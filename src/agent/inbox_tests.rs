@@ -249,18 +249,22 @@ async fn inbox_steering_is_durable_and_cancel_does_not_run_followups() {
             ));
             let worker = runner.clone();
             let (cancel, cancelled) = tokio::sync::oneshot::channel();
+            let (progress, mut events) = tokio::sync::mpsc::channel(32);
             let task = tokio::spawn(async move {
                 worker
                     .run_with_cancel(
                         SessionId::new("chat"),
                         IncomingMessage::new(InterfaceId("test".into()), "chat", "initial"),
-                        None,
+                        Some(progress),
                         Some(cancelled),
                         None,
                     )
                     .await
             });
             seen.recv().await.unwrap();
+            while let Ok(event) = events.try_recv() {
+                assert!(!matches!(event, super::AgentEvent::InputConsumed));
+            }
             let mut steer = request("chat", "steer", "correction");
             steer.mode = BusyMode::Steer;
             store.submit(steer).await.unwrap();
@@ -300,6 +304,13 @@ async fn inbox_steering_is_durable_and_cancel_does_not_run_followups() {
             } else {
                 replies.send(true).unwrap();
                 let context = seen.recv().await.unwrap();
+                let mut consumed = 0;
+                while let Ok(event) = events.try_recv() {
+                    if matches!(event, super::AgentEvent::InputConsumed) {
+                        consumed += 1;
+                    }
+                }
+                assert_eq!(consumed, 1);
                 assert!(context.iter().any(
                     |m| matches!(m,super::message::Message::User(u) if u.content=="correction")
                 ));

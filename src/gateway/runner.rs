@@ -1136,6 +1136,20 @@ impl GatewayRunner {
             let finished = tokio::select! {
                 event = rx.recv() => {
                     match event {
+                        Some(AgentEvent::InputConsumed) => {
+                            if progress_disabled {
+                                continue;
+                            }
+                            for id in [status_id.take(), preview_id.take()].into_iter().flatten() {
+                                if let Err(error) = interface.delete(conversation_id, &id).await {
+                                    warn!("Failed to remove progress after new input: {error}");
+                                }
+                            }
+                            status_state = None;
+                            preview.clear();
+                            preview_sent.clear();
+                            false
+                        }
                         // A reply belongs in its own message; previewing it in the status
                         // makes the chat jump when that status is removed or shortened.
                         Some(AgentEvent::SessionChanged { .. }) => {
@@ -2735,6 +2749,89 @@ mod tests {
         let (id, _, _, _, _) = GatewayRunner::show_progress(&interface, "chat", rx).await;
         assert!(id.is_some());
         assert!(messages.recv().await.unwrap().contains("Retry 1/3"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn consumed_input_recreates_progress_with_unchanged_plan_and_tool() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (updates, mut received) = mpsc::unbounded_channel();
+            let sends = Arc::new(AtomicUsize::new(0));
+            let interface = RecordingInterface {
+                updates,
+                sends: sends.clone(),
+                incoming: None,
+            };
+            let (tx, rx) = mpsc::channel(8);
+            let task =
+                tokio::spawn(
+                    async move { GatewayRunner::show_progress(&interface, "chat", rx).await },
+                );
+            tx.send(AgentEvent::PlanUpdated(
+                crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                    "plan":[{"step":"Inspect","status":"in_progress"}]
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+            received.recv().await.unwrap();
+            tx.send(AgentEvent::ToolStarted {
+                call_id: "cmd".into(),
+                name: "exec_command".into(),
+                arguments: serde_json::json!({"cmd":"cargo test"}),
+            })
+            .await
+            .unwrap();
+            let status = received.recv().await.unwrap();
+            for _ in 0..2 {
+                tx.send(AgentEvent::InputConsumed).await.unwrap();
+                assert_eq!(received.recv().await.unwrap(), "<deleted>");
+                assert_eq!(received.recv().await.unwrap(), status);
+            }
+            assert_eq!(sends.load(Ordering::SeqCst), 3);
+            drop(tx);
+            assert!(task.await.unwrap().0.is_some());
+            assert!(received.try_recv().is_err());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consumed_input_starts_fresh_preview_without_creating_status() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (updates, mut received) = mpsc::unbounded_channel();
+            let sends = Arc::new(AtomicUsize::new(0));
+            let interface = RecordingInterface {
+                updates,
+                sends: sends.clone(),
+                incoming: None,
+            };
+            let (tx, rx) = mpsc::channel(8);
+            let task =
+                tokio::spawn(
+                    async move { GatewayRunner::show_progress(&interface, "chat", rx).await },
+                );
+            tx.send(AgentEvent::InputConsumed).await.unwrap();
+            tx.send(AgentEvent::TextDelta("Old answer".into()))
+                .await
+                .unwrap();
+            assert_eq!(received.recv().await.unwrap(), "Old answer");
+            tx.send(AgentEvent::InputConsumed).await.unwrap();
+            assert_eq!(received.recv().await.unwrap(), "<deleted>");
+            tx.send(AgentEvent::TextDelta("New answer".into()))
+                .await
+                .unwrap();
+            assert_eq!(received.recv().await.unwrap(), "New answer");
+            drop(tx);
+            let (status_id, _, _, preview_id, _) = task.await.unwrap();
+            assert!(status_id.is_none());
+            assert!(preview_id.is_some());
+            assert_eq!(sends.load(Ordering::SeqCst), 2);
+            assert!(received.try_recv().is_err());
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

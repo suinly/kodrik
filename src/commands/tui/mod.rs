@@ -389,6 +389,7 @@ async fn next_terminal_event() -> std::io::Result<Event> {
 
 fn show_progress(app: &mut App, event: AgentEvent) -> bool {
     match event {
+        AgentEvent::InputConsumed => return false,
         AgentEvent::SessionChanged {
             previous_user_messages,
         } => {

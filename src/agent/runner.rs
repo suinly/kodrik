@@ -1322,13 +1322,17 @@ mod tests {
                 Arc::new(JsonSessionStore::new(directory.path())),
             ));
             let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+            let (progress, mut events) = mpsc::channel(32);
             let task_runner = runner.clone();
             let task = tokio::spawn(async move {
                 task_runner.run_with_cancel(SessionId::new("steer"),
                     IncomingMessage::new(InterfaceId("test".into()), "chat", "initial"),
-                    None, None, Some(&mut input_rx)).await
+                    Some(progress), None, Some(&mut input_rx)).await
             });
             assert_eq!(contexts.recv().await.unwrap().len(), 1);
+            while let Ok(event) = events.try_recv() {
+                assert!(!matches!(event, AgentEvent::InputConsumed));
+            }
             input_tx.send(user("during generation")).unwrap();
             replies.send(Ok(vec![Message::ToolCall(ToolCall {
                 call_id: "call".into(), name: "blocking".into(), arguments: serde_json::json!({}),
@@ -1337,8 +1341,18 @@ mod tests {
             let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png)).unwrap();
             input_tx.send(UserMessage { files: Vec::new(), content: "during tool".into(), images: vec![image.clone()] }).unwrap();
             assert!(contexts.try_recv().is_err());
+            while let Ok(event) = events.try_recv() {
+                assert!(!matches!(event, AgentEvent::InputConsumed));
+            }
             release.notify_one();
             let context = contexts.recv().await.unwrap();
+            let mut consumed = 0;
+            while let Ok(event) = events.try_recv() {
+                if matches!(event, AgentEvent::InputConsumed) {
+                    consumed += 1;
+                }
+            }
+            assert_eq!(consumed, 1);
             assert_eq!(context.len(), 5);
             assert!(matches!(&context[1], Message::ToolCall(call) if call.call_id == "call"));
             assert!(matches!(&context[2], Message::ToolResult(result) if result.content.output["done"] == true));

@@ -24,6 +24,7 @@ pub struct Agent {
 
 #[derive(Debug)]
 pub enum AgentEvent {
+    InputConsumed,
     SessionChanged {
         previous_user_messages: usize,
     },
@@ -325,6 +326,7 @@ impl Agent {
             .and_then(|cp| cp.record.overflow_compaction_from);
 
         loop {
+            let mut input_consumed = false;
             if let Some(cp) = checkpoint.as_deref_mut()
                 && cp.record.pending_calls.is_empty()
             {
@@ -338,6 +340,7 @@ impl Agent {
                     self.prepare_input(session, &mut input).await?;
                     session.push(Message::User(input));
                     cp.record.submission_ids.push(record.id);
+                    input_consumed = true;
                 }
             }
             if let Some(incoming) = incoming.as_mut() {
@@ -346,7 +349,11 @@ impl Agent {
                         sandbox.prepare_input(&mut input).await?;
                     }
                     session.push(Message::User(input));
+                    input_consumed = true;
                 }
+            }
+            if input_consumed && let Some(tx) = progress {
+                let _ = tx.send(AgentEvent::InputConsumed).await;
             }
             let messages = if let Some(cp) = checkpoint
                 .as_ref()
