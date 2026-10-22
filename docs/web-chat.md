@@ -11,7 +11,9 @@ as a persistent page; see [UI documents](ui-documents.md).
 
 Personal conversations belong to a user and are shared between web chat and
 private Telegram chats. CLI/TUI always uses the configured owner, whose web agent
-also shares terminal tools, memory and skills. Access is by invitation; group and guest chats are disabled.
+also shares terminal tools, memory and skills. Access is by invitation; groups are disabled.
+Guest mode in private chats gives each pair shared context and sandboxed tools,
+separate from their personal spaces, for the owner and invited users.
 The Nuxt 4 SPA uses standard Nuxt UI components and renders canonical snapshots; Axum
 handles authentication, persistence, agent execution and SSE subscriptions. No Node.js server is needed in production.
 
@@ -107,7 +109,13 @@ Once admitted, the person can sign in normally through Telegram and use the bot
 in private messages. They receive isolated user tools, never owner privileges.
 The configured `[owner]` Telegram ID and owner-password login need no invitation.
 Existing Telegram users and sessions also require admission after this upgrade.
-Groups and guest messages are disabled, including messages from the owner.
+Groups are disabled. The owner and invited users can invoke guest mode in private
+chats with other people. Guest access is checked against the current sender. Both
+participants use the same guest history, memory, datasets and virtual filesystem;
+other pairs have separate spaces. The agent sees each sender's Telegram user ID,
+name and username, plus supplied reply context. Guest
+runs never use personal history, memory, skills or native shell access, including
+when invoked by the owner. Revoking access also blocks guest requests and replies.
 
 Revoking the invitation also revokes the access it granted. Revoking a user
 invalidates web sessions and pending approvals. New bot messages,

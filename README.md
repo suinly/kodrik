@@ -154,7 +154,10 @@ before starting the brew service.
 
 Configuration and state live in `~/.kodrik/`. Each user shares personal history,
 memory and skills between Telegram and web; CLI/TUI always uses the configured
-owner. Access requires an owner-issued invitation; groups and guest messages are disabled.
+owner. Access requires an owner-issued invitation; groups are disabled. The owner
+and invited users can invoke guest mode in private chats with other people. Each
+pair shares guest history, memory, lists and sandboxed tools, separate from their
+personal memory and files. The agent identifies each speaker by Telegram user ID.
 Invited users use Bashkit with a persistent
 virtual filesystem; CLI/TUI and the configured owner's personal chats retain
 native shell and file tools. Set `[owner]` to link your Telegram identity to the

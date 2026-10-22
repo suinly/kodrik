@@ -55,7 +55,13 @@ token = "your-bot-token"
 ```
 
 The gateway accepts private messages only from the configured owner and users
-admitted through a one-use invitation. Groups and guest messages are disabled.
+admitted through a one-use invitation. Groups are disabled. Guest mode in private
+chats is available to those same users, authenticated by the sender rather than
+the other person's chat ID. Both directions of a private conversation share one
+guest session, memory, datasets and virtual filesystem, identified by the sorted
+pair of participant IDs. Other pairs and personal spaces remain separate.
+Each model turn checks the current caller's access, even if the other participant
+has lost access. Sender ID, name, username and quoted reply context reach the agent.
 The name `telegram` is configurable; multiple named gateways are supported.
 Run `kodrik gateway` to start polling. Create a separate link manually for each
 person using `kodrik invites create --label "Alice"`; see

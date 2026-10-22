@@ -332,7 +332,14 @@ with its matching binary. See [tested storage cases](durable-recovery.md#storage
 expiry times, admitted Telegram IDs, and the configured owner ID. Treat this
 private file as part of the full-state backup; removing it revokes invitations
 and membership along with sessions. No raw invitation URLs are retained.
-Groups and guest messages are disabled. Existing uninvited user directories
+Groups are disabled. Private guest chats for the owner and invited users are stored
+under `spaces/telegram/<hex-interface>/guest-chats/<lower-user-id>-<higher-user-id>/`,
+separately from personal data and other participant pairs. Both directions share
+one session, memory, datasets and virtual filesystem. Old per-caller guest
+directories remain untouched and are not automatically imported into the shared
+space. Guest chats use sandboxed tools and
+are reopened on the next authorized guest request, without background schedulers.
+Existing uninvited user directories
 remain on disk but their applications and background jobs are not recovered.
 Use `kodrik invites list` and the revoke commands to manage access; do not edit
 the journal while the gateway is running.

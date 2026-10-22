@@ -52,6 +52,19 @@ fn user_participant(user: &teloxide::types::User, message_id: i32) -> Participan
     }
 }
 
+fn guest_sender(user: &Value) -> Value {
+    let name = [user["first_name"].as_str(), user["last_name"].as_str()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    json!({
+        "user_id": user["id"],
+        "name": name,
+        "username": user["username"].as_str().map(|name| format!("@{name}")),
+    })
+}
+
 fn group_sender(message: &teloxide::types::Message, group: &mut TelegramGroup) -> Value {
     let (key, id, profile) = if let Some(chat) = &message.sender_chat {
         (
@@ -111,6 +124,7 @@ pub struct TelegramInterface {
     attachment_dir: std::path::PathBuf,
     space_root: Option<std::path::PathBuf>,
     access_root: Option<std::path::PathBuf>,
+    guest_queries: std::sync::Mutex<HashMap<String, u64>>,
     journal: Option<crate::audit::Journal>,
     stream: bool,
     languages: std::sync::Arc<std::sync::RwLock<HashMap<i64, (Language, bool)>>>,
@@ -135,6 +149,7 @@ impl TelegramInterface {
             attachment_dir: attachment_dir.into(),
             space_root: None,
             access_root: None,
+            guest_queries: Default::default(),
             journal: None,
             stream: true,
             languages: Default::default(),
@@ -221,7 +236,22 @@ impl TelegramInterface {
             }),
         )
         .await?;
+        let guest = if method == "answerGuestQuery" && self.access_root.is_some() {
+            let query = body["guest_query_id"]
+                .as_str()
+                .context("Missing guest query ID")?;
+            Some((query.to_owned(), self.consume_guest_query(query)?))
+        } else {
+            None
+        };
         let result = self.api_request_inner(method, body).await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.downcast_ref::<super::SendRejection>().is_some())
+            && let Some((query, Some(user))) = guest
+        {
+            self.guest_queries.lock().unwrap().insert(query, user);
+        }
         let status = match &result {
             Ok(body)
                 if matches!(method, "deleteMessage" | "answerCallbackQuery")
@@ -528,8 +558,45 @@ impl TelegramInterface {
         Ok(Some(Event::Message(incoming)))
     }
 
-    fn map_guest(&self, guest: Value, bot_username: &str) -> anyhow::Result<Option<Event>> {
+    fn admits_guest(&self, guest: &Value) -> bool {
+        if self.access_root.is_none() {
+            return true;
+        }
+        let Some(user) = guest["from"]["id"].as_u64() else {
+            return false;
+        };
+        let Some(query) = guest["guest_query_id"].as_str().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        if guest["chat"]["type"] != "private"
+            || !guest["chat"]["id"].as_i64().is_some_and(|id| id > 0)
+            || !guest["sender_chat"].is_null()
+            || guest["from"]["is_bot"] != false
+            || !self.allows_recipient(&user.to_string())
+        {
+            return false;
+        }
+        self.guest_queries
+            .lock()
+            .unwrap()
+            .insert(query.to_owned(), user);
+        true
+    }
+
+    fn consume_guest_query(&self, query: &str) -> anyhow::Result<Option<u64>> {
         if self.access_root.is_some() {
+            let user = self.guest_queries.lock().unwrap().remove(query);
+            anyhow::ensure!(
+                user.is_some_and(|user| self.allows_recipient(&user.to_string())),
+                "Telegram guest access denied or query already answered"
+            );
+            return Ok(user);
+        }
+        Ok(None)
+    }
+
+    fn map_guest(&self, guest: Value, bot_username: &str) -> anyhow::Result<Option<Event>> {
+        if !self.admits_guest(&guest) {
             return Ok(None);
         }
         let chat = guest["chat"]["id"]
@@ -562,7 +629,25 @@ impl TelegramInterface {
         let mut incoming = IncomingMessage::new(self.id(), chat.to_string(), "");
         incoming.request_id = format!("{}:{chat}:guest:{query}", self.id());
         incoming.guest_query_id = Some(query.to_owned());
+        incoming.guest_user_id = guest["from"]["id"].as_u64();
         incoming.is_group = is_group;
+        if !is_group
+            && incoming.guest_user_id.is_some()
+            && !login_start(&text)
+            && !matches!(
+                text.split_whitespace().next(),
+                Some("/sessions" | "/session")
+            )
+        {
+            let mut sender = guest_sender(&guest["from"]);
+            if let Some(reply) = guest["reply_to_message"].as_object() {
+                sender["reply_to"] = json!({
+                    "sender": guest_sender(reply.get("from").unwrap_or(&Value::Null)),
+                    "text": reply.get("text").or_else(|| reply.get("caption")),
+                });
+            }
+            text = format!("[Telegram guest sender] {sender}\n{text}");
+        }
         if is_group
             && !login_start(&text)
             && !matches!(
@@ -668,7 +753,9 @@ impl TelegramInterface {
                         IncomingUpdate::Guest(_) => None,
                         _ => continue,
                     };
-                    if self.access_root.is_some() && message.is_none_or(|message| !self.admits_message(message)) {
+                    if let Some(message) = message {
+                        if !self.admits_message(message) { continue; }
+                    } else if let IncomingUpdate::Guest(guest) = &update && !self.admits_guest(guest) {
                         continue;
                     }
                     let chat = if let Some(message) = message { message.chat.id } else {
@@ -991,10 +1078,6 @@ impl Interface for TelegramInterface {
     }
 
     async fn answer_guest(&self, query_id: &str, message: &str) -> anyhow::Result<MessageId> {
-        anyhow::ensure!(
-            self.access_root.is_none(),
-            "Telegram guest access is disabled"
-        );
         let body = self
             .api_request(
                 "answerGuestQuery",
@@ -1032,10 +1115,6 @@ impl Interface for TelegramInterface {
         query_id: &str,
         message: &super::OutgoingMessage,
     ) -> anyhow::Result<MessageId> {
-        anyhow::ensure!(
-            self.access_root.is_none(),
-            "Telegram guest access is disabled"
-        );
         self.answer_guest_outgoing_message(query_id, message).await
     }
 
@@ -1171,6 +1250,111 @@ impl Interface for TelegramInterface {
 mod tests {
     use super::*;
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn invited_guest_retries_only_after_a_definite_delivery_rejection() {
+        for (status, code) in [("400 Bad Request", 400), ("500 Internal Server Error", 500)] {
+            let root = tempfile::tempdir().unwrap();
+            crate::web::auth::AuthStore::new(root.path())
+                .configure_owner(Some(42))
+                .unwrap();
+            let response = if code == 400 {
+                json!({"ok":false,"error_code":code,"description":"rejected"})
+            } else {
+                json!({"message":"upstream failure"})
+            };
+            let (interface, request) = server(status, response).await;
+            let mut interface = interface.with_access(root.path().into());
+            interface.map_guest(json!({"guest_query_id":"query","chat":{"id":99,"type":"private"},"from":{"id":42,"is_bot":false},"text":"hello"}), "TestBot").unwrap().unwrap();
+            assert!(interface.answer_guest("query", "first").await.is_err());
+            request.await.unwrap();
+            if code == 400 {
+                let (accepted, request) = server(
+                    "200 OK",
+                    json!({"ok":true,"result":{"inline_message_id":"fallback"}}),
+                )
+                .await;
+                interface.bot = accepted.bot;
+                interface.answer_guest("query", "fallback").await.unwrap();
+                request.await.unwrap();
+            } else {
+                assert!(
+                    interface
+                        .answer_guest("query", "duplicate")
+                        .await
+                        .unwrap_err()
+                        .to_string()
+                        .contains("already answered")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn invited_guest_uses_sender_access_and_one_reply_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let auth = crate::web::auth::AuthStore::new(root.path());
+        auth.configure_owner(Some(42)).unwrap();
+        auth.grant_test_user(7).unwrap();
+        let (interface, request) = server(
+            "200 OK",
+            json!({"ok":true,"result":{"inline_message_id":"reply"}}),
+        )
+        .await;
+        let interface = interface.with_access(root.path().into());
+        let guest = json!({"guest_query_id":"query","chat":{"id":99,"type":"private"},"from":{"id":7,"is_bot":false,"first_name":"Invited","last_name":"User","username":"invited"},"text":"hello","reply_to_message":{"from":{"id":99,"first_name":"Peer"},"text":"Let's watch Arrival"}});
+        let (tx, mut rx) = mpsc::channel(10);
+        interface
+            .process_updates(
+                futures::stream::iter([Ok(IncomingUpdate::Guest(guest.clone()))]),
+                tx,
+                "TestBot",
+            )
+            .await
+            .unwrap();
+        let Some(Event::Message(message)) = rx.recv().await else {
+            panic!("invited guest must reach the gateway even when the other user is not invited");
+        };
+        assert_eq!(message.source.conversation_id, "99");
+        assert_eq!(message.guest_query_id.as_deref(), Some("query"));
+        let (sender, text) = message
+            .text
+            .strip_prefix("[Telegram guest sender] ")
+            .unwrap()
+            .split_once('\n')
+            .unwrap();
+        let sender: Value = serde_json::from_str(sender).unwrap();
+        assert_eq!(sender["user_id"], 7);
+        assert_eq!(sender["name"], "Invited User");
+        assert_eq!(sender["username"], "@invited");
+        assert_eq!(sender["reply_to"]["sender"]["user_id"], 99);
+        assert_eq!(sender["reply_to"]["text"], "Let's watch Arrival");
+        assert_eq!(text, "hello");
+        assert!(!interface.allows_recipient("99"));
+        interface.answer_guest("query", "hello").await.unwrap();
+        assert!(interface.answer_guest("query", "duplicate").await.is_err());
+        let (path, body) = request.await.unwrap();
+        assert!(path.contains("answerGuestQuery"));
+        assert_eq!(body["guest_query_id"], "query");
+
+        for patch in [
+            json!({"from":{"id":9,"is_bot":false}}),
+            json!({"from":null}),
+            json!({"from":{"id":7,"is_bot":true}}),
+            json!({"sender_chat":{"id":7}}),
+            json!({"chat":{"id":-99,"type":"group"}}),
+        ] {
+            let mut denied = guest.clone();
+            denied
+                .as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            assert!(interface.map_guest(denied, "TestBot").unwrap().is_none());
+        }
+        interface.map_guest(guest, "TestBot").unwrap().unwrap();
+        auth.revoke_user(7).unwrap();
+        assert!(interface.answer_guest("query", "revoked").await.is_err());
+    }
 
     #[tokio::test]
     async fn invite_access_blocks_delivery_but_allows_login_prompts() {

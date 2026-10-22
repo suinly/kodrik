@@ -721,6 +721,55 @@ impl std::fmt::Display for Observed {
 impl std::error::Error for Observed {}
 
 impl AgentRunner {
+    pub(crate) async fn cancel_queued_input(
+        &self,
+        conversation: &SessionId,
+        request: &str,
+    ) -> anyhow::Result<()> {
+        let Some(store) = self.sessions.runtime_store() else {
+            return Ok(());
+        };
+        let conversation = conversation.as_str().to_owned();
+        let request = request.to_owned();
+        store.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let id: Option<String> = tx.query_row("SELECT id FROM submissions WHERE conversation_id=?1 AND request_id=?2 AND status='Queued'", params![conversation, request], |row| row.get(0)).optional()?;
+            if let Some(id) = id {
+                let mut record = read_record(&tx, &id)?.context("Queued submission missing")?;
+                record.status = SubmissionStatus::Cancelled;
+                write_record(&tx, &record)?;
+            }
+            tx.commit()?;
+            Ok(())
+        }).await
+    }
+
+    pub(crate) async fn discard_guest_queries(
+        &self,
+        conversation: &SessionId,
+    ) -> anyhow::Result<()> {
+        self.cancel_conversation(conversation).await?;
+        let Some(store) = self.sessions.runtime_store() else {
+            return Ok(());
+        };
+        let conversation = conversation.as_str().to_owned();
+        store.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let records = tx.prepare("SELECT payload FROM submissions WHERE conversation_id=?1 AND status='Queued'")?
+                .query_map([&conversation], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for bytes in records {
+                let mut record: SubmissionRecord = serde_json::from_slice(&bytes)?;
+                if record.request.message.guest_query_id.is_some() {
+                    record.status = SubmissionStatus::Cancelled;
+                    write_record(&tx, &record)?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }).await
+    }
+
     pub(crate) fn has_inbox(&self) -> bool {
         self.sessions.runtime_store().is_some()
     }

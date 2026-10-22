@@ -357,7 +357,9 @@ impl GatewayRunner {
                         message.acknowledge();
                         continue;
                     }
-                    if gateway.telegram_spaces.is_some() && gateway.prepare_telegram_chat(
+                    if gateway.telegram_spaces.is_some() && message.guest_query_id.is_some() {
+                        gateway.prepare_telegram_guest(&message).await?;
+                    } else if gateway.telegram_spaces.is_some() && gateway.prepare_telegram_chat(
                         &message.source.interface.0, message.source.conversation_id.parse()?
                     ).await? {
                         let reminders = gateway.reminders.last().unwrap().clone();
@@ -371,7 +373,7 @@ impl GatewayRunner {
                         message.acknowledge();
                         continue;
                     }
-                    let admission_id=SessionId::new(format!("{}:{}{}",message.source.interface,message.source.conversation_id,if message.guest_query_id.is_some(){":guest"}else{""}));
+                    let admission_id=message.session_id();
                     let admission_runner=gateway.runner_for(&admission_id)?;
                     let control=message.guest_query_id.is_none() && message.images.is_empty() && message.files.is_empty() && matches!(message.text.trim(),"/stop"|"/new");
                     if admission_runner.has_inbox() {
@@ -394,9 +396,7 @@ impl GatewayRunner {
                     if message.guest_query_id.is_none() {
                         if let Some(proactive) = &self.proactive { proactive.note_activity(); }
                     }
-                    let key = (message.source.interface.0.clone(), format!("{}{}",
-                        message.source.conversation_id,
-                        if message.guest_query_id.is_some() { ":guest" } else { "" }));
+                    let key = (message.source.interface.0.clone(), message.session_id().as_str().to_owned());
                     let tx = conversations.entry(key).or_insert_with(|| {
                         let (tx, rx) = mpsc::channel(100);
                         let gateway = gateway.clone();
@@ -526,19 +526,14 @@ impl GatewayRunner {
                 },
             };
             if !self.allows_message(&message)? {
+                let id = message.session_id();
+                self.runner_for(&id)?
+                    .cancel_queued_input(&id, &message.request_id)
+                    .await?;
                 message.acknowledge();
                 continue;
             }
-            let id = SessionId::new(format!(
-                "{}:{}{}",
-                message.source.interface,
-                message.source.conversation_id,
-                if message.guest_query_id.is_some() {
-                    ":guest"
-                } else {
-                    ""
-                }
-            ));
+            let id = message.session_id();
             let durable = self.runner_for(&id)?.has_inbox();
             if durable
                 && self
@@ -571,7 +566,7 @@ impl GatewayRunner {
             let conversation_id = message.source.conversation_id.clone();
             let (input_tx, mut input_rx) = mpsc::unbounded_channel();
             let mut stopped = false;
-            if !durable && !message.is_group {
+            if !durable && !message.is_group && message.guest_query_id.is_none() {
                 for message in pending.drain(..) {
                     input_tx.send(UserMessage {
                         files: message.files,
@@ -614,7 +609,7 @@ impl GatewayRunner {
                                 break;
                             }
                             // A group participant may be talking to someone else, not steering this run.
-                            if durable || message.is_group {
+                            if durable || message.is_group || message.guest_query_id.is_some() {
                                 pending.push_back(message);
                             } else {
                                 input_tx.send(UserMessage { files: message.files, content: message.text, images: message.images })?;
@@ -667,8 +662,13 @@ impl GatewayRunner {
         let Some(spaces) = &self.telegram_spaces else {
             return Ok(true);
         };
-        if message.is_group || message.guest_query_id.is_some() {
+        if message.is_group {
             return Ok(false);
+        }
+        if message.guest_query_id.is_some() {
+            return message
+                .guest_user_id
+                .map_or(Ok(false), |user| spaces.users.allowed_user(user));
         }
         let Ok(user) = message.source.conversation_id.parse::<u64>() else {
             return Ok(false);
@@ -689,22 +689,14 @@ impl GatewayRunner {
             return Ok(());
         }
         if !self.allows_message(message)? {
+            let id = message.session_id();
+            if let Ok(runner) = self.runner_for(&id) {
+                runner.cancel_queued_input(&id, &message.request_id).await?;
+            }
             message.acknowledge();
             return Ok(());
         }
-        let context = crate::audit::Context::new(
-            &format!(
-                "{}:{}{}",
-                message.source.interface,
-                message.source.conversation_id,
-                if message.guest_query_id.is_some() {
-                    ":guest"
-                } else {
-                    ""
-                }
-            ),
-            "message",
-        );
+        let context = crate::audit::Context::new(message.session_id().as_str(), "message");
         let result = if let Some(cancel) = cancel {
             let (agent_cancel, agent_cancelled) = oneshot::channel();
             let (delivery_cancel, delivery_cancelled) = tokio::sync::watch::channel(false);
@@ -777,30 +769,43 @@ impl GatewayRunner {
                     conversation_id: conversation_id.clone(),
                 };
 
-                let session_id = SessionId::new(format!(
-                    "{}:{}{}",
-                    message.source.interface,
-                    conversation_id,
-                    if message.guest_query_id.is_some() {
-                        ":guest"
-                    } else {
-                        ""
-                    }
-                ));
+                let session_id = message.session_id();
                 let agent_runner = self.runner_for(&session_id)?;
                 let request_id = message.request_id.clone();
                 let delivery_session = session_id.clone();
 
                 if let Some(query) = message.guest_query_id.clone() {
+                    // Bind model attempts and background work to this caller over the shared store.
+                    let guest_runner = if self.telegram_spaces.is_some() {
+                        self.build_telegram_guest_runner(&message).await?
+                    } else {
+                        agent_runner.clone()
+                    };
                     // A guest has exactly one response slot; no chat actions, progress,
                     // group participation decision or normal sendMessage is allowed.
                     let response = crate::agent::tools::telegram_reply::REPLY_CONTEXT
-                        .scope(
-                            reply_context.clone(),
-                            agent_runner.run_with_cancel(session_id, message, None, cancel, None),
-                        )
+                        .scope(reply_context.clone(), async {
+                            let mut shutdown = self.agent_runner.shutdown_receiver();
+                            let response = guest_runner
+                                .run_with_cancel(session_id, message, None, cancel, None);
+                            tokio::pin!(response);
+                            tokio::select! {
+                                result = &mut response => result,
+                                    _ = async { let _ = shutdown.wait_for(|stopped| *stopped).await; } => {
+                                    guest_runner.suspend();
+                                    response.await
+                                }
+                            }
+                        })
                         .await;
+                    if response
+                        .as_ref()
+                        .is_err_and(|error| error.is::<crate::agent::recovery::Suspended>())
+                    {
+                        return Err(crate::agent::recovery::Suspended.into());
+                    }
                     if reply_context.guest_consumed().await {
+                        guest_runner.finish_learning().await;
                         return Ok(());
                     }
                     let text = match response {
@@ -810,7 +815,10 @@ impl GatewayRunner {
                             language.pick("Response interrupted", "Ответ прерван")
                         ),
                     };
-                    interface.answer_guest(&query, &text).await?;
+                    if let Err(error) = interface.answer_guest(&query, &text).await {
+                        log::warn!("Telegram guest reply failed: {error:#}");
+                    }
+                    guest_runner.finish_learning().await;
                     return Ok(());
                 }
 
@@ -1409,9 +1417,37 @@ mod tests {
             anyhow::bail!("ordinary send in guest chat")
         }
         async fn answer_guest(&self, query: &str, text: &str) -> anyhow::Result<MessageId> {
+            anyhow::ensure!(query != "revoked", "Telegram guest access denied");
             self.0.send((query.into(), text.into()))?;
             Ok(MessageId("inline".into()))
         }
+    }
+
+    #[tokio::test]
+    async fn denied_guest_delivery_does_not_stop_later_queries() {
+        use crate::agent::{Agent, ContextBuilder, session::JsonSessionStore, tools::ToolRegistry};
+        let directory = tempfile::tempdir().unwrap();
+        let runner = Arc::new(AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(ScopeLlm),
+                ToolRegistry::default(),
+                ContextBuilder::new("guest"),
+            )),
+            Arc::new(JsonSessionStore::new(directory.path())),
+        ));
+        let (tx, mut sent) = mpsc::unbounded_channel();
+        let gateway = GatewayRunner::new(runner).add_interface(GuestInterface(tx));
+        let (queue, inputs) = mpsc::channel(2);
+        for query in ["revoked", "live"] {
+            let mut message =
+                IncomingMessage::new(InterfaceId("telegram:test".into()), "99", "hello");
+            message.guest_query_id = Some(query.into());
+            queue.send(message).await.unwrap();
+        }
+        drop(queue);
+        gateway.run_conversation(inputs).await.unwrap();
+        assert_eq!(sent.try_recv().unwrap(), ("live".into(), "guest".into()));
+        assert!(sent.try_recv().is_err());
     }
 
     #[tokio::test]

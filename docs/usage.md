@@ -155,6 +155,18 @@ saved activity, which may be a vote without newer aggregate counts. Individual
 votes are read in pages of 50 using `offset` and `next_offset`; all saved votes
 remain available across pages. Use `offset:null` for the first page and lists.
 
+Guest mode in private chats is available to the owner and invited users. The two
+participants share one guest history, memory, datasets and virtual filesystem,
+without access to personal memory or files. The agent distinguishes speakers by
+Telegram user ID, with their name and username supplied as descriptive labels.
+For example, either person can ask to add a film to their shared watchlist, or
+create and update a shared shopping checklist. Other pairs have separate spaces.
+Ordinary groups remain disabled.
+
+Guest mode only supplies invocations and quoted reply context, not the full private
+chat history. Mention the bot in the request, or reply to the relevant film or
+shopping message while invoking it.
+
 Guest mode has one response slot. It supports posts, locations and media from
 public URLs or Telegram file IDs, but not local uploads, photo albums or polls.
 Guest document URLs must identify PDF or ZIP files, and guest video URLs require
