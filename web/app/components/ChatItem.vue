@@ -2,12 +2,13 @@
 import {t} from '../utils/i18n'
 import type { ChatMessage } from '../utils/api'
 import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
-const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean }>()
+const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
 const blocks=computed(()=>groupMessageParts(props.message.parts))
 const editing=ref(false)
 const text=ref('')
 const hasActions=computed(()=>props.message.role==='user' && !editing.value && (props.editable || (props.message.versions?.length ?? 0)>1))
+const searchRing=computed(()=>props.searchSelected?'rounded-lg ring-2 ring-primary ring-offset-4 ring-offset-default':undefined)
 function beginEdit() {
   text.value=props.message.parts.filter(part=>part.type==='text').map(part=>part.text).join('\n')
   try {
@@ -22,8 +23,9 @@ function beginEdit() {
   <UChatMessage :id="message.id" :data-message-id="message.id" :role="message.role" :parts="[]"
     :side="message.role === 'user' ? 'right' : 'left'"
     :variant="message.role === 'user' ? 'soft' : 'naked'"
-    :ui="{actions:'gap-1 group-focus-within/message:opacity-100',container:hasActions?'[@media(pointer:coarse)]:pb-12':undefined}"
-    class="message min-w-0">
+    :ui="{actions:'gap-1 group-focus-within/message:opacity-100',container:hasActions?'[@media(pointer:coarse)]:pb-12':undefined,
+      root:message.role==='user'?undefined:searchRing,content:message.role==='user'?searchRing:undefined}"
+    class="message min-w-0" :class="{'search-match':searchSelected}">
     <template #content>
       <div class="min-w-0 space-y-3">
         <template v-for="(block,index) in blocks" :key="index">

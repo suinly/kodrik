@@ -406,7 +406,7 @@ const compactionLabels = {
           </div>
           <ChatItem v-for="message in snapshot?.messages ?? []" :key="message.id" :message="message" :superseded="superseded" :actions="!editorLocked"
             :editable="message.role==='user' && !locked && !busy && !snapshot?.queued.length && !editingMessage" :saving="editingMessage===message.id"
-            :class="{'rounded-lg ring-2 ring-primary ring-offset-4 ring-offset-default':matches[matchIndex]===message.id}"
+            :search-selected="matches[matchIndex]===message.id"
             @edit="text=>editMessage(message,text)" @version="id=>emit('navigate',id)"
             @prompt="text=>{if(!editorLocked){draft=draft.trim()?`${draft}\n\n${text}`:text;prompt?.textareaRef?.focus({preventScroll:true})}}" />
           <div v-if="snapshot?.live.current?.text" data-testid="partial">

@@ -184,7 +184,7 @@ test('conversation search scrolls to matches and navigates in both directions', 
     await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
     const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
     await search.fill('Поисковый маяк');
-    const selected=page.locator('.message.ring-2');
+    const selected=page.locator('.message.search-match');
     const expectMatch=async text=>{
       await expect(selected).toContainText(text);
       await expect.poll(()=>selected.evaluate(el=>{
@@ -193,6 +193,8 @@ test('conversation search scrolls to matches and navigates in both directions', 
       })).toBe(true);
     };
     await expectMatch('Сообщение 2:');
+    await expect(selected).not.toHaveClass(/\bring-2\b/);
+    await expect(selected.locator('[data-slot="content"]').first()).toHaveClass(/\bring-2\b/);
     await page.getByRole('button',{name:'Следующее совпадение',exact:true}).click();
     await expectMatch('Сообщение 21:');
     await page.getByRole('button',{name:'Предыдущее совпадение',exact:true}).click();
@@ -309,7 +311,7 @@ test('conversation content search, rename, inline edits, versions and deletion w
     await expect(page.locator('.message').getByText('Уникальный маяк для поиска',{exact:true})).toHaveCount(1);
     await expect(page.getByRole('textbox',{name:'Поиск в диалоге',exact:true})).toHaveValue('УНИКАЛЬНЫЙ МАЯК');
     await page.getByRole('textbox',{name:'Поиск в диалоге',exact:true}).fill('Привет');
-    await expect(page.locator('.message.ring-2')).toContainText('Привет!');
+    await expect(page.locator('.message.search-match')).toContainText('Привет!');
     await page.screenshot({path:'/tmp/kodrik-chat-management-desktop.png',fullPage:true});
     await page.setViewportSize({width:390,height:844});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
