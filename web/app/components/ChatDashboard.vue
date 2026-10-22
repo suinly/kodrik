@@ -213,7 +213,7 @@ onMounted(() => {
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
       :toggle="{size:'xl'}" :ui="{root:'min-h-0',body:'overflow-hidden',content:'chat-viewport bg-default'}">
       <template #header>
-        <UButton :to="chatUrl" external aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
+        <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
       </template>
       <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create" />
       <p class="text-xs font-medium text-muted mt-4"> {{ t("Диалоги") }} </p>

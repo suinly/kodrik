@@ -204,6 +204,20 @@ test('conversation search scrolls to matches and navigates in both directions', 
   } finally {await browser.close();}
 });
 
+test('chat logo navigates in the current tab', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const logo=page.getByRole('link',{name:'kodrik',exact:true});
+    await expect(logo).toHaveAttribute('target','_self');
+    await logo.click();
+    await expect(page).toHaveURL(new URL('chat/',base).href);
+    assert.equal(page.context().pages().length,1);
+  } finally {await browser.close();}
+});
+
 test('conversation content search, rename, inline edits, versions and deletion work together', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'Уникальный маяк для поиска'});
