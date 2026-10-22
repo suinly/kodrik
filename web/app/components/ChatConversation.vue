@@ -61,7 +61,7 @@ async function showMatch(index:number) {
   follow.value=false
   await nextTick()
   const id=matches.value[matchIndex.value]
-  if(id) document.getElementById(id)?.scrollIntoView({block:'center',behavior:'smooth'})
+  if(id) transcript.value?.querySelector(`[data-message-id="${CSS.escape(id)}"]`)?.scrollIntoView({block:'center',behavior:'smooth'})
 }
 watch([search,()=>matches.value.join('\n')],()=>showMatch(0))
 watch(()=>props.initialSearch,value=>{search.value=value ?? ''})

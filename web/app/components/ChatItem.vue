@@ -19,7 +19,7 @@ function beginEdit() {
 </script>
 
 <template>
-  <UChatMessage :id="message.id" :role="message.role" :parts="[]"
+  <UChatMessage :id="message.id" :data-message-id="message.id" :role="message.role" :parts="[]"
     :side="message.role === 'user' ? 'right' : 'left'"
     :variant="message.role === 'user' ? 'soft' : 'naked'"
     :ui="{actions:'gap-1 group-focus-within/message:opacity-100',container:hasActions?'[@media(pointer:coarse)]:pb-12':undefined}"

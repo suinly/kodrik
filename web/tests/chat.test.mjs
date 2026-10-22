@@ -168,6 +168,42 @@ test('message timestamps use the browser timezone and survive reload', {timeout:
   } finally {await browser.close();}
 });
 
+test('conversation search scrolls to matches and navigates in both directions', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],
+      messages:Array.from({length:40},(_,index)=>({id:`${id}:${index}`,role:index%2?'assistant':'user',parts:[{type:'text',text:`Сообщение ${index}: ${index===2 || index===21?'Поисковый маяк':'Обычный текст'}`}]}))};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const transcript=page.getByTestId('chat-transcript');
+    await expect(page.locator('.message')).toHaveCount(40);
+    await expect.poll(()=>transcript.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight)).toBeLessThan(2);
+    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
+    await search.fill('Поисковый маяк');
+    const selected=page.locator('.message.ring-2');
+    const expectMatch=async text=>{
+      await expect(selected).toContainText(text);
+      await expect.poll(()=>selected.evaluate(el=>{
+        const item=el.getBoundingClientRect(),view=el.closest('[data-testid="chat-transcript"]').getBoundingClientRect();
+        return item.top>=view.top && item.bottom<=view.bottom;
+      })).toBe(true);
+    };
+    await expectMatch('Сообщение 2:');
+    await page.getByRole('button',{name:'Следующее совпадение',exact:true}).click();
+    await expectMatch('Сообщение 21:');
+    await page.getByRole('button',{name:'Предыдущее совпадение',exact:true}).click();
+    await expectMatch('Сообщение 2:');
+    await search.press('Enter');
+    await expectMatch('Сообщение 21:');
+    await search.press('Enter');
+    await expectMatch('Сообщение 2:');
+  } finally {await browser.close();}
+});
+
 test('conversation content search, rename, inline edits, versions and deletion work together', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'Уникальный маяк для поиска'});
