@@ -1,0 +1,82 @@
+import {readFile,readdir,writeFile,mkdir} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import ts from 'typescript';
+
+const root=new URL('../',import.meta.url);
+// These groups belong to the application shell, not generated documents.
+const excluded=/^(App|Container|Error|Main|Header|Footer.*|Page.*|Dashboard.*|Sidebar|Splitter|Chat.*|Editor.*|NavigationMenu|CommandPalette|Breadcrumb|Pricing.*|Blog.*|Changelog.*|Marquee|OverlayProvider|Theme|Toaster|AuthForm|FileUpload|LinkBase|ContextMenuContent|DropdownMenuContent)$/;
+const kebab=name=>name.replace(/([a-z0-9])([A-Z])/g,'$1-$2').replace(/([A-Z])([A-Z][a-z])/g,'$1-$2').toLowerCase();
+
+export async function buildCatalog(){
+  const directory=new URL('node_modules/@nuxt/ui/dist/runtime/components/',root);
+  const pkg=JSON.parse(await readFile(new URL('node_modules/@nuxt/ui/package.json',root),'utf8'));
+  const components={};
+  for(const file of (await readdir(directory)).filter(name=>name.endsWith('.vue')).sort()){
+    const name=file.slice(0,-4);
+    if(excluded.test(name)) continue;
+    const source=await readFile(new URL(file,directory),'utf8');
+    const props=new Set(),booleans=new Set(),models=new Set();
+    for(const script of source.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)){
+      const ast=ts.createSourceFile(file+'.js',script[1],ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+      function visit(node){
+        if(ts.isCallExpression(node)){
+          const call=node.expression.getText(ast),arg=node.arguments[0];
+          if(call==='defineProps' && arg && ts.isObjectLiteralExpression(arg)) for(const prop of arg.properties){
+            if(!prop.name) continue;
+            const key=prop.name.getText(ast).replace(/^['"]|['"]$/g,'');
+            props.add(key);
+            if(ts.isPropertyAssignment(prop) && /\btype:\s*(Boolean|\[[^\]]*Boolean)/.test(prop.initializer.getText(ast))) booleans.add(key);
+          }
+          if(call==='defineModel'){
+            const key=arg && ts.isStringLiteral(arg)?arg.text:'modelValue';
+            props.add(key);models.add(key);
+          }
+          if(call==='defineEmits' && arg && ts.isArrayLiteralExpression(arg)) for(const event of arg.elements){
+            if(ts.isStringLiteral(event) && event.text.startsWith('update:')) models.add(event.text.slice(7));
+          }
+        }
+        ts.forEachChild(node,visit);
+      }
+      visit(ast);
+    }
+    const declaration=await readFile(new URL(file+'.d.ts',directory),'utf8');
+    const ast=ts.createSourceFile(file+'.d.ts',declaration,ts.ScriptTarget.Latest,true);
+    const api=ast.statements.filter(node=>(ts.isInterfaceDeclaration(node)||ts.isTypeAliasDeclaration(node)) && node.modifiers?.some(m=>m.kind===ts.SyntaxKind.ExportKeyword)).map(node=>node.getFullText(ast).trim()).join('\n\n');
+    const tag='u-'+kebab(name);
+    components[tag]={name:'U'+name,props:[...props].sort(),booleans:[...booleans].sort(),models:[...models].sort(),api,documentation:`https://ui.nuxt.com/docs/components/${kebab(name)}`};
+  }
+  components['u-progress'].props.push('segments');
+  components['u-progress'].props.sort();
+  components['u-progress'].api+='\n\n/** MDC adapter: segments?: {value: number; color: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral"; label?: string}[] (max 32). Numeric max defaults to 100. Sum must not exceed max; remaining space is empty. Do not combine with modelValue. Bind with :segments="views.portions". */';
+  components['u-table'].api+='\n\n/** MDC adapter: column definitions may add dateFormat: "short" | "medium" | "long" | "full" | {locale?: string, timeZone?: string, dateStyle?: string, timeStyle?: string, year?: string, month?: string, day?: string, weekday?: string, hour?: string, minute?: string, second?: string, hour12?: boolean}. These are Intl.DateTimeFormat options; defaults ru-RU/UTC. Only cells are formatted, raw accessor values remain unchanged for sorting. A named cell slot takes precedence. Use :date-value{:value="slot.row.original.date" date-format="long"} inside slots or other document text. */';
+  components['u-chart'].props.push('range');
+  components['u-chart'].props.sort();
+  components['u-chart'].api+='\n\n/** MDC range adapter: range?: {min: string; max: string}. Draws a flat translucent band between the two bound fields and a line at (min + max) / 2 for each row. Optional categories add reference lines; categories matching min/max are omitted. Requires unique index values, finite numeric bounds (min <= max), or explicit null for gaps. Only type line/linear curve, no stacked/definition. Native charts are unchanged without range. */';
+  return {version:pkg.version,components};
+}
+
+export async function generate(){
+  const catalog=await buildCatalog();
+  const manifest={version:catalog.version,components:Object.fromEntries(Object.entries(catalog.components).map(([tag,{name,props,booleans,models}])=>[tag,{name,props,booleans,models}]))};
+  const registry=`// Generated by scripts/generate-ui-catalog.mjs.
+import type {Component} from 'vue'
+import type {UiNode} from './ui-document'
+export const uiComponents: Record<string,Component> = {}
+const loaders: Record<string,()=>Promise<{default:unknown}>> = {
+${Object.entries(catalog.components).map(([tag,component])=>`  '${tag}': () => import('@nuxt/ui/components/${component.name.slice(1)}.vue'),`).join('\n')}
+}
+export async function prepareUiComponents(nodes: UiNode[]) {
+  const used = new Set<string>()
+  function visit(nodes: UiNode[]) { for (const node of nodes) { if(node.tag && Object.hasOwn(loaders,node.tag)) used.add(node.tag); if(node.children) visit(node.children) } }
+  visit(nodes)
+  await Promise.all([...used].map(async tag => { if(!uiComponents[tag]) uiComponents[tag]=(await loaders[tag]!()).default as Component }))
+}
+`
+  const outputs=[['app/utils/ui-components.json',JSON.stringify(manifest,null,2)+'\n'],['app/utils/ui-registry.ts',registry],['../src/agent/tools/ui_catalog.json',JSON.stringify(catalog,null,2)+'\n']];
+  for(const [path,content] of outputs){
+    const url=new URL(path,root);await mkdir(new URL('.',url),{recursive:true});
+    if(await readFile(url,'utf8').catch(()=>null)!==content) await writeFile(url,content);
+  }
+  return Object.keys(catalog.components).length;
+}
+if(process.argv[1]===fileURLToPath(import.meta.url)) console.log(`Nuxt UI catalog: ${await generate()} components`);

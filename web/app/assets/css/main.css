@@ -1,0 +1,95 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* Catppuccin Latte / Mocha. Component geometry stays with Nuxt UI. */
+@theme {
+  --color-blue-400: #89b4fa;
+  --color-blue-500: #1e66f5;
+  --color-blue-600: #1e66f5;
+}
+
+:root {
+  --ui-chart-1: var(--ui-primary);
+  --ui-chart-2: #8839ef;
+  --ui-chart-3: #179299;
+  --ui-chart-4: #df8e1d;
+  --ui-chart-5: #d20f39;
+  --ui-chart-6: #ea76cb;
+  --ui-primary: #1e66f5;
+  --ui-secondary: #8839ef;
+  --ui-success: #40a02b;
+  --ui-info: #1e66f5;
+  --ui-warning: #df8e1d;
+  --ui-error: #d20f39;
+  --ui-bg: #eff1f5;
+  --ui-bg-muted: #e6e9ef;
+  --ui-bg-elevated: #dce0e8;
+  --ui-bg-accented: #ccd0da;
+  --ui-bg-inverted: #4c4f69;
+  --ui-text: #4c4f69;
+  --ui-text-highlighted: #4c4f69;
+  --ui-text-muted: #6c6f85;
+  --ui-text-dimmed: #7c7f93;
+  --ui-text-toned: #5c5f77;
+  --ui-text-inverted: #eff1f5;
+  --ui-border: #ccd0da;
+  --ui-border-muted: #dce0e8;
+  --ui-border-accented: #bcc0cc;
+}
+
+.dark {
+  --ui-chart-2: #cba6f7;
+  --ui-chart-3: #94e2d5;
+  --ui-chart-4: #f9e2af;
+  --ui-chart-5: #f38ba8;
+  --ui-chart-6: #f5c2e7;
+  --ui-primary: #89b4fa;
+  --ui-secondary: #cba6f7;
+  --ui-success: #a6e3a1;
+  --ui-info: #89b4fa;
+  --ui-warning: #f9e2af;
+  --ui-error: #f38ba8;
+  --ui-bg: #1e1e2e;
+  --ui-bg-muted: #181825;
+  --ui-bg-elevated: #313244;
+  --ui-bg-accented: #45475a;
+  --ui-bg-inverted: #cdd6f4;
+  --ui-text: #cdd6f4;
+  --ui-text-highlighted: #cdd6f4;
+  --ui-text-muted: #a6adc8;
+  --ui-text-dimmed: #9399b2;
+  --ui-text-toned: #bac2de;
+  --ui-text-inverted: #1e1e2e;
+  --ui-border: #45475a;
+  --ui-border-muted: #313244;
+  --ui-border-accented: #585b70;
+}
+
+html, body, #__nuxt { height: 100%; }
+.chat-viewport {
+  top: var(--chat-viewport-top, 0px);
+  bottom: auto;
+  height: var(--chat-viewport-height, 100dvh);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.app-safe-area {
+  padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
+}
+@media (pointer: coarse) {
+  .chat-viewport button { min-height: 2.75rem; min-width: 2.75rem; }
+  .chat-viewport .chat-prompt button {
+    position: relative;
+    justify-content: center;
+    min-height: 2rem;
+    min-width: 2rem;
+  }
+  /* Keep the touch target larger than the compact visible button. */
+  .chat-viewport .chat-prompt button::after {
+    content: '';
+    position: absolute;
+    inset: -0.375rem;
+  }
+  .chat-keyboard-hint { display: none; }
+}
+.prose { overflow-wrap: anywhere; }
+.prose pre { overflow-x: auto; }

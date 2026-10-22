@@ -1,0 +1,10 @@
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -55,6 +55,7 @@
+ 
+   const advance = () => input[index++];
+   const push = node => {
++    if (node.nodes && stack.length > 100) throw new SyntaxError('braces nesting exceeds 100 levels');
+     if (node.type === 'text' && prev.type === 'dot') {
+       prev.type = 'text';
+     }

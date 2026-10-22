@@ -1,0 +1,6 @@
+/target
+/docs/superpowers/
+/web/node_modules/
+/web/dist/
+/web/.nuxt/
+/web/.output/

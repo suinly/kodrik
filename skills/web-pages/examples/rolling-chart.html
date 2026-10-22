@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пример: последние семь дней</title>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+  body { margin: 24px; }
+  .plot { position: relative; height: 240px; max-width: 720px; }
+  li { margin-block: 6px; }
+</style>
+<h1>Последние семь дней</h1>
+<p>Сплошная линия — значение, пунктир — ориентир. Нет записи ≠ ноль.</p>
+<p id="status" role="status"></p>
+<div class="plot"><canvas id="plot" role="img" aria-label="Значения за последние семь дней"></canvas></div>
+<ul id="values" aria-label="Значения по дням"></ul>
+<script>
+  // Replace these demonstration records with validated page data. Never infer
+  // missing values from adjacent dates; use null for a day without a record.
+  const end = new Date(); end.setHours(12, 0, 0, 0);
+  const dates = Array.from({length: 7}, (_, i) => {
+    const d = new Date(end); d.setDate(d.getDate() - 6 + i);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
+  const records = {
+    [dates[4]]: {value: [1725.8, 1814.8], target: 2029},
+    [dates[5]]: {value: [1497.95, 1733.45], target: 2029},
+    [dates[6]]: {value: 748, target: 2029}
+  };
+  const low = [], high = [], target = [];
+  for (const date of dates) {
+    const record = records[date], value = record?.value;
+    const bounds = Array.isArray(value) ? value : [value, value];
+    low.push(typeof bounds[0] === 'number' ? bounds[0] : null);
+    high.push(typeof bounds[1] === 'number' ? bounds[1] : null);
+    target.push(typeof record?.target === 'number' ? record.target : null);
+    const item = document.createElement('li');
+    item.textContent = `${date}: ${record ? `${Array.isArray(value) ? value.join('–') : value} ккал; ориентир ${record.target} ккал` : 'нет записи'}`;
+    document.getElementById('values').append(item);
+  }
+  function draw() {
+    if (typeof Chart === 'undefined') {
+      document.getElementById('status').textContent = 'График не загрузился; значения доступны списком.';
+      return;
+    }
+    new Chart(document.getElementById('plot'), {
+      type: 'line',
+      data: {labels: dates.map(d => d.slice(5)), datasets: [
+        {label: 'Нижняя граница', data: low, borderColor: '#047857', spanGaps: false},
+        {label: 'Верхняя граница', data: high, borderColor: '#0d9488', borderDash: [3, 3], spanGaps: false},
+        {label: 'Ориентир', data: target, borderColor: '#a16207', borderDash: [8, 5], spanGaps: false}
+      ]},
+      options: {responsive: true, maintainAspectRatio: false,
+        animation: !matchMedia('(prefers-reduced-motion: reduce)').matches}
+    });
+    document.getElementById('status').textContent = 'Диапазон показан двумя линиями; значения также доступны списком.';
+  }
+  // The pinned CDN script is deferred; wait until it has run.
+  addEventListener('load', draw);
+</script>
+<!-- Adapt chart text/grid colors to the resolved theme and update the existing
+     chart on theme changes. Keep the list visible even if Chart.js fails. -->
+</html>

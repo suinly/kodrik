@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Пример: нативный select</title>
+<style>
+  :root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+  body { margin: 24px; }
+  label { display: block; max-width: 100%; }
+  select {
+    display: block;
+    box-sizing: border-box;
+    min-height: 44px;
+    max-width: 100%;
+    margin-top: 8px;
+    padding: 8px 44px 8px 12px; /* Reserve space for the arrow. */
+    appearance: none;
+    border: 1px solid #78716c;
+    border-radius: 8px;
+    background-color: Canvas;
+    color: CanvasText;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m3 6 5 5 5-5' fill='none' stroke='%2378716c' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+  select:focus-visible { outline: 2px solid #047857; outline-offset: 2px; }
+  @media (prefers-color-scheme: dark) {
+    select { border-color: #71717a; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m3 6 5 5 5-5' fill='none' stroke='%23d4d4d8' stroke-width='1.5'/%3E%3C/svg%3E"); }
+  }
+</style>
+<label for="day">День
+  <select id="day" name="day">
+    <option value="2026-10-07">7 октября 2026 г.</option>
+    <option value="2026-10-06">6 октября 2026 г.</option>
+  </select>
+</label>
+<!-- If a page uses a .dark class instead of color-scheme media queries, apply
+     the light/dark arrow colors under that class as well. Keep native keyboard
+     behavior; test the actual browser at narrow widths and both themes. -->
+</html>

@@ -1,0 +1,42 @@
+[
+  {
+    "package": "node-forge",
+    "version": "1.4.0",
+    "file": "lib/rsa.js",
+    "patch": "node-forge.patch",
+    "original": "fd4740238145ec26470eb3f06a627c72039538ce1307dbdce40521f94dfd0a50",
+    "patched": "c7b72e7ef41f4fc0e5228dce3e37851e9ca064c789365d5e392c25d1c5f6e710"
+  },
+  {
+    "package": "braces",
+    "version": "3.0.3",
+    "file": "lib/parse.js",
+    "patch": "braces-parse.patch",
+    "original": "e572166565f15fa6ad9865ae49d678218e32aabfd1b3720f6d0d43d39800d310",
+    "patched": "b7f6e6f68945f992eccbd203a13b9db5403f024dfc5eb97884f6a47f986fd676"
+  },
+  {
+    "package": "braces",
+    "version": "3.0.3",
+    "file": "lib/compile.js",
+    "patch": "braces-compile.patch",
+    "original": "dc98f22eee3d511785d92a00758d5f0d48efed5f5813bdecc2de430c529b5c9f",
+    "patched": "1fbd61a3e33170a84b8852712c8caf25669612123c6780113e8aa9156bec3830"
+  },
+  {
+    "package": "braces",
+    "version": "3.0.3",
+    "file": "lib/expand.js",
+    "patch": "braces-expand.patch",
+    "original": "41ccc196ebfa7b7781a634e721eb744e4e7bcb54cba427a7e3d6806a1b9e58f7",
+    "patched": "4846d8dbee3ee4e121ae11c1019559d51e85bd99106c6b8375fb3e58dffca253"
+  },
+  {
+    "package": "braces",
+    "version": "3.0.3",
+    "file": "lib/stringify.js",
+    "patch": "braces-stringify.patch",
+    "original": "379f22d77bfa1478341ccd49c5e4267464aabcbba03558bab332aac23fc6f23a",
+    "patched": "53a722057fac44d6bf0e4d9f4758c71d7faae148a207d4c68c48ad5595db5e22"
+  }
+]
