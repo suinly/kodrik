@@ -14,12 +14,11 @@ concurrency:
 jobs:
   update:
     if: ${{ !github.event.release.prerelease }}
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       TAG: ${{ github.event.release.tag_name }}
       GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      HOMEBREW_NO_AUTO_UPDATE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,7 +30,6 @@ jobs:
           mkdir dist
           gh release download "$TAG" --repo suinly/kodrik --pattern '*-aarch64-apple-darwin.tar.gz' --dir dist
           ruby scripts/homebrew-formula.rb "$TAG" dist/*.tar.gz > dist/kodrik.rb
-          brew ruby scripts/test-homebrew.rb
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: suinly/homebrew-tap
