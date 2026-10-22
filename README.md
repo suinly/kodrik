@@ -42,10 +42,6 @@ The Homebrew package currently targets macOS 14 Sonoma or newer on Apple Silicon
 This is the package's chosen support floor; older macOS versions have not been
 validated. Intel Macs and Linux are not included in this release pipeline.
 
-**First-release status:** the release workflows are prepared. The command below
-becomes available after the first release is published and its formula is merged
-in `suinly/homebrew-tap`:
-
 ```sh
 brew install suinly/tap/kodrik
 kodrik --version
@@ -189,10 +185,11 @@ conversations before restarting the service; see the
 processes and verifying restart. Configuration and history remain in `~/.kodrik/`
 when the package is upgraded or uninstalled.
 
-The first Homebrew release uses ad-hoc signing, without Apple notarization.
+Homebrew release binaries use ad-hoc signing, without Apple notarization.
 Maintainers can follow [GitHub setup and release steps](docs/homebrew.md#maintainer-setup):
 a version tag creates a tested draft release, publication opens a formula PR in
 the tap, and merging that PR makes the version available through Homebrew.
+Releases can also be built and verified locally before uploading their artifacts.
 
 ## Documentation
 

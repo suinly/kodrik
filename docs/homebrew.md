@@ -1,8 +1,7 @@
 # Homebrew installation and releases
 
 The Homebrew package targets macOS 14 Sonoma or newer on Apple Silicon.
-Intel Macs and Linux are not included. The installation command becomes available
-after the first release is published and its formula PR is merged in
+Intel Macs and Linux are not included. Stable releases are available through
 `suinly/homebrew-tap`.
 
 ## Install and configure
@@ -150,6 +149,12 @@ different repository. Do not put tokens in either repository.
 5. Review the draft and publish it. **Update Homebrew tap** downloads that release
    archive, calculates its checksum and opens a versioned formula PR in the tap.
 6. Review and merge the tap PR. Users can now install or upgrade to that version.
+
+The build can also run locally from the clean tagged checkout, using the same
+build, packaging, signature and Homebrew checks in `.github/workflows/release.yml`.
+Upload the archive, `SHA256SUMS` and generated `kodrik.rb` to a draft release for
+that existing tag, then publish it. Publication triggers the same tap workflow;
+the tap update itself runs on Linux and does not need a macOS build runner.
 
 A failed build or install check prevents draft creation. An existing tag/release
 is not overwritten on rerun. A failed tap update leaves the published release
