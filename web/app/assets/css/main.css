@@ -93,3 +93,4 @@ html, body, #__nuxt { height: 100%; }
 }
 .prose { overflow-wrap: anywhere; }
 .prose pre { overflow-x: auto; }
+::highlight(conversation-search) { background-color: #f9e2af; color: #4c4f69; }

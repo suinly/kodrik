@@ -54,7 +54,33 @@ const follow = ref(true)
 let lastScrollTop = 0
 let mounted = true
 let scrollObserver: ResizeObserver | undefined
+let searchObserver: MutationObserver | undefined
 const controller = new AbortController()
+
+function highlightSearch() {
+  if(!CSS.highlights) return
+  const query=search.value.trim()
+  if(!query) {CSS.highlights.delete('conversation-search');return}
+  const highlight=new Highlight()
+  const pattern=new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'giu')
+  for(const id of matches.value) {
+    const message=transcript.value?.querySelector(`[data-message-id="${CSS.escape(id)}"]`)
+    for(const content of message?.querySelectorAll('[data-search-text]') ?? []) {
+      const walker=document.createTreeWalker(content,NodeFilter.SHOW_TEXT)
+      let node:Node|null
+      while((node=walker.nextNode())) {
+        for(const match of node.textContent!.matchAll(pattern)) {
+          const range=new Range()
+          range.setStart(node,match.index)
+          range.setEnd(node,match.index+match[0].length)
+          highlight.add(range)
+        }
+      }
+    }
+  }
+  CSS.highlights.set('conversation-search',highlight)
+}
+watch(search,highlightSearch,{flush:'post'})
 
 async function showMatch(index:number) {
   matchIndex.value=matches.value.length ? (index+matches.value.length)%matches.value.length : 0
@@ -157,6 +183,8 @@ async function reload(block = false) {
 }
 
 onMounted(async () => {
+  searchObserver = new MutationObserver(highlightSearch)
+  if (transcript.value) searchObserver.observe(transcript.value,{childList:true,subtree:true,characterData:true})
   scrollObserver = new ResizeObserver(() => {
     if (follow.value) scrollToLatest()
   })
@@ -183,7 +211,7 @@ onMounted(async () => {
     }
   }
 })
-onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect() })
+onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect(); searchObserver?.disconnect(); CSS.highlights?.delete('conversation-search') })
 function focusInput() {
   if (mounted && !editorLocked.value) prompt.value?.textareaRef?.focus({preventScroll:true})
 }

@@ -204,6 +204,48 @@ test('conversation search scrolls to matches and navigates in both directions', 
   } finally {await browser.close();}
 });
 
+test('conversation search highlights literal text in Markdown and clears it when closed', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:`${id}:0`,role:'user',parts:[{type:'text',text:'Поиск **МАЯК**, ещё маяк. Литерал a+b.'}]},
+      {id:`${id}:1`,role:'assistant',parts:[{type:'text',text:'Текст с [маяк](https://example.com) и `маяк`.'}]},
+      {id:`${id}:2`,role:'assistant',parts:[{type:'dynamic-tool',toolCallId:'hidden',toolName:'exec_command',state:'output-available',input:{cmd:'маяк'},output:'маяк'}]},
+    ]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await expect(page.locator('.message strong')).toHaveText('МАЯК');
+    await expect(page.locator('.message code')).toHaveText('маяк');
+    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
+    const highlights=()=>page.evaluate(()=>Array.from(CSS.highlights.get('conversation-search') ?? [],range=>range.toString()));
+    await search.fill(' МаЯк ');
+    await expect.poll(highlights).toEqual(['МАЯК','маяк','маяк','маяк']);
+    assert.equal(await page.locator('.message strong').evaluate(el=>getComputedStyle(el,'::highlight(conversation-search)').backgroundColor),'rgb(249, 226, 175)');
+    await expect(page.locator('.message strong')).toHaveText('МАЯК');
+    await expect(page.getByRole('link',{name:'маяк',exact:true})).toHaveAttribute('href','https://example.com');
+    await page.screenshot({path:'/tmp/kodrik-chat-search-highlight-desktop.png',fullPage:true});
+    await page.emulateMedia({colorScheme:'dark'});
+    await page.setViewportSize({width:390,height:844});
+    await expect(page.locator('html')).toHaveClass(/dark/);
+    await page.screenshot({path:'/tmp/kodrik-chat-search-highlight-mobile-dark.png',fullPage:true});
+    snapshot.messages[0].parts[0].text+=' Новый маяк.';
+    snapshot.revision++;
+    await expect.poll(highlights).toEqual(['МАЯК','маяк','маяк','маяк','маяк']);
+    await search.fill('a+b');
+    await expect.poll(highlights).toEqual(['a+b']);
+    await search.fill('нет совпадений');
+    await expect.poll(highlights).toEqual([]);
+    await search.fill('маяк');
+    await expect.poll(highlights).toEqual(['МАЯК','маяк','маяк','маяк','маяк']);
+    await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
+    await expect.poll(highlights).toEqual([]);
+  } finally {await browser.close();}
+});
+
 test('chat logo navigates in the current tab', {timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

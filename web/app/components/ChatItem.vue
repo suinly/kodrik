@@ -28,7 +28,7 @@ function beginEdit() {
       <div class="min-w-0 space-y-3">
         <template v-for="(block,index) in blocks" :key="index">
           <template v-if="block.kind==='content'">
-            <ChatMarkdown v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" />
+            <ChatMarkdown v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" data-search-text />
             <div v-else-if="block.part.type==='file'" class="flex flex-col items-start gap-2">
               <img v-if="block.part.url && block.part.mediaType.startsWith('image/')" :src="block.part.url" :alt="block.part.filename" loading="lazy" class="max-h-72 max-w-full rounded-lg object-contain">
               <UButton :to="block.part.url" :disabled="!block.part.url" external download color="neutral" variant="outline"
