@@ -13,6 +13,7 @@ The terminal UI and one-shot CLI share the owner's state. Each Telegram chat has
 
 | I want to… | Read |
 | --- | --- |
+| Install with Homebrew or publish an Apple Silicon release | [Homebrew](homebrew.md) |
 | Save, inspect or forget a preference | [Persistent memory](memory.md) |
 | Keep a nutrition diary or other structured records | [Datasets](datasets.md) |
 | Change personality or manage learned facts and interests | [Companion](companion.md) |

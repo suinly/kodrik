@@ -1,5 +1,13 @@
 # Getting started
 
+## Homebrew on Apple Silicon
+
+The Homebrew distribution targets macOS 14+ on Apple Silicon and includes the
+frontend and built-in skills. It requires no Rust, Node.js or source checkout.
+See [Homebrew installation](homebrew.md) for availability, installation, initial
+configuration and the optional background service. The requirements and build
+steps below apply to source installations.
+
 ## Requirements
 
 - A current stable Rust toolchain with Rust 2024 edition support and Cargo.

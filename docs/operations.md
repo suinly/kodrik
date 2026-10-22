@@ -1,12 +1,20 @@
 # Updating and running Kodrik
 
+## Homebrew installations
+
+For the Apple Silicon package, use [Homebrew update and restart](homebrew.md#update-and-restart).
+It updates through `brew upgrade`, runs an optional user service through
+`brew services`, and preserves `~/.kodrik/`. The bundled `self-update` skill
+identifies the running installation before choosing Homebrew or the source
+workflow below. Do not run the source installer over a brew-managed service.
+
 ## Update, build and restart are separate operations
 
 The bundled `self-update` skill distinguishes three requests:
 
 | Request | Intended operation |
 | --- | --- |
-| “Update yourself” | Fetch the configured Git upstream, fast-forward, build and handle a verified restart |
+| “Update yourself” | Update with Homebrew, or fetch/fast-forward/build the configured source checkout, then handle a verified restart |
 | “Build the current revision” | Build the checked-out source; report local modifications |
 | “Restart” | Restart the existing executable without fetching or rebuilding |
 
@@ -66,6 +74,10 @@ backing up or moving state. They are not automatically deleted, because old
 sessions may still need them. No Python or local document converter is used.
 
 ### Service installation
+
+For the brew package, follow [Homebrew service setup](homebrew.md#run-the-background-gateway).
+Both installation methods use `com.kodrik.gateway`; migrate explicitly instead
+of starting a second service. The instructions below concern the source installer.
 
 On macOS, run `./scripts/install-macos.sh` from outside the running gateway.
 It builds and installs the current checkout in `~/.local/bin/kodrik`, writes

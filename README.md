@@ -33,10 +33,32 @@ PDF page images also require vision support.
 
 Source repository: [suinly/kodrik](https://github.com/suinly/kodrik).
 
-You need a current stable Rust toolchain with Rust 2024 edition support, npm,
-Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+, and credentials for a model and
-endpoint supporting the OpenAI Responses API and tool calling. An endpoint that
-only supports Chat Completions is insufficient.
+You need credentials for a model and endpoint supporting the OpenAI Responses API
+and tool calling. An endpoint that only supports Chat Completions is insufficient.
+
+### Install with Homebrew (Apple Silicon)
+
+The Homebrew package currently targets macOS 14 Sonoma or newer on Apple Silicon.
+This is the package's chosen support floor; older macOS versions have not been
+validated. Intel Macs and Linux are not included in this release pipeline.
+
+**First-release status:** the release workflows are prepared. The command below
+becomes available after the first release is published and its formula is merged
+in `suinly/homebrew-tap`:
+
+```sh
+brew install suinly/tap/kodrik
+kodrik --version
+```
+
+The executable includes the web frontend and built-in skills. Rust, Node.js and a
+source checkout are not required. Installation does not create your configuration
+or start a background service. Continue with **Configure and run** below.
+
+### Build from source
+
+Source builds require a current stable Rust toolchain with Rust 2024 edition
+support, npm, and Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+.
 
 From the repository root, build the frontend before Rust; web assets are embedded
 in the executable, so no Node.js server is needed at runtime:
@@ -45,7 +67,18 @@ in the executable, so no Node.js server is needed at runtime:
 npm ci --prefix web
 npm run build --prefix web
 cargo build --release --locked
-mkdir -p ~/.kodrik
+export PATH="$PWD/target/release:$PATH"
+```
+
+The final command makes the built `kodrik` executable available in this shell.
+You can also invoke `./target/release/kodrik` directly from the checkout.
+
+### Configure and run
+
+For either installation method, create the private state directory:
+
+```sh
+install -d -m 700 ~/.kodrik
 ```
 
 Create `~/.kodrik/config.toml`:
@@ -59,16 +92,17 @@ model = "your-model"
 api_key = "your-key"
 ```
 
-Replace the model and API key placeholders. The empty `[gateway]` table is
+Replace the model and API key placeholders and run
+`chmod 600 ~/.kodrik/config.toml`. The empty `[gateway]` table is
 required even for terminal-only use. For a custom endpoint, set `api_base` under
 `[provider.primary]`; see [Configuration](docs/configuration.md).
 
 Launch the terminal UI or ask a single question:
 
 ```sh
-./target/release/kodrik
+kodrik
 # Or ask a single question:
-./target/release/kodrik ask "What should we explore today?"
+kodrik ask "What should we explore today?"
 ```
 
 Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
@@ -99,14 +133,28 @@ base_url = "http://127.0.0.1:8080/"
 Set the owner password if using password login, then run the gateway:
 
 ```sh
-./target/release/kodrik web set-password
-./target/release/kodrik gateway
+kodrik web set-password
+kodrik gateway
 ```
 
 Open [the local chat](http://127.0.0.1:8080/chat/) and sign in with the owner
 password or through your configured Telegram bot. The gateway serves both
 Telegram and the enabled web interface; terminal mode does not start the server.
 For remote access, configure HTTPS following [Web pages](docs/web-pages.md).
+
+For a Homebrew installation, run the gateway in the background after configuration:
+
+```sh
+install -d -m 700 ~/.kodrik/workspace ~/.kodrik/logs
+brew services start suinly/tap/kodrik
+brew services info suinly/tap/kodrik
+```
+
+Stop the foreground gateway first. Run the service commands as your regular user,
+without `sudo`. The background gateway works in `~/.kodrik/workspace` and writes
+logs to `~/.kodrik/logs/`. If you previously used the source installer, follow
+[migration instructions](docs/homebrew.md#migrate-from-the-source-installer)
+before starting the brew service.
 
 Configuration and state live in `~/.kodrik/`. Each user shares personal history,
 memory and skills between Telegram and web; CLI/TUI always uses the configured
@@ -118,12 +166,13 @@ owner's state and native tools; without it, all Telegram chats use Bashkit.
 Create a separate link for each person with `kodrik invites create --label "Alice"`.
 See [invitations](docs/web-chat.md#owner-managed-invitations) and [Configuration](docs/configuration.md).
 
-### macOS service installation
+### Source-based macOS service installation
 
 With the build requirements above and a code-signing identity named `Kodrik Local`
 available in your keychain, run `./scripts/install-macos.sh` from the checkout.
 The installer requires this identity and stops if signing fails. For a manual
-build without service installation, use the commands above.
+build without service installation, use the commands above. Homebrew installations
+use `brew services` instead; do not run this installer over a brew-managed service.
 
 The installer builds and installs `~/.local/bin/kodrik`, creates a configuration
 template if needed, and manages the per-user gateway LaunchAgent. On a fresh
@@ -132,6 +181,19 @@ the installer to start the gateway. Re-running installs the current checkout and
 restarts the service. Logs live in `~/.kodrik/logs/`. Add `~/.local/bin` to your
 shell's `PATH` for terminal use. See [Operations](docs/operations.md).
 
+### Updates and releases
+
+Homebrew installations update with `brew upgrade suinly/tap/kodrik`. Finish active
+conversations before restarting the service; see the
+[update procedure](docs/homebrew.md#update-and-restart) for preserving running
+processes and verifying restart. Configuration and history remain in `~/.kodrik/`
+when the package is upgraded or uninstalled.
+
+The first Homebrew release uses ad-hoc signing, without Apple notarization.
+Maintainers can follow [GitHub setup and release steps](docs/homebrew.md#maintainer-setup):
+a version tag creates a tested draft release, publication opens a formula PR in
+the tap, and merging that PR makes the version available through Homebrew.
+
 ## Documentation
 
 Start at the [documentation index](docs/index.md), or go directly to:
@@ -139,6 +201,7 @@ Start at the [documentation index](docs/index.md), or go directly to:
 | Task                                       | Guide                                                                                |
 | ------------------------------------------ | ------------------------------------------------------------------------------------ |
 | Install and launch                         | [Getting started](docs/getting-started.md)                                           |
+| Install with Homebrew or publish a release | [Homebrew](docs/homebrew.md)                                                         |
 | Configure models or Telegram               | [Configuration](docs/configuration.md)                                               |
 | Find commands and shortcuts                | [Using Kodrik](docs/usage.md)                                                        |
 | Understand memory and learning             | [Memory](docs/memory.md) · [Companion](docs/companion.md)                            |

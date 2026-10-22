@@ -7,15 +7,52 @@ description: Use when the user asks Kodrik to update itself, build its binary, o
 
 Follow the requested operation:
 
-- **Update yourself / update Kodrik:** fetch and fast-forward the configured upstream, build the release binary, then restart the verified gateway. The update request authorizes these steps; do not ask separately for permission to pull.
+- **Update yourself / update Kodrik:** identify the installation below, update through its package manager or Git checkout, then restart the verified gateway. The update request authorizes these steps; do not ask separately for permission to pull or upgrade.
 - **Restart:** restart the existing gateway binary, without pulling or building.
 - **Build / rebuild:** build the current local revision, without pulling or restarting unless also requested.
 
 Explicit restrictions in the user's request take precedence. Reading this skill alone does not authorize any operation. Never reset, stash, discard changes, switch branches, or create merge commits as part of this workflow.
 
-## Identify the checkout and gateway
+## Identify the installation and gateway
 
-From the repository root, inspect `git status --short --branch` and `git log -1 --oneline`. For update or restart, inspect the running Kodrik process and its launchd job. Obtain the numeric user ID with `id -u`, then run `launchctl print gui/<uid>/com.kodrik.gateway` using that ID. Confirm that the job runs `~/.local/bin/kodrik gateway`, uses this checkout as its working directory, and has `KeepAlive`. Legacy jobs may run `target/release/kodrik gateway`; verify the actual executable before proceeding.
+For update or restart, inspect the running Kodrik process and its launchd job.
+Obtain the numeric user ID with `id -u`, then run
+`launchctl print gui/<uid>/com.kodrik.gateway` using that ID. Verify the actual
+executable, PID, working directory and `KeepAlive`; do not identify an installation
+from whichever `kodrik` happens to be first on `PATH`.
+
+**Homebrew:** compare the verified executable with
+`brew --prefix suinly/tap/kodrik` and its resolved Cellar path, and confirm the
+installed formula with `brew list --versions suinly/tap/kodrik`. The gateway job
+must launch the stable `opt/kodrik/bin/kodrik gateway` path with `KeepAlive`.
+Follow the Homebrew section below; a checkout is not required.
+
+**Source install:** follow the Git/build sections. From the repository root,
+inspect `git status --short --branch` and `git log -1 --oneline`. Confirm the job
+runs `~/.local/bin/kodrik gateway`, uses this checkout as its working directory,
+and has `KeepAlive`. Legacy jobs may run `target/release/kodrik gateway`; verify
+the actual executable before proceeding. For build-only requests, use the
+explicitly requested checkout; a local build does not replace a brew installation.
+
+## Update with Homebrew
+
+For an update request, run `brew update`, then
+`HOMEBREW_NO_INSTALL_CLEANUP=1 brew upgrade suinly/tap/kodrik`. Stop on failure;
+do not fall back to Git, rebuild, local signing or direct Cellar writes. Use the
+updated stable `opt/kodrik/bin/kodrik --version` to verify the installed executable.
+Keeping the old keg until restart lets the running process finish using its
+current executable, including subprocesses it may need during the final response.
+
+For restart-only requests, skip the update. Use the verified stable executable
+for `request-restart <verified-pid>` when this gateway handles the conversation,
+then follow the confirmation checks in the Restart section. Do not run
+`brew services restart` from inside that gateway: it can terminate the response.
+Outside the gateway, use `brew services restart suinly/tap/kodrik` only after
+verifying this is the service being controlled. Never run Homebrew as root.
+
+Run `brew cleanup suinly/tap/kodrik` only after the new PID has confirmed startup
+and no CLI/TUI or gateway process still uses the old keg. If the update remains
+pending or confirmation is missing, retain it and report the observed state.
 
 ## Update from Git (update requests only)
 
@@ -26,7 +63,7 @@ From the repository root, inspect `git status --short --branch` and `git log -1 
 
 ## Build (update or build requests)
 
-Run `npm ci --prefix web`, then `npm run build --prefix web`, then `cargo build --release --locked` from the verified repository root. Node.js 22.12+ is required to build the embedded web frontend. If any build step fails, stop without restarting the running gateway. Verify that `target/release/kodrik` exists and record the revision used for the build. An explicitly requested local build may include uncommitted changes; report that fact and preserve them.
+Run `npm ci --prefix web`, then `npm run build --prefix web`, then `cargo build --release --locked` from the verified repository root. Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+ is required to build the embedded web frontend. If any build step fails, stop without restarting the running gateway. Verify that `target/release/kodrik` exists and record the revision used for the build. An explicitly requested local build may include uncommitted changes; report that fact and preserve them.
 
 For an update using the installed `~/.local/bin/kodrik`, sign and verify the successful build before replacing the executable or requesting restart:
 
@@ -41,10 +78,10 @@ Use the same `Kodrik Local` certificate and signing identifier as the macOS inst
 
 ## Restart (update or restart requests)
 
-Tell the user that restarting may interrupt the current response. If the verified gateway is handling this conversation, run `./target/release/kodrik request-restart <verified-pid>`. Report the restart as requested, not completed: the gateway saves and sends the final response, exits cleanly, and the next process edits that response with confirmation.
+Tell the user that restarting may interrupt the current response. If the verified gateway is handling this conversation, run the verified installed executable with `request-restart <verified-pid>` (the stable `opt/kodrik/bin/kodrik` path for Homebrew, or `~/.local/bin/kodrik` for the source installer). Report the restart as requested, not completed: the gateway saves and sends the final response, exits cleanly, and the next process edits that response with confirmation.
 
 Never defer a restart with `launchctl submit`, `nohup`, a detached/background shell command, a fixed-delay signal, or a temporary/persistent plist change. These mechanisms can outlive the response, acquire an implicit `KeepAlive`, or restart the gateway repeatedly.
 
-When the request is running outside the verified gateway process (for example in the TUI), restart only the verified job with `launchctl kickstart -k gui/<uid>/com.kodrik.gateway`. Do not kill unrelated processes or use a broad `pkill`.
+When the request is running outside the verified gateway process (for example in the TUI), use `brew services restart suinly/tap/kodrik` for Homebrew, or restart only the verified source-installed job with `launchctl kickstart -k gui/<uid>/com.kodrik.gateway`. Do not kill unrelated processes or use a broad `pkill`.
 
-After restarting, check the launchd job, new PID, binary path, and configured log for startup errors. Report Git update, build, restart request, and restart confirmation separately, omitting steps that were not requested. If confirmation is absent, inspect `~/.kodrik/restart-request.json` and `~/.kodrik/restart-receipt.json`; never schedule a second restart over pending state.
+After restarting, check the launchd job, new PID, binary path, and configured log for startup errors. Report the package/Git update, build, restart request, and restart confirmation separately, omitting steps that were not requested. If confirmation is absent, inspect `~/.kodrik/restart-request.json` and `~/.kodrik/restart-receipt.json`; never schedule a second restart over pending state.

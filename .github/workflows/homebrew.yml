@@ -1,0 +1,53 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: macos-15
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Download published archive and generate formula
+        run: |
+          test -n "$GH_TOKEN"
+          mkdir dist
+          gh release download "$TAG" --repo suinly/kodrik --pattern '*-aarch64-apple-darwin.tar.gz' --dir dist
+          ruby scripts/homebrew-formula.rb "$TAG" dist/*.tar.gz > dist/kodrik.rb
+          brew ruby scripts/test-homebrew.rb
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: suinly/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Open formula update pull request
+        working-directory: tap
+        run: |
+          git switch -c "kodrik-$TAG"
+          mkdir -p Formula
+          cp ../dist/kodrik.rb Formula/kodrik.rb
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/kodrik.rb
+          git commit -m "chore: update kodrik to $TAG"
+          git push origin "kodrik-$TAG"
+          printf 'Update Kodrik to %s. Formula checksum is calculated from the published Apple Silicon release archive.\n' "$TAG" > "$RUNNER_TEMP/homebrew-pr.md"
+          gh pr create --repo suinly/homebrew-tap --head "kodrik-$TAG" --base main \
+            --title "Update kodrik to $TAG" --body-file "$RUNNER_TEMP/homebrew-pr.md"

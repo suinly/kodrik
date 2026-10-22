@@ -32,6 +32,14 @@ that blocks loopback binding cannot run those tests successfully; rerun them
 in an environment that permits local listeners. Those failures do not establish
 a provider integration regression.
 
+## Homebrew distribution
+
+Homebrew formula generation, release validation and maintainer setup are described
+in [Homebrew releases](homebrew.md#maintainer-setup). Run
+`brew ruby scripts/test-homebrew.rb` to check generated formulas and launchd
+settings with Homebrew's real Ruby libraries, and `actionlint` to validate the
+release workflows. Neither check installs Kodrik or starts a service.
+
 ## Source map
 
 | Path | Responsibility |
