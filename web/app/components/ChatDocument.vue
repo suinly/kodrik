@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
+import {linkTarget} from '../utils/link-target'
 const props=defineProps<{output:unknown;actions?:boolean}>()
 const emit=defineEmits<{prompt:[text:string]}>()
 const document=computed(()=>(props.output as {document?:unknown})?.document)
@@ -19,7 +20,7 @@ const description=computed(() => t("Снимок на момент создан�
 <template>
   <div class="min-w-0 space-y-3">
     <div class="flex flex-wrap items-center gap-2">
-      <UButton v-if="url" :to="url" external :label="t('Открыть страницу')" icon="i-lucide-external-link" />
+      <UButton v-if="url" :to="url" :target="linkTarget(url)" external :label="t('Открыть страницу')" icon="i-lucide-external-link" />
       <UModal v-model:open="expanded" fullscreen :title="title" :description="description">
         <UButton :label="t('Развернуть документ')" icon="i-lucide-maximize" color="neutral" variant="outline" />
         <template #close><UButton :aria-label="t('Закрыть документ')" icon="i-lucide-x" color="neutral" variant="ghost" /></template>

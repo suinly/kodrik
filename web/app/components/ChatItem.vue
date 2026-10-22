@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
+import {linkTarget} from '../utils/link-target'
 import type { ChatMessage } from '../utils/api'
 import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
 const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
@@ -33,7 +34,7 @@ function beginEdit() {
             <ChatMarkdown v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" data-search-text />
             <div v-else-if="block.part.type==='file'" class="flex flex-col items-start gap-2">
               <img v-if="block.part.url && block.part.mediaType.startsWith('image/')" :src="block.part.url" :alt="block.part.filename" loading="lazy" class="max-h-72 max-w-full rounded-lg object-contain">
-              <UButton :to="block.part.url" :disabled="!block.part.url" external download color="neutral" variant="outline"
+              <UButton :to="block.part.url" :target="linkTarget(block.part.url)" :disabled="!block.part.url" external download color="neutral" variant="outline"
                 :icon="block.part.mediaType.startsWith('image/') ? 'i-lucide-image' : 'i-lucide-file'"
                 :label="block.part.filename" class="max-w-full" :ui="{label:'truncate'}" />
             </div>

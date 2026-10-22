@@ -1,4 +1,5 @@
 import {formatUiValue,t} from '../utils/i18n'
+import {linkTarget} from '../utils/link-target'
 import {defineComponent,h,type PropType,type VNodeChild} from 'vue'
 import {UCard,UAlert,UButton,UPageGrid,ProseH1,ProseH2,ProseH3,ProseH4,ProseP,ProseStrong,ProseEm,ProseBlockquote,ProseUl,ProseOl,ProseLi,ProseHr,ProsePre,ProseCode,ProseTable,ProseThead,ProseTbody,ProseTr,ProseTh,ProseTd} from '#components'
 import UiDataTable from './UiDataTable.vue'
@@ -47,7 +48,7 @@ export default defineComponent({
       if(tag==='button') return h(UButton,{label:String(p.label),disabled:!props.actions,title:props.actions?undefined:t("Продолжите разговор через «Открыть чат»"),onClick:()=>emit('prompt',String(p.prompt))})
       if(tag==='data-table' && source) return h(UiDataTable,{source,live:props.live,title:p.title?String(p.title):undefined,columns:p.columns as unknown[]|undefined})
       if(tag==='line-chart' && source) return h(UiLineChart,{data:source.data,x:String(p.x),y:String(p.y),label:String(p.label),unit:p.unit?String(p.unit):undefined})
-      const attrs={...p,...(tag==='a'?{target:'_blank',rel:'noopener noreferrer nofollow'}:{}),class:'*:first:mt-0 *:last:mb-0'}
+      const attrs={...p,...(tag==='a'?{target:linkTarget(p.href),rel:'noopener noreferrer nofollow'}:{}),class:'*:first:mt-0 *:last:mb-0'}
       const component=!(tag==='code' && inPre) && Object.prototype.hasOwnProperty.call(prose,tag)?prose[tag as keyof typeof prose]:tag
       return typeof component==='string'?h(component,attrs,children()):h(component,attrs,children)
     }

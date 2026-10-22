@@ -1,4 +1,5 @@
 import {locale,t} from '../utils/i18n'
+import {linkTarget} from '../utils/link-target'
 import {computed,defineComponent,h,inject,provide,reactive,ref,shallowRef,watch,type InjectionKey,type PropType} from 'vue'
 import {parseDate,parseDateTime,parseZonedDateTime,parseTime} from '@internationalized/date'
 import {useForwardExpose} from 'reka-ui'
@@ -86,7 +87,7 @@ export default defineComponent({
       const component=uiComponents[props.tag as keyof typeof uiComponents],meta=uiCatalog[props.tag]!
       if(!component) throw new Error(t("Компонент {0} не загружен.", props.tag))
       const attrs={...props.values,...models}
-      if(attrs.to || attrs.href){attrs.target='_blank';attrs.rel='noopener noreferrer'}
+      if(attrs.to || attrs.href){attrs.target=linkTarget(attrs.to??attrs.href);attrs.external=true;attrs.rel='noopener noreferrer'}
       let componentSlots=slots
       if(rangeChart.value){
         const chart=rangeChart.value

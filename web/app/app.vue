@@ -14,11 +14,9 @@ const page=documentData?JSON.parse(documentData) as {url:string;chatUrl:string;l
 
 <template>
   <UApp :locale="language === 'ru' ? ru : en">
-    <UTheme :props="{button:{target:'_blank'},prose:{a:{target:'_blank'}}}">
     <LoginPage v-if="login" :return-to="login.returnTo" :error="login.error" />
     <LazyHomePage v-else-if="home" v-bind="home" />
     <LazyDocumentPage v-else-if="page" v-bind="page" />
     <LazyChatDashboard v-else />
-    </UTheme>
   </UApp>
 </template>

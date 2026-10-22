@@ -262,6 +262,54 @@ test('chat logo navigates in the current tab', {timeout:30000},async()=>{
   } finally {await browser.close();}
 });
 
+test('home Open Chat and sign-in links stay in the current tab', {timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US'});
+    await page.goto(base);
+    await page.emulateMedia({colorScheme:'light'});
+    const open=page.getByRole('link',{name:'Open chat',exact:true});
+    await expect(open).not.toHaveAttribute('target','_blank');
+    await page.screenshot({path:'/tmp/kodrik-home-light.png',fullPage:true});
+    await open.click();
+    await expect(page).toHaveURL(new URL('chat/',base).href);
+    assert.equal(page.context().pages().length,1);
+    const anonymous=await browser.newPage({locale:'en-US'});
+    await anonymous.goto(base);
+    const login=anonymous.getByRole('link',{name:'Sign in',exact:true});
+    await expect(login).not.toHaveAttribute('target','_blank');
+    await login.click();
+    await expect(anonymous).toHaveURL(new URL('auth/login',base).href);
+    assert.equal(anonymous.context().pages().length,1);
+  } finally {await browser.close();}
+});
+
+test('Markdown and document links use the current tab only for local URLs', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const local=new URL('chat/',base),external='https://example.com/docs';
+    const links=[['Relative',local.pathname,'_self'],['Absolute',local.href,'_self'],['Same host',`//${local.host}${local.pathname}`,'_self'],['Fragment','#inside','_self'],['Query',`?conversation=${id}`,'_self'],['Outside',external,'_blank'],['Other host','//example.com/docs','_blank'],['Other scheme',local.href.replace('http:','https:'),'_blank'],['Other port',`http://${local.hostname}:1/docs`,'_blank']];
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[{id:`${id}:0`,role:'assistant',parts:[
+      {type:'text',text:links.map(([name,url])=>`[${name}](${url})`).join('\n\n')},
+      {type:'dynamic-tool',toolCallId:'links',toolName:'show_ui',state:'output-available',input:{},output:{url:new URL('pages/preview/',base).href,document:{version:1,title:'Links',sources:[],body:`[Local document](${local.pathname})\n\n[External document](${external})\n\n::u-button{to="${local.pathname}" target="_blank" label="Local button"}\n::\n\n::u-button{to="${external}" target="_self" label="External button"}\n::\n\n::u-link{href="${local.pathname}"}\nLocal UI link\n::`}}},
+    ]}]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    for(const [name,,target] of [...links,['Local document',local.pathname,'_self'],['External document',external,'_blank'],['Local button',local.pathname,'_self'],['External button',external,'_blank'],['Local UI link',local.pathname,'_self']]) {
+      const link=page.getByRole('link',{name,exact:true});
+      await expect(link).toHaveAttribute('target',target);
+    }
+    const button=page.getByRole('link',{name:'Local button',exact:true});
+    await expect(button).toHaveAttribute('href',local.pathname);
+    await button.click();
+    await expect(page).toHaveURL(local.href);
+    assert.equal(page.context().pages().length,1);
+  } finally {await browser.close();}
+});
+
 test('conversation content search, rename, inline edits, versions and deletion work together', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'Уникальный маяк для поиска'});
@@ -1061,7 +1109,8 @@ test('chat UX groups technical steps, folds old documents and expands the latest
     await expect(page.getByText('Не удалось отобразить документ',{exact:true})).toHaveCount(0);
     await expect(page.getByText('Снимок на момент создания. Данные на странице могут измениться.',{exact:true})).toBeVisible();
     await expect(page.getByRole('link',{name:'Открыть страницу',exact:true})).toHaveAttribute('href',url);
-    for(const name of ['Открыть страницу','Справка','Открыть справку']) {
+    await expect(page.getByRole('link',{name:'Открыть страницу',exact:true})).not.toHaveAttribute('target','_blank');
+    for(const name of ['Справка','Открыть справку']) {
       await expect(page.getByRole('link',{name,exact:true})).toHaveAttribute('target','_blank');
     }
     await page.getByPlaceholder('Черновик внутри документа').fill('Остаётся при разворачивании');
