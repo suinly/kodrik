@@ -80,6 +80,52 @@ Git or invoke `brew services restart` inside its own conversation. See
 [Gateway lifecycle](operations.md#gateway-lifecycle) for confirmation and recovery.
 Use `/new` after upgrading to refresh the conversation's bundled skill catalog.
 
+## Intermediate versions from main
+
+Install the latest committed code without waiting for a release:
+
+```sh
+brew update
+brew install --HEAD suinly/tap/kodrik
+brew list --versions suinly/tap/kodrik
+```
+
+HEAD builds locally from `main`. Homebrew installs Rust and Node.js 24 as build
+dependencies, builds the embedded web frontend and executable, then ad-hoc signs
+it with the same gateway identifier as releases. Building takes longer than
+installing a stable release. Uncommitted changes and commits outside `main` are
+not included. Platform requirements are the same as for stable.
+
+To update an installed HEAD build from a separate terminal:
+
+```sh
+brew update
+HOMEBREW_NO_INSTALL_CLEANUP=1 brew upgrade --fetch-HEAD suinly/tap/kodrik
+brew list --versions suinly/tap/kodrik
+brew services restart suinly/tap/kodrik
+```
+
+Only restart if you use the gateway. Follow the same restart and cleanup checks
+as stable updates. Homebrew reports a version such as `HEAD-a1b2c3d` identifying
+the source revision; `kodrik --version` still reports the Cargo package version,
+which may stay unchanged between commits. The `self-update` skill preserves the
+installed stable or HEAD channel and uses `--fetch-HEAD` for HEAD updates.
+
+To switch an existing installation between channels, finish active conversations
+and exit CLI/TUI processes. From a separate terminal, stop the service if used,
+remove the installed kegs, then install the desired channel:
+
+```sh
+brew services stop suinly/tap/kodrik
+brew uninstall --force suinly/tap/kodrik
+brew install --HEAD suinly/tap/kodrik
+brew services start suinly/tap/kodrik
+```
+
+For a return to stable, omit `--HEAD`. Omit the service commands for terminal-only
+use. Both channels use the same `~/.kodrik/` data and service; uninstalling keeps
+that data. Back it up before testing intermediate builds using [Storage](storage.md).
+
 ## Migrate from the source installer
 
 Keep your existing `~/.kodrik/` and back it up following [Storage](storage.md).

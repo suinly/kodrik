@@ -36,10 +36,22 @@ explicitly requested checkout; a local build does not replace a brew installatio
 
 ## Update with Homebrew
 
-For an update request, run `brew update`, then
-`HOMEBREW_NO_INSTALL_CLEANUP=1 brew upgrade suinly/tap/kodrik`. Stop on failure;
-do not fall back to Git, rebuild, local signing or direct Cellar writes. Use the
-updated stable `opt/kodrik/bin/kodrik --version` to verify the installed executable.
+For an update request, determine the installed channel from the verified
+executable's resolved Cellar keg and its `INSTALL_RECEIPT.json` (`source.spec`).
+Use `brew list --versions suinly/tap/kodrik` to corroborate it: HEAD kegs have
+versions such as `HEAD-a1b2c3d`. Multiple retained kegs do not identify the active
+channel; if the active keg or receipt is unclear, stop and report it.
+
+Run `brew update`, then preserve that channel:
+
+- **stable:** `HOMEBREW_NO_INSTALL_CLEANUP=1 brew upgrade suinly/tap/kodrik`
+- **head:** `HOMEBREW_NO_INSTALL_CLEANUP=1 brew upgrade --fetch-HEAD suinly/tap/kodrik`
+
+Stop on failure; do not fall back to Git, rebuild, local signing or direct Cellar
+writes. Never switch channels during an update. Use the updated
+`opt/kodrik/bin/kodrik --version` to verify the installed executable. For HEAD,
+also record the new resolved keg/revision: the CLI package version can stay the
+same between commits. Report an unchanged revision as already current.
 Keeping the old keg until restart lets the running process finish using its
 current executable, including subprocesses it may need during the final response.
 

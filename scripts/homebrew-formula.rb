@@ -14,11 +14,33 @@ puts <<~FORMULA
     version "#{version}"
     sha256 "#{checksum}"
 
+    head do
+      url "https://github.com/suinly/kodrik.git", branch: "main"
+
+      depends_on "node@24" => :build
+      depends_on "rust" => :build
+    end
+
     depends_on arch: :arm64
     depends_on macos: :sonoma
 
+    def fetch
+      return unless build.head?
+
+      system "npm", "ci", "--prefix", "web", "--include=dev", *std_npm_args(prefix: nil, ignore_scripts: false)
+      system "cargo", "fetch", *std_cargo_fetch_args
+    end
+
     def install
-      bin.install "kodrik"
+      if build.head?
+        system "npm", "run", "build", "--prefix", "web"
+        system "cargo", "install", *std_cargo_args
+        system "/usr/bin/codesign", "--force", "--sign", "-", "--identifier", "com.kodrik.gateway",
+               "--timestamp=none", bin/"kodrik"
+        system "/usr/bin/codesign", "--verify", "--strict", bin/"kodrik"
+      else
+        bin.install "kodrik"
+      end
     end
 
     def caveats
@@ -49,7 +71,8 @@ puts <<~FORMULA
     end
 
     test do
-      assert_match "kodrik #{version}", shell_output("\#{bin}/kodrik --version")
+      expected_version = build.head? ? "kodrik " : "kodrik #{version}"
+      assert_match expected_version, shell_output("\#{bin}/kodrik --version")
       result = JSON.parse(shell_output("\#{bin}/kodrik invites list"))
       assert_empty result.fetch("invites")
       assert_empty result.fetch("users")
