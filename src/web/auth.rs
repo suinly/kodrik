@@ -92,6 +92,14 @@ struct Journal {
 }
 
 impl Journal {
+    fn identity(&self, token: &str, now: i64) -> Option<Identity> {
+        self.sessions
+            .get(&token_hash(token))
+            .map(StoredSession::grant)
+            .filter(|grant| grant.expires > now && self.allowed_identity(&grant.identity))
+            .map(|grant| grant.identity)
+    }
+
     fn create_session(&mut self, identity: Identity, now: i64) -> anyhow::Result<Option<String>> {
         if !self.allowed_identity(&identity) {
             return Ok(None);
@@ -260,20 +268,22 @@ impl AuthStore {
     }
 
     pub(crate) fn authenticated(&self, token: &str, now: i64) -> anyhow::Result<bool> {
-        Ok(self.identity(token, now)? == Some(Identity::Owner))
+        if !valid_token(token) {
+            return Ok(false);
+        }
+        let journal = self.read()?;
+        Ok(match journal.identity(token, now) {
+            Some(Identity::Owner) => true,
+            Some(Identity::Telegram(user)) => journal.owner_id == Some(user),
+            None => false,
+        })
     }
 
     pub(crate) fn identity(&self, token: &str, now: i64) -> anyhow::Result<Option<Identity>> {
         if !valid_token(token) {
             return Ok(None);
         }
-        let journal = self.read()?;
-        Ok(journal
-            .sessions
-            .get(&token_hash(token))
-            .map(StoredSession::grant)
-            .filter(|grant| grant.expires > now && journal.allowed_identity(&grant.identity))
-            .map(|grant| grant.identity))
+        Ok(self.read()?.identity(token, now))
     }
 
     #[cfg(test)]
@@ -519,6 +529,34 @@ mod tests {
                 .is_some()
         );
         assert_eq!(store.read().unwrap().sessions.len(), 6);
+    }
+
+    #[test]
+    fn telegram_owner_uses_the_same_session_for_chat_and_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::new(dir.path());
+        store.configure_owner(Some(42)).unwrap();
+        store.grant_test_user(7).unwrap();
+        let owner = store
+            .test_session(Identity::Telegram(42), 100)
+            .unwrap()
+            .unwrap();
+        let guest = store
+            .test_session(Identity::Telegram(7), 100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store.identity(&owner, 101).unwrap(),
+            Some(Identity::Telegram(42))
+        );
+        assert!(store.authenticated(&owner, 101).unwrap());
+        assert!(!store.authenticated(&guest, 101).unwrap());
+        assert!(!store.authenticated(&owner, 100 + SESSION_SECONDS).unwrap());
+        store.configure_owner(Some(7)).unwrap();
+        assert!(!store.authenticated(&owner, 102).unwrap());
+        assert!(store.authenticated(&guest, 102).unwrap());
+        store.logout(&guest).unwrap();
+        assert!(!store.authenticated(&guest, 103).unwrap());
     }
 
     #[test]

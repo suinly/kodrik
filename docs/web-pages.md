@@ -33,8 +33,9 @@ Telegram sessions share a pool of 64, with four additional slots reserved for
 owner-password access. At capacity, an existing identity can replace
 its own session; a new Telegram identity must wait for space. A login never
 evicts another identity's session. Use the sign-out form at `base_url` to
-revoke the current session. Without a password, private pages remain closed;
-public pages still work.
+revoke the current session. The configured owner can use the same Telegram login
+for chat and private pages; password login grants the same owner access. Public
+pages also work without login.
 
 The server runs with the gateway. Terminal and `ask` modes can publish files
 when web is configured, but do not start the HTTP listener. An empty gateway
@@ -140,7 +141,8 @@ creation or a design update for the desired page.
 
 ## Private and public access
 
-New pages are private by default. Private HTML requires owner login, and all
+New pages are private by default. Private pages require owner login (password or
+the configured owner's Telegram approval), shared with web chat, and all
 associated data and resource files require the same session. Unauthorized
 resource requests return 401 rather than the login form.
 

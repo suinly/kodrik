@@ -79,7 +79,7 @@ async fn telegram_login_bot_approval_is_private_explicit_and_never_model_work() 
                     auth.identity(&token, now).unwrap(),
                     Some(Identity::Telegram(42))
                 );
-                assert!(!auth.authenticated(&token, now).unwrap());
+                assert!(auth.authenticated(&token, now).unwrap());
             }
             LoginPoll::Denied if !approve => {}
             other => panic!("wrong decision {other:?}"),

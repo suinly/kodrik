@@ -411,6 +411,7 @@ async fn page_index(
     )
     .await
 }
+
 async fn page_root_redirect(
     State(state): State<ServerState>,
     Path(slug): Path<String>,
@@ -1056,7 +1057,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_accepts_only_password_and_keeps_telegram_sessions_out_of_owner_pages() {
+    async fn login_accepts_only_password_and_keeps_invited_users_out_of_owner_pages() {
         use crate::web::auth::Identity;
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1250,14 +1251,30 @@ mod tests {
             .unwrap()
             .unwrap();
         let cookie = format!("kodrik_web_session={token}");
+        auth.configure_owner(Some(42)).unwrap();
+        auth.grant_test_user(7).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let telegram = auth
+            .test_session(super::super::auth::Identity::Telegram(42), now)
+            .unwrap()
+            .unwrap();
+        let guest = auth
+            .test_session(super::super::auth::Identity::Telegram(7), now)
+            .unwrap()
+            .unwrap();
+        let telegram_cookie = format!("kodrik_web_session={telegram}");
+        let guest_cookie = format!("kodrik_web_session={guest}");
         let release = PageStore::new(dir.path())
             .manifest("private")
             .unwrap()
             .unwrap()
             .release;
         let app = router_with_resources(settings, dir.path(), None, Some(datasets.clone()));
-        for (slug, session, enabled) in [("private", cookie.as_str(), true), ("public", "", false)]
-        {
+        for (slug, session, enabled) in [
+            ("private", cookie.as_str(), true),
+            ("private", telegram_cookie.as_str(), true),
+            ("public", "", false),
+        ] {
             let response = app
                 .clone()
                 .oneshot(
@@ -1277,6 +1294,13 @@ mod tests {
         }
         let payload = json!({"request_id":uuid::Uuid::new_v4(),"values":{"name":"one"},"expected_revision":null,"clear_fields":[]});
         for (slug, query, session, origin, status) in [
+            (
+                "private",
+                format!("?release={release}"),
+                guest_cookie.as_str(),
+                "http://127.0.0.1",
+                401,
+            ),
             (
                 "private",
                 format!("?release={release}"),
@@ -1315,7 +1339,7 @@ mod tests {
             (
                 "private",
                 format!("?release={release}"),
-                cookie.as_str(),
+                telegram_cookie.as_str(),
                 "http://127.0.0.1",
                 200,
             ),
