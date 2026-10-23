@@ -84,8 +84,8 @@ test('pages catalog searches published titles and addresses without losing the c
   try {
     const page=await signedPage(browser);
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
-    const pages=page.getByRole('tab',{name:'Страницы',exact:true});
-    const dialogs=page.getByRole('tab',{name:'Диалоги',exact:true});
+    const pages=page.getByRole('button',{name:'Страницы',exact:true});
+    const dialogs=page.getByRole('button',{name:'Чат',exact:true});
     await pages.click();
     await expect(page.getByText('Здесь появятся опубликованные страницы.',{exact:true})).toBeVisible();
     await dialogs.click();
@@ -108,7 +108,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect(page.getByText('Страницы не найдены.',{exact:true})).toBeVisible();
     await search.fill('');
     await link.click();
-    await expect(page).toHaveURL(new URL(`chat/?conversation=${id}`,base).href);
+    await expect(page).toHaveURL(new URL('chat/?page=nutrition',base).href);
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
     await expect(viewer.getByRole('heading',{name:'Дневник питания',exact:true})).toBeVisible();
     await expect(viewer.getByRole('table')).toBeVisible();
@@ -133,7 +133,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect(link).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-pages-catalog-desktop.png',fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:390,height:844});
-    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await page.getByRole('button',{name:'Показать страницы',exact:true}).click();
     const mobileCatalog=page.getByRole('dialog').getByRole('navigation',{name:'Каталог страниц'});
     await expect(mobileCatalog).toBeVisible();
     await expect.poll(async()=> (await mobileCatalog.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(0);
@@ -152,6 +152,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await writeFile(join(directory,'index.html'),'<!doctype html><h1>Legacy published report</h1>');
     await writeFile(join(storage,'pages','manifests','legacy-preview.json'),JSON.stringify({release,visibility:'private',document:false}));
     await page.setViewportSize({width:1280,height:720});
+    await pages.click();
     await page.getByRole('button',{name:'Обновить',exact:true}).click();
     await navigation.getByRole('button',{name:/legacy-preview/}).click();
     await expect(page.frameLocator('iframe[title="legacy-preview"]').getByRole('heading',{name:'Legacy published report'})).toBeVisible();
@@ -176,6 +177,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await mkdir(nativeDirectory,{recursive:true});
     await writeFile(join(nativeDirectory,'document.json'),JSON.stringify({document:{title:'Relative links',body,sources:[],views:[],actions:[]},snapshot:{}}));
     await writeFile(join(storage,'pages','manifests','relative-links.json'),JSON.stringify({release:nativeRelease,visibility:'private',document:true}));
+    await pages.click();
     await page.getByRole('button',{name:'Обновить',exact:true}).click();
     await navigation.getByRole('button',{name:/Relative links/}).click();
     for(const label of ['Relative report','Relative button']) await expect(viewer.getByRole('link',{name:label,exact:true})).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
@@ -202,7 +204,7 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
     await expect(open).toBeVisible();
     assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true,42)).ok,true);
     await expect(page).toHaveURL(new URL('chat/',base).href);
-    await page.getByRole('tab',{name:'Страницы',exact:true}).click();
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
     await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
     await expect(viewer.getByRole('table')).toBeVisible();
@@ -215,6 +217,143 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
     await expect(document.getByRole('table')).toBeVisible();
     await expect(document.getByRole('textbox',{name:'Пароль',exact:true})).toHaveCount(0);
   } finally {await browser.close();}
+});
+
+test('section rail switches context menus and main content without losing chat drafts', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const sections=page.getByRole('navigation',{name:'Разделы',exact:true});
+    await expect(sections).toBeVisible();
+    assert.ok((await sections.boundingBox()).width<=64);
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await composer.fill('Черновик между разделами');
+    await sections.getByRole('button',{name:'Страницы',exact:true}).click();
+    await expect(page.getByRole('navigation',{name:'История диалогов'})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toHaveCount(0);
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await expect(page.getByRole('navigation',{name:'Каталог страниц'})).toHaveCount(0);
+    await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
+    await page.getByLabel('Название вебхука',{exact:true}).fill('Навигационный вебхук');
+    await page.getByLabel('Инструкция агенту',{exact:true}).fill('Обработай событие.');
+    await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
+    await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading',{name:'Навигационный вебхук',exact:true})).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-section-rail-desktop.png',animations:'disabled'});
+    await sections.getByRole('button',{name:'Чат',exact:true}).click();
+    await expect(composer).toHaveValue('Черновик между разделами');
+    await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
+    await sections.getByRole('button',{name:'Страницы',exact:true}).click();
+    await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    const menu=page.getByRole('dialog');
+    await menu.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:'Навигационный вебхук',exact:true}).click();
+    await expect(menu).toHaveCount(0);
+    await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Навигационный вебхук');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await page.screenshot({path:'/tmp/kodrik-section-rail-mobile.png',animations:'disabled'});
+    await page.getByRole('button',{name:'Удалить вебхук',exact:true}).click();
+    await page.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+  } finally {await browser.close();}
+});
+
+test('page and webhook links restore selections on reload and in a fresh tab', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await expect.poll(()=>new URL(page.url()).searchParams.get('page')).toBe('nutrition');
+    assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
+    const pageUrl=page.url();
+    await page.reload();
+    await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
+    await page.getByLabel('Название вебхука',{exact:true}).fill('Вебхук по ссылке');
+    await page.getByLabel('Инструкция агенту',{exact:true}).fill('Диагностика события.');
+    await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
+    await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
+    const token=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
+    await expect.poll(()=>new URL(page.url()).searchParams.get('webhook')).not.toBeNull();
+    const hookUrl=page.url();
+    assert.equal(hookUrl.includes(token),false);
+    const anonymous=await browser.newPage({locale:'ru-RU'});
+    await anonymous.goto(hookUrl);
+    await expect(anonymous.getByLabel('Пароль',{exact:true})).toBeVisible();
+    await expect(anonymous.locator('input[name="return_to"]')).toHaveValue(new URL(hookUrl).pathname+new URL(hookUrl).search);
+    await anonymous.close();
+    await page.reload();
+    await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Вебхук по ссылке');
+    await expect(page.getByLabel('Инструкция агенту',{exact:true})).toHaveValue('Диагностика события.');
+    await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await expect(page).toHaveURL(pageUrl);
+    await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    const fresh=await signedPage(browser);
+    await fresh.goto(hookUrl);
+    await expect(fresh.getByLabel('Название вебхука',{exact:true})).toHaveValue('Вебхук по ссылке');
+    await fresh.getByRole('button',{name:'Удалить вебхук',exact:true}).click();
+    await fresh.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await expect.poll(()=>new URL(fresh.url()).searchParams.has('webhook')).toBe(false);
+    await fresh.goto(hookUrl);
+    await expect(fresh.getByRole('alert')).toContainText('Вебхук удалён или не найден.');
+    await expect(fresh.getByLabel('Название вебхука',{exact:true})).toHaveCount(0);
+    await fresh.goto(new URL('chat/?page=does-not-exist',base).href);
+    await expect(fresh.getByRole('alert')).toContainText('Страница удалена или не найдена.');
+    await expect(fresh.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toHaveCount(0);
+    await fresh.route('**/api/webhooks',route=>route.fulfill({status:503,body:''}));
+    await fresh.goto(hookUrl);
+    await expect(fresh.getByRole('alert')).toContainText('503');
+    await fresh.unroute('**/api/webhooks');
+    await fresh.getByRole('button',{name:'Повторить',exact:true}).click();
+    await expect(fresh.getByRole('alert')).toContainText('Вебхук удалён или не найден.');
+  } finally {await browser.close();}
+});
+
+test('a delayed new conversation response cannot override a newer section', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  let release=()=>{};
+  let created;
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('chat/?page=nutrition',base).href);
+    await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    await page.getByRole('button',{name:'Чат',exact:true}).click();
+    let started;const creating=new Promise(resolve=>{started=resolve});
+    const pending=new Promise(resolve=>{release=resolve});
+    await page.route('**/api/chat/sessions',async route=>{
+      if(route.request().method()!=='POST') return route.continue();
+      started();await pending;await route.continue();
+    });
+    await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();await creating;
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
+    await expect(page.getByRole('region',{name:'Просмотр страницы'})).toBeVisible();
+    const completed=page.waitForResponse(response=>response.request().method()==='POST' && response.url().endsWith('/api/chat/sessions'));
+    release();created=(await(await completed).json()).id;
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await expect(page).toHaveURL(new URL('chat/?page=nutrition',base).href);
+    await expect(page.getByRole('region',{name:'Просмотр страницы'})).toBeVisible();
+  } finally {
+    release();await browser.close();
+    if(created) assert.equal((await fetch(new URL(`api/chat/sessions/${created}`,base),{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}})).status,204);
+  }
 });
 
 test('home composer starts one conversation and moves down without replacing the input', {timeout:60000},async()=>{
@@ -1822,6 +1961,63 @@ async function signedPage(browser,options={}) {
   await page.context().addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
   return page;
 }
+
+test('owner manages webhooks, rotates one-time tokens and opens arbitrary event conversations', {timeout:60000}, async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    await page.goto(new URL('chat/',base).href);
+    await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
+    await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки checkout');
+    await page.getByLabel('Инструкция агенту',{exact:true}).fill('Найди причину ошибки и открой PR после проверки тестов.');
+    await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
+    const url=await page.getByLabel('URL вебхука',{exact:true}).inputValue();
+    const token=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
+    assert.ok(token.length>=32);
+    assert.equal((await fetch(url,{method:'POST',body:'unauthorized'})).status,401);
+    const event=await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Idempotency-Key':'browser-event'},body:'checkout error\nraw stack trace'});
+    assert.equal(event.status,202);const accepted=await event.json();
+    await page.getByRole('button',{name:'Открыть обработку',exact:true}).first().click();
+    await expect(page).toHaveURL(new RegExp(`conversation=${accepted.conversation_id}`));
+    await expect(page.locator('.message[data-role="user"]').first()).toContainText('checkout error');
+    await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
+    await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки оплаты');
+    await page.getByLabel('Инструкция агенту',{exact:true}).fill('Проверь новую инструкцию.');
+    await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
+    await expect(page.getByRole('navigation',{name:'Список вебхуков'})).toContainText('Ошибки оплаты');
+    await page.getByRole('button',{name:'Перевыпустить токен',exact:true}).click();
+    await page.getByRole('button',{name:'Подтвердить перевыпуск',exact:true}).click();
+    const rotated=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
+    assert.notEqual(rotated,token);
+    assert.equal((await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:'old token'})).status,401);
+    await page.getByRole('switch',{name:'Вебхук включён',exact:true}).click();
+    await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
+    assert.equal((await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${rotated}`},body:'disabled'})).status,401);
+    await page.getByRole('button',{name:'Удалить вебхук',exact:true}).click();
+    await page.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await expect(page.getByText('Пока нет вебхуков.',{exact:true})).toBeVisible();
+  } finally {await browser.close();}
+});
+
+test('webhook form works in the mobile sidebar and English interface', {timeout:60000}, async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    await page.goto(new URL('chat/',base).href);
+    await page.getByRole('button',{name:'Webhooks',exact:true}).click();
+    await page.getByRole('button',{name:'Create webhook',exact:true}).click();
+    await page.getByLabel('Webhook name',{exact:true}).fill('Mobile errors');
+    await page.getByLabel('Agent instruction',{exact:true}).fill('Investigate the event.');
+    await page.getByRole('button',{name:'Save webhook',exact:true}).click();
+    await expect(page.getByLabel('Bearer token',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
+    await page.getByRole('button',{name:'Delete webhook',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm deletion',exact:true}).click();
+    await expect(page.getByRole('navigation',{name:'Webhooks list'}).getByRole('button',{name:'Mobile errors',exact:true})).toHaveCount(0);
+  } finally {await browser.close();}
+});
 
 async function newConversation(page) {
   await page.getByRole('textbox',{name:'Сообщение',exact:true}).waitFor();

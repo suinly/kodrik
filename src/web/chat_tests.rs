@@ -475,6 +475,43 @@ async fn chat_with_ui(
     Chat::new(&owner, data).await.unwrap()
 }
 
+#[tokio::test]
+async fn dashboard_links_survive_owner_login_redirect() {
+    let f = Fixture::new().await;
+    for query in [
+        "page=nutrition",
+        "webhook=incident-hook",
+        "conversation=test-session",
+    ] {
+        let response = f
+            .client
+            .get(format!("{}chat/?{query}", f.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 303);
+        let login = reqwest::Url::parse(response.headers()["location"].to_str().unwrap()).unwrap();
+        assert_eq!(
+            login
+                .query_pairs()
+                .find(|(key, _)| key == "return_to")
+                .unwrap()
+                .1,
+            format!("/kodrik/chat/?{query}")
+        );
+        let redirect = f
+            .client
+            .get(format!("{}chat?{query}", f.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            redirect.headers()["location"],
+            format!("/kodrik/chat/?{query}")
+        );
+    }
+}
+
 struct Fixture {
     data: tempfile::TempDir,
     base: String,

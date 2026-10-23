@@ -10,7 +10,7 @@ use crate::agent::{
 };
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, Request, State},
     http::{HeaderMap, Method, StatusCode},
     middleware::{self, Next},
     response::{
@@ -444,17 +444,25 @@ async fn authorize(
     next.run(request).await
 }
 
-async fn chat_redirect(State(state): State<WebState>) -> Redirect {
-    Redirect::to(&format!("{}chat/", state.settings.prefix()))
+async fn chat_redirect(State(state): State<WebState>, OriginalUri(uri): OriginalUri) -> Redirect {
+    let query = uri
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    Redirect::to(&format!("{}chat/{query}", state.settings.prefix()))
 }
 
-async fn index(State(state): State<WebState>, headers: HeaderMap) -> Response {
+async fn index(
+    State(state): State<WebState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
     match state.authenticated(&headers).await {
         Ok(true) => super::chat_assets::index(state.settings.prefix()),
         Ok(false) => {
             let mut url = state.settings.base_url.join("auth/login").unwrap();
             url.query_pairs_mut()
-                .append_pair("return_to", &format!("{}chat/", state.settings.prefix()));
+                .append_pair("return_to", uri.path_and_query().unwrap().as_str());
             Redirect::to(url.as_str()).into_response()
         }
         Err(response) => response,
