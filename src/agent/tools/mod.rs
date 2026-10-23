@@ -4,6 +4,7 @@ mod datasets;
 mod encyclopedia;
 pub(crate) mod exec_command;
 mod memory;
+pub(crate) mod messages;
 mod publish_page;
 mod registry;
 mod session_search;

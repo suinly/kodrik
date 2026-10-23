@@ -29,6 +29,61 @@ impl llm::LlmProvider for Model {
     }
 }
 struct Chat(AtomicUsize, bool);
+
+#[tokio::test]
+async fn messages_sent_notification_does_not_replace_final_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open_async(dir.path().into())
+            .await
+            .unwrap(),
+    );
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(Model),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    );
+    let channel = SessionId::new("telegram:test:42");
+    let incoming = IncomingMessage::new(InterfaceId("telegram:test".into()), "42", "hello");
+    let request = incoming.request_id.clone();
+    runner.run(channel.clone(), incoming, None).await.unwrap();
+    let run = store
+        .submission(channel.as_str(), &request)
+        .await
+        .unwrap()
+        .unwrap()
+        .run_id
+        .unwrap();
+    let receipt = store
+        .queue_notification(
+            &run,
+            "notification",
+            channel.as_str(),
+            "web",
+            "new",
+            "Notification".into(),
+        )
+        .await
+        .unwrap();
+    store
+        .deliver_web_notification(&receipt)
+        .await
+        .unwrap()
+        .unwrap();
+    let chat = Arc::new(Chat(AtomicUsize::new(0), false));
+    let reply = tools::telegram_reply::ReplyContext::new(chat.clone(), "42".into(), None);
+    for _ in 0..2 {
+        runner
+            .deliver_final(chat.as_ref(), &channel, &request, None, &reply)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(chat.0.load(Ordering::SeqCst), 1);
+}
 #[async_trait::async_trait]
 impl Interface for Chat {
     fn id(&self) -> InterfaceId {

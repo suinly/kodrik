@@ -59,6 +59,47 @@ the body. These details are snapshotted when the event is accepted, so renaming
 or deleting the webhook does not change the recorded source. Subsequent messages
 in its conversation are the owner's follow-up questions, not new webhook events.
 
+## Send a notification to another channel
+
+Owner agents can use the `messages` tool from webhook runs and ordinary chats.
+Put the delivery request in the webhook's saved instruction, for example:
+
+> Investigate the incident. Send me a short summary and the PR link in Telegram
+> using messages. If the fix cannot be completed, send the reason instead.
+
+`list_channels` discovers the configured destinations. `send` takes a channel
+and nonempty text (up to 32 KiB):
+
+```json
+{"action":"send","channel":"telegram","text":"Checkout fixed: PR link","conversation_id":null}
+```
+
+Telegram sends through the bot selected by the existing owner settings to the
+owner's private chat. No recipient ID or bot token is supplied by the model.
+Telegram is absent when no owner/bot is configured. The owner must have started
+the bot and must not have blocked it.
+
+The `web` channel is available when the web interface is enabled. Supply an
+existing conversation UUID, or null to create a new conversation. A successful
+send returns its conversation ID and dashboard URL. Messages appear as assistant
+messages and remain in history. A busy destination waits until its current work
+finishes; this does not invoke another agent turn in the destination.
+
+`sent` confirms delivery, while `pending` means the message is saved for later
+delivery. Pending notifications are checked every five seconds while Kodrik
+runs and survive restarts. Rate-limited sends wait for the server's Retry-After.
+Pending sends to a removed channel or a previously configured owner are rejected;
+they are never redirected to the new owner. Deleting a destination web conversation
+also rejects its pending messages.
+An uncertain remote outcome is reported as an error and is not automatically
+resent. A replay of the same tool call reuses its original receipt. Sending to
+another channel does not suppress the final answer in the source conversation.
+
+The tool is unavailable to invited users, groups and guest queries. This version
+supports text; additional external channels can use the existing `Interface`
+transport without changing the tool arguments. The separate `telegram_reply`
+tool continues to reply only within its current Telegram chat.
+
 A successfully persisted request returns `202 Accepted`:
 
 ```json

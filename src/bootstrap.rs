@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod messages_tests;
+
 use crate::{
     agent::{
         Agent, AgentRunner, ContextBuilder,
@@ -185,6 +189,34 @@ pub(crate) async fn build_app_with_access(
     };
 
     let sandbox = isolated.then(|| Arc::new(crate::agent::sandbox::Sandbox::new(data.to_owned())));
+    let sessions = SqliteSessionStore::open_async(data.join("sessions")).await?;
+    let messages = if !isolated && access.is_none() {
+        use crate::agent::tools::messages::{MessageChannel, MessagesTool};
+        let mut channels = Vec::new();
+        if let Some(owner) = &config.owner {
+            config.validate_owner()?;
+            let crate::config::GatewayConfig::Telegram { token, .. } =
+                &config.gateway[&owner.interface];
+            channels.push(MessageChannel {
+                name: "telegram".into(),
+                interface: Arc::new(
+                    crate::interfaces::TelegramInterface::new(
+                        &owner.interface,
+                        token,
+                        data.join("attachments"),
+                    )
+                    .with_journal(journal.clone()),
+                ),
+                recipient: owner.user_id.to_string(),
+            });
+        }
+        let web_url =
+            crate::web::Settings::from_config(&config.web)?.map(|settings| settings.base_url);
+        (!channels.is_empty() || web_url.is_some())
+            .then(|| MessagesTool::new(sessions.clone(), channels, web_url))
+    } else {
+        None
+    };
     let mut tools = ToolRegistry::default()
         .register(Arc::new(UpdatePlanTool))
         .register(Arc::new(MemoryTool::new(data.join("memories"))))
@@ -206,6 +238,9 @@ pub(crate) async fn build_app_with_access(
     }
     tools = tools.register(Arc::new(TelegramReplyTool::new(sandbox.clone())));
     tools = tools.register(Arc::new(TelegramResultsTool));
+    if let Some(messages) = &messages {
+        tools = tools.register(Arc::new(messages.clone()));
+    }
     if let Some(sandbox) = &sandbox {
         for name in ["exec_command", "view_image", "apply_patch"] {
             tools = tools.register(sandbox.tool(name));
@@ -258,8 +293,6 @@ pub(crate) async fn build_app_with_access(
             .with_companion(data)
     ).with_limits(4, 32_000).with_journal(journal.clone()));
 
-    let sessions = SqliteSessionStore::open_async(data.join("sessions")).await?;
-
     let decision_provider = config.provider.get("system_one").unwrap_or(provider);
     let decision_llm = Arc::new(
         make_llm(decision_provider)
@@ -281,6 +314,9 @@ pub(crate) async fn build_app_with_access(
         ));
     }
     let agent_runner = Arc::new(agent_runner);
+    if let Some(messages) = messages {
+        tokio::spawn(messages.run(agent_runner.shutdown_receiver()));
+    }
 
     Ok(AppContext {
         datasets,

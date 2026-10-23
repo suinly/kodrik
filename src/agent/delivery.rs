@@ -50,6 +50,8 @@ struct Receipt {
     preview: Option<String>,
     #[serde(default)]
     cancel_requested: bool,
+    #[serde(default)]
+    notification: bool,
 }
 tokio::task_local! {
     pub(crate) static CURRENT_DELIVERY: Option<(SqliteSessionStore,String,String)>;
@@ -94,7 +96,7 @@ pub(crate) fn checkpoint_final(
     if !interface.starts_with("telegram:") || chat.parse::<i64>().is_err() {
         return Ok(());
     }
-    let explicit:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM deliveries WHERE run_id=?1 AND json_extract(payload,'$.status')!='Rejected')",[&run.id],|r|r.get(0))?;
+    let explicit:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM deliveries WHERE run_id=?1 AND json_extract(payload,'$.status')!='Rejected' AND coalesce(json_extract(payload,'$.notification'),0)=0)",[&run.id],|r|r.get(0))?;
     if explicit {
         return Ok(());
     }
@@ -121,10 +123,117 @@ pub(crate) fn checkpoint_final(
             message_id: None,
             preview: None,
             cancel_requested: false,
+            notification: false,
         },
     )
 }
 impl SqliteSessionStore {
+    pub(crate) async fn pending_notifications(&self) -> anyhow::Result<Vec<String>> {
+        self.with_connection(|db| {
+            Ok(db.prepare("SELECT id FROM deliveries WHERE json_extract(payload,'$.notification')=1 AND json_extract(payload,'$.status') IN ('Pending','Sending') ORDER BY rowid")?
+                .query_map([], |row| row.get(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).await
+    }
+
+    pub(crate) async fn notification_destination(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            let receipt = read(db, &id)?.context("Delivery missing")?;
+            ensure!(receipt.notification, "Not a notification");
+            Ok((receipt.interface, receipt.chat))
+        })
+        .await
+    }
+
+    pub(crate) async fn reject_notification(&self, id: &str) -> anyhow::Result<()> {
+        let _ownership = self.execution_lock("delivery", id).await?;
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut receipt = read(&tx, &id)?.context("Delivery missing")?;
+            ensure!(receipt.notification, "Not a notification");
+            match receipt.status {
+                Status::Pending => receipt.status = Status::Rejected,
+                Status::Sending => receipt.status = Status::Uncertain,
+                _ => return Ok(()),
+            }
+            receipt.cancel_requested = true;
+            write(&tx, &receipt)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .map_err(storage_failure)
+    }
+
+    pub(crate) async fn notification_result(&self, id: &str) -> anyhow::Result<Option<MessageId>> {
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            let receipt = read(db, &id)?.context("Delivery missing")?;
+            ensure!(
+                matches!(
+                    receipt.status,
+                    Status::Pending | Status::Sending | Status::Sent
+                ),
+                "Notification outcome is {:?}; do not resend it with a new call",
+                receipt.status
+            );
+            Ok(if receipt.status == Status::Sent {
+                receipt.message_id.map(MessageId)
+            } else {
+                None
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn deliver_web_notification(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<MessageId>> {
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut receipt = read(&tx, &id)?.context("Delivery missing")?;
+            ensure!(receipt.notification && receipt.interface == "web", "Not a web notification");
+            if receipt.status == Status::Sent {
+                return Ok(receipt.message_id.map(MessageId));
+            }
+            if receipt.status != Status::Pending || receipt.cancel_requested {
+                return Ok(None);
+            }
+            let Payload::Text(body) = &receipt.payload else {
+                anyhow::bail!("Web notifications require text");
+            };
+            let mut session = if receipt.chat == "new" {
+                Session::new(super::session::SessionId::new(uuid::Uuid::new_v4().to_string()))
+            } else {
+                let bytes: Option<Vec<u8>> = tx.query_row("SELECT payload FROM sessions WHERE id=?1", [&receipt.chat], |row| row.get(0)).optional()?;
+                let Some(bytes) = bytes else {
+                    receipt.status = Status::Rejected;
+                    write(&tx, &receipt)?;
+                    tx.commit()?;
+                    return Ok(None);
+                };
+                if super::inbox::session_busy_in(&tx, &receipt.chat)? {
+                    return Ok(None);
+                }
+                serde_json::from_slice::<Session>(&bytes)?
+            };
+            session.push(super::message::Message::Assistant(super::AssistantMessage { content: body.clone() }));
+            receipt.message_id = Some(format!("{}:{}", session.id().as_str(), session.messages().len()-1));
+            receipt.status = Status::Sent;
+            tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+                params![session.id().as_str(),serde_json::to_vec(&session)?,Utc::now().timestamp_nanos_opt().context("Session timestamp overflow")?])?;
+            write(&tx, &receipt)?;
+            tx.commit()?;
+            Ok(receipt.message_id.map(MessageId))
+        }).await.map_err(storage_failure)
+    }
+
     pub(crate) async fn cancel_session_deliveries(&self, session: &str) -> anyhow::Result<()> {
         let session = session.to_owned();
         self.with_connection(move |db| {
@@ -148,14 +257,14 @@ impl SqliteSessionStore {
         }).await
     }
     pub(crate) async fn pending_delivery_conversations(&self) -> anyhow::Result<Vec<String>> {
-        self.with_connection(|db|Ok(db.prepare("SELECT DISTINCT conversation_id FROM deliveries WHERE json_extract(payload,'$.status') IN ('Pending','Sending')")?.query_map([],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?)).await
+        self.with_connection(|db|Ok(db.prepare("SELECT DISTINCT conversation_id FROM deliveries WHERE coalesce(json_extract(payload,'$.notification'),0)=0 AND json_extract(payload,'$.status') IN ('Pending','Sending')")?.query_map([],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?)).await
     }
     pub(crate) async fn pending_deliveries(
         &self,
         conversation: &str,
     ) -> anyhow::Result<Vec<String>> {
         let conversation = conversation.to_owned();
-        self.with_connection(move|db|Ok(db.prepare("SELECT id FROM deliveries WHERE conversation_id=?1 AND json_extract(payload,'$.status') IN ('Pending','Sending') ORDER BY rowid")?.query_map([conversation],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?)).await
+        self.with_connection(move|db|Ok(db.prepare("SELECT id FROM deliveries WHERE conversation_id=?1 AND coalesce(json_extract(payload,'$.notification'),0)=0 AND json_extract(payload,'$.status') IN ('Pending','Sending') ORDER BY rowid")?.query_map([conversation],|r|r.get(0))?.collect::<Result<Vec<_>,_>>()?)).await
     }
     pub(crate) async fn queue_explicit(
         &self,
@@ -166,6 +275,49 @@ impl SqliteSessionStore {
         chat: &str,
         message: &OutgoingMessage,
     ) -> anyhow::Result<String> {
+        self.queue_delivery(
+            run,
+            call,
+            conversation,
+            interface,
+            chat,
+            Payload::Rich(message.clone()),
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn queue_notification(
+        &self,
+        run: &str,
+        call: &str,
+        conversation: &str,
+        interface: &str,
+        chat: &str,
+        text: String,
+    ) -> anyhow::Result<String> {
+        self.queue_delivery(
+            run,
+            call,
+            conversation,
+            interface,
+            chat,
+            Payload::Text(text),
+            true,
+        )
+        .await
+    }
+
+    async fn queue_delivery(
+        &self,
+        run: &str,
+        call: &str,
+        conversation: &str,
+        interface: &str,
+        chat: &str,
+        payload: Payload,
+        notification: bool,
+    ) -> anyhow::Result<String> {
         let id = format!("{run}:{call}");
         let r = Receipt {
             id: id.clone(),
@@ -174,11 +326,12 @@ impl SqliteSessionStore {
             interface: interface.into(),
             chat: chat.into(),
             status: Status::Pending,
-            payload: Payload::Rich(message.clone()),
+            payload,
             retry_at: None,
             message_id: None,
             preview: None,
             cancel_requested: false,
+            notification,
         };
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -186,7 +339,8 @@ impl SqliteSessionStore {
                 ensure!(
                     serde_json::to_vec(&old.payload)? == serde_json::to_vec(&r.payload)?
                         && old.interface == r.interface
-                        && old.chat == r.chat,
+                        && old.chat == r.chat
+                        && old.notification == r.notification,
                     "Delivery identity conflict"
                 );
             } else {
@@ -493,7 +647,7 @@ impl super::AgentRunner {
             return Ok(None);
         };
         let explicit=store.with_connection({let run=run.clone();move|db|{
-            let bytes:Option<Vec<u8>>=db.query_row("SELECT payload FROM deliveries WHERE run_id=?1 AND json_extract(payload,'$.status')='Sent' ORDER BY rowid DESC LIMIT 1",[run],|r|r.get(0)).optional()?;
+            let bytes:Option<Vec<u8>>=db.query_row("SELECT payload FROM deliveries WHERE run_id=?1 AND json_extract(payload,'$.status')='Sent' AND coalesce(json_extract(payload,'$.notification'),0)=0 ORDER BY rowid DESC LIMIT 1",[run],|r|r.get(0)).optional()?;
             Ok(bytes.map(|bytes|serde_json::from_slice::<Receipt>(&bytes)).transpose()?.and_then(|r|r.message_id).map(MessageId))
         }}).await.map_err(storage_failure)?;
         if explicit.is_some() {

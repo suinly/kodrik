@@ -254,6 +254,13 @@ impl Chat {
             "cancel_requested":false,"messages":history(&view.session),"plan":null,
             "live":{"current":null,"interrupted":null},"deliveries":[]})
         };
+        if view
+            .run
+            .as_ref()
+            .is_some_and(|run| run.run.phase.terminal())
+        {
+            snapshot["messages"] = json!(history(&view.session));
+        }
         snapshot["revision"] = json!(view.revision);
         snapshot["busy"] = json!(view.busy);
         snapshot["blocked_reason"] = json!(view.blocked_reason);

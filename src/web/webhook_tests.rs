@@ -5,6 +5,54 @@ use axum::{
 };
 use tower::ServiceExt;
 
+#[tokio::test]
+async fn messages_web_notification_is_visible_after_completed_run() {
+    use crate::agent::{
+        AssistantMessage,
+        message::Message,
+        run_state::{Checkpoint, RunPhase},
+    };
+    let f = Fixture::new().await;
+    let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+    session.push(Message::Assistant(AssistantMessage {
+        content: "Original answer".into(),
+    }));
+    f.chat.sessions.save(&session).await.unwrap();
+    let mut checkpoint = Checkpoint::new(&f.chat.sessions, session.id(), &session);
+    checkpoint
+        .save(&session, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let receipt = f
+        .chat
+        .sessions
+        .queue_notification(
+            &checkpoint.record.id,
+            "notification",
+            session.id().as_str(),
+            "web",
+            session.id().as_str(),
+            "New notification".into(),
+        )
+        .await
+        .unwrap();
+    f.chat
+        .sessions
+        .deliver_web_notification(&receipt)
+        .await
+        .unwrap()
+        .unwrap();
+    let snapshot = f.chat.snapshot(session.id().as_str()).await.unwrap();
+    let texts: Vec<_> = snapshot["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["parts"].as_array().unwrap())
+        .filter_map(|part| part["text"].as_str())
+        .collect();
+    assert_eq!(texts, vec!["Original answer", "New notification"]);
+}
+
 struct Fixture {
     _data: tempfile::TempDir,
     chat: Chat,
