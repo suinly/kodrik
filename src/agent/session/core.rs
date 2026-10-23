@@ -29,6 +29,8 @@ pub struct Session {
     #[serde(default)]
     system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) webhook_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     telegram_group: Option<TelegramGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     skills_catalog: Option<String>,
@@ -55,6 +57,7 @@ impl Session {
             generation: uuid::Uuid::new_v4().to_string(),
             id,
             system_prompt: None,
+            webhook_instruction: None,
             telegram_group: None,
             skills_catalog: None,
             memory_snapshot: None,

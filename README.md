@@ -138,6 +138,10 @@ password or through your configured Telegram bot. The gateway serves both
 Telegram and the enabled web interface; terminal mode does not start the server.
 For remote access, configure HTTPS following [Web pages](docs/web-pages.md).
 
+The owner can create Bearer-authenticated webhooks from **Webhooks** in the chat
+sidebar. Each delivery starts a separate agent conversation using your saved
+instruction. See [Webhooks](docs/webhooks.md) for request examples and limits.
+
 For a Homebrew installation, run the gateway in the background after configuration:
 
 ```sh

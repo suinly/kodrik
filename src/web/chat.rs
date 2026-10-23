@@ -38,6 +38,11 @@ mod titles;
 #[cfg(test)]
 #[path = "chat_user_tests.rs"]
 pub(super) mod user_tests;
+#[cfg(test)]
+#[path = "webhook_tests.rs"]
+mod webhook_tests;
+#[path = "webhooks.rs"]
+mod webhooks;
 
 #[derive(Clone)]
 pub(crate) struct Chat {
@@ -60,6 +65,7 @@ impl Chat {
             })?);
         titles::init(&sessions).await?;
         management::init(&sessions).await?;
+        webhooks::init(&sessions).await?;
         let chat = Self {
             runner: Arc::new(owner.for_web(sessions.clone())),
             sessions,
@@ -392,6 +398,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     Router::new()
         .merge(api)
+        .merge(webhooks::routes(state.clone()))
         .route("/chat", get(chat_redirect))
         .route("/chat/", get(index))
         .route("/chat/{*path}", get(asset))

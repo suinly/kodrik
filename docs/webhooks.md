@@ -1,0 +1,110 @@
+# Webhooks
+
+Webhooks let an external service submit arbitrary event data to the owner agent.
+Enable the web interface, sign in as the owner, and open **Webhooks** in the chat
+icon rail. The sidebar lists your webhooks; selecting one opens its instruction,
+credentials and recent events in the main area. On mobile, select the icon to
+open the list. Invited users cannot manage or invoke owner webhooks with their login.
+
+## Create and manage
+
+Choose **Create webhook**, enter its name and the instruction the agent should
+follow, and save. The instruction can identify a project, repository, required
+checks, and the expected result. For example:
+
+> Investigate checkout errors in the shop repository. Reproduce the problem,
+> add a regression test, fix the root cause, run the relevant checks and open a
+> pull request. Include the incident URL and test results. If there is not enough
+> evidence, report what is missing. Do not merge or deploy.
+
+Copy the generated endpoint URL and Bearer token. The token disappears when you
+select another webhook or leave the section. It is shown only in the creation
+or rotation response and is not stored in browser storage. The server
+stores its SHA-256 hash in the existing private SQLite session database.
+
+You can edit the name/instruction, disable ingestion, rotate the token, or delete
+the webhook without restarting Kodrik or editing configuration. Rotating a token
+invalidates the previous one immediately. Disabling a webhook pauses ingestion;
+reenabling it accepts its current token again. Deleting it permanently disables
+its endpoint. Already accepted tasks and their conversations are preserved.
+
+## Send an event
+
+Send a POST request to the URL shown in the interface. Include the token in the
+Authorization header, never in the URL. Remote access requires HTTPS; HTTP is
+supported only for local development on loopback, as with the existing web UI.
+
+```sh
+curl -X POST 'https://kodrik.example/api/webhooks/WEBHOOK_ID' \
+  -H 'Authorization: Bearer YOUR_TOKEN' \
+  -H 'Content-Type: text/plain' \
+  -H 'Idempotency-Key: incident-42-event-1' \
+  --data-binary @event.txt
+```
+
+The body must be nonempty UTF-8 text of at most 64 KiB. It can contain plain text,
+JSON with any structure, logs, stack traces, or other textual event data. No JSON
+schema or Content-Type is required. The original text is passed to the agent
+without parsing or rewriting it. Binary attachments are not supported.
+
+The agent also receives the webhook's name, ID and receipt time separately from
+the body. These details are snapshotted when the event is accepted, so renaming
+or deleting the webhook does not change the recorded source. Subsequent messages
+in its conversation are the owner's follow-up questions, not new webhook events.
+
+A successfully persisted request returns `202 Accepted`:
+
+```json
+{"conversation_id":"SESSION_UUID","duplicate":false}
+```
+
+This acknowledges durable acceptance, not successful completion of the task.
+Open **Recent events** in the webhook manager to see queue/execution status and
+open the corresponding conversation. The normal chat history, live updates and
+stop controls work for these conversations.
+
+## Retries and recovery
+
+An optional `Idempotency-Key` header accepts 1–128 ASCII characters. Reuse it when
+retrying the same delivery. For that webhook, an identical body returns the same
+conversation with `duplicate:true`; a different body returns `409 Conflict`.
+Without the header, every POST starts a new conversation.
+
+An error group can contain several distinct events. Choose delivery keys that
+identify individual events; automatic grouping into incidents or existing PRs
+is not part of this endpoint.
+
+The session, owner instruction snapshot, queue submission and deduplication
+receipt are committed in one SQLite transaction before returning 202. Accepted
+work continues if the sender disconnects and is recovered after a process
+restart using the existing agent recovery rules. Changing the webhook's
+instruction affects future deliveries only. If the owner deletes a conversation,
+its receipt still prevents duplicate execution; a retry then returns a null
+conversation ID.
+
+## Limits and permissions
+
+- Up to 32 webhooks.
+- Up to 10 new deliveries per webhook per minute; identical retries do not consume
+  this allowance.
+- Up to 100 outstanding web conversations per server process, sharing the
+  existing four-worker execution capacity. Run one web server for this limit.
+- Each webhook turn has a persisted limit of 16 model calls and five minutes;
+  recovery retains these limits.
+
+Missing, invalid, disabled or revoked credentials return 401. Invalid body/key
+returns 400, an oversized body 413, a conflicting retry 409, and an exhausted
+rate/queue allowance 429. Management requires the owner session cookie, and
+management mutations require the existing same-origin checks. A browser login
+cookie alone cannot authorize ingestion.
+
+Webhook runs use the owner's existing tools, process permissions, context and
+credentials. A webhook does not create a separate sandbox or repository access
+policy. The stored instruction is separate from the untrusted event body, but
+instruction text is not an operating-system permission boundary. Configure the
+Kodrik process and credentials accordingly. Repository access and Git hosting
+credentials must already be available if the task needs to create a PR.
+
+Keep tokens private: anyone holding a webhook token can submit tasks to that
+webhook. Do not include secrets in event bodies unless they are intended to be
+saved in conversation history and sent to the configured model provider.
