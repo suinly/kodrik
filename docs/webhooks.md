@@ -79,6 +79,16 @@ owner's private chat. No recipient ID or bot token is supplied by the model.
 Telegram is absent when no owner/bot is configured. The owner must have started
 the bot and must not have blocked it.
 
+After a webhook notification is successfully delivered to Telegram, that private
+chat selects the webhook's source session. The notification's tool call and
+subsequent Telegram replies share the original event history and saved webhook
+instruction. Receiving a webhook alone, sending to web, a pending delivery or a
+failed send does not switch Telegram. Retrying an already delivered notification
+does not override a session selected later by the owner.
+If Telegram is still finishing a turn in its previous session, the new reply
+waits for that turn and remains bound to the webhook session. While the webhook
+run itself is still active, the existing cross-channel session-busy check applies.
+
 The `web` channel is available when the web interface is enabled. Supply an
 existing conversation UUID, or null to create a new conversation. A successful
 send returns its conversation ID and dashboard URL. Messages appear as assistant

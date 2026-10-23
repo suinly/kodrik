@@ -351,7 +351,7 @@ fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn select(db: &Connection, conversation: &str, id: &str) -> anyhow::Result<()> {
+pub(crate) fn select(db: &Connection, conversation: &str, id: &str) -> anyhow::Result<()> {
     valid_id(conversation)?;
     let old: Option<String> = db
         .query_row(

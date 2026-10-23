@@ -531,6 +531,20 @@ impl SqliteSessionStore {
                     if receipt.cancel_requested && receipt.status == Status::Pending {
                         receipt.status = Status::Rejected;
                     }
+                    if receipt.notification
+                        && receipt.status == Status::Sent
+                        && receipt.interface.starts_with("telegram:")
+                    {
+                        let source: Option<String> = tx.query_row(
+                            "SELECT r.session_id FROM runs r JOIN sessions s ON s.id=r.session_id
+                             WHERE r.id=?1 AND json_extract(s.payload,'$.webhook_instruction') IS NOT NULL",
+                            [&receipt.run_id], |row| row.get(0),
+                        ).optional()?;
+                        if let Some(source) = source {
+                            super::session::select_active(&tx,
+                                &format!("{}:{}", receipt.interface, receipt.chat), &source)?;
+                        }
+                    }
                     write(&tx, &receipt)?;
                     tx.commit()?;
                     Ok(())

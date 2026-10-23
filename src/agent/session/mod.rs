@@ -8,7 +8,7 @@ mod store;
 mod titles;
 pub(crate) use owner_migration::{checkpoint_owner_destination, stage_personal_sessions};
 pub(crate) use runtime::ExecutionOwnership;
-pub(crate) use sqlite::ownership_lock;
+pub(crate) use sqlite::{ownership_lock, select as select_active};
 
 pub use core::{Session, SessionId};
 #[cfg(test)]

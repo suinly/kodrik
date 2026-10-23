@@ -39,6 +39,12 @@ impl Interface for Recorder {
                 retry_after: Some(1),
             }
             .into()),
+            3 => Err(SendRejection {
+                description: "Bot blocked".into(),
+                error_code: 403,
+                retry_after: None,
+            }
+            .into()),
             _ => Ok(MessageId("100".into())),
         }
     }
@@ -54,6 +60,23 @@ struct Fixture {
 }
 
 impl Fixture {
+    async fn webhook() -> Self {
+        let mut f = Self::new().await;
+        f.checkpoint
+            .save(&f.source, RunPhase::Completed, None)
+            .await
+            .unwrap();
+        f.source = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+        f.source.webhook_instruction = Some("Report checkout failures to Telegram".into());
+        f.store.save(&f.source).await.unwrap();
+        f.checkpoint = Checkpoint::new(&f.store, f.source.id(), &f.source);
+        f.checkpoint
+            .save(&f.source, RunPhase::NeedModel, None)
+            .await
+            .unwrap();
+        f
+    }
+
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open_async(dir.path().into())
@@ -103,6 +126,208 @@ fn telegram() -> Value {
 }
 
 #[tokio::test]
+async fn messages_webhook_telegram_delivery_selects_source_session_once() {
+    let f = Fixture::webhook().await;
+    let chat = SessionId::new("telegram:test:42");
+    let previous = f.store.active_id(&chat).await.unwrap();
+    assert_ne!(&previous, f.source.id());
+    f.tool
+        .execute(json!({"action":"list_channels"}))
+        .await
+        .unwrap();
+    assert_eq!(f.store.active_id(&chat).await.unwrap(), previous);
+    assert_eq!(
+        f.send("notify", telegram()).await.unwrap().output["status"],
+        "sent"
+    );
+    assert_eq!(&f.store.active_id(&chat).await.unwrap(), f.source.id());
+    assert_eq!(
+        f.store
+            .load(f.source.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .webhook_instruction,
+        f.source.webhook_instruction
+    );
+    let manually_selected = f.store.new_session(&chat).await.unwrap();
+    f.send("notify", telegram()).await.unwrap();
+    assert_eq!(
+        &f.store.active_id(&chat).await.unwrap(),
+        manually_selected.id()
+    );
+    assert_eq!(f.recorder.seen.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn messages_webhook_failed_or_pending_telegram_delivery_keeps_current_session() {
+    for failure in [1, 2, 3] {
+        let f = Fixture::webhook().await;
+        let chat = SessionId::new("telegram:test:42");
+        let previous = f.store.active_id(&chat).await.unwrap();
+        f.recorder.failure.store(failure, Ordering::SeqCst);
+        let result = f.send("notify", telegram()).await;
+        if failure != 2 {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap().output["status"], "pending");
+        }
+        assert_eq!(f.store.active_id(&chat).await.unwrap(), previous);
+    }
+}
+
+#[tokio::test]
+async fn messages_webhook_web_notification_keeps_telegram_session() {
+    let f = Fixture::webhook().await;
+    let chat = SessionId::new("telegram:test:42");
+    let previous = f.store.active_id(&chat).await.unwrap();
+    f.send(
+        "notify",
+        json!({"action":"send","channel":"web","text":"Checkout failed"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(f.store.active_id(&chat).await.unwrap(), previous);
+}
+
+#[tokio::test]
+async fn messages_non_webhook_telegram_notification_keeps_current_session() {
+    let f = Fixture::new().await;
+    let chat = SessionId::new("telegram:test:42");
+    let current = f.store.new_session(&chat).await.unwrap();
+    f.send("notify", telegram()).await.unwrap();
+    assert_eq!(&f.store.active_id(&chat).await.unwrap(), current.id());
+}
+
+#[tokio::test]
+async fn messages_webhook_followup_does_not_steer_the_previous_telegram_session() {
+    use crate::agent::inbox::{BusyMode, SubmissionRequest};
+    use crate::gateway::IncomingMessage;
+    let mut f = Fixture::webhook().await;
+    f.checkpoint
+        .save(&f.source, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let chat = SessionId::new("telegram:test:42");
+    let previous = f.store.active_id(&chat).await.unwrap();
+    let previous = f.store.load(&previous).await.unwrap().unwrap();
+    let mut active = Checkpoint::new(&f.store, &chat, &previous);
+    active
+        .save(&previous, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    f.send("notify", telegram()).await.unwrap();
+    let followup = f
+        .store
+        .submit(SubmissionRequest::new(
+            &chat,
+            IncomingMessage::new(InterfaceId("telegram:test".into()), "42", "What failed?"),
+            BusyMode::Steer,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(followup.session_id.as_deref(), Some(f.source.id().as_str()));
+    assert!(followup.run_id.is_none());
+    assert!(f.store.steering(&active.record).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn messages_webhook_telegram_followup_uses_the_notification_history() {
+    use crate::agent::{
+        Agent, AgentRunner, ContextBuilder, LlmContext, UserMessage, message::ToolCall,
+        tools::ToolRegistry,
+    };
+    use crate::gateway::IncomingMessage;
+
+    struct Model;
+    #[async_trait::async_trait]
+    impl crate::agent::llm::LlmProvider for Model {
+        async fn generate(
+            &self,
+            context: &LlmContext<'_>,
+            _: &[&dyn Tool],
+            _: Option<&mpsc::Sender<crate::agent::AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            let last = context.messages.last().unwrap();
+            let message = match last {
+                Message::User(input) if input.content == "What failed?" => {
+                    assert!(
+                        context
+                            .instructions
+                            .contains("Report checkout failures to Telegram")
+                    );
+                    assert!(context.messages.iter().any(|message| matches!(message, Message::User(message) if message.content == "Checkout failed")));
+                    assert!(context.messages.iter().any(|message| matches!(message, Message::ToolCall(call) if call.name == "messages" && call.arguments["text"] == "Site is down")));
+                    Message::Assistant(AssistantMessage {
+                        content: "Checkout failed; the notification refers to this event".into(),
+                    })
+                }
+                Message::User(_) => Message::ToolCall(ToolCall {
+                    call_id: "notify".into(),
+                    name: "messages".into(),
+                    arguments: telegram(),
+                }),
+                Message::ToolResult(_) => Message::Assistant(AssistantMessage {
+                    content: "Notification sent".into(),
+                }),
+                _ => panic!("unexpected model input"),
+            };
+            Ok((vec![message], None))
+        }
+    }
+
+    let mut f = Fixture::webhook().await;
+    f.checkpoint
+        .save(&f.source, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(Model),
+            ToolRegistry::default().register(Arc::new(f.tool.clone())),
+            ContextBuilder::new("test"),
+        )),
+        Arc::new(f.store.clone()),
+    );
+    let chat = SessionId::new("telegram:test:42");
+    let previous = f.store.active_id(&chat).await.unwrap();
+    runner
+        .run(
+            f.source.id().clone(),
+            IncomingMessage::new(
+                InterfaceId("webhook".into()),
+                f.source.id().as_str(),
+                "Checkout failed",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let reply = runner
+        .run(
+            chat.clone(),
+            IncomingMessage::new(InterfaceId("telegram:test".into()), "42", "What failed?"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(reply.content.contains("Checkout failed"));
+    assert_eq!(&f.store.active_id(&chat).await.unwrap(), f.source.id());
+    let saved = f.store.load(f.source.id()).await.unwrap().unwrap();
+    assert!(saved.messages().iter().any(|message| matches!(message, Message::User(UserMessage { content, .. }) if content == "What failed?")));
+    assert!(
+        f.store
+            .load(&previous)
+            .await
+            .unwrap()
+            .unwrap()
+            .messages()
+            .is_empty()
+    );
+    assert_eq!(f.recorder.seen.lock().await.len(), 1);
+}
+
+#[tokio::test]
 async fn messages_telegram_binds_owner_outside_telegram_and_replays_once() {
     let f = Fixture::new().await;
     let channels = f
@@ -130,6 +355,13 @@ async fn messages_telegram_binds_owner_outside_telegram_and_replays_once() {
     assert_eq!(
         *f.recorder.seen.lock().await,
         vec![("42".into(), "Site is down".into())]
+    );
+    assert_eq!(
+        &f.store
+            .active_id(&SessionId::new("telegram:test:42"))
+            .await
+            .unwrap(),
+        f.source.id()
     );
 }
 
@@ -356,10 +588,13 @@ async fn messages_deleted_web_destination_does_not_retry_forever() {
 
 #[tokio::test]
 async fn messages_pending_remote_delivery_recovers_without_tool_context() {
-    let f = Fixture::new().await;
+    let f = Fixture::webhook().await;
+    let chat = SessionId::new("telegram:test:42");
+    let previous = f.store.active_id(&chat).await.unwrap();
     f.recorder.failure.store(2, Ordering::SeqCst);
     let result = f.send("rate-limited", telegram()).await.unwrap().output;
     assert_eq!(result["status"], "pending");
+    assert_eq!(f.store.active_id(&chat).await.unwrap(), previous);
     let id = result["delivery_id"].as_str().unwrap().to_owned();
     f.store
         .with_connection(|db| {
@@ -384,6 +619,7 @@ async fn messages_pending_remote_delivery_recovers_without_tool_context() {
     worker.await.unwrap();
     assert!(f.tool.deliver(&id).await.unwrap().is_some());
     assert_eq!(f.recorder.seen.lock().await.len(), 2);
+    assert_eq!(&f.store.active_id(&chat).await.unwrap(), f.source.id());
 }
 
 #[tokio::test]

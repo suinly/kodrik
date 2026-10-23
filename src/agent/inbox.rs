@@ -387,8 +387,8 @@ pub(crate) fn admit_submission(
         record.duplicate = true;
         return Ok(record);
     }
+    let target = active_session(tx, &request.conversation_id)?;
     if !request.control {
-        let target = active_session(tx, &request.conversation_id)?;
         let conflict: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND conversation_id<>?2 AND terminal=0)
              OR EXISTS(SELECT 1 FROM submissions s LEFT JOIN active_sessions a ON a.conversation_id=s.conversation_id
@@ -433,7 +433,15 @@ pub(crate) fn admit_submission(
     )?;
     let control_pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM submissions WHERE conversation_id=?1 AND status='Queued' AND json_extract(payload,'$.request.control')=1)",[&request.conversation_id],|r|r.get(0))?;
     let (run_id, session_id) = if request.mode == BusyMode::Steer && !control_pending {
-        live.map(|(r, s)| (Some(r), Some(s))).unwrap_or_default()
+        live.map(|(r, s)| {
+            if s == target {
+                (Some(r), Some(s))
+            } else {
+                // A notification may switch the channel while its previous run finishes.
+                (None, Some(target))
+            }
+        })
+        .unwrap_or_default()
     } else {
         (None, None)
     };
