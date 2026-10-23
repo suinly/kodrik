@@ -243,6 +243,11 @@ impl AgentRunner {
                     .push((id, "Recovered attachment is unavailable".into()));
                 continue;
             }
+            if session.webhook_instruction.is_some() {
+                // Discard webhook execution limits persisted by older versions.
+                cp.record.model_limit = None;
+                cp.record.deadline_at = None;
+            }
             if !cp.prepare_recovery(&session, self.restart_limit).await? {
                 report.blocked.push((
                     id,

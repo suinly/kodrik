@@ -472,11 +472,6 @@ impl AgentRunner {
                     .map(|store| Checkpoint::new(store, &session_id, &session));
                 if let Some(cp) = checkpoint.as_mut() {
                     cp.ownership = Some(super::session::ExecutionOwnership::join(ownership));
-                    if session.webhook_instruction.is_some() {
-                        cp.record.model_limit = Some(16);
-                        cp.record.deadline_at =
-                            Some(chrono::Utc::now() + chrono::Duration::minutes(5));
-                    }
                 }
                 if let Some(cp) = checkpoint.as_mut()
                     && let Some(record) = &submission

@@ -515,8 +515,8 @@ async fn webhook_accepted_work_recovers_after_settings_are_changed_and_deleted()
         hook["id"].as_str().unwrap()
     )));
     let run = view.run.unwrap().run;
-    assert_eq!(run.model_limit, Some(16));
-    assert!(run.deadline_at.is_some());
+    assert_eq!(run.model_limit, None);
+    assert_eq!(run.deadline_at, None);
 }
 
 #[tokio::test]

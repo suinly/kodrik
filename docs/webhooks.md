@@ -147,8 +147,8 @@ conversation ID.
   this allowance.
 - Up to 100 outstanding web conversations per server process, sharing the
   existing four-worker execution capacity. Run one web server for this limit.
-- Each webhook turn has a persisted limit of 16 model calls and five minutes;
-  recovery retains these limits.
+- Webhook turns have no webhook-specific model-call budget or execution deadline.
+  Unfinished runs recovered after a restart also discard these legacy limits.
 
 Missing, invalid, disabled or revoked credentials return 401. Invalid body/key
 returns 400, an oversized body 413, a conflicting retry 409, and an exhausted

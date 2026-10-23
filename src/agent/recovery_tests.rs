@@ -975,6 +975,46 @@ async fn durable_expired_deadline_and_exhausted_budget_do_not_generate() {
     }
 }
 
+#[tokio::test]
+async fn webhook_recovery_ignores_legacy_execution_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::open_async(dir.path().into())
+            .await
+            .unwrap(),
+    );
+    let mut session = Session::new(SessionId::new("web:incident"));
+    session.webhook_instruction = Some("Fix the incident".into());
+    session.initialize_system_prompt("test");
+    let mut cp = Checkpoint::new(&store, session.id(), &session);
+    cp.record.isolated = Some(false);
+    cp.record.model_limit = Some(16);
+    cp.record.model_attempts = 16;
+    cp.record.deadline_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+    cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+    let id = cp.record.id.clone();
+    drop(cp);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(Model(calls.clone())),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    );
+    let report = runner
+        .recover(RecoveryTarget::Conversation(session.id().clone()))
+        .await
+        .unwrap();
+    assert!(report.blocked.is_empty(), "{:?}", report.blocked);
+    assert_eq!(report.completed.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let run = store.load_run(&id).await.unwrap().unwrap().0;
+    assert!(matches!(run.phase, RunPhase::Completed));
+    assert_eq!(run.model_attempts, 17);
+}
+
 struct RetryingModel(Arc<AtomicUsize>);
 #[async_trait::async_trait]
 impl llm::LlmProvider for RetryingModel {
