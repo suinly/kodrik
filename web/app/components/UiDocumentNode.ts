@@ -1,5 +1,5 @@
 import {formatUiValue,t} from '../utils/i18n'
-import {linkTarget} from '../utils/link-target'
+import {linkTarget,resolveLinkProps} from '../utils/link-target'
 import {defineComponent,h,type PropType,type VNodeChild} from 'vue'
 import {UCard,UAlert,UButton,UPageGrid,ProseH1,ProseH2,ProseH3,ProseH4,ProseP,ProseStrong,ProseEm,ProseBlockquote,ProseUl,ProseOl,ProseLi,ProseHr,ProsePre,ProseCode,ProseTable,ProseThead,ProseTbody,ProseTr,ProseTh,ProseTd} from '#components'
 import UiDataTable from './UiDataTable.vue'
@@ -14,14 +14,16 @@ const prose={h1:ProseH1,h2:ProseH2,h3:ProseH3,h4:ProseH4,p:ProseP,strong:ProseSt
 const columnClasses=['sm:grid-cols-1 lg:grid-cols-1','lg:grid-cols-2','lg:grid-cols-3','lg:grid-cols-4']
 
 export default defineComponent({
-  props:{node:{type:Object as PropType<UiNode>,required:true},sources:{type:Array as PropType<UiSource[]>,required:true},views:{type:Object as PropType<Record<string,unknown>>,default:()=>({})},documentActions:{type:Array as PropType<UiAction[]>,default:()=>[]},live:Boolean,actions:Boolean},
+  props:{node:{type:Object as PropType<UiNode>,required:true},sources:{type:Array as PropType<UiSource[]>,required:true},views:{type:Object as PropType<Record<string,unknown>>,default:()=>({})},documentActions:{type:Array as PropType<UiAction[]>,default:()=>[]},live:Boolean,actions:Boolean,baseUrl:String},
   emits:{prompt:(_text:string)=>true,refresh:()=>true},
   setup(props,{emit}) {
     function render(node:UiNode,inPre=false,scope:Record<string,unknown>={}):VNodeChild {
       if(node.type==='text') return node.value
       const context={sources:Object.fromEntries(props.sources.map(source=>[source.id,sourceRows(source.data)])),views:props.views,...scope}
       if(node.type==='binding') return String(readUiPath(node.value!,context)??'')
-      const tag=node.tag!,p=resolveUiProps(node,context),children=(slot?:Record<string,unknown>)=>node.children?.filter(child=>!child.slot).map(child=>render(child,tag==='pre',slot&&Object.keys(slot).length?{...scope,slot}:scope))
+      const tag=node.tag!,values=resolveUiProps(node,context)
+      const p=props.baseUrl?resolveLinkProps(values,props.baseUrl):values
+      const children=(slot?:Record<string,unknown>)=>node.children?.filter(child=>!child.slot).map(child=>render(child,tag==='pre',slot&&Object.keys(slot).length?{...scope,slot}:scope))
       if(tag==='u-progress' && ['modelValue','max','segments'].some(key=>node.bindings?.[key] && p[key]==null)
         || tag==='u-chart' && (node.bindings?.data && p.data==null || Array.isArray(p.data) && !p.data.length)) return h('p',{class:'text-sm text-muted'},t("Нет данных."))
       if(Object.prototype.hasOwnProperty.call(uiCatalog,tag)){

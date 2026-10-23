@@ -2,7 +2,7 @@
 import {t} from '../utils/i18n'
 import {parseUiDocument,type UiDocument,type UiNode} from '../utils/ui-document'
 import {prepareUiComponents} from '../utils/ui-registry'
-const props=defineProps<{document:unknown;live?:boolean;actions?:boolean}>()
+const props=defineProps<{document:unknown;live?:boolean;actions?:boolean;baseUrl?:string}>()
 const emit=defineEmits<{prompt:[text:string];refresh:[]}>()
 const parsed=shallowRef<{document:UiDocument;nodes:UiNode[]}>()
 const error=ref('')
@@ -21,7 +21,7 @@ watch(()=>props.document,async(raw,_,cleanup)=>{
       <p>{{ t(error) }}</p>
     </div>
     <template v-else-if="parsed">
-      <UiDocumentNode v-for="(node,index) in parsed.nodes" :key="index" :node="node" :sources="parsed.document.sources" :views="parsed.document.views" :document-actions="parsed.document.actions" :live="live" :actions="actions" @prompt="emit('prompt',$event)" @refresh="emit('refresh')" />
+      <UiDocumentNode v-for="(node,index) in parsed.nodes" :key="index" :node="node" :sources="parsed.document.sources" :views="parsed.document.views" :document-actions="parsed.document.actions" :live="live" :actions="actions" :base-url="baseUrl" @prompt="emit('prompt',$event)" @refresh="emit('refresh')" />
     </template>
     <USkeleton v-else class="h-24 w-full" />
   </section>

@@ -518,6 +518,7 @@ impl Fixture {
         let datasets = crate::agent::datasets::DatasetStore::open(root.join("datasets")).unwrap();
         let mut owner = chat_with_ui(root, Some((root.to_owned(), settings.clone()))).await;
         if storage.is_some() {
+            auth.configure_owner(Some(42)).unwrap();
             auth.grant_test_user(7).unwrap();
             let config = super::chat::user_tests::user_config();
             let app = crate::bootstrap::build_app_at(&config, &root.join("users/42"), false)
@@ -546,9 +547,10 @@ impl Fixture {
                 let auth = auth.clone();
                 async move {
                     let id = input["id"].as_str().unwrap();
+                    let user = input["user"].as_u64().unwrap_or(7);
                     let now = chrono::Utc::now().timestamp();
-                    auth.present_telegram_login(id,"main",7,now).unwrap();
-                    axum::Json(json!({"ok":auth.decide_telegram_login(id,"main",7,input["approve"].as_bool().unwrap(),now).unwrap()}))
+                    auth.present_telegram_login(id,"main",user,now).unwrap();
+                    axum::Json(json!({"ok":auth.decide_telegram_login(id,"main",user,input["approve"].as_bool().unwrap(),now).unwrap()}))
                 }
             }));
         }

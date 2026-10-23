@@ -37,6 +37,13 @@ pub(crate) struct PageFile {
     pub download: bool,
 }
 
+pub(crate) struct PageSummary {
+    pub slug: String,
+    pub title: String,
+    pub visibility: Visibility,
+    pub document: bool,
+}
+
 pub(crate) fn validate_slug(slug: &str) -> anyhow::Result<()> {
     ensure!(
         (1..=64).contains(&slug.len())
@@ -93,6 +100,47 @@ impl PageStore {
     }
     pub(crate) fn drafts(&self) -> PathBuf {
         self.root.join("drafts")
+    }
+
+    pub(crate) fn list(&self) -> anyhow::Result<Vec<PageSummary>> {
+        let directory = self.root.join("manifests");
+        reject_symlinks(&directory)?;
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(error.into()),
+        };
+        let mut pages = Vec::new();
+        for entry in entries {
+            let name = entry?.file_name();
+            let Some(slug) = name.to_str().and_then(|name| name.strip_suffix(".json")) else {
+                continue;
+            };
+            if validate_slug(slug).is_err() {
+                continue;
+            }
+            let Some(manifest) = self.manifest(slug)? else {
+                continue;
+            };
+            let title = if manifest.document {
+                let file = self
+                    .read(slug, &manifest, "document.json")?
+                    .context("Published document is missing")?;
+                serde_json::from_slice::<super::documents::PublishedDocument>(&file.bytes)?
+                    .document
+                    .title
+            } else {
+                slug.to_owned()
+            };
+            pages.push(PageSummary {
+                slug: slug.to_owned(),
+                title,
+                visibility: manifest.visibility,
+                document: manifest.document,
+            });
+        }
+        pages.sort_by_cached_key(|page| (page.title.to_lowercase(), page.slug.clone()));
+        Ok(pages)
     }
 
     pub(crate) fn manifest(&self, slug: &str) -> anyhow::Result<Option<Manifest>> {
@@ -281,6 +329,31 @@ fn copy_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_ignores_unrelated_files_and_rejects_manifest_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let store = PageStore::new(dir.path());
+        assert!(store.list().unwrap().is_empty());
+        let manifests = store.root.join("manifests");
+        fs::create_dir_all(&manifests).unwrap();
+        for name in [".temporary", "notes.txt", "INVALID.json"] {
+            fs::write(manifests.join(name), "unrelated file").unwrap();
+        }
+        assert!(store.list().unwrap().is_empty());
+        let outside = dir.path().join("outside.json");
+        fs::write(
+            &outside,
+            r#"{"release":"00000000-0000-0000-0000-000000000000","visibility":"public"}"#,
+        )
+        .unwrap();
+        symlink(&outside, manifests.join("outside.json")).unwrap();
+        assert!(store.list().is_err());
+        fs::remove_file(manifests.join("outside.json")).unwrap();
+        fs::write(manifests.join("broken.json"), "broken manifest").unwrap();
+        assert!(store.list().is_err());
+    }
 
     #[test]
     fn publish_preserves_access_and_previous_release_on_failure() {

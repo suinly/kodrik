@@ -131,6 +131,7 @@ pub(crate) fn router_with_resources(
         .route("/pages/{slug}", get(page_root_redirect))
         .route("/pages/{slug}/", get(page_index))
         .route("/pages/{slug}/{*path}", get(page))
+        .route("/api/pages", get(page_catalog))
         .route(
             "/api/documents/{slug}/sources/{source}",
             get(document_source),
@@ -412,6 +413,36 @@ async fn page_index(
     .await
 }
 
+async fn page_catalog(State(state): State<ServerState>, headers: HeaderMap) -> Response {
+    blocking(move || {
+        let Some(token) = request_token(&headers) else {
+            return Ok(StatusCode::UNAUTHORIZED.into_response());
+        };
+        let Some(_) = state
+            .auth
+            .identity(&token, chrono::Utc::now().timestamp())?
+        else {
+            return Ok(StatusCode::UNAUTHORIZED.into_response());
+        };
+        let mut pages = Vec::new();
+        if state
+            .auth
+            .authenticated(&token, chrono::Utc::now().timestamp())?
+        {
+            for page in state.pages.list()? {
+                pages.push(serde_json::json!({
+                    "url": state.settings.url(&format!("pages/{}/", page.slug))?,
+                    "slug": page.slug,
+                    "title": page.title,
+                    "visibility": page.visibility,
+                    "document": page.document,
+                }));
+            }
+        }
+        Ok(axum::Json(pages).into_response())
+    })
+    .await
+}
 async fn page_root_redirect(
     State(state): State<ServerState>,
     Path(slug): Path<String>,
@@ -765,6 +796,117 @@ mod tests {
             pages::{PageStore, Visibility},
         },
     };
+
+    #[tokio::test]
+    async fn page_catalog_lists_current_publications_only_for_owner_sessions() {
+        use crate::web::{
+            auth::Identity,
+            documents::{Document, PublishedDocument},
+        };
+        use serde_json::{Value, json};
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            trusted_proxies: vec![],
+            listen: "127.0.0.1:0".parse().unwrap(),
+            base_url: "http://127.0.0.1/kodrik/".parse().unwrap(),
+        };
+        let auth = AuthStore::new(dir.path());
+        let now = chrono::Utc::now().timestamp();
+        auth.set_password("password").unwrap();
+        auth.configure_owner(Some(42)).unwrap();
+        auth.grant_test_user(7).unwrap();
+        let telegram_owner = auth
+            .test_session(Identity::Telegram(42), now)
+            .unwrap()
+            .unwrap();
+        let owner = auth.login("password", now).unwrap().unwrap();
+        let guest = auth
+            .test_session(Identity::Telegram(7), now)
+            .unwrap()
+            .unwrap();
+        let app = router(settings, dir.path());
+        async fn catalog(app: &Router, token: &str, status: StatusCode) -> Value {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/kodrik/api/pages")
+                        .header(header::COOKIE, format!("kodrik_web_session={token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            if status == StatusCode::OK {
+                serde_json::from_slice(&bytes).unwrap()
+            } else {
+                Value::Null
+            }
+        }
+        catalog(&app, "", StatusCode::UNAUTHORIZED).await;
+        assert_eq!(catalog(&app, &owner, StatusCode::OK).await, json!([]));
+        let pages = PageStore::new(dir.path());
+        let document = |title: &str| PublishedDocument {
+            document: Document {
+                title: title.into(),
+                body: "Report".into(),
+                sources: vec![],
+                views: vec![],
+                actions: vec![],
+            },
+            snapshot: json!({}),
+        };
+        pages
+            .publish_document("nutrition", &document("Old title"), None)
+            .unwrap();
+        pages
+            .publish_document("nutrition", &document("Meals"), Some(Visibility::Public))
+            .unwrap();
+        let draft = pages.drafts().join("legacy");
+        std::fs::create_dir_all(&draft).unwrap();
+        std::fs::write(draft.join("index.html"), "Legacy page").unwrap();
+        pages.publish("legacy", None).unwrap();
+        std::fs::create_dir_all(pages.drafts().join("unpublished")).unwrap();
+        let expected = json!([
+            {"slug":"legacy","title":"legacy","document":false,"visibility":"private","url":"http://127.0.0.1/kodrik/pages/legacy/"},
+            {"slug":"nutrition","title":"Meals","document":true,"visibility":"public","url":"http://127.0.0.1/kodrik/pages/nutrition/"}
+        ]);
+        assert_eq!(catalog(&app, &owner, StatusCode::OK).await, expected);
+        assert_eq!(
+            catalog(&app, &telegram_owner, StatusCode::OK).await,
+            expected
+        );
+        for path in [
+            "pages/legacy/",
+            "pages/nutrition/",
+            "pages/nutrition/document.json",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/kodrik/{path}"))
+                        .header(
+                            header::COOKIE,
+                            format!("kodrik_web_session={telegram_owner}"),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+        assert_eq!(catalog(&app, &guest, StatusCode::OK).await, json!([]));
+        auth.logout(&owner).unwrap();
+        catalog(&app, &owner, StatusCode::UNAUTHORIZED).await;
+    }
 
     #[test]
     fn forwarded_client_ip_requires_explicit_trusted_peer_and_one_valid_address() {

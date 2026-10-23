@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import {locale, t} from '../utils/i18n'
-import { api, base, login, messageOf, type Conversation, type ConversationDraft } from '../utils/api'
+import { api, base, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle} from '../utils/chat-presentation'
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
 const error = ref('')
 const menu = ref(false)
+const sidebar = ref('conversations')
+const selectedPage = ref<PublishedPage | null>(null)
+const pageRevision = ref(0)
+const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
@@ -104,6 +108,7 @@ async function refresh() {
 }
 
 function select(conversation: Conversation) {
+  selectedPage.value = null
   focusAfterMenu=menu.value
   const root=conversation.root_id ?? conversation.id
   try {
@@ -127,6 +132,18 @@ function sidebarCloseFocus(event:Event) {
   focusAfterMenu=false
   event.preventDefault()
   void nextTick(()=>conversationView.value?.focusInput())
+}
+
+function openPage(page: PublishedPage) {
+  selectedPage.value = page
+  pageRevision.value++
+  focusAfterMenu = false
+  menu.value = false
+}
+
+function closePage() {
+  selectedPage.value = null
+  void nextTick(() => conversationView.value?.focusInput())
 }
 
 function manage(session:Conversation,action:'rename'|'delete') {
@@ -181,6 +198,7 @@ async function create() {
   creating.value = true
   try {
     select(await api<Conversation>('sessions', 'POST'))
+    sidebar.value = 'conversations'
     await refresh()
   } catch (reason) { error.value = messageOf(reason) }
   finally { creating.value = false }
@@ -216,7 +234,9 @@ onMounted(() => {
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
       </template>
       <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create" />
-      <p class="text-xs font-medium text-muted mt-4"> {{ t("Диалоги") }} </p>
+      <UTabs v-model="sidebar" :items="[{label:t('Диалоги'),value:'conversations',slot:'conversations'},{label:t('Страницы'),value:'pages',slot:'pages'}]"
+        :ui="{root:'flex min-h-0 flex-1 flex-col',content:'flex min-h-0 flex-1 flex-col gap-2'}">
+      <template #conversations>
       <UInput v-model="search" :aria-label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" icon="i-lucide-search" :loading="searching" size="xl" class="w-full" />
       <nav :aria-label="t('История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
         <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="conversation-row relative flex shrink-0 items-center">
@@ -244,6 +264,9 @@ onMounted(() => {
         <p v-else-if="listing" role="status" class="text-sm text-muted"> {{ t("Загружаю диалоги…") }} </p>
       </nav>
       <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t("Диалоги не найдены.") : t("Здесь появятся ваши разговоры.") }}</p>
+      </template>
+      <template #pages><PageCatalog :selected="selectedPage?.slug" @open="openPage" /></template>
+      </UTabs>
       <template #footer>
         <div class="flex w-full items-center justify-between">
           <LanguageSwitch />
@@ -257,9 +280,13 @@ onMounted(() => {
 
     <UDashboardPanel id="chat" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">
       <template #header>
-        <UDashboardNavbar :title="selected ? conversationTitle(selected) : t('Кодрик')">
+        <UDashboardNavbar :title="selectedPage?.title ?? (selected ? conversationTitle(selected) : t('Кодрик'))">
           <template #left>
-            <div class="conversation-heading flex min-w-0 items-center gap-1.5">
+            <div v-if="selectedPage" class="flex min-w-0 items-center gap-1.5">
+              <UButton icon="i-lucide-arrow-left" :aria-label="t('Вернуться в диалог')" :title="t('Вернуться в диалог')" color="neutral" variant="ghost" @click="closePage" />
+              <h1 class="min-w-0 truncate font-semibold text-highlighted">{{ selectedPage.title }}</h1>
+            </div>
+            <div v-else class="conversation-heading flex min-w-0 items-center gap-1.5">
               <h1 class="min-w-0 truncate font-semibold text-highlighted">
                 <UChatShimmer v-if="selected?.title_pending" :text="selected.title" data-testid="navbar-title-shimmer" :aria-label="t('Создаю название диалога')" class="truncate motion-reduce:animate-none" />
                 <span v-else>{{ selected ? conversationTitle(selected) : t("Кодрик") }}</span>
@@ -268,7 +295,13 @@ onMounted(() => {
             </div>
           </template>
           <template #toggle><UDashboardSidebarToggle :aria-label="t('Показать диалоги')" size="xl" /></template>
-          <template #right><UButton v-if="selected" icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" /></template>
+          <template #right>
+            <template v-if="selectedPage">
+              <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить страницу')" :title="t('Обновить страницу')" color="neutral" variant="ghost" @click="pageRevision++" />
+              <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
+            </template>
+            <UButton v-else-if="selected" icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
+          </template>
         </UDashboardNavbar>
       </template>
       <template #body>
@@ -279,8 +312,12 @@ onMounted(() => {
             <UButton :label="t('Войти')" :to="login" external color="neutral" variant="link" size="sm" />
           </div>
         </div>
-        <ChatConversation v-if="selected" ref="conversationView" :key="selected.id" :conversation="selected" :draft-state="draftFor(selected.id)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
-        <div v-else class="flex flex-1 flex-col items-center justify-center gap-5 p-6 text-center">
+        <section v-if="selectedPage" :aria-label="t('Просмотр страницы')" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <DocumentPage v-if="selectedPage.document" :key="`${selectedPage.slug}:${pageRevision}`" :url="pageDocumentUrl" :chat-url="chatUrl" :login-url="login" embedded />
+          <iframe v-else :key="`${selectedPage.slug}:${pageRevision}`" :src="selectedPage.url" :title="selectedPage.title" class="min-h-0 w-full flex-1 border-0 bg-default" />
+        </section>
+        <ChatConversation v-if="selected" v-show="!selectedPage" ref="conversationView" :key="selected.id" :conversation="selected" :draft-state="draftFor(selected.id)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
+        <div v-else-if="!selectedPage" class="flex flex-1 flex-col items-center justify-center gap-5 p-6 text-center">
           <KodrikLogo class="h-10" />
           <h1 class="text-3xl font-semibold text-highlighted"> {{ t("С чего начнём?") }} </h1>
           <p class="max-w-md text-muted"> {{ t("Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.") }} </p>

@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +75,145 @@ test('Telegram approval login shows only that user shared history without a code
     assert.equal(await page.evaluate(async id=>(await fetch(`/kodrik/api/chat/sessions/${id}`)).status,owner.id),404);
     await page.reload();
     await expect(page.locator('.message')).toContainText('История из Telegram');
+  } finally {await browser.close();}
+});
+
+test('pages catalog searches published titles and addresses without losing the conversation draft', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const pages=page.getByRole('tab',{name:'Страницы',exact:true});
+    const dialogs=page.getByRole('tab',{name:'Диалоги',exact:true});
+    await pages.click();
+    await expect(page.getByText('Здесь появятся опубликованные страницы.',{exact:true})).toBeVisible();
+    await dialogs.click();
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await composer.fill('Несохранённый черновик');
+    await request('send',{id,text:'ui'});
+    await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+    await pages.click();
+    const navigation=page.getByRole('navigation',{name:'Каталог страниц'});
+    const link=navigation.getByRole('button',{name:/Дневник питания/});
+    await expect(link).toBeVisible();
+    await expect(navigation.getByText('Приватная',{exact:true})).toBeVisible();
+    const search=page.getByRole('textbox',{name:'Поиск страниц',exact:true});
+    for(const query of ['ДНЕВНИК','NUTRITION']) {
+      await search.fill(query);
+      await expect(link).toBeVisible();
+    }
+    await search.fill('нет такой страницы');
+    await expect(link).toHaveCount(0);
+    await expect(page.getByText('Страницы не найдены.',{exact:true})).toBeVisible();
+    await search.fill('');
+    await link.click();
+    await expect(page).toHaveURL(new URL(`chat/?conversation=${id}`,base).href);
+    const viewer=page.getByRole('region',{name:'Просмотр страницы'});
+    await expect(viewer.getByRole('heading',{name:'Дневник питания',exact:true})).toBeVisible();
+    await expect(viewer.getByRole('table')).toBeVisible();
+    await expect(viewer.getByRole('button',{name:'Открыть чат',exact:true})).toHaveCount(0);
+    const external=page.getByRole('link',{name:'Открыть в новой вкладке',exact:true});
+    await expect(external).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
+    const opened=page.waitForEvent('popup');
+    await external.click();
+    const document=await opened;
+    await expect(document).toHaveURL(new URL('pages/nutrition/',base).href);
+    await expect(document.getByRole('table')).toBeVisible();
+    await document.close();
+    await page.screenshot({path:'/tmp/kodrik-pages-viewer-desktop.png',fullPage:true,animations:'disabled'});
+    await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
+    await dialogs.click();
+    await expect(composer).toHaveValue('Несохранённый черновик');
+    await page.route('**/api/pages',route=>route.fulfill({status:503,body:''}));
+    await pages.click();
+    await expect(page.getByRole('alert')).toContainText('Не удалось загрузить страницы.');
+    await page.unroute('**/api/pages');
+    await page.getByRole('button',{name:'Повторить загрузку',exact:true}).click();
+    await expect(link).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-pages-catalog-desktop.png',fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    const mobileCatalog=page.getByRole('dialog').getByRole('navigation',{name:'Каталог страниц'});
+    await expect(mobileCatalog).toBeVisible();
+    await expect.poll(async()=> (await mobileCatalog.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(0);
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kodrik-pages-catalog-mobile.png',fullPage:true,animations:'disabled'});
+    await page.getByRole('dialog').getByRole('button',{name:/Дневник питания/}).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(viewer.getByRole('table')).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-pages-viewer-mobile.png',fullPage:true,animations:'disabled'});
+    await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
+    await expect(composer).toHaveValue('Несохранённый черновик');
+
+    const release=crypto.randomUUID();
+    const directory=join(storage,'pages','releases','legacy-preview',release);
+    await mkdir(directory,{recursive:true});
+    await writeFile(join(directory,'index.html'),'<!doctype html><h1>Legacy published report</h1>');
+    await writeFile(join(storage,'pages','manifests','legacy-preview.json'),JSON.stringify({release,visibility:'private',document:false}));
+    await page.setViewportSize({width:1280,height:720});
+    await page.getByRole('button',{name:'Обновить',exact:true}).click();
+    await navigation.getByRole('button',{name:/legacy-preview/}).click();
+    await expect(page.frameLocator('iframe[title="legacy-preview"]').getByRole('heading',{name:'Legacy published report'})).toBeVisible();
+    await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
+    await expect(composer).toHaveValue('Несохранённый черновик');
+
+    const nativeRelease=crypto.randomUUID();
+    const nativeDirectory=join(storage,'pages','releases','relative-links',nativeRelease);
+    const body=`[Relative report](../nutrition/)
+
+[Anchor](#section)
+
+::u-button{to="../nutrition/" label="Relative button"}
+::
+
+:::u-dropdown-menu{:items='[{"label":"Nested report","to":"../nutrition/"}]'}
+::u-button{label="Open links"}
+::
+:::
+
+## Section {#section}`;
+    await mkdir(nativeDirectory,{recursive:true});
+    await writeFile(join(nativeDirectory,'document.json'),JSON.stringify({document:{title:'Relative links',body,sources:[],views:[],actions:[]},snapshot:{}}));
+    await writeFile(join(storage,'pages','manifests','relative-links.json'),JSON.stringify({release:nativeRelease,visibility:'private',document:true}));
+    await page.getByRole('button',{name:'Обновить',exact:true}).click();
+    await navigation.getByRole('button',{name:/Relative links/}).click();
+    for(const label of ['Relative report','Relative button']) await expect(viewer.getByRole('link',{name:label,exact:true})).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
+    await expect(viewer.getByRole('link',{name:'Anchor',exact:true})).toHaveAttribute('href','#section');
+    await viewer.getByRole('button',{name:'Open links',exact:true}).click();
+    await expect(page.getByRole('menuitem',{name:'Nested report',exact:true})).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
+  } finally {await browser.close();}
+});
+
+test('Telegram owner opens the catalog and private pages after one chat login', {timeout:60000},async()=>{
+  // Give this additional sign-in its own login rate-limit window.
+  const listen=new URL(base).host;
+  const exited=once(server,'exit');process.kill(-server.pid,'SIGTERM');await exited;
+  await start(listen);
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await browser.newPage({locale:'ru-RU'});
+    await page.goto(new URL('auth/login?return_to=/kodrik/chat/',base).href);
+    await page.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
+    const open=page.getByRole('link',{name:'Открыть Telegram',exact:true});
+    await expect(open).toBeVisible();
+    assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true,42)).ok,true);
+    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await page.getByRole('tab',{name:'Страницы',exact:true}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    const viewer=page.getByRole('region',{name:'Просмотр страницы'});
+    await expect(viewer.getByRole('table')).toBeVisible();
+    await viewer.getByRole('button',{name:'Далее',exact:true}).click();
+    await expect(viewer.getByRole('cell',{name:'400',exact:true})).toBeVisible();
+    const popup=page.waitForEvent('popup');
+    await page.getByRole('link',{name:'Открыть в новой вкладке',exact:true}).click();
+    const document=await popup;
+    await expect(document).toHaveURL(new URL('pages/nutrition/',base).href);
+    await expect(document.getByRole('table')).toBeVisible();
+    await expect(document.getByRole('textbox',{name:'Пароль',exact:true})).toHaveCount(0);
   } finally {await browser.close();}
 });
 
@@ -1412,8 +1551,10 @@ test('browser login, text, tools, stop, history and mobile layout', { timeout: 6
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(new URL('chat/', base).href);
+    const loginResponse=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname.endsWith('/auth/login'));
     await page.locator('input[type=password]').fill('preview-password');
     await page.locator('button[type=submit]').click();
+    assert.equal((await loginResponse).status(),303);
     await page.getByRole('button', { name: 'Начать разговор' }).click();
     const input = page.getByRole('textbox', { name: 'Сообщение' });
     await input.fill('tools');
@@ -1996,9 +2137,9 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
 });
 
 // Keep approval scenarios after the fixture restart to isolate the login rate-limit window.
-async function decideTelegram(id,approve) {
+async function decideTelegram(id,approve,user=7) {
   const response=await fetch(new URL('__test/telegram-login',base),{
-    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,approve}),
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,approve,user}),
   });
   assert.ok(response.ok);return response.json();
 }
