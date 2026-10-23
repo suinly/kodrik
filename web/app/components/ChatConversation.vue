@@ -3,7 +3,9 @@ import {t} from '../utils/i18n'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
 
-const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;initialSearch?:string;searchOpen?:boolean }>()
+const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
+const home = computed(() => !!props.start)
+const homeView = !!props.start
 const emit = defineEmits<{ saved: [];navigate:[id:string];removed:[];'close-search':[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
@@ -11,14 +13,14 @@ const matchIndex=ref(0)
 const matches=computed(()=>matchingMessages(snapshot.value?.messages ?? [],search.value))
 const editingMessage=ref<string|null>(null)
 type Pending = { id: string; text: string; files?: string[] }
-const pendingKey = `kodrik.pending.${props.conversation.id}`
+const pendingKey = computed(() => `kodrik.pending.${props.conversation.id}`)
 let pending: Pending | null = null
-try { pending = JSON.parse(sessionStorage.getItem(pendingKey) || 'null') } catch {}
+try { pending = JSON.parse(sessionStorage.getItem(pendingKey.value) || 'null') } catch {}
 if(pending && !props.draftState.text) props.draftState.text=pending.text
 const draft = toRef(props.draftState,'text')
 const files = toRef(props.draftState,'files')
 const attachmentsOpen = ref(false)
-const loading = ref(true)
+const loading = ref(!props.start)
 const submitting = ref(false)
 const busy = ref(props.conversation.busy)
 const stopping = ref(false)
@@ -120,6 +122,7 @@ function persistDraft() {
     const names=files.value.length?files.value.map(file=>file.name):props.draftState.missingFiles
     if(draft.value || names.length) sessionStorage.setItem(`kodrik.draft.${props.conversation.id}`,JSON.stringify({text:draft.value,files:names}))
     else sessionStorage.removeItem(`kodrik.draft.${props.conversation.id}`)
+    if(homeView && props.conversation.id !== 'new') sessionStorage.removeItem('kodrik.draft.new')
   } catch { hint.value=t("Не удалось сохранить черновик в браузере. Не закрывайте вкладку до отправки.") }
 }
 watch([draft,files],()=>{props.draftState.revision++},{deep:true,flush:'sync'})
@@ -144,7 +147,7 @@ function trackScroll() {
 function clearPending() {
   const id=pending?.id
   pending = null
-  if(JSON.parse(sessionStorage.getItem(pendingKey)||'null')?.id===id) sessionStorage.removeItem(pendingKey)
+  if(JSON.parse(sessionStorage.getItem(pendingKey.value)||'null')?.id===id) sessionStorage.removeItem(pendingKey.value)
   if(props.draftState.pendingFiles?.id===id) props.draftState.pendingFiles=undefined
 }
 
@@ -182,14 +185,7 @@ async function reload(block = false) {
   }
 }
 
-onMounted(async () => {
-  searchObserver = new MutationObserver(highlightSearch)
-  if (transcript.value) searchObserver.observe(transcript.value,{childList:true,subtree:true,characterData:true})
-  scrollObserver = new ResizeObserver(() => {
-    if (follow.value) scrollToLatest()
-  })
-  if (transcript.value) scrollObserver.observe(transcript.value)
-  if (transcriptContent.value) scrollObserver.observe(transcriptContent.value)
+async function observe() {
   let delay = 500
   while (!controller.signal.aborted) {
     try {
@@ -210,7 +206,19 @@ onMounted(async () => {
       delay = Math.min(delay * 2, 8000)
     }
   }
+}
+onMounted(() => {
+  searchObserver = new MutationObserver(highlightSearch)
+  if (transcript.value) searchObserver.observe(transcript.value,{childList:true,subtree:true,characterData:true})
+  scrollObserver = new ResizeObserver(() => {
+    if (follow.value) scrollToLatest()
+  })
+  if (transcript.value) scrollObserver.observe(transcript.value)
+  if (transcriptContent.value) scrollObserver.observe(transcriptContent.value)
+  if(home.value) void nextTick(focusInput)
+  else void observe()
 })
+watch(() => props.conversation.id, () => { persistDraft(); void observe() })
 onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect(); searchObserver?.disconnect(); CSS.highlights?.delete('conversation-search') })
 function focusInput() {
   if (mounted && !editorLocked.value) prompt.value?.textareaRef?.focus({preventScroll:true})
@@ -282,6 +290,12 @@ async function submit() {
     if (new TextEncoder().encode(text).length > 32768) throw new Error(t("Сообщение превышает 32 KiB текста."))
     let keys = await fingerprints(selectedFiles)
     if (!mounted) return
+    if(props.start) {
+      const conversation = await props.start()
+      if(!conversation || !mounted) return
+      await nextTick()
+      persistDraft()
+    }
     if (pending) {
       const saved = await requestStatus(props.conversation.id, pending.id)
       if (!mounted) return
@@ -326,7 +340,7 @@ async function submit() {
     }
     if (!text.trim() && !selectedFiles.length) return
     if (!pending) pending = { id: crypto.randomUUID(), text, files: keys }
-    sessionStorage.setItem(pendingKey, JSON.stringify(pending))
+    sessionStorage.setItem(pendingKey.value, JSON.stringify(pending))
     props.draftState.pendingFiles={id:pending.id,files:selectedFiles}
     draft.value = ''
     files.value=[]
@@ -396,13 +410,15 @@ const compactionLabels = {
       </template>
       <UButton icon="i-lucide-x" :aria-label="t('Закрыть поиск')" color="neutral" variant="ghost" size="sm" @click="closeSearch" />
     </div>
+    <div class="conversation-layout" :class="{'conversation-layout-home':homeView,'conversation-layout-centered':home && !submitting}">
     <div class="relative flex min-h-0 flex-1 flex-col">
-      <div ref="transcript" data-testid="chat-transcript" class="min-h-0 flex-1 overflow-y-auto overscroll-contain" @scroll="trackScroll">
-        <div ref="transcriptContent" class="mx-auto max-w-3xl space-y-5 px-4 py-6 sm:px-6">
+      <div ref="transcript" data-testid="chat-transcript" class="min-h-0 flex-1 overflow-y-auto overscroll-contain" :class="{'flex flex-col justify-end':home}" @scroll="trackScroll">
+        <div ref="transcriptContent" class="mx-auto w-full max-w-3xl space-y-5 px-4 py-6 sm:px-6">
           <p v-if="loading" role="status" class="text-muted text-sm"> {{ t("Загружаю историю…") }} </p>
-          <div v-if="!loading && !snapshot?.messages.length && !queuedMessages.length" class="py-12 text-center space-y-3">
-            <h1 class="text-2xl font-semibold text-highlighted"> {{ t("Есть мысль?") }} </h1>
-            <p class="text-muted"> {{ t("Начните с вопроса, задачи, файла или фотографии.") }} </p>
+          <div v-if="!loading && !submitting && !snapshot?.messages.length && !queuedMessages.length" class="text-center space-y-3" :class="home ? 'pb-4' : 'py-12'">
+            <KodrikLogo v-if="home" class="mx-auto mb-5 h-10" />
+            <h1 class="text-2xl font-semibold text-highlighted">{{ home ? t('С чего начнём?') : t('Есть мысль?') }}</h1>
+            <p class="text-muted">{{ home ? t('Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.') : t('Начните с вопроса, задачи, файла или фотографии.') }}</p>
           </div>
           <ChatItem v-for="message in snapshot?.messages ?? []" :key="message.id" :message="message" :superseded="superseded" :actions="!editorLocked"
             :editable="message.role==='user' && !locked && !busy && !snapshot?.queued.length && !editingMessage" :saving="editingMessage===message.id"
@@ -431,7 +447,7 @@ const compactionLabels = {
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
           <div class="flex flex-wrap gap-2">
-            <UButton :label="t('Обновить историю')" color="neutral" variant="link" size="sm" @click="problem = ''; reload(true)" />
+            <UButton v-if="!home" :label="t('Обновить историю')" color="neutral" variant="link" size="sm" @click="problem = ''; reload(true)" />
             <UButton v-if="authExpired" :label="t('Войти')" :to="login" external color="neutral" variant="link" size="sm" />
           </div>
         </div>
@@ -480,5 +496,17 @@ const compactionLabels = {
       </div>
       <p class="chat-keyboard-hint hidden text-center text-xs text-muted sm:block"> {{ t("Enter — отправить · Shift + Enter — новая строка") }} </p>
     </div>
+    <div v-if="homeView" aria-hidden="true" class="min-h-0" />
+    </div>
   </section>
 </template>
+
+<style scoped>
+.conversation-layout { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.conversation-layout-home { display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 0fr); transition: grid-template-rows 280ms ease; }
+.conversation-layout-home > [data-testid='chat-composer'] { max-height: calc(var(--chat-viewport-height, 100dvh) * 0.75); }
+.conversation-layout-centered { grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); }
+@media (prefers-reduced-motion: reduce) {
+  .conversation-layout-home { transition: none; }
+}
+</style>

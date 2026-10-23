@@ -5,6 +5,9 @@ import {conversationTitle,shortConversationTitle} from '../utils/chat-presentati
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
+const homeConversation: Conversation = {id:'new',title:'',busy:false,updated_at:null}
+const conversationKey = ref(0)
+const initializing = ref(true)
 const error = ref('')
 const menu = ref(false)
 const sidebar = ref('conversations')
@@ -103,11 +106,18 @@ async function refresh() {
       const current=selected.value
       const item=sessions.value.find(item=>(item.root_id ?? item.id)===(current.root_id ?? current.id)) ?? await api<Conversation>(`sessions/${current.id}`)
       if(selected.value?.id===current.id) selected.value={...current,...item,id:current.id}
-    } else if(id) selected.value=sessions.value.find(item=>item.id===id) ?? await api<Conversation>(`sessions/${id}`)
+    } else if(id) {
+      const conversation=sessions.value.find(item=>item.id===id) ?? await api<Conversation>(`sessions/${id}`)
+      if(!selected.value && !creating.value && new URL(window.location.href).searchParams.get('conversation')===id) {
+        conversationKey.value++
+        selected.value=conversation
+      }
+    }
   } catch (reason) { error.value = messageOf(reason) }
 }
 
-function select(conversation: Conversation) {
+function select(conversation: Conversation, preserveView = false) {
+  if(!preserveView && selected.value?.id !== conversation.id) conversationKey.value++
   selectedPage.value = null
   focusAfterMenu=menu.value
   const root=conversation.root_id ?? conversation.id
@@ -166,6 +176,7 @@ async function saveManagement() {
       const root=session.root_id ?? session.id
       if((selected.value?.root_id ?? selected.value?.id)===root) {
         selected.value=null
+        conversationKey.value++
         const url=new URL(window.location.href);url.searchParams.delete('conversation');window.history.replaceState(null,'',url)
       }
       try {
@@ -189,23 +200,30 @@ function openVersion(id:string) {
 }
 function removed() {
   selected.value=null
+  conversationKey.value++
   const url=new URL(window.location.href);url.searchParams.delete('conversation');window.history.replaceState(null,'',url)
   refresh()
 }
 
-async function create() {
+async function create(fromHome = false) {
   if (creating.value) return
   creating.value = true
   try {
-    select(await api<Conversation>('sessions', 'POST'))
+    const conversation = await api<Conversation>('sessions', 'POST')
+    if(fromHome) {
+      drafts[conversation.id] = draftFor('new')
+      delete drafts.new
+    }
+    select(conversation, fromHome)
     sidebar.value = 'conversations'
     await refresh()
+    return conversation
   } catch (reason) { error.value = messageOf(reason) }
   finally { creating.value = false }
 }
 
 onMounted(() => {
-  refresh()
+  void refresh().finally(() => { initializing.value = false })
   const viewport = window.visualViewport
   const updateViewport = () => {
     // Safari's keyboard shrinks the visual viewport, not the layout viewport.
@@ -233,7 +251,7 @@ onMounted(() => {
       <template #header>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
       </template>
-      <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create" />
+      <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create()" />
       <UTabs v-model="sidebar" :items="[{label:t('Диалоги'),value:'conversations',slot:'conversations'},{label:t('Страницы'),value:'pages',slot:'pages'}]"
         :ui="{root:'flex min-h-0 flex-1 flex-col',content:'flex min-h-0 flex-1 flex-col gap-2'}">
       <template #conversations>
@@ -316,13 +334,7 @@ onMounted(() => {
           <DocumentPage v-if="selectedPage.document" :key="`${selectedPage.slug}:${pageRevision}`" :url="pageDocumentUrl" :chat-url="chatUrl" :login-url="login" embedded />
           <iframe v-else :key="`${selectedPage.slug}:${pageRevision}`" :src="selectedPage.url" :title="selectedPage.title" class="min-h-0 w-full flex-1 border-0 bg-default" />
         </section>
-        <ChatConversation v-if="selected" v-show="!selectedPage" ref="conversationView" :key="selected.id" :conversation="selected" :draft-state="draftFor(selected.id)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
-        <div v-else-if="!selectedPage" class="flex flex-1 flex-col items-center justify-center gap-5 p-6 text-center">
-          <KodrikLogo class="h-10" />
-          <h1 class="text-3xl font-semibold text-highlighted"> {{ t("С чего начнём?") }} </h1>
-          <p class="max-w-md text-muted"> {{ t("Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.") }} </p>
-          <UButton :label="t('Начать разговор')" icon="i-lucide-plus" size="lg" :loading="creating" @click="create" />
-        </div>
+        <ChatConversation v-if="selected || !initializing" v-show="!selectedPage" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>

@@ -217,6 +217,71 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
   } finally {await browser.close();}
 });
 
+test('home composer starts one conversation and moves down without replacing the input', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),created=[],sent=[];
+    page.on('request',request=>{
+      if(request.method()==='POST' && new URL(request.url()).pathname.endsWith('/api/chat/sessions')) created.push(request);
+      if(request.method()==='POST' && new URL(request.url()).pathname.endsWith('/api/chat/send')) sent.push(request);
+    });
+    await page.goto(new URL('chat/',base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(input).toBeFocused();
+    await expect(input).toHaveJSProperty('readOnly',false);
+    assert.equal(created.length,0);
+    const view=await page.getByRole('region',{name:'Разговор с Кодриком'}).boundingBox();
+    const centered=await page.getByTestId('chat-composer').boundingBox();
+    assert.ok(Math.abs(centered.y+centered.height/2-view.y-view.height/2)<30,'Home composer is centered');
+    await input.fill('Первый вопрос с главной');
+    await page.reload();
+    await expect(input).toHaveValue('Первый вопрос с главной');
+    await input.evaluate(element=>element.dataset.homeInput='preserved');
+    await page.screenshot({path:'/tmp/kodrik-home-composer-desktop.png',fullPage:true,animations:'disabled'});
+    await input.press('Enter');await input.press('Enter');
+    await expect(page).toHaveURL(/conversation=/);
+    await expect(page.locator('.message').getByText('Первый вопрос с главной',{exact:true})).toHaveCount(1);
+    await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
+    assert.equal(created.length,1);assert.equal(sent.length,1);
+    await expect(input).toHaveAttribute('data-home-input','preserved');
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue('');
+    await expect.poll(async()=> (await input.boundingBox()).y).toBeGreaterThan(centered.y+100);
+    await page.screenshot({path:'/tmp/kodrik-home-composer-started.png',fullPage:true,animations:'disabled'});
+  } finally {await browser.close();}
+});
+
+test('home composer keeps failed drafts and starts mobile conversations with attachments only', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    await page.goto(new URL('chat/',base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(input).toHaveJSProperty('readOnly',false);
+    await page.screenshot({path:'/tmp/kodrik-home-composer-mobile.png',fullPage:true,animations:'disabled'});
+    await input.fill('Сохранить при ошибке');
+    await page.route('**/api/chat/sessions',route=>route.request().method()==='POST'?route.fulfill({status:503,json:{error:'Unavailable'}}):route.continue());
+    await input.press('Enter');
+    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(input).toHaveValue('Сохранить при ошибке');
+    await expect(input).toHaveJSProperty('readOnly',false);
+    assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
+    await page.unroute('**/api/chat/sessions');
+    await input.fill('');
+    await page.getByRole('button',{name:'Прикрепить файлы и фото',exact:true}).click();
+    await page.locator('input[type=file]').setInputFiles({name:'first.txt',mimeType:'text/plain',buffer:Buffer.from('first attachment')});
+    await expect(page.getByText('first.txt',{exact:true})).toBeVisible();
+    await expect(page.getByText('first.txt',{exact:true})).toBeInViewport();
+    await page.screenshot({path:'/tmp/kodrik-home-composer-attachment-mobile.png',fullPage:true,animations:'disabled'});
+    await input.press('Enter');
+    await expect(page).toHaveURL(/conversation=/);
+    await expect(page.locator('.message').getByRole('link',{name:'first.txt',exact:true})).toBeVisible();
+    await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
+    await expect(input).toHaveValue('');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  } finally {await browser.close();}
+});
+
 test('conversation menus appear on hover or focus and pins survive reload', {timeout:60000},async()=>{
   const older=await(await request('sessions',{})).json();
   const newer=await(await request('sessions',{})).json();
@@ -1204,6 +1269,7 @@ test('conversation list retry restores a direct link and refreshes an exhausted 
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);let failLists=true;
+    await page.addInitScript(id=>sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'Черновик существующего диалога',files:[]})),id);
     await page.route('**/api/chat/sessions?*',async route=>{
       if(failLists) {await route.fulfill({status:503,json:{error:'Temporary failure'}});return;}
       const response=await route.fetch();
@@ -1212,9 +1278,13 @@ test('conversation list retry restores a direct link and refreshes an exhausted 
     });
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     await expect(page.getByRole('button',{name:'Повторить загрузку',exact:true})).toBeVisible();
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(input).toHaveValue('');
     failLists=false;
     await page.getByRole('button',{name:'Повторить загрузку',exact:true}).click();
-    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeVisible({timeout:3000});
+    await expect(input).toHaveValue('Черновик существующего диалога');
+    await input.fill('Продолжение сохранённого черновика');
+    assert.equal(await page.evaluate(id=>JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)).text,id),'Продолжение сохранённого черновика');
     await page.getByRole('button',{name:'Переименовать диалог',exact:true}).click();
     await page.getByRole('textbox',{name:'Название диалога',exact:true}).fill('Восстановлено после ошибки');
     failLists=true;
@@ -1555,7 +1625,7 @@ test('browser login, text, tools, stop, history and mobile layout', { timeout: 6
     await page.locator('input[type=password]').fill('preview-password');
     await page.locator('button[type=submit]').click();
     assert.equal((await loginResponse).status(),303);
-    await page.getByRole('button', { name: 'Начать разговор' }).click();
+    await newConversation(page);
     const input = page.getByRole('textbox', { name: 'Сообщение' });
     await input.fill('tools');
     const toolsId=new URL(page.url()).searchParams.get('conversation');
@@ -1598,7 +1668,7 @@ test('composer waits for authoritative snapshot after admission', { timeout: 300
     const page = await browser.newPage({locale:'ru-RU'});
     await page.context().addCookies([{ name: cookie.split('=')[0], value: cookie.split('=')[1], url: base }]);
     await page.goto(new URL('chat/', base).href);
-    await page.getByRole('button', { name: 'Начать разговор' }).click();
+    await newConversation(page);
     await page.getByRole('heading', { name: 'Есть мысль?' }).waitFor();
     const held = new Promise(resolve => { release = resolve; });
     let observed;
@@ -1630,7 +1700,7 @@ test('composer keeps focus after Enter and button submission without stealing it
     const page = await browser.newPage({locale:'ru-RU'});
     await page.context().addCookies([{ name: cookie.split('=')[0], value: cookie.split('=')[1], url: base }]);
     await page.goto(new URL('chat/', base).href);
-    await page.getByRole('button', { name: 'Начать разговор' }).click();
+    await newConversation(page);
     await page.getByRole('heading', { name: 'Есть мысль?' }).waitFor();
     const input = page.getByRole('textbox', { name: 'Сообщение' });
     await expect(input).toBeFocused();
@@ -1681,7 +1751,7 @@ test('lost send response checks stable request status before another submission'
     const [name,...value]=cookie.split('=');
     await page.context().addCookies([{name,value:value.join('='),url:base}]);
     await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('heading',{name:'Есть мысль?'}).waitFor();
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     const bodies=[];let statusChecks=0;
@@ -1729,7 +1799,7 @@ test('refresh and two observers preserve execution; Stop is shared', {timeout:30
     const context=await browser.newContext({locale:'ru-RU'});
     await context.addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
     const page=await context.newPage();await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await input.fill('wait');await input.press('Enter');
     await page.getByText('Жду остановки',{exact:true}).waitFor();
@@ -1751,6 +1821,13 @@ async function signedPage(browser,options={}) {
   const page=await browser.newPage({locale:'ru-RU',...options});
   await page.context().addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
   return page;
+}
+
+async function newConversation(page) {
+  await page.getByRole('textbox',{name:'Сообщение',exact:true}).waitFor();
+  const button=page.getByRole('button',{name:'Новый диалог',exact:true}).first();
+  if(!await button.isVisible()) await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+  await button.click();
 }
 
 async function chooseLanguage(page,value) {
@@ -1941,7 +2018,7 @@ test('files and photos send without text, survive reload and download; mobile th
   try {
     const page=await signedPage(browser);
     await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('heading',{name:'Есть мысль?'}).waitFor();
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:3}});
     await page.getByRole('button',{name:'Прикрепить файлы и фото'}).click();
@@ -1994,7 +2071,7 @@ test('paste and drop attach files; lost multipart response reconciles after relo
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await expect(input).toHaveJSProperty('readOnly',false);
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:3}});
@@ -2034,7 +2111,7 @@ test('Markdown renders formatting without executing HTML, Vue components or unsa
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await input.fill('**Safe bold**\n\n[Safe link](https://example.com/)\n\n<script>window.chatInjection = true</script>\n\n<img src=x onerror="window.chatInjection=true">\n\n[unsafe](javascript:alert(1))\n\n::u-button\nInjected component\n::');
     await page.getByRole('button',{name:'Отправить',exact:true}).click();
@@ -2061,7 +2138,7 @@ test('closing tab during a tool preserves one effect and one answer', {timeout:3
   const priorEffects=(await readFile(join(storage,'effects.txt'),'utf8').catch(()=> '')).trim().split('\n').filter(Boolean).length;
   try {
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('slowtool');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByRole('button',{name:'Выполняются шаги: 1',exact:true}).click();
     await page.getByText('slow_tool',{exact:true}).waitFor();
@@ -2079,7 +2156,7 @@ test('network loss reconnects without cancelling; stop interrupts persisted retr
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('backoff');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByRole('button',{name:'Остановить',exact:false}).waitFor();
     // Abort the observer, then force its reconnect requests to fail.
@@ -2098,7 +2175,7 @@ test('backend process restart restores the same run and attached browser', {time
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('restart');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByText('Перед перезапуском',{exact:true}).waitFor();
     const id=new URL(page.url()).searchParams.get('conversation');
@@ -2120,7 +2197,7 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
     const context=await browser.newContext({locale:'ru-RU'});const page=await context.newPage();
     await page.goto(new URL('chat/',base).href);
     await page.locator('input[type=password]').fill('preview-password');await page.locator('button[type=submit]').click();
-    await page.getByRole('button',{name:'Начать разговор'}).click();
+    await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('wait');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByText('Жду остановки',{exact:true}).waitFor();
     const url=page.url();const second=await context.newPage();await second.goto(url);
