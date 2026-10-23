@@ -165,6 +165,94 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn webhook_owner_migration_preserves_endpoint_and_retry_history() {
+    let mut f = Fixture::new().await;
+    let auth = AuthStore::new(f._data.path());
+    auth.configure_owner(None).unwrap();
+    auth.set_password("migration-password").unwrap();
+    let token = auth
+        .login("migration-password", chrono::Utc::now().timestamp())
+        .unwrap()
+        .unwrap();
+    f.cookie = format!("kodrik_web_session={token}");
+    f.chat.runner.suspend();
+    let hook = f.create().await;
+    let (status, accepted) = f
+        .deliver(&hook, "before-migration", "Checkout failed")
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !f.chat.runs.lock().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let Fixture {
+        _data: data,
+        chat,
+        router,
+        cookie,
+        guest,
+    } = f;
+    drop(router);
+    drop(chat);
+    // The chat fixture uses owner-sessions; migrate through the production sessions path.
+    std::fs::rename(
+        data.path().join("owner-sessions"),
+        data.path().join("sessions"),
+    )
+    .unwrap();
+    let root = data.path().to_owned();
+    let destination = tokio::task::spawn_blocking(move || {
+        let config = toml::from_str("[owner]\ninterface='main'\nuser_id=42\n[gateway.main]\ntype='telegram'\ntoken='test'\n[provider]").unwrap();
+        crate::spaces::owner_data(&root, &config)
+    }).await.unwrap().unwrap();
+    std::fs::rename(
+        destination.join("sessions"),
+        destination.join("owner-sessions"),
+    )
+    .unwrap();
+    AuthStore::new(data.path())
+        .configure_owner(Some(42))
+        .unwrap();
+    let chat = crate::web::chat_tests::chat(&destination).await;
+    let settings = Settings {
+        trusted_proxies: vec![],
+        listen: "127.0.0.1:0".parse().unwrap(),
+        base_url: "http://localhost/kodrik/".parse().unwrap(),
+    };
+    let router = crate::web::server::router_with_chat(settings, data.path(), Some(chat.clone()));
+    let f = Fixture {
+        _data: data,
+        chat,
+        router,
+        cookie,
+        guest,
+    };
+    let (status, duplicate) = f
+        .deliver(&hook, "before-migration", "Checkout failed")
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{duplicate}");
+    assert_eq!(duplicate["duplicate"], true);
+    assert_eq!(duplicate["conversation_id"], accepted["conversation_id"]);
+    assert_eq!(
+        f.deliver(&hook, "before-migration", "Changed body").await.0,
+        StatusCode::CONFLICT
+    );
+    let (status, fresh) = f.deliver(&hook, "after-migration", "New incident").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(fresh["duplicate"], false);
+    let (status, hooks) = f.manage("GET", "", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hooks[0]["name"], "Site errors");
+    assert_eq!(
+        hooks[0]["instruction"],
+        "Diagnose the incident and open a PR after tests pass."
+    );
+}
+
+#[tokio::test]
 async fn webhook_management_requires_owner_and_same_origin() {
     let f = Fixture::new().await;
     assert_eq!(
