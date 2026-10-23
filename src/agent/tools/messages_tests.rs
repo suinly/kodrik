@@ -198,6 +198,62 @@ async fn messages_notifications_are_not_flushed_as_current_chat_replies() {
 }
 
 #[tokio::test]
+async fn messages_web_waits_for_session_owner_without_an_active_run() {
+    let f = Fixture::new().await;
+    let mut target = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+    target.push(Message::Assistant(AssistantMessage {
+        content: "Earlier message".into(),
+    }));
+    f.store.save(&target).await.unwrap();
+    let ownership = f
+        .store
+        .execution_lock("session", target.id().as_str())
+        .await
+        .unwrap();
+    let mut older_snapshot = f.store.load(target.id()).await.unwrap().unwrap();
+    let result = f.send("shared-session", json!({"action":"send", "channel":"web", "text":"Notification", "conversation_id":target.id().as_str()})).await.unwrap().output;
+    assert_eq!(result["status"], "pending");
+    let delivery = result["delivery_id"].as_str().unwrap();
+    assert!(
+        f.store
+            .notification_result(delivery)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.store
+            .load(target.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .messages()
+            .len(),
+        1
+    );
+    older_snapshot.push(Message::Assistant(AssistantMessage {
+        content: "Reminder delivered".into(),
+    }));
+    f.store.save(&older_snapshot).await.unwrap();
+    drop(ownership);
+    f.tool.deliver(delivery).await.unwrap().unwrap();
+    f.tool.deliver(delivery).await.unwrap().unwrap();
+    let saved = f.store.load(target.id()).await.unwrap().unwrap();
+    let texts: Vec<_> = saved
+        .messages()
+        .iter()
+        .filter_map(|message| match message {
+            Message::Assistant(message) => Some(message.content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["Earlier message", "Reminder delivered", "Notification"]
+    );
+}
+
+#[tokio::test]
 async fn messages_web_waits_for_busy_history_and_appends_only_once() {
     let f = Fixture::new().await;
     let mut target = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));

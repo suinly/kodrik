@@ -194,8 +194,40 @@ impl SqliteSessionStore {
         &self,
         id: &str,
     ) -> anyhow::Result<Option<MessageId>> {
+        let receipt = self
+            .with_connection({
+                let id = id.to_owned();
+                move |db| read(db, &id)?.context("Delivery missing")
+            })
+            .await
+            .map_err(storage_failure)?;
+        ensure!(
+            receipt.notification && receipt.interface == "web",
+            "Not a web notification"
+        );
+        if receipt.status == Status::Sent {
+            return Ok(receipt.message_id.map(MessageId));
+        }
+        let ownership = if receipt.chat == "new" {
+            None
+        } else {
+            match self.execution_lock("session", &receipt.chat).await {
+                Ok(ownership) => Some(ownership),
+                Err(error)
+                    if matches!(
+                        error.downcast_ref::<std::fs::TryLockError>(),
+                        Some(std::fs::TryLockError::WouldBlock)
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(storage_failure(error)),
+            }
+        };
         let id = id.to_owned();
         self.with_connection(move |db| {
+            // Keep ownership inside the blocking write even if its async caller is cancelled.
+            let _ownership = ownership;
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut receipt = read(&tx, &id)?.context("Delivery missing")?;
             ensure!(receipt.notification && receipt.interface == "web", "Not a web notification");
