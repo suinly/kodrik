@@ -10,7 +10,7 @@ import { chromium, expect } from '@playwright/test';
 
 let server, base, cookie, storage;
 async function start(listen) {
-  server = spawn('rtk', ['proxy', 'cargo', 'test', 'web::chat_tests::browser_fixture', '--', '--ignored', '--nocapture'], {
+  server = spawn('cargo', ['test', 'web::chat_tests::browser_fixture', '--', '--ignored', '--nocapture'], {
     cwd: fileURLToPath(new URL('../../', import.meta.url)), env: {...process.env, CHAT_TEST_DATA:storage, ...(listen ? {CHAT_TEST_LISTEN:listen}: {})}, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
   base = await new Promise((resolve, reject) => {

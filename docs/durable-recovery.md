@@ -74,27 +74,27 @@ the host disk or tested every filesystem's power-loss behavior.
 From the repository root, with loopback and child-process execution permitted:
 
 ```sh
-rtk npm run build --prefix web
-rtk cargo test --locked
-rtk cargo clippy --all-targets --locked
-rtk npm test --prefix web
-rtk cargo fmt --check
-rtk git diff --check
+npm run build --prefix web
+cargo test --locked
+cargo clippy --all-targets --locked
+npm test --prefix web
+cargo fmt --check
+git diff --check
 ```
 
 Focused suites:
 
 ```sh
-rtk cargo test --locked durable_process
-rtk cargo test --locked storage_recovery_tests
-rtk cargo test --locked durable_storage_readonly_and_full
-rtk cargo test --locked recovery_five_real_process_crashes
+cargo test --locked durable_process
+cargo test --locked storage_recovery_tests
+cargo test --locked durable_storage_readonly_and_full
+cargo test --locked recovery_five_real_process_crashes
 ```
 
 The manual measurement is ignored during the regular suite:
 
 ```sh
-rtk cargo test --locked durable_checkpoint_benchmark -- --ignored --nocapture
+cargo test --locked durable_checkpoint_benchmark -- --ignored --nocapture
 ```
 
 It reports end-to-end checkpoint p50/p95 (including Session cloning, serialization

@@ -257,7 +257,7 @@ mod tests {
                     vec![Message::ToolCall(ToolCall {
                         call_id: format!("shell-{results}"),
                         name: "exec_command".into(),
-                        arguments: json!({"cmd":"rtk proxy sh -c 'printf x >> marker'", "workdir":self.root}),
+                        arguments: json!({"cmd":"sh -c 'printf x >> marker'", "workdir":self.root}),
                     })],
                     None,
                 ));
@@ -266,7 +266,7 @@ mod tests {
                 0 => Message::ToolCall(ToolCall {
                     call_id: "shell".into(),
                     name: "exec_command".into(),
-                    arguments: json!({"cmd":"rtk proxy sh -c 'printf x >> marker'", "workdir":self.root}),
+                    arguments: json!({"cmd":"sh -c 'printf x >> marker'", "workdir":self.root}),
                 }),
                 1 => Message::ToolCall(ToolCall {
                     call_id: "follow-up".into(),

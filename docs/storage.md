@@ -255,9 +255,9 @@ Inspect recent events or one run without any database (replace the legacy
 `~/.kodrik` prefix with the current space directory when configured):
 
 ```sh
-rtk proxy jq -c '{timestamp,event,trigger,name,status,run_id}' ~/.kodrik/logs/actions/*.jsonl
-rtk proxy jq -c --arg run 'RUN_UUID' 'select(.run_id == $run)' ~/.kodrik/logs/actions/*.jsonl
-rtk proxy jq -s 'group_by(.action_id)[] | select(length == 1 and .[0].status == "started") | .[0]' ~/.kodrik/logs/actions/*.jsonl
+jq -c '{timestamp,event,trigger,name,status,run_id}' ~/.kodrik/logs/actions/*.jsonl
+jq -c --arg run 'RUN_UUID' 'select(.run_id == $run)' ~/.kodrik/logs/actions/*.jsonl
+jq -s 'group_by(.action_id)[] | select(length == 1 and .[0].status == "started") | .[0]' ~/.kodrik/logs/actions/*.jsonl
 ```
 
 ## Back up and restore
