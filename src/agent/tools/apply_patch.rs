@@ -19,7 +19,9 @@ pub(crate) struct ApplyPatchArgs {
     /// Codex patch text enclosed in *** Begin Patch / *** End Patch.
     /// Use *** Add/Update/Delete File: path; do not use ---/+++ headers or numbered @@ hunks.
     pub(crate) patch: String,
-    /// Allowed workspace directory. Null uses Kodrik's current directory.
+    /// Allowed workspace root for this call. Null uses Kodrik's current directory,
+    /// not a directory selected by cd in an earlier exec_command call. When editing
+    /// another repository, set workdir explicitly to that repository's root.
     pub(crate) workdir: Option<String>,
 }
 
@@ -34,7 +36,7 @@ impl Tool for ApplyPatchTool {
 
     fn description(&self) -> String {
         format!(
-            "Edit files inside workdir using *** Add File: path (+ lines), *** Delete File: path, or *** Update File: path (optional *** Move to: path and *** End of File). Checks the entire patch before writing. Returns changed_files with path, action, added and removed line counts. Writes are atomic per file; an I/O failure reports files already changed. Paths must stay inside workdir; file symlinks are rejected.\n{PATCH_FORMAT_HELP}"
+            "Edit files inside workdir using *** Add File: path (+ lines), *** Delete File: path, or *** Update File: path (optional *** Move to: path and *** End of File). Checks the entire patch before writing. Returns changed_files with path, action, added and removed line counts. Writes are atomic per file; an I/O failure reports files already changed. Relative paths start at workdir; absolute paths must also stay inside workdir. Set workdir explicitly to the repository root for each call; cd in exec_command does not carry over. File symlinks are rejected.\n{PATCH_FORMAT_HELP}"
         )
     }
 
@@ -281,8 +283,9 @@ fn resolve_path(root: &Path, path: &str) -> anyhow::Result<PathBuf> {
     let mut resolved = fs::canonicalize(ancestor)?;
     ensure!(
         resolved.starts_with(root),
-        "Path is outside workdir: {}",
-        candidate.display()
+        "Path is outside workdir: {}. Resolved workdir: {}. Paths must stay inside workdir; workdir: null uses Kodrik's current directory, not a directory selected by cd in exec_command. To edit another repository, set workdir explicitly to that repository's root and use paths relative to it.",
+        candidate.display(),
+        root.display()
     );
     for part in missing.into_iter().rev() {
         resolved.push(part);
@@ -676,6 +679,31 @@ mod tests {
             assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched\n");
         }
         assert!(!directory.path().join("new").exists());
+    }
+
+    #[tokio::test]
+    async fn outside_workdir_error_explains_how_to_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        fs::create_dir(&root).unwrap();
+        let outside = directory.path().join("outside");
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+content\n*** End Patch",
+            outside.display()
+        );
+
+        let error = run(&root, &patch).await.unwrap_err().to_string();
+        assert!(error.contains(&format!("Path is outside workdir: {}", outside.display())));
+        assert!(error.contains(&format!(
+            "Resolved workdir: {}",
+            root.canonicalize().unwrap().display()
+        )));
+        assert!(error.contains("workdir: null uses Kodrik's current directory"));
+        assert!(error.contains("set workdir explicitly to that repository's root"));
+        assert!(!outside.exists());
+
+        run(directory.path(), &patch).await.unwrap();
+        assert_eq!(fs::read_to_string(outside).unwrap(), "content\n");
     }
 
     #[tokio::test]

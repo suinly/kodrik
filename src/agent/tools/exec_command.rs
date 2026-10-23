@@ -13,7 +13,9 @@ use tokio::{
 pub(crate) struct ExecCommandArgs {
     /// Shell command to execute through /bin/sh -c.
     pub(crate) cmd: String,
-    /// Working directory. Null inherits Kodrik's current directory.
+    /// Working directory for this call only. Null uses Kodrik's current directory,
+    /// not a directory selected by cd in an earlier call. Prefer setting workdir
+    /// explicitly over prefixing commands with cd.
     pub(crate) workdir: Option<String>,
     /// Positive timeout in milliseconds. Null uses 30000.
     pub(crate) timeout_ms: Option<u64>,
