@@ -4,6 +4,10 @@ use std::sync::Arc;
 #[path = "messages_tests.rs"]
 mod messages_tests;
 
+#[cfg(test)]
+#[path = "mcp_tests.rs"]
+mod mcp_tests;
+
 use crate::{
     agent::{
         Agent, AgentRunner, ContextBuilder,
@@ -240,6 +244,12 @@ pub(crate) async fn build_app_with_access(
     tools = tools.register(Arc::new(TelegramResultsTool));
     if let Some(messages) = &messages {
         tools = tools.register(Arc::new(messages.clone()));
+    }
+    if !isolated && access.is_none() {
+        // Keep the MCP handshake future off the stack of nested app builders.
+        for tool in Box::pin(crate::agent::tools::mcp::connect(&config.mcp)).await? {
+            tools = tools.register(tool);
+        }
     }
     if let Some(sandbox) = &sandbox {
         for name in ["exec_command", "view_image", "apply_patch"] {

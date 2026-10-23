@@ -372,7 +372,7 @@ impl OpenAiLlm {
                     name: tool.name(),
                     description: Some(tool.description()),
                     parameters: Some(parameters),
-                    strict: Some(true),
+                    strict: Some(tool.strict_schema()),
                     ..Default::default()
                 })
             })

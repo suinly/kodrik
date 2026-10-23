@@ -40,6 +40,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 yaml-rust = "0.4.5"
 bashkit = { version = "=0.18.2", default-features = false, features = ["jq"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+rmcp = { version = "3.7.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }

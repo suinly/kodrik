@@ -21,8 +21,26 @@ pub struct Config {
     pub sessions: SessionsConfig,
     #[serde(default)]
     pub research: ResearchConfig,
+    #[serde(default)]
+    pub mcp: HashMap<String, McpServerConfig>,
     pub gateway: HashMap<String, GatewayConfig>,
     pub provider: HashMap<String, ProviderConfig>,
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum McpServerConfig {
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServerConfig").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -316,6 +334,18 @@ pub enum ProviderConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_rejects_unsupported_transport_and_missing_url() {
+        for server in [
+            "type = 'stdio'\nurl = 'https://example.com/mcp'",
+            "type = 'http'",
+            "url = 'https://example.com/mcp'",
+        ] {
+            let input = format!("[gateway]\n[provider]\n[mcp.rustrak]\n{server}");
+            assert!(toml::from_str::<super::Config>(&input).is_err(), "{server}");
+        }
+    }
+
     #[test]
     fn research_defaults_and_prefixed_endpoint() {
         let config: super::Config = toml::from_str(

@@ -3,6 +3,7 @@ mod companion;
 mod datasets;
 mod encyclopedia;
 pub(crate) mod exec_command;
+pub(crate) mod mcp;
 mod memory;
 pub(crate) mod messages;
 mod publish_page;

@@ -12,6 +12,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> String;
     fn description(&self) -> String;
     fn parameters(&self) -> serde_json::Value;
+    fn strict_schema(&self) -> bool {
+        true
+    }
     fn replay_policy(&self) -> ReplayPolicy {
         ReplayPolicy::Never
     }

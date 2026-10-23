@@ -86,6 +86,48 @@ filesystem, inherited environment or network access, and never falls back to the
 real shell. Wikipedia and optional web research remain separate tools. See [Storage](storage.md)
 for paths and the one-time migration of existing owner data.
 
+## MCP servers
+
+Add named MCP servers using Streamable HTTP:
+
+```toml
+[mcp.rustrak]
+type = "http"
+url = "https://rustrak.suinly.com/mcp"
+
+[mcp.rustrak.headers]
+Authorization = "Bearer YOUR_TOKEN"
+```
+
+`type` and `url` are required; `headers` is optional and accepts HTTP header
+names and literal string values. Add another `[mcp.<name>]` table for each server.
+Restart Kodrik after changes. Environment-variable interpolation is not supported.
+Keep tokens in the local configuration, outside the repository.
+
+Kodrik initializes each configured server and discovers all pages of tools at
+startup. A connection or discovery failure stops startup with the server name;
+initialization and discovery share a 30-second deadline per server. Tool calls
+have a 60-second deadline. Use the final endpoint URL: redirects are not followed.
+URLs must use HTTP(S), without embedded credentials or a fragment.
+
+Tools appear as `mcp__rustrak__<tool>`. The complete name must be at most 64 ASCII
+letters, digits, underscores or hyphens; invalid or duplicate names fail startup.
+The server's input schemas are passed through with non-strict function calling.
+Text, structured results and `isError` are preserved in tool results and history.
+Headers are not included in tool definitions or arguments.
+
+Only the owner's foreground agent receives these tools (CLI/TUI and the owner's
+personal chats). Isolated users, guest spaces and proactive research do not
+connect to the configured servers. Calls use the server token's permissions,
+including write operations. Calls are never marked safe for crash replay, and
+HTTP failures or expired MCP sessions do not automatically repeat the request.
+A timeout may leave the remote operation's outcome unknown. If the server expires
+an MCP session, restart Kodrik to reconnect.
+
+This version supports HTTP tools only. stdio, the legacy HTTP+SSE transport,
+OAuth login flows, prompts, resources and interactive tool responses are not
+implemented.
+
 ## Sessions
 
 ```toml
