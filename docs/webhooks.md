@@ -35,6 +35,42 @@ invalidates the previous one immediately. Disabling a webhook pauses ingestion;
 reenabling it accepts its current token again. Deleting it permanently disables
 its endpoint. Already accepted tasks and their conversations are preserved.
 
+## Manage through the agent
+
+When the web interface is enabled, the owner agent can use `webhooks` from
+ordinary chats, Telegram, terminal mode and webhook runs. It shares the web
+manager's database, validation and limits. Invited users, isolated agents,
+groups and guest queries cannot use it.
+
+| Action | Fields | Result |
+| --- | --- | --- |
+| `list` | None | `webhooks` array with settings and endpoint URLs |
+| `get` | `id` | Webhook settings and endpoint URL |
+| `create` | `name`, `instruction`, optional `enabled` (defaults to true) | Webhook settings, URL and new `token` |
+| `update` | `id` and any of `name`, `instruction`, `enabled` | Updated settings; omitted/null fields stay unchanged |
+| `delete` | `id` | `id` and `deleted: true` |
+| `rotate_token` | `id` | New `token`; the old token stops working immediately |
+| `events` | `id` | `events` array with the last 30 accepted deliveries |
+
+Pass null for unused fields. For example, disable an existing webhook without
+changing its instruction:
+
+```json
+{"action":"update","id":"WEBHOOK_ID","name":null,"instruction":null,"enabled":false}
+```
+
+Names must contain 1–200 bytes and instructions 1–16384 bytes; neither may be
+blank. `list` and `get` never return credentials. Creating or rotating a token
+returns its plaintext to the agent, so it is saved in conversation/tool history
+and sent to the configured model provider. Share it only with the owner or the
+intended sender. The webhook record still stores only its SHA-256 hash.
+
+Interrupted tool calls are not automatically replayed. After an uncertain change,
+inspect `list`/`get` before trying again. A token lost during creation or rotation
+cannot be recovered from the webhook record; rotate it explicitly if needed.
+Terminal mode can manage settings but does not start the HTTP server: the gateway
+must be running to receive deliveries.
+
 ## Send an event
 
 Send a POST request to the URL shown in the interface. Include the token in the

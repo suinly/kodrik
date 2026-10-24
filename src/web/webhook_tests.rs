@@ -1,9 +1,242 @@
 use super::*;
+use crate::agent::tools::{Tool, webhooks::WebhooksTool};
 use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
 use tower::ServiceExt;
+
+impl Fixture {
+    fn tool(&self) -> WebhooksTool {
+        WebhooksTool::new(
+            (*self.chat.sessions).clone(),
+            "http://localhost/kodrik/".parse().unwrap(),
+        )
+    }
+}
+
+#[tokio::test]
+async fn webhook_tool_and_http_share_settings_tokens_and_accepted_work() {
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    let tool = f.tool();
+    let mut hook = tool
+        .execute(json!({"action":"create","name":"  Monitor  ","instruction":"Investigate errors"}))
+        .await
+        .unwrap()
+        .output;
+    let id = hook["id"].as_str().unwrap().to_owned();
+    assert_eq!(hook["name"], "Monitor");
+    assert_eq!(hook["enabled"], true);
+    assert_eq!(
+        hook["url"],
+        format!("http://localhost/kodrik/api/webhooks/{id}")
+    );
+    let (status, listed) = f.manage("GET", "", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed[0]["id"], id);
+    assert!(listed[0].get("token").is_none());
+    let changed = tool
+        .execute(json!({"action":"update","id":id,"enabled":false}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(changed["enabled"], false);
+    assert_eq!(changed["instruction"], "Investigate errors");
+    assert_eq!(
+        f.deliver(&hook, "disabled", "error").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.manage(
+            "PATCH",
+            &format!("/{id}"),
+            json!({"name":"Renamed","instruction":"New instruction","enabled":true})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let saved = f
+        .tool()
+        .execute(json!({"action":"get","id":id}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(saved["name"], "Renamed");
+    assert!(saved.get("token").is_none());
+    tool.execute(json!({"action":"update","id":id,"name":"  Agent edit  ","instruction":"Follow the owner","enabled":null})).await.unwrap();
+    let (_, listed) = f.manage("GET", "", Value::Null).await;
+    assert_eq!(listed[0]["name"], "Agent edit");
+    assert_eq!(listed[0]["instruction"], "Follow the owner");
+    assert_eq!(listed[0]["enabled"], true);
+    let rotated = tool
+        .execute(json!({"action":"rotate_token","id":id}))
+        .await
+        .unwrap()
+        .output;
+    assert_ne!(hook["token"], rotated["token"]);
+    assert_eq!(
+        f.deliver(&hook, "revoked", "error").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    hook["token"] = rotated["token"].clone();
+    let (status, accepted) = f.deliver(&hook, "new-token", "error").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let events = tool
+        .execute(json!({"action":"events","id":id}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(
+        events["events"][0]["conversation_id"],
+        accepted["conversation_id"]
+    );
+    let deleted = tool
+        .execute(json!({"action":"delete","id":id}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(deleted["deleted"], true);
+    assert_eq!(
+        f.deliver(&hook, "deleted", "error").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        tool.execute(json!({"action":"list"})).await.unwrap().output["webhooks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    use crate::agent::session::SessionStore;
+    assert!(
+        f.chat
+            .sessions
+            .load(&SessionId::new(
+                accepted["conversation_id"].as_str().unwrap()
+            ))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    for action in ["get", "update", "rotate_token", "delete"] {
+        let error = tool.execute(json!({"action":action,"id":id,"name":if action=="update" {Some("Gone")} else {None}})).await.err().unwrap();
+        assert!(error.to_string().contains("Webhook not found"), "{error:#}");
+    }
+}
+
+#[tokio::test]
+async fn webhook_tool_validates_arguments_and_shares_the_http_limit() {
+    let f = Fixture::new().await;
+    let tool = f.tool();
+    for args in [
+        json!({"action":"create","name":" ","instruction":"Do it"}),
+        json!({"action":"create","name":"x".repeat(201),"instruction":"Do it"}),
+        json!({"action":"create","name":"Monitor","instruction":" "}),
+        json!({"action":"create","name":"Monitor","instruction":"x".repeat(16385)}),
+        json!({"action":"create","name":"Monitor"}),
+        json!({"action":"create","name":"Monitor","instruction":"Do it","id":"chosen-id"}),
+        json!({"action":"list","enabled":false}),
+        json!({"action":"delete"}),
+        json!({"action":"update","id":"missing"}),
+        json!({"action":"list","token":"secret"}),
+    ] {
+        assert!(tool.execute(args.clone()).await.is_err(), "{args}");
+    }
+    let hook = f.create().await;
+    for changes in [
+        json!({"name":" "}),
+        json!({"instruction":"x".repeat(16385)}),
+    ] {
+        let mut args = changes;
+        args["action"] = "update".into();
+        args["id"] = hook["id"].clone();
+        assert!(tool.execute(args).await.is_err());
+    }
+    for _ in 1..32 {
+        tool.execute(json!({"action":"create","name":"Monitor","instruction":"Investigate"}))
+            .await
+            .unwrap();
+    }
+    assert!(
+        tool.execute(json!({"action":"create","name":"Overflow","instruction":"Investigate"}))
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Webhook limit reached")
+    );
+    assert_eq!(
+        f.manage(
+            "POST",
+            "",
+            json!({"name":"Overflow","instruction":"Investigate"})
+        )
+        .await
+        .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let reopened = SqliteSessionStore::open_async(f._data.path().join("owner-sessions"))
+        .await
+        .unwrap();
+    let restored = WebhooksTool::new(reopened, "http://localhost/kodrik/".parse().unwrap());
+    assert_eq!(
+        restored
+            .execute(json!({"action":"list"}))
+            .await
+            .unwrap()
+            .output["webhooks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+}
+
+#[tokio::test]
+async fn webhook_tool_rejects_guests_and_groups_even_when_called_directly() {
+    use crate::agent::tools::{
+        ReplayPolicy, ToolRegistry,
+        telegram_reply::{REPLY_CONTEXT, ReplyContext},
+    };
+    let f = Fixture::new().await;
+    assert_eq!(f.tool().replay_policy(), ReplayPolicy::Never);
+    let registry = ToolRegistry::default().register(Arc::new(f.tool()));
+    for (chat, guest) in [("42", Some("query".into())), ("-10042", None)] {
+        let interface = Arc::new(crate::TelegramInterface::new(
+            "main",
+            "unused",
+            f._data.path().join("attachments"),
+        ));
+        REPLY_CONTEXT
+            .scope(ReplyContext::new(interface, chat.into(), guest), async {
+                assert!(registry.list().is_empty());
+                assert!(
+                    registry
+                        .execute("webhooks", json!({"action":"list"}))
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    f.tool()
+                        .execute(json!({"action":"create","name":"Forbidden","instruction":"No"}))
+                        .await
+                        .is_err()
+                );
+            })
+            .await;
+    }
+    assert!(
+        f.tool()
+            .execute(json!({"action":"list"}))
+            .await
+            .unwrap()
+            .output["webhooks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
 
 #[tokio::test]
 async fn messages_web_notification_is_visible_after_completed_run() {

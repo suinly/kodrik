@@ -18,6 +18,7 @@ pub(crate) mod view_image;
 mod wakeups;
 mod web_read;
 mod web_search;
+pub(crate) mod webhooks;
 
 pub use apply_patch::ApplyPatchTool;
 pub use companion::CompanionTool;

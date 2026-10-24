@@ -65,7 +65,7 @@ impl Chat {
             })?);
         titles::init(&sessions).await?;
         management::init(&sessions).await?;
-        webhooks::init(&sessions).await?;
+        super::webhook_store::init(&sessions).await?;
         let chat = Self {
             runner: Arc::new(owner.for_web(sessions.clone())),
             sessions,

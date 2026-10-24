@@ -138,8 +138,9 @@ password or through your configured Telegram bot. The gateway serves both
 Telegram and the enabled web interface; terminal mode does not start the server.
 For remote access, configure HTTPS following [Web pages](docs/web-pages.md).
 
-The owner can create Bearer-authenticated webhooks from **Webhooks** in the chat
-sidebar. Each delivery starts a separate agent conversation using your saved
+The owner can manage Bearer-authenticated webhooks from **Webhooks** in the chat
+sidebar or ask the agent to manage them using its `webhooks` tool.
+Each delivery starts a separate agent conversation using your saved
 instruction. See [Webhooks](docs/webhooks.md) for request examples and limits.
 The owner agent can use `messages` to send text to the owner's Telegram chat or
 an existing/new web conversation, including when started by a webhook.

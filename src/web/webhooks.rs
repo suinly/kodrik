@@ -1,8 +1,9 @@
 use super::{Chat, WebState, error, internal};
 use crate::agent::{
     inbox::{BusyMode, SubmissionRequest, admit_submission},
-    session::{Session, SessionId, SqliteSessionStore},
+    session::{Session, SessionId},
 };
+use crate::web::webhook_store::{WebhookError, WebhookStore, hash};
 use axum::{
     Extension, Json, Router,
     extract::{DefaultBodyLimit, FromRequest, Path, Request, State},
@@ -11,28 +12,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 const BODY_LIMIT: usize = 64 * 1024;
-
-pub(super) async fn init(store: &SqliteSessionStore) -> anyhow::Result<()> {
-    store.with_connection(|db| {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS webhooks (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, instruction TEXT NOT NULL,
-            token_hash TEXT NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS webhook_receipts (
-            webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
-            request_key TEXT NOT NULL, body_hash TEXT NOT NULL,
-            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-            accepted_at TEXT NOT NULL,
-            PRIMARY KEY(webhook_id,request_key));
-            CREATE INDEX IF NOT EXISTS webhook_receipts_time ON webhook_receipts(webhook_id,accepted_at);")?;
-        Ok(())
-    }).await
-}
 
 pub(super) fn routes(state: WebState) -> Router<WebState> {
     let management = Router::new()
@@ -75,47 +59,32 @@ async fn owner_only(State(state): State<WebState>, mut request: Request, next: N
     next.run(request).await
 }
 
-#[derive(Serialize)]
-struct Webhook {
-    id: String,
-    name: String,
-    instruction: String,
-    enabled: bool,
-    created_at: String,
+fn store(state: &WebState) -> Result<WebhookStore, StatusCode> {
+    let chat = state.chat()?;
+    Ok(WebhookStore::new(
+        (*chat.sessions).clone(),
+        state.settings.base_url.clone(),
+    ))
 }
 
-fn hooks(db: &Connection) -> anyhow::Result<Vec<Webhook>> {
-    Ok(db.prepare("SELECT id,name,instruction,enabled,created_at FROM webhooks ORDER BY created_at DESC,id")?
-        .query_map([], |row| Ok(Webhook { id:row.get(0)?,name:row.get(1)?,instruction:row.get(2)?,enabled:row.get(3)?,created_at:row.get(4)? }))?
-        .collect::<rusqlite::Result<_>>()?)
-}
-
-fn with_url(state: &WebState, hook: &Webhook) -> Value {
-    let mut value = serde_json::to_value(hook).expect("Webhook serialization");
-    value["url"] = json!(
-        state
-            .settings
-            .base_url
-            .join(&format!("api/webhooks/{}", hook.id))
-            .expect("Webhook URL")
-            .as_str()
-    );
-    value
+fn management_error(error: anyhow::Error) -> Response {
+    let status = match error.downcast_ref::<WebhookError>() {
+        Some(WebhookError::InvalidInput) => StatusCode::BAD_REQUEST,
+        Some(WebhookError::NotFound) => StatusCode::NOT_FOUND,
+        Some(WebhookError::LimitReached) => StatusCode::TOO_MANY_REQUESTS,
+        None => return internal(error),
+    };
+    super::error(status, &error.to_string())
 }
 
 async fn list(Extension(state): Extension<WebState>) -> Result<Json<Value>, Response> {
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let hooks = chat
-        .sessions
-        .with_connection(|db| hooks(db))
-        .await
-        .map_err(internal)?;
-    Ok(Json(json!(
-        hooks
-            .iter()
-            .map(|hook| with_url(&state, hook))
-            .collect::<Vec<_>>()
-    )))
+    Ok(Json(
+        store(&state)
+            .map_err(IntoResponse::into_response)?
+            .list()
+            .await
+            .map_err(management_error)?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -130,80 +99,15 @@ fn enabled() -> bool {
     true
 }
 
-fn validate(input: &Input) -> Result<(), Response> {
-    if input.name.trim().is_empty()
-        || input.name.len() > 200
-        || input.instruction.trim().is_empty()
-        || input.instruction.len() > 16 * 1024
-    {
-        return Err(error(
-            StatusCode::BAD_REQUEST,
-            "Name must contain 1–200 bytes; instruction 1–16384 bytes",
-        ));
-    }
-    Ok(())
-}
-
-fn new_token() -> String {
-    format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    )
-}
-fn hash(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
-}
-
 async fn create(
     Extension(state): Extension<WebState>,
     Json(input): Json<Input>,
 ) -> Result<(StatusCode, Json<Value>), Response> {
-    validate(&input)?;
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let hook = Webhook {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: input.name.trim().into(),
-        instruction: input.instruction,
-        enabled: input.enabled,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
-    let mut result = with_url(&state, &hook);
-    let token = new_token();
-    let digest = hash(&token);
-    let created = chat
-        .sessions
-        .with_connection(move |db| {
-            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            if tx.query_row("SELECT count(*) FROM webhooks", [], |row| {
-                row.get::<_, i64>(0)
-            })? >= 32
-            {
-                return Ok(false);
-            }
-            tx.execute(
-                "INSERT INTO webhooks VALUES(?1,?2,?3,?4,?5,?6)",
-                params![
-                    hook.id,
-                    hook.name,
-                    hook.instruction,
-                    digest,
-                    hook.enabled,
-                    hook.created_at
-                ],
-            )?;
-            tx.commit()?;
-            Ok(true)
-        })
+    let result = store(&state)
+        .map_err(IntoResponse::into_response)?
+        .create(input.name, input.instruction, input.enabled)
         .await
-        .map_err(internal)?;
-    if !created {
-        return Err(error(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Webhook limit reached",
-        ));
-    }
-    result["token"] = json!(token);
+        .map_err(management_error)?;
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -212,21 +116,16 @@ async fn update(
     Path(id): Path<String>,
     Json(input): Json<Input>,
 ) -> Result<StatusCode, Response> {
-    validate(&input)?;
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let changed = chat
-        .sessions
-        .with_connection(move |db| {
-            Ok(db.execute(
-                "UPDATE webhooks SET name=?2,instruction=?3,enabled=?4 WHERE id=?1",
-                params![id, input.name.trim(), input.instruction, input.enabled],
-            )?)
-        })
+    store(&state)
+        .map_err(IntoResponse::into_response)?
+        .update(
+            id,
+            Some(input.name),
+            Some(input.instruction),
+            Some(input.enabled),
+        )
         .await
-        .map_err(internal)?;
-    if changed == 0 {
-        return Err(error(StatusCode::NOT_FOUND, "Webhook not found"));
-    }
+        .map_err(management_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -234,38 +133,24 @@ async fn rotate(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let token = new_token();
-    let digest = hash(&token);
-    let changed = chat
-        .sessions
-        .with_connection(move |db| {
-            Ok(db.execute(
-                "UPDATE webhooks SET token_hash=?2 WHERE id=?1",
-                params![id, digest],
-            )?)
-        })
-        .await
-        .map_err(internal)?;
-    if changed == 0 {
-        return Err(error(StatusCode::NOT_FOUND, "Webhook not found"));
-    }
-    Ok(Json(json!({"token":token})))
+    Ok(Json(
+        store(&state)
+            .map_err(IntoResponse::into_response)?
+            .rotate(id)
+            .await
+            .map_err(management_error)?,
+    ))
 }
 
 async fn delete(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Response> {
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let changed = chat
-        .sessions
-        .with_connection(move |db| Ok(db.execute("DELETE FROM webhooks WHERE id=?1", [id])?))
+    store(&state)
+        .map_err(IntoResponse::into_response)?
+        .delete(id)
         .await
-        .map_err(internal)?;
-    if changed == 0 {
-        return Err(error(StatusCode::NOT_FOUND, "Webhook not found"));
-    }
+        .map_err(management_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -273,15 +158,13 @@ async fn events(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let events = chat.sessions.with_connection(move |db| {
-        Ok(db.prepare("SELECT w.session_id,w.accepted_at,coalesce(s.status,'Deleted') FROM webhook_receipts w
-            LEFT JOIN submissions s ON s.id=(SELECT id FROM submissions WHERE conversation_id=w.session_id ORDER BY sequence LIMIT 1)
-            WHERE w.webhook_id=?1 ORDER BY w.accepted_at DESC LIMIT 30")?
-            .query_map([id], |row| Ok(json!({"conversation_id":row.get::<_,Option<String>>(0)?,"accepted_at":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?})))?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
-    }).await.map_err(internal)?;
-    Ok(Json(json!(events)))
+    Ok(Json(
+        store(&state)
+            .map_err(IntoResponse::into_response)?
+            .events(id)
+            .await
+            .map_err(management_error)?,
+    ))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<String> {

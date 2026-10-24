@@ -136,6 +136,14 @@ api_base = "{base}"
             .iter()
             .any(|t| t["name"] == "messages");
         assert_eq!(available, !isolated);
+        assert_eq!(
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "webhooks"),
+            !isolated
+        );
         let sessions = app
             .agent_runner
             .sqlite_store()

@@ -11,6 +11,7 @@ pub(crate) mod documents;
 pub(crate) mod pages;
 pub(crate) mod server;
 pub(crate) mod views;
+pub(crate) mod webhook_store;
 
 #[derive(Clone)]
 pub(crate) struct Settings {

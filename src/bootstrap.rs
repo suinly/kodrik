@@ -237,6 +237,16 @@ pub(crate) async fn build_app_with_access(
         .register(Arc::new(WakeupTool::new(data)))
         .register(Arc::new(EncyclopediaTool))
         .register(Arc::new(SessionSearchTool::new(data.join("sessions"))));
+    if !isolated
+        && access.is_none()
+        && let Some(settings) = crate::web::Settings::from_config(&config.web)?
+    {
+        crate::web::webhook_store::init(&sessions).await?;
+        tools = tools.register(Arc::new(crate::agent::tools::webhooks::WebhooksTool::new(
+            sessions.clone(),
+            settings.base_url,
+        )));
+    }
     if let Some((search, read)) = &research_tools {
         tools = tools.register(search.clone()).register(read.clone());
     }
