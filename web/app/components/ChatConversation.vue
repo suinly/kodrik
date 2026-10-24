@@ -505,7 +505,9 @@ const compactionLabels = {
 .conversation-layout { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .conversation-layout-home { display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 0fr); transition: grid-template-rows 280ms ease; }
 .conversation-layout-home > [data-testid='chat-composer'] { max-height: calc(var(--chat-viewport-height, 100dvh) * 0.75); }
-.conversation-layout-centered { grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); }
+@media (min-width: 1024px) {
+  .conversation-layout-centered { grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); }
+}
 @media (prefers-reduced-motion: reduce) {
   .conversation-layout-home { transition: none; }
 }

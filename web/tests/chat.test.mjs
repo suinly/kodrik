@@ -566,6 +566,8 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     await page.goto(new URL('chat/',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toHaveJSProperty('readOnly',false);
+    const composer=page.getByTestId('chat-composer');
+    await expect.poll(()=>composer.evaluate(el=>Math.round(el.parentElement.getBoundingClientRect().bottom-el.getBoundingClientRect().bottom))).toBe(0);
     await page.screenshot({path:'/tmp/kodrik-home-composer-mobile.png',fullPage:true,animations:'disabled'});
     await input.fill('Сохранить при ошибке');
     await page.route('**/api/chat/sessions',route=>route.request().method()==='POST'?route.fulfill({status:503,json:{error:'Unavailable'}}):route.continue());
