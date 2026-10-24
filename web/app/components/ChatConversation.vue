@@ -487,7 +487,8 @@ const compactionLabels = {
           </template>
         </UAccordion>
       </div>
-      <UChatPrompt ref="prompt" v-model="draft" :aria-label="t('Сообщение')" :placeholder="t('Напишите Кодрику…')"
+      <UChatPrompt ref="prompt" v-model="draft" as="div" name="chat-message" autocomplete="off" enterkeyhint="send"
+        :aria-label="t('Сообщение')" :placeholder="t('Напишите Кодрику…')"
         class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
         :rows="1" autoresize :maxrows="4" :maxlength="32768" :readonly="editorLocked" :autofocus="false"
         :ui="{body:'min-w-0 flex-1 items-center',base:'min-h-8 resize-none py-1 text-base/6 [scrollbar-width:none]'}"

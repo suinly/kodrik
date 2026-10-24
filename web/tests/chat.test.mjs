@@ -608,6 +608,9 @@ test('home composer starts one conversation and moves down without replacing the
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeFocused();
     await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveAttribute('autocomplete','off');
+    await expect(input).toHaveJSProperty('form',null);
+    await expect(input).toHaveJSProperty('enterKeyHint','send');
     assert.equal(created.length,0);
     const view=await page.getByRole('region',{name:'Разговор с Кодриком'}).boundingBox();
     const centered=await page.getByTestId('chat-composer').boundingBox();
