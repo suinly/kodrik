@@ -66,6 +66,13 @@
 }
 
 html, body, #__nuxt { height: 100%; }
+html:has(.chat-viewport) { overflow: hidden; overscroll-behavior-y: none; }
+body:has(.chat-viewport) {
+  /* Installed iOS apps can scroll the body even with overflow: hidden alone. */
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
 .chat-viewport {
   top: var(--chat-viewport-top, 0px);
   bottom: auto;

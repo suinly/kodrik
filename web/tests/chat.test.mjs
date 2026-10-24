@@ -521,6 +521,44 @@ test('home composer starts one conversation and moves down without replacing the
   } finally {await browser.close();}
 });
 
+test('mobile app keeps its shell still during swipes while content and normal pages remain scrollable', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=>(await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const input=await page.context().newCDPSession(page);
+    const swipe=(x,y,distance)=>input.send('Input.synthesizeScrollGesture',{x,y,yDistance:distance,gestureSourceType:'touch',preventFling:true});
+    // Emulate the extra document scroll range exposed by iOS standalone mode.
+    const addRootOverflow=()=>page.evaluate(()=>{
+      const spacer=document.createElement('div');spacer.style.height='200vh';document.body.append(spacer);
+    });
+    await page.goto(base);
+    await expect(page.getByRole('link',{name:'Открыть чат',exact:true})).toBeVisible();
+    await addRootOverflow();
+    await swipe(200,600,-300);
+    await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
+    await page.goto(new URL('chat/',base).href);
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(composer).toBeVisible();
+    await composer.fill('Черновик после свайпа');
+    await addRootOverflow();
+    await swipe(200,600,-300);
+    assert.equal(await page.evaluate(()=>scrollY),0);
+    await swipe(200,200,300);
+    assert.equal(await page.evaluate(()=>scrollY),0);
+    await expect(composer).toHaveValue('Черновик после свайпа');
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const transcript=page.getByTestId('chat-transcript');
+    await expect(page.getByRole('heading',{name:'Дневник питания',exact:true})).toBeAttached();
+    await transcript.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
+    await swipe(200,500,-250);
+    await expect.poll(()=>transcript.evaluate(el=>el.scrollTop)).toBeGreaterThan(0);
+    assert.equal(await page.evaluate(()=>scrollY),0);
+  } finally {await browser.close();}
+});
+
 test('home composer keeps failed drafts and starts mobile conversations with attachments only', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
