@@ -179,12 +179,7 @@ impl PageStore {
         self.publish_release(slug, visibility, Some(bytes))
     }
 
-    fn publish_release(
-        &self,
-        slug: &str,
-        visibility: Option<Visibility>,
-        document: Option<Vec<u8>>,
-    ) -> anyhow::Result<Manifest> {
+    fn lock(&self, slug: &str) -> anyhow::Result<File> {
         validate_slug(slug)?;
         let locks = self.root.join("locks");
         checked_dir(&locks)?;
@@ -199,6 +194,28 @@ impl PageStore {
             .custom_flags(libc::O_NOFOLLOW)
             .open(lock_path)?;
         lock.lock()?;
+        Ok(lock)
+    }
+
+    pub(crate) fn delete(&self, slug: &str) -> anyhow::Result<()> {
+        let _lock = self.lock(slug)?;
+        let path = self.root.join("manifests").join(format!("{slug}.json"));
+        reject_symlinks(&path)?;
+        // shortcut: release snapshots remain on disk; add garbage collection if retention needs limits.
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn publish_release(
+        &self,
+        slug: &str,
+        visibility: Option<Visibility>,
+        document: Option<Vec<u8>>,
+    ) -> anyhow::Result<Manifest> {
+        let _lock = self.lock(slug)?;
         let old = self.manifest(slug)?;
         let draft = self.drafts().join(slug);
         if document.is_none() {
@@ -329,6 +346,44 @@ fn copy_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_removes_publication_and_preserves_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PageStore::new(dir.path());
+        let draft = store.drafts().join("report");
+        fs::create_dir_all(&draft).unwrap();
+        fs::write(draft.join("index.html"), "report").unwrap();
+        store.publish("report", Some(Visibility::Public)).unwrap();
+        store.delete("report").unwrap();
+        assert!(store.manifest("report").unwrap().is_none());
+        assert!(store.list().unwrap().is_empty());
+        assert_eq!(fs::read(draft.join("index.html")).unwrap(), b"report");
+        store.delete("report").unwrap();
+        assert!(store.delete("../report").is_err());
+        let published = store.publish("report", None).unwrap();
+        assert_eq!(published.visibility, Visibility::Private);
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deletion_rejects_manifest_and_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let store = PageStore::new(dir.path());
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("report.json"), "keep").unwrap();
+        let manifests = store.root.join("manifests");
+        fs::create_dir_all(&manifests).unwrap();
+        symlink(outside.join("report.json"), manifests.join("report.json")).unwrap();
+        assert!(store.delete("report").is_err());
+        fs::remove_file(manifests.join("report.json")).unwrap();
+        fs::remove_dir(&manifests).unwrap();
+        symlink(&outside, &manifests).unwrap();
+        assert!(store.delete("report").is_err());
+        assert_eq!(fs::read(outside.join("report.json")).unwrap(), b"keep");
+    }
 
     #[test]
     fn catalog_ignores_unrelated_files_and_rejects_manifest_symlinks() {

@@ -34,6 +34,10 @@ const sectionTitle = computed(()=>section.value==='chat'?t('Диалоги'):sec
 const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
+const pageCatalogRevision = ref(0)
+const pageToDelete = ref<PublishedPage | null>(null)
+const deletingPage = ref(false)
+const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
 const mainTitle = computed(()=>section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : section.value==='webhooks' ? webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки') : selected.value ? conversationTitle(selected.value) : t('Кодрик'))
 const conversationView = useTemplateRef('conversationView')
@@ -244,6 +248,35 @@ function closePage() {
   void nextTick(() => conversationView.value?.focusInput())
 }
 
+function confirmPageDeletion(page: PublishedPage) {
+  focusAfterMenu = false
+  menu.value = false
+  pageDeleteError.value = ''
+  pageToDelete.value = page
+}
+
+async function deletePage() {
+  if (!pageToDelete.value || deletingPage.value) return
+  const slug = pageToDelete.value.slug
+  deletingPage.value = true
+  pageDeleteError.value = ''
+  try {
+    const response = await fetch(new URL(`api/pages/${encodeURIComponent(slug)}`, base), {
+      method: 'DELETE', headers: {'Accept-Language': locale.value},
+    })
+    if (response.status === 401) throw new Error(t('Сессия истекла. Войдите снова.'))
+    if (!response.ok && response.status !== 404) throw new Error(t('Не удалось удалить страницу. Попробуйте ещё раз.'))
+    if (selectedPage.value?.slug === slug) {
+      selectedPage.value = null
+      if (section.value === 'pages') writeLocation()
+    }
+    pageCatalogRevision.value++
+    pageToDelete.value = null
+  } catch (reason) {
+    pageDeleteError.value = messageOf(reason)
+  } finally { deletingPage.value = false }
+}
+
 function openSection(next:Section) {
   section.value=next
   writeLocation()
@@ -398,7 +431,7 @@ onMounted(() => {
       </nav>
       <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t("Диалоги не найдены.") : t("Здесь появятся ваши разговоры.") }}</p>
       </template>
-      <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" @open="openPage" />
+      <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
       <div v-else-if="webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
         <div class="flex items-center gap-1">
           <UButton :label="t('Создать вебхук')" icon="i-lucide-plus" :disabled="webhooks.saving || webhooks.loading" class="min-w-0 flex-1 justify-center" @click="chooseWebhook()" />
@@ -475,6 +508,16 @@ onMounted(() => {
       </template>
     </UDashboardPanel>
   </UDashboardGroup>
+  <UModal :open="pageToDelete!==null" :title="t('Удалить страницу?')" :dismissible="!deletingPage" :close="deletingPage?false:undefined" @update:open="open=>{if(!open) pageToDelete=null}">
+    <template #body>
+      <p class="text-sm text-muted">{{ t('Удалить страницу «{0}»? Она исчезнет из каталога, а её ссылка перестанет работать. Черновики и исходные данные сохранятся.', pageToDelete?.title ?? '') }}</p>
+      <p v-if="pageDeleteError" role="alert" class="mt-3 text-sm text-error">{{ t(pageDeleteError) }}</p>
+    </template>
+    <template #footer>
+      <UButton :label="t('Отмена')" color="neutral" variant="ghost" :disabled="deletingPage" @click="pageToDelete=null" />
+      <UButton :label="t('Подтвердить удаление')" color="error" :loading="deletingPage" @click="deletePage" />
+    </template>
+  </UModal>
   <UModal :open="management!==null" :title="management==='rename'?t('Переименовать диалог'):t('Удалить диалог?')" :dismissible="!saving" @update:open="open=>{if(!open) management=null}">
     <template #body>
       <form v-if="management==='rename'" id="rename-conversation" @submit.prevent="saveManagement">

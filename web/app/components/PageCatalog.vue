@@ -2,8 +2,8 @@
 import {locale, t} from '../utils/i18n'
 import {base, login, type PublishedPage} from '../utils/api'
 
-defineProps<{selected?: string}>()
-const emit = defineEmits<{open: [page: PublishedPage]}>()
+const props = defineProps<{selected?: string; revision?: number}>()
+const emit = defineEmits<{open: [page: PublishedPage]; delete: [page: PublishedPage]}>()
 const pages = ref<PublishedPage[]>([])
 const search = ref('')
 const loading = ref(false)
@@ -27,6 +27,7 @@ async function load() {
   } finally { loading.value = false }
 }
 onMounted(load)
+watch(() => props.revision, load)
 </script>
 
 <template>
@@ -43,18 +44,28 @@ onMounted(load)
     </template>
     <template v-else>
       <nav :aria-label="t('Каталог страниц')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
-        <UButton v-for="page in visiblePages" :key="page.slug" @click="emit('open', page)"
-          :title="page.title" color="neutral" :variant="selected === page.slug ? 'soft' : 'ghost'" :aria-current="selected === page.slug ? 'page' : undefined" class="shrink-0 justify-start">
+        <div v-for="page in visiblePages" :key="page.slug" class="page-row relative flex shrink-0 items-center">
+        <UButton @click="emit('open', page)"
+          :title="page.title" color="neutral" :variant="selected === page.slug ? 'soft' : 'ghost'" :aria-current="selected === page.slug ? 'page' : undefined" class="w-full justify-start pr-11">
           <UIcon name="i-lucide-file-text" class="shrink-0 text-muted" />
           <span class="min-w-0 flex-1 text-left">
             <span class="block truncate">{{ page.title }}</span>
             <span class="block truncate text-xs text-muted">{{ page.slug }}</span>
             <span class="block text-xs text-muted">{{ page.visibility === 'public' ? t('Публичная') : t('Приватная') }}</span>
           </span>
-          <UIcon name="i-lucide-chevron-right" class="shrink-0 text-muted" />
         </UButton>
+        <UButton icon="i-lucide-trash-2" :aria-label="t('Удалить страницу «{0}»', page.title)" :title="t('Удалить страницу')" color="error" variant="ghost" size="sm" class="page-actions absolute right-1" @click="emit('delete', page)" />
+        </div>
         <p v-if="!visiblePages.length" class="text-sm text-muted">{{ pages.length ? t('Страницы не найдены.') : t('Здесь появятся опубликованные страницы.') }}</p>
       </nav>
     </template>
   </div>
 </template>
+
+<style scoped>
+@media (hover: hover) and (pointer: fine) {
+  .page-actions { opacity: 0; }
+  .page-row:hover .page-actions,
+  .page-row:focus-within .page-actions { opacity: 1; }
+}
+</style>

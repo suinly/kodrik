@@ -12,7 +12,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use futures::StreamExt;
 use serde::Deserialize;
@@ -132,6 +132,7 @@ pub(crate) fn router_with_resources(
         .route("/pages/{slug}/", get(page_index))
         .route("/pages/{slug}/{*path}", get(page))
         .route("/api/pages", get(page_catalog))
+        .route("/api/pages/{slug}", delete(page_delete))
         .route(
             "/api/documents/{slug}/sources/{source}",
             get(document_source),
@@ -410,6 +411,33 @@ async fn page_index(
         uri.to_string(),
         false,
     )
+    .await
+}
+
+async fn page_delete(
+    State(state): State<ServerState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !valid_origin(&state.settings, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if validate_slug(&slug).is_err() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    blocking(move || {
+        let authenticated = match request_token(&headers) {
+            Some(token) => state
+                .auth
+                .authenticated(&token, chrono::Utc::now().timestamp())?,
+            None => false,
+        };
+        if !authenticated {
+            return Ok(StatusCode::UNAUTHORIZED.into_response());
+        }
+        state.pages.delete(&slug)?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
     .await
 }
 
@@ -796,6 +824,101 @@ mod tests {
             pages::{PageStore, Visibility},
         },
     };
+
+    #[tokio::test]
+    async fn page_deletion_requires_owner_and_origin_and_revokes_published_urls() {
+        use crate::web::auth::Identity;
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            trusted_proxies: vec![],
+            listen: "127.0.0.1:0".parse().unwrap(),
+            base_url: "http://127.0.0.1/kodrik/".parse().unwrap(),
+        };
+        let auth = AuthStore::new(dir.path());
+        let now = chrono::Utc::now().timestamp();
+        auth.set_password("password").unwrap();
+        auth.configure_owner(Some(42)).unwrap();
+        auth.grant_test_user(7).unwrap();
+        let owner = auth.login("password", now).unwrap().unwrap();
+        let guest = auth
+            .test_session(Identity::Telegram(7), now)
+            .unwrap()
+            .unwrap();
+        let telegram_owner = auth
+            .test_session(Identity::Telegram(42), now)
+            .unwrap()
+            .unwrap();
+        let app = router(settings, dir.path());
+        let pages = PageStore::new(dir.path());
+        let draft = pages.drafts().join("report");
+        std::fs::create_dir_all(&draft).unwrap();
+        std::fs::write(draft.join("index.html"), "report").unwrap();
+        std::fs::write(draft.join("data.json"), "{}").unwrap();
+        pages.publish("report", Some(Visibility::Public)).unwrap();
+        async fn remove(app: &Router, slug: &str, token: &str, origin: Option<&str>) -> StatusCode {
+            let mut request = Request::builder()
+                .method(Method::DELETE)
+                .uri(format!("/kodrik/api/pages/{slug}"))
+                .header(header::COOKIE, format!("kodrik_web_session={token}"));
+            if let Some(origin) = origin {
+                request = request.header(header::ORIGIN, origin);
+            }
+            app.clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+                .status()
+        }
+        for (token, origin, expected) in [
+            ("", Some("http://127.0.0.1"), StatusCode::UNAUTHORIZED),
+            (
+                guest.as_str(),
+                Some("http://127.0.0.1"),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (owner.as_str(), None, StatusCode::FORBIDDEN),
+            (
+                owner.as_str(),
+                Some("https://evil.example"),
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            assert_eq!(remove(&app, "report", token, origin).await, expected);
+            assert!(pages.manifest("report").unwrap().is_some());
+        }
+        assert_eq!(
+            remove(&app, "INVALID", &owner, Some("http://127.0.0.1")).await,
+            StatusCode::BAD_REQUEST
+        );
+        for token in [&owner, &telegram_owner] {
+            assert_eq!(
+                remove(&app, "report", token, Some("http://127.0.0.1")).await,
+                StatusCode::NO_CONTENT
+            );
+            assert!(pages.list().unwrap().is_empty());
+            for path in ["pages/report/", "pages/report/data.json"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/kodrik/{path}"))
+                            .header(header::COOKIE, format!("kodrik_web_session={owner}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+                assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+            }
+            assert_eq!(
+                remove(&app, "report", token, Some("http://127.0.0.1")).await,
+                StatusCode::NO_CONTENT
+            );
+            pages.publish("report", Some(Visibility::Public)).unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn page_catalog_lists_current_publications_only_for_owner_sessions() {

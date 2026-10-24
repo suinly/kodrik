@@ -95,7 +95,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
     await pages.click();
     const navigation=page.getByRole('navigation',{name:'Каталог страниц'});
-    const link=navigation.getByRole('button',{name:/Дневник питания/});
+    const link=navigation.getByRole('button',{name:/^Дневник питания/});
     await expect(link).toBeVisible();
     await expect(navigation.getByText('Приватная',{exact:true})).toBeVisible();
     const search=page.getByRole('textbox',{name:'Поиск страниц',exact:true});
@@ -139,7 +139,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect.poll(async()=> (await mobileCatalog.boundingBox())?.x ?? -1).toBeGreaterThanOrEqual(0);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-pages-catalog-mobile.png',fullPage:true,animations:'disabled'});
-    await page.getByRole('dialog').getByRole('button',{name:/Дневник питания/}).click();
+    await page.getByRole('dialog').getByRole('button',{name:/^Дневник питания/}).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(viewer.getByRole('table')).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-pages-viewer-mobile.png',fullPage:true,animations:'disabled'});
@@ -154,7 +154,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await page.setViewportSize({width:1280,height:720});
     await pages.click();
     await page.getByRole('button',{name:'Обновить',exact:true}).click();
-    await navigation.getByRole('button',{name:/legacy-preview/}).click();
+    await navigation.getByRole('button',{name:/^legacy-preview/}).click();
     await expect(page.frameLocator('iframe[title="legacy-preview"]').getByRole('heading',{name:'Legacy published report'})).toBeVisible();
     await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
     await expect(composer).toHaveValue('Несохранённый черновик');
@@ -179,7 +179,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await writeFile(join(storage,'pages','manifests','relative-links.json'),JSON.stringify({release:nativeRelease,visibility:'private',document:true}));
     await pages.click();
     await page.getByRole('button',{name:'Обновить',exact:true}).click();
-    await navigation.getByRole('button',{name:/Relative links/}).click();
+    await navigation.getByRole('button',{name:/^Relative links/}).click();
     for(const label of ['Relative report','Relative button']) await expect(viewer.getByRole('link',{name:label,exact:true})).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
     await expect(viewer.getByRole('link',{name:'Anchor',exact:true})).toHaveAttribute('href','#section');
     await viewer.getByRole('button',{name:'Open links',exact:true}).click();
@@ -205,7 +205,7 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
     assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true,42)).ok,true);
     await expect(page).toHaveURL(new URL('chat/',base).href);
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
-    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
     await expect(viewer.getByRole('table')).toBeVisible();
     await viewer.getByRole('button',{name:'Далее',exact:true}).click();
@@ -235,7 +235,7 @@ test('section rail switches context menus and main content without losing chat d
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'История диалогов'})).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toHaveCount(0);
-    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
     await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'Каталог страниц'})).toHaveCount(0);
@@ -285,6 +285,66 @@ test('section rail switches context menus and main content without losing chat d
   } finally {await browser.close();}
 });
 
+test('page deletion confirms, keeps failed attempts and clears selected pages on desktop and mobile', {timeout:60000},async()=>{
+  for(const slug of ['delete-desktop','delete-mobile']) {
+    const release=crypto.randomUUID();
+    const directory=join(storage,'pages','releases',slug,release);
+    await mkdir(directory,{recursive:true});
+    await writeFile(join(directory,'index.html'),`<!doctype html><h1>${slug}</h1>`);
+    await mkdir(join(storage,'pages','manifests'),{recursive:true});
+    await writeFile(join(storage,'pages','manifests',`${slug}.json`),JSON.stringify({release,visibility:'public',document:false}));
+  }
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('chat/?page=delete-desktop',base).href);
+    await expect(page.locator('iframe[title="delete-desktop"]')).toBeVisible();
+    const remove=page.getByRole('button',{name:'Удалить страницу «delete-desktop»',exact:true});
+    await expect(remove).toHaveCSS('opacity','0');
+    await remove.locator('..').hover();
+    await expect(remove).toHaveCSS('opacity','1');
+    await page.mouse.move(1000,400);
+    await expect(remove).toHaveCSS('opacity','0');
+    await remove.focus();
+    await expect(remove).toHaveCSS('opacity','1');
+    await remove.click();
+    const confirmation=page.getByRole('dialog',{name:'Удалить страницу?',exact:true});
+    await expect(confirmation).toContainText('delete-desktop');
+    await confirmation.getByRole('button',{name:'Отмена',exact:true}).click();
+    await expect(remove).toBeVisible();
+    assert.equal((await fetch(new URL('pages/delete-desktop/',base))).status,200);
+    await remove.click();
+    await page.route('**/api/pages/delete-desktop',route=>route.fulfill({status:503,body:''}));
+    await confirmation.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await expect(confirmation.getByRole('alert')).toContainText('Не удалось удалить страницу. Попробуйте ещё раз.');
+    await expect(page.locator('iframe[title="delete-desktop"]')).toHaveCount(1);
+    await page.unroute('**/api/pages/delete-desktop');
+    await confirmation.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await expect(confirmation).toHaveCount(0);
+    await expect(remove).toHaveCount(0);
+    await expect(page.locator('iframe[title="delete-desktop"]')).toHaveCount(0);
+    await expect(page).toHaveURL(new URL('chat/?section=pages',base).href);
+    assert.equal((await fetch(new URL('pages/delete-desktop/',base))).status,404);
+    await page.reload();
+    await expect(remove).toHaveCount(0);
+    const mobile=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    await mobile.goto(new URL('chat/?section=pages',base).href);
+    await mobile.getByRole('button',{name:'Показать страницы',exact:true}).click();
+    const mobileRemove=mobile.getByRole('dialog').getByRole('button',{name:'Удалить страницу «delete-mobile»',exact:true});
+    await expect(mobileRemove).toHaveCSS('opacity','1');
+    await mobileRemove.click();
+    const mobileConfirmation=mobile.getByRole('dialog',{name:'Удалить страницу?',exact:true});
+    await expect(mobileConfirmation).toBeVisible();
+    await mobile.screenshot({path:'/tmp/kodrik-delete-page-mobile.png',animations:'disabled'});
+    await mobileConfirmation.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await expect(mobileConfirmation).toHaveCount(0);
+    await mobile.getByRole('button',{name:'Показать страницы',exact:true}).click();
+    await expect(mobileRemove).toHaveCount(0);
+    assert.equal((await fetch(new URL('pages/delete-mobile/',base))).status,404);
+    assert.equal(await mobile.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  } finally {await browser.close();}
+});
+
 test('page and webhook links restore selections on reload and in a fresh tab', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'ui'});
@@ -294,7 +354,7 @@ test('page and webhook links restore selections on reload and in a fresh tab', {
     const page=await signedPage(browser);
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
-    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     await expect.poll(()=>new URL(page.url()).searchParams.get('page')).toBe('nutrition');
     assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
     const pageUrl=page.url();
@@ -320,7 +380,7 @@ test('page and webhook links restore selections on reload and in a fresh tab', {
     await expect(page.getByLabel('Инструкция агенту',{exact:true})).toHaveValue('Диагностика события.');
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
-    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/Дневник питания/}).click();
+    await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     await expect(page).toHaveURL(pageUrl);
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
     const fresh=await signedPage(browser);

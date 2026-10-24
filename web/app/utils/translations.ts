@@ -2,6 +2,11 @@
 export const en = {
   'Открываю ссылку…': 'Opening link…',
   'Страница удалена или не найдена.': 'Page deleted or not found.',
+  'Удалить страницу': 'Delete page',
+  'Удалить страницу «{0}»': 'Delete page “{0}”',
+  'Удалить страницу?': 'Delete page?',
+  'Удалить страницу «{0}»? Она исчезнет из каталога, а её ссылка перестанет работать. Черновики и исходные данные сохранятся.': 'Delete page “{0}”? It will be removed from the catalog and its link will stop working. Drafts and source data will be kept.',
+  'Не удалось удалить страницу. Попробуйте ещё раз.': 'Could not delete the page. Try again.',
   'Вебхук удалён или не найден.': 'Webhook deleted or not found.',
   'Вебхуки доступны только владельцу.': 'Webhooks are available to the owner only.',
   'Разделы': 'Sections',
