@@ -30,6 +30,8 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Update Homebrew
+        run: brew update
       - name: Build and test
         run: |
           rustup toolchain install stable --profile minimal
