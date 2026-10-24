@@ -504,6 +504,98 @@ test('a delayed new conversation response cannot override a newer section', {tim
   }
 });
 
+test('typing restores composer focus without losing the first character or cursor position', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const keyboard=await page.context().newCDPSession(page);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    for(const path of ['chat/',`chat/?conversation=${id}`]) {
+      await page.goto(new URL(path,base).href);
+      await expect(input).toBeFocused();
+      for(const [key,text] of [['x','x'],['Shift+!','!'],['Space',' ']]) {
+        await input.fill('');
+        await input.evaluate(el=>el.blur());
+        await page.keyboard.press(key);
+        await expect(input).toBeFocused();
+        await expect(input).toHaveValue(text);
+      }
+      await input.fill('до конца');
+      await input.evaluate(el=>{el.setSelectionRange(2,3);el.blur();});
+      await keyboard.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Ж',text:'Ж',code:'Semicolon',modifiers:8});
+      await keyboard.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Ж',code:'Semicolon'});
+      await expect(input).toHaveValue('доЖконца');
+      await page.keyboard.press('ControlOrMeta+z');
+      await expect(input).toHaveValue('до конца');
+      await page.reload();
+      await expect(input).toHaveValue('до конца');
+    }
+  } finally {await browser.close();}
+});
+
+test('composer focus recovery respects other fields, shortcuts, overlays and hidden chat', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const input=page.locator('textarea[aria-label="Сообщение"]');
+    await input.fill('Черновик');
+    await input.evaluate(el=>el.blur());
+    for(const key of ['Control+x','Meta+x','Alt+x','ArrowLeft','Escape','Enter','Tab']) {
+      await page.keyboard.press(key);
+      await expect(input).not.toBeFocused();
+      await expect(input).toHaveValue('Черновик');
+    }
+    await page.evaluate(()=>{
+      document.activeElement?.blur();
+      document.body.addEventListener('keydown',event=>event.preventDefault(),{once:true});
+    });
+    await page.keyboard.press('x');
+    await expect(input).not.toBeFocused();
+    await expect(input).toHaveValue('Черновик');
+    await page.evaluate(()=>document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'x',isComposing:true,bubbles:true})));
+    await expect(input).not.toBeFocused();
+    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
+    await expect(search).toBeFocused();
+    await page.keyboard.type('query');
+    await expect(search).toHaveValue('query');
+    await expect(input).toHaveValue('Черновик');
+    await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
+    const searchButton=page.getByRole('button',{name:'Найти в диалоге',exact:true});
+    await searchButton.focus();
+    await page.keyboard.press('Space');
+    await expect(search).toBeVisible();
+    await expect(input).toHaveValue('Черновик');
+    await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
+    await page.getByRole('button',{name:'Переименовать диалог',exact:true}).click();
+    const title=page.getByRole('textbox',{name:'Название диалога',exact:true});
+    await title.fill('Название');
+    await page.keyboard.type('x');
+    await expect(title).toHaveValue('Названиеx');
+    await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).focus();
+    await page.keyboard.press('x');
+    await expect(input).not.toBeFocused();
+    await expect(input).toHaveValue('Черновик');
+    await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).click();
+    await page.locator(`[data-conversation-id="${id}"]`).locator('..').getByRole('button',{name:/Действия с диалогом/}).click();
+    await page.keyboard.press('x');
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(input).not.toBeFocused();
+    await expect(input).toHaveValue('Черновик');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
+    await expect(input).toBeHidden();
+    await page.evaluate(()=>document.activeElement?.blur());
+    await page.keyboard.press('x');
+    await expect(input).not.toBeFocused();
+    await page.getByRole('button',{name:'Чат',exact:true}).click();
+    await expect(input).toHaveValue('Черновик');
+  } finally {await browser.close();}
+});
+
 test('home composer starts one conversation and moves down without replacing the input', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
@@ -2035,6 +2127,10 @@ test('composer waits for authoritative snapshot after admission', { timeout: 300
     await page.getByRole('button', { name: 'Отправить' }).waitFor();
     await expect(input).toHaveJSProperty('readOnly', true);
     await expect(page.getByRole('button', { name: 'Отправить' })).toBeDisabled();
+    await input.evaluate(el=>el.blur());
+    await page.keyboard.press('x');
+    await expect(input).not.toBeFocused();
+    await expect(input).toHaveValue('');
     release();
     await page.unrouteAll({ behavior: 'wait' });
     await input.fill('second');

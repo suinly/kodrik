@@ -208,6 +208,7 @@ async function observe() {
   }
 }
 onMounted(() => {
+  document.addEventListener('keydown', recoverInputFocus, {signal:controller.signal})
   searchObserver = new MutationObserver(highlightSearch)
   if (transcript.value) searchObserver.observe(transcript.value,{childList:true,subtree:true,characterData:true})
   scrollObserver = new ResizeObserver(() => {
@@ -222,6 +223,17 @@ watch(() => props.conversation.id, () => { persistDraft(); void observe() })
 onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect(); searchObserver?.disconnect(); CSS.highlights?.delete('conversation-search') })
 function focusInput() {
   if (mounted && !editorLocked.value) prompt.value?.textareaRef?.focus({preventScroll:true})
+}
+function recoverInputFocus(event:KeyboardEvent) {
+  if(event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || [...event.key].length!==1 || editorLocked.value) return
+  const target=event.target
+  if(target instanceof HTMLElement && (target.isContentEditable || target.closest('input,textarea,select,[role="textbox"],[role="combobox"]'))) return
+  if(event.key===' ' && target instanceof HTMLElement && target.closest('button,a,summary,[role="button"]')) return
+  const input=prompt.value?.textareaRef
+  if(!input || input.disabled || input.readOnly || !input.getClientRects().length) return
+  if([...document.querySelectorAll('[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')].some(element=>element.getClientRects().length)) return
+  // Focus during keydown lets the browser insert this character with normal undo and maxlength.
+  focusInput()
 }
 defineExpose({focusInput})
 watch(editorLocked, async locked => {

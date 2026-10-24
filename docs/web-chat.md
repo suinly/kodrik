@@ -226,8 +226,11 @@ Its transparent overlay floats over the transcript without reserving a footer ro
 
 The composer receives focus once after opening a conversation, including creating,
 switching and reloading, as soon as its history is loaded and input is available.
-Subsequent updates do not steal focus. Mobile Safari may require a tap before
-showing the software keyboard.
+Subsequent updates do not steal focus. Typing a printable character outside an
+editable field returns focus to the visible, unlocked composer and inserts that
+first character at its saved selection. Shortcuts, composition, open dialogs and
+menus, and Space on a button or link keep their normal behavior. Mobile Safari
+may require a tap before showing the software keyboard.
 On narrow screens the composer stays compact, its touch targets remain large, and
 keyboard hints are hidden. The chat and mobile sidebar respect display safe areas;
 the visual viewport keeps the composer above the software keyboard.
