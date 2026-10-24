@@ -1315,6 +1315,14 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
     const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();
     await expect.poll(()=>dialog.evaluate(el=>Math.round(el.getBoundingClientRect().x))).toBe(0);
+    const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+    for(const name of ['Язык','Переключить тему','Выйти']) {
+      const bounds=await dialog.getByRole('button',{name,exact:true}).boundingBox();
+      assert.ok(bounds.x>=logo.x+logo.width,`${name}: to the right of the logo`);
+      assert.ok(Math.abs(bounds.y+bounds.height/2-logo.y-logo.height/2)<1,`${name}: same header row`);
+      assert.ok(bounds.x+bounds.width<=320,`${name}: fits the narrow screen`);
+      await checkIcon(name);
+    }
     await expect(dialog.getByRole('button',{name:'Выйти',exact:true})).toBeVisible();
     await expect(dialog.getByRole('textbox',{name:'Поиск диалогов',exact:true})).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-chat-mobile-menu.png'});

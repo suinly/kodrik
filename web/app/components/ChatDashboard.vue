@@ -396,9 +396,16 @@ onMounted(() => {
     </aside>
     <UDashboardSidebar v-model:open="menu" :default-size="18"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',footer:'border-t border-default py-3 sm:px-4',content:'chat-viewport bg-default'}">
+      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport bg-default'}">
       <template #header>
-        <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
+        <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
+        <div class="ml-auto flex shrink-0 items-center gap-0.5">
+          <LanguageSwitch />
+          <ThemeSwitch />
+          <form :action="logoutUrl" method="post">
+            <UButton type="submit" color="neutral" variant="ghost" icon="i-lucide-log-out" :aria-label="t('Выйти')" :title="t('Выйти')" size="lg" />
+          </form>
+        </div>
       </template>
       <nav :aria-label="t('Разделы')" class="flex shrink-0 flex-col gap-1 border-b border-default pb-3 lg:hidden">
         <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :label="t(item.label)"
@@ -462,15 +469,6 @@ onMounted(() => {
           </UButton>
         </nav>
       </div>
-      <template #footer>
-        <div class="flex w-full items-center justify-between">
-          <LanguageSwitch />
-          <ThemeSwitch />
-          <form :action="logoutUrl" method="post">
-            <UButton type="submit" color="neutral" variant="ghost" icon="i-lucide-log-out" :aria-label="t('Выйти')" :title="t('Выйти')" size="sm" />
-          </form>
-        </div>
-      </template>
     </UDashboardSidebar>
 
     <UDashboardPanel id="chat" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">

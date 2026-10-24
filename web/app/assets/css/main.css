@@ -99,6 +99,7 @@ body:has(.chat-viewport) {
 }
 @media (pointer: coarse) {
   .chat-viewport button { min-height: 2.75rem; min-width: 2.75rem; }
+  .chat-viewport button:has(> [data-slot='leadingIcon']:only-child) { justify-content: center; }
   .chat-viewport .sidebar-item { min-height: 3.5rem; }
   .chat-viewport .sidebar-item-with-actions { padding-inline-end: 3.25rem; }
   .chat-viewport .chat-prompt button {
