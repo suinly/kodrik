@@ -24,6 +24,11 @@ const restoring = ref(false)
 const locationError = ref(false)
 let navigationRevision=0
 const webhooks = useWebhooks(computed(()=>section.value==='webhooks'))
+const webhookSearch = ref('')
+const visibleWebhooks = computed(() => {
+  const query = webhookSearch.value.trim().toLowerCase()
+  return webhooks.hooks.filter(hook => hook.name.toLowerCase().includes(query))
+})
 const sections = [
   {id:'chat',label:'Чат',icon:'i-lucide-messages-square'},
   {id:'pages',label:'Страницы',icon:'i-lucide-panels-top-left'},
@@ -391,7 +396,7 @@ onMounted(() => {
     </aside>
     <UDashboardSidebar v-model:open="menu" :default-size="18"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',body:'overflow-hidden',content:'chat-viewport bg-default'}">
+      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',footer:'border-t border-default py-3 sm:px-4',content:'chat-viewport bg-default'}">
       <template #header>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
       </template>
@@ -400,29 +405,39 @@ onMounted(() => {
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
           :disabled="webhooks.saving" size="xl" class="justify-start" @click="openSection(item.id)" />
       </nav>
-      <h2 class="text-sm font-semibold text-highlighted">{{ sectionTitle }}</h2>
+      <div v-if="section!=='pages'" class="sidebar-section-header">
+        <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted">{{ sectionTitle }}</h2>
+        <template v-if="section==='chat'">
+          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="listing" :disabled="creating" @click="refresh" />
+          <UButton :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
+        </template>
+        <template v-else-if="webhooks.allowed">
+          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
+          <UButton :aria-label="t('Создать вебхук')" :title="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :disabled="webhooks.saving || webhooks.loading" @click="chooseWebhook()" />
+        </template>
+      </div>
       <template v-if="section==='chat'">
-      <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create()" />
-      <UInput v-model="search" :aria-label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" icon="i-lucide-search" :loading="searching" size="xl" class="w-full" />
+      <UInput v-model="search" :aria-label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" icon="i-lucide-search" :loading="searching" size="lg" class="w-full" />
       <nav :aria-label="t('История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
-        <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="conversation-row relative flex shrink-0 items-center">
+        <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="sidebar-row relative flex shrink-0 items-center">
         <UButton
           :aria-label="conversationTitle(session)" :title="conversationTitle(session)" :data-conversation-id="session.id" color="neutral"
           :variant="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'soft' : 'ghost'"
           :aria-current="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'page' : undefined"
-          :disabled="creating" class="w-full justify-start pr-10"
+          :disabled="creating" class="sidebar-item sidebar-item-with-actions"
           @click="select(session)">
-          <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="shrink-0 text-muted" />
-          <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="shrink-0 animate-spin" :aria-label="t('Выполняется')" />
+          <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="sidebar-icon" />
+          <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="sidebar-icon animate-spin" :aria-label="t('Выполняется')" />
+          <UIcon v-if="!session.pinned && !session.busy" name="i-lucide-message-square" class="sidebar-icon" />
           <span class="min-w-0 flex-1 text-left">
             <UChatShimmer v-if="session.title_pending" :text="shortConversationTitle(session.title)" data-testid="title-shimmer" :aria-label="t('Создаю название диалога')" class="block truncate motion-reduce:animate-none" />
             <span v-else class="block truncate">{{ shortConversationTitle(conversationTitle(session)) }}</span>
-            <time v-if="session.updated_at" :datetime="session.updated_at" class="block text-xs text-muted">{{ dateFormat.format(new Date(session.updated_at)) }}</time>
-            <span v-if="session.snippet" class="block truncate text-xs text-muted">{{ session.snippet }}</span>
+            <span v-if="session.snippet" class="block truncate text-xs font-normal text-muted">{{ session.snippet }}</span>
+            <time v-else-if="session.updated_at" :datetime="session.updated_at" class="block text-xs font-normal text-muted">{{ dateFormat.format(new Date(session.updated_at)) }}</time>
           </span>
         </UButton>
         <UDropdownMenu :items="[{label:session.pinned?t('Открепить диалог'):t('Закрепить диалог'),icon:session.pinned?'i-lucide-pin-off':'i-lucide-pin',onSelect:()=>togglePin(session)},{label:t('Переименовать'),icon:'i-lucide-pencil',onSelect:()=>manage(session,'rename')},{label:t('Удалить диалог'),icon:'i-lucide-trash-2',color:'error',disabled:session.busy,onSelect:()=>manage(session,'delete')}]">
-          <UButton icon="i-lucide-ellipsis" :aria-label="t('Действия с диалогом «{0}»', conversationTitle(session))" color="neutral" variant="ghost" size="sm" class="conversation-actions absolute right-1" />
+          <UButton icon="i-lucide-ellipsis" :aria-label="t('Действия с диалогом «{0}»', conversationTitle(session))" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary absolute right-1" />
         </UDropdownMenu>
         </div>
         <p v-if="listError" role="alert" class="text-sm text-error">{{ t(listError) }}</p>
@@ -433,17 +448,17 @@ onMounted(() => {
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
       <div v-else-if="webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
-        <div class="flex items-center gap-1">
-          <UButton :label="t('Создать вебхук')" icon="i-lucide-plus" :disabled="webhooks.saving || webhooks.loading" class="min-w-0 flex-1 justify-center" @click="chooseWebhook()" />
-          <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
-        </div>
+        <UInput v-model="webhookSearch" :aria-label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')" icon="i-lucide-search" size="lg" class="w-full" />
         <p v-if="webhooks.loading" role="status" class="text-sm text-muted">{{ t('Загружаю вебхуки…') }}</p>
-        <p v-else-if="!webhooks.hooks.length" class="text-sm text-muted">{{ t('Пока нет вебхуков.') }}</p>
+        <p v-else-if="!visibleWebhooks.length" class="text-sm text-muted">{{ webhooks.hooks.length ? t('Вебхуки не найдены.') : t('Пока нет вебхуков.') }}</p>
         <nav :aria-label="t('Список вебхуков')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
-          <UButton v-for="hook in webhooks.hooks" :key="hook.id" :label="hook.name" color="neutral" :variant="webhooks.selected===hook.id?'soft':'ghost'"
-            :aria-current="webhooks.selected===hook.id?'page':undefined" :disabled="webhooks.saving || webhooks.loading" class="shrink-0 justify-start" @click="chooseWebhook(hook)">
-            <span class="min-w-0 flex-1 truncate text-left">{{ hook.name }}</span>
-            <UIcon v-if="!hook.enabled" name="i-lucide-pause" :aria-label="t('Отключён')" class="shrink-0 text-muted" />
+          <UButton v-for="hook in visibleWebhooks" :key="hook.id" :aria-label="hook.name" :aria-description="hook.enabled?t('Включён'):t('Отключён')" :title="hook.name" color="neutral" :variant="webhooks.selected===hook.id?'soft':'ghost'"
+            :aria-current="webhooks.selected===hook.id?'page':undefined" :disabled="webhooks.saving || webhooks.loading" class="sidebar-item" @click="chooseWebhook(hook)">
+            <UIcon :name="hook.enabled?'i-lucide-webhook':'i-lucide-pause'" class="sidebar-icon" />
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block truncate">{{ hook.name }}</span>
+              <span class="block text-xs font-normal text-muted">{{ hook.enabled ? t('Включён') : t('Отключён') }}</span>
+            </span>
           </UButton>
         </nav>
       </div>
@@ -536,11 +551,8 @@ onMounted(() => {
 
 <style scoped>
 @media (hover: hover) and (pointer: fine) {
-  .conversation-actions, .conversation-rename { opacity: 0; }
+  .conversation-rename { opacity: 0; }
   .conversation-heading:hover .conversation-rename,
-  .conversation-heading:focus-within .conversation-rename,
-  .conversation-row:hover .conversation-actions,
-  .conversation-row:focus-within .conversation-actions,
-  .conversation-actions[data-state='open'] { opacity: 1; }
+  .conversation-heading:focus-within .conversation-rename { opacity: 1; }
 }
 </style>

@@ -75,8 +75,25 @@ html, body, #__nuxt { height: 100%; }
 .app-safe-area {
   padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
 }
+.sidebar-section-header { @apply flex min-h-8 shrink-0 items-center gap-1; }
+.sidebar-item { @apply min-h-14 w-full shrink-0 justify-start gap-2.5 rounded-lg px-3 py-2 text-sm font-normal; }
+.sidebar-item[aria-current='page'] { @apply font-medium; }
+.sidebar-item-with-actions { padding-inline-end: 2.75rem; }
+.sidebar-icon { @apply size-4 shrink-0 text-muted; }
+.sidebar-action { @apply size-8 justify-center p-0 text-muted; }
+.sidebar-delete:hover, .sidebar-delete:focus-visible { color: var(--ui-error); }
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-secondary { opacity: 0; }
+  .sidebar-section-header:hover .sidebar-secondary,
+  .sidebar-section-header:focus-within .sidebar-secondary,
+  .sidebar-row:hover .sidebar-secondary,
+  .sidebar-row:focus-within .sidebar-secondary,
+  .sidebar-secondary[data-state='open'] { opacity: 1; }
+}
 @media (pointer: coarse) {
   .chat-viewport button { min-height: 2.75rem; min-width: 2.75rem; }
+  .chat-viewport .sidebar-item { min-height: 3.5rem; }
+  .chat-viewport .sidebar-item-with-actions { padding-inline-end: 3.25rem; }
   .chat-viewport .chat-prompt button {
     position: relative;
     justify-content: center;

@@ -31,11 +31,12 @@ watch(() => props.revision, load)
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col gap-2">
-    <div class="flex items-center gap-1">
-      <UInput v-model="search" :aria-label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')" icon="i-lucide-search" size="xl" class="min-w-0 flex-1" />
-      <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" :loading="loading" @click="load" />
+  <div class="flex min-h-0 flex-1 flex-col gap-3">
+    <div class="sidebar-section-header">
+      <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted">{{ t('Страницы') }}</h2>
+      <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="loading" @click="load" />
     </div>
+    <UInput v-model="search" :aria-label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')" icon="i-lucide-search" size="lg" class="w-full" />
     <p v-if="loading" role="status" class="text-sm text-muted">{{ t('Загружаю страницы…') }}</p>
     <template v-else-if="error">
       <p role="alert" class="text-sm text-error">{{ t(error) }}</p>
@@ -44,28 +45,19 @@ watch(() => props.revision, load)
     </template>
     <template v-else>
       <nav :aria-label="t('Каталог страниц')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
-        <div v-for="page in visiblePages" :key="page.slug" class="page-row relative flex shrink-0 items-center">
+        <div v-for="page in visiblePages" :key="page.slug" class="sidebar-row relative flex shrink-0 items-center">
         <UButton @click="emit('open', page)"
-          :title="page.title" color="neutral" :variant="selected === page.slug ? 'soft' : 'ghost'" :aria-current="selected === page.slug ? 'page' : undefined" class="w-full justify-start pr-11">
-          <UIcon name="i-lucide-file-text" class="shrink-0 text-muted" />
+          :aria-label="page.title" :aria-description="page.visibility==='public'?t('Публичная'):t('Приватная')" :title="page.title" color="neutral" :variant="selected === page.slug ? 'soft' : 'ghost'" :aria-current="selected === page.slug ? 'page' : undefined" class="sidebar-item sidebar-item-with-actions">
+          <UIcon :name="page.visibility==='public'?'i-lucide-globe':'i-lucide-lock-keyhole'" role="img" :aria-hidden="false" :aria-label="page.visibility==='public'?t('Публичная'):t('Приватная')" :title="page.visibility==='public'?t('Публичная'):t('Приватная')" class="sidebar-icon" />
           <span class="min-w-0 flex-1 text-left">
             <span class="block truncate">{{ page.title }}</span>
-            <span class="block truncate text-xs text-muted">{{ page.slug }}</span>
-            <span class="block text-xs text-muted">{{ page.visibility === 'public' ? t('Публичная') : t('Приватная') }}</span>
+            <span class="block truncate text-xs font-normal text-muted">{{ page.slug }}</span>
           </span>
         </UButton>
-        <UButton icon="i-lucide-trash-2" :aria-label="t('Удалить страницу «{0}»', page.title)" :title="t('Удалить страницу')" color="error" variant="ghost" size="sm" class="page-actions absolute right-1" @click="emit('delete', page)" />
+        <UButton icon="i-lucide-trash-2" :aria-label="t('Удалить страницу «{0}»', page.title)" :title="t('Удалить страницу')" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary sidebar-delete absolute right-1" @click="emit('delete', page)" />
         </div>
         <p v-if="!visiblePages.length" class="text-sm text-muted">{{ pages.length ? t('Страницы не найдены.') : t('Здесь появятся опубликованные страницы.') }}</p>
       </nav>
     </template>
   </div>
 </template>
-
-<style scoped>
-@media (hover: hover) and (pointer: fine) {
-  .page-actions { opacity: 0; }
-  .page-row:hover .page-actions,
-  .page-row:focus-within .page-actions { opacity: 1; }
-}
-</style>

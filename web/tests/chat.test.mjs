@@ -97,7 +97,7 @@ test('pages catalog searches published titles and addresses without losing the c
     const navigation=page.getByRole('navigation',{name:'Каталог страниц'});
     const link=navigation.getByRole('button',{name:/^Дневник питания/});
     await expect(link).toBeVisible();
-    await expect(navigation.getByText('Приватная',{exact:true})).toBeVisible();
+    await expect(navigation.getByRole('img',{name:'Приватная',exact:true})).toBeVisible();
     const search=page.getByRole('textbox',{name:'Поиск страниц',exact:true});
     for(const query of ['ДНЕВНИК','NUTRITION']) {
       await search.fill(query);
@@ -187,6 +187,44 @@ test('pages catalog searches published titles and addresses without losing the c
   } finally {await browser.close();}
 });
 
+test('page access indicators stay visible beside long addresses on desktop and touch screens', {timeout:60000},async()=>{
+  const pages=[{slug:`private-${'a'.repeat(56)}`,visibility:'private',label:'Приватная'},
+    {slug:`public-${'b'.repeat(57)}`,visibility:'public',label:'Публичная'}];
+  for(const {slug,visibility} of pages) {
+    const release=crypto.randomUUID(),directory=join(storage,'pages','releases',slug,release);
+    await mkdir(directory,{recursive:true});
+    await writeFile(join(directory,'index.html'),'<!doctype html><h1>Page</h1>');
+    await mkdir(join(storage,'pages','manifests'),{recursive:true});
+    await writeFile(join(storage,'pages','manifests',`${slug}.json`),JSON.stringify({release,visibility,document:false}));
+  }
+  const browser=await chromium.launch({headless:true});
+  try {
+    for(const mobile of [false,true]) {
+      const page=await signedPage(browser,mobile?{viewport:{width:320,height:720},isMobile:true,hasTouch:true}:{});
+      await page.goto(new URL('chat/?section=pages',base).href);
+      if(mobile) await page.getByRole('button',{name:'Показать страницы',exact:true}).click();
+      const catalog=page.getByRole('navigation',{name:'Каталог страниц'});
+      for(const {slug,label} of pages) {
+        const row=catalog.getByRole('button',{name:new RegExp(`^${slug}`)});
+        await row.scrollIntoViewIfNeeded();
+        const indicator=row.getByRole('img',{name:label,exact:true});
+        await expect(indicator).toBeVisible();
+        await expect(indicator).toHaveAttribute('title',label);
+        await expect(row).toHaveAttribute('aria-description',label);
+        const address=row.getByText(slug,{exact:true}).last();
+        assert.ok(await address.evaluate(el=>el.scrollWidth>el.clientWidth));
+        const iconBox=await indicator.boundingBox(),addressBox=await address.boundingBox();
+        assert.ok(iconBox.x+iconBox.width<=addressBox.x);
+        const remove=row.locator('..').getByRole('button',{name:`Удалить страницу «${slug}»`,exact:true});
+        assert.ok(iconBox.x+iconBox.width<=(await remove.boundingBox()).x);
+      }
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.screenshot({path:`/tmp/kodrik-page-access-${mobile?'mobile':'desktop'}.png`,animations:'disabled'});
+      await page.close();
+    }
+  } finally {await browser.close();}
+});
+
 test('Telegram owner opens the catalog and private pages after one chat login', {timeout:60000},async()=>{
   // Give this additional sign-in its own login rate-limit window.
   const listen=new URL(base).host;
@@ -232,6 +270,7 @@ test('section rail switches context menus and main content without losing chat d
     assert.ok((await sections.boundingBox()).width<=64);
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await composer.fill('Черновик между разделами');
+    await page.screenshot({path:'/tmp/kodrik-sidebar-chat-desktop.png',animations:'disabled'});
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'История диалогов'})).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toHaveCount(0);
@@ -246,12 +285,22 @@ test('section rail switches context menus and main content without losing chat d
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('heading',{name:'Навигационный вебхук',exact:true})).toBeVisible();
+    const webhookSearch=page.getByRole('textbox',{name:'Поиск вебхуков',exact:true});
+    const webhookList=page.getByRole('navigation',{name:'Список вебхуков'});
+    await webhookSearch.fill('ничего не найдено');
+    await expect(webhookList.getByRole('button')).toHaveCount(0);
+    await expect(page.getByText('Вебхуки не найдены.',{exact:true})).toBeVisible();
+    await webhookSearch.fill('НАВИГАЦИОННЫЙ');
+    await expect(webhookList.getByRole('button',{name:'Навигационный вебхук',exact:true})).toBeVisible();
+    await expect(webhookList.getByText('Включён',{exact:true})).toBeVisible();
+    await webhookSearch.fill('');
     await page.screenshot({path:'/tmp/kodrik-section-rail-desktop.png',animations:'disabled'});
     await sections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(composer).toHaveValue('Черновик между разделами');
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-sidebar-pages-desktop.png',animations:'disabled'});
     await page.setViewportSize({width:390,height:844});
     await expect(sections).toHaveCount(0);
     await page.getByRole('button',{name:'Показать страницы',exact:true}).click();
@@ -268,6 +317,7 @@ test('section rail switches context menus and main content without losing chat d
     await page.screenshot({path:'/tmp/kodrik-section-menu-mobile.png',animations:'disabled'});
     await mobileSections.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await expect(mobileSections.getByRole('button',{name:'Вебхуки',exact:true})).toHaveAttribute('aria-current','page');
+    await page.screenshot({path:'/tmp/kodrik-sidebar-webhooks-mobile.png',animations:'disabled'});
     await menu.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:'Навигационный вебхук',exact:true}).click();
     await expect(menu).toHaveCount(0);
     await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Навигационный вебхук');
@@ -279,6 +329,7 @@ test('section rail switches context menus and main content without losing chat d
     await page.getByRole('button',{name:'Показать вебхуки',exact:true}).click();
     await mobileSections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(menu.getByRole('navigation',{name:'История диалогов'})).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-sidebar-chat-mobile.png',animations:'disabled'});
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
     await expect(composer).toHaveValue('Черновик между разделами');
@@ -2086,6 +2137,7 @@ test('webhook form works in the mobile sidebar and English interface', {timeout:
   try {
     const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     await page.goto(new URL('chat/',base).href);
+    await page.getByRole('button',{name:'Show conversations',exact:true}).click();
     await page.getByRole('button',{name:'Webhooks',exact:true}).click();
     await page.getByRole('button',{name:'Create webhook',exact:true}).click();
     await page.getByLabel('Webhook name',{exact:true}).fill('Mobile errors');
@@ -2095,6 +2147,7 @@ test('webhook form works in the mobile sidebar and English interface', {timeout:
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
     await page.getByRole('button',{name:'Delete webhook',exact:true}).click();
     await page.getByRole('button',{name:'Confirm deletion',exact:true}).click();
+    await page.getByRole('button',{name:'Show webhooks',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'Webhooks list'}).getByRole('button',{name:'Mobile errors',exact:true})).toHaveCount(0);
   } finally {await browser.close();}
 });
