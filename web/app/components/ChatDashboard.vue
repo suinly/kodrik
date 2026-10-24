@@ -412,19 +412,15 @@ onMounted(() => {
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
           :disabled="webhooks.saving" size="xl" class="justify-start" @click="openSection(item.id)" />
       </nav>
-      <div v-if="section!=='pages'" class="sidebar-section-header">
-        <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted">{{ sectionTitle }}</h2>
-        <template v-if="section==='chat'">
-          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="listing" :disabled="creating" @click="refresh" />
+      <SidebarSearch v-if="section==='chat'" v-model="search" :title="sectionTitle" :label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
+          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="listing" :disabled="creating" @click="refresh" />
           <UButton :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
-        </template>
-        <template v-else-if="webhooks.allowed">
-          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
+      </SidebarSearch>
+      <SidebarSearch v-else-if="section==='webhooks' && webhooks.allowed" v-model="webhookSearch" :title="sectionTitle" :label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')">
+          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
           <UButton :aria-label="t('Создать вебхук')" :title="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :disabled="webhooks.saving || webhooks.loading" @click="chooseWebhook()" />
-        </template>
-      </div>
+      </SidebarSearch>
       <template v-if="section==='chat'">
-      <UInput v-model="search" :aria-label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" icon="i-lucide-search" :loading="searching" size="lg" class="w-full" />
       <nav :aria-label="t('История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
         <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="sidebar-row relative flex shrink-0 items-center">
         <UButton
@@ -455,7 +451,6 @@ onMounted(() => {
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
       <div v-else-if="webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
-        <UInput v-model="webhookSearch" :aria-label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')" icon="i-lucide-search" size="lg" class="w-full" />
         <p v-if="webhooks.loading" role="status" class="text-sm text-muted">{{ t('Загружаю вебхуки…') }}</p>
         <p v-else-if="!visibleWebhooks.length" class="text-sm text-muted">{{ webhooks.hooks.length ? t('Вебхуки не найдены.') : t('Пока нет вебхуков.') }}</p>
         <nav :aria-label="t('Список вебхуков')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">

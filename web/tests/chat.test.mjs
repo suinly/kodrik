@@ -99,6 +99,10 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect(link).toBeVisible();
     await expect(navigation.getByRole('img',{name:'Приватная',exact:true})).toBeVisible();
     const search=page.getByRole('textbox',{name:'Поиск страниц',exact:true});
+    const searchToggle=page.getByRole('button',{name:'Поиск страниц',exact:true});
+    await expect(search).toHaveCount(0);
+    await searchToggle.click();
+    await expect(search).toBeFocused();
     for(const query of ['ДНЕВНИК','NUTRITION']) {
       await search.fill(query);
       await expect(link).toBeVisible();
@@ -106,7 +110,11 @@ test('pages catalog searches published titles and addresses without losing the c
     await search.fill('нет такой страницы');
     await expect(link).toHaveCount(0);
     await expect(page.getByText('Страницы не найдены.',{exact:true})).toBeVisible();
-    await search.fill('');
+    await search.press('Escape');
+    await expect(search).toHaveCount(0);
+    await expect(searchToggle).toBeFocused();
+    await searchToggle.click();
+    await expect(search).toHaveValue('');
     await link.click();
     await expect(page).toHaveURL(new URL('chat/?page=nutrition',base).href);
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
@@ -286,6 +294,10 @@ test('section rail switches context menus and main content without losing chat d
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('heading',{name:'Навигационный вебхук',exact:true})).toBeVisible();
     const webhookSearch=page.getByRole('textbox',{name:'Поиск вебхуков',exact:true});
+    const webhookSearchToggle=page.getByRole('button',{name:'Поиск вебхуков',exact:true});
+    await expect(webhookSearch).toHaveCount(0);
+    await webhookSearchToggle.click();
+    await expect(webhookSearch).toBeFocused();
     const webhookList=page.getByRole('navigation',{name:'Список вебхуков'});
     await webhookSearch.fill('ничего не найдено');
     await expect(webhookList.getByRole('button')).toHaveCount(0);
@@ -293,7 +305,12 @@ test('section rail switches context menus and main content without losing chat d
     await webhookSearch.fill('НАВИГАЦИОННЫЙ');
     await expect(webhookList.getByRole('button',{name:'Навигационный вебхук',exact:true})).toBeVisible();
     await expect(webhookList.getByText('Включён',{exact:true})).toBeVisible();
-    await webhookSearch.fill('');
+    await webhookSearchToggle.click();
+    await expect(webhookSearch).toHaveCount(0);
+    await webhookSearchToggle.click();
+    await expect(webhookSearch).toHaveValue('');
+    await webhookSearch.press('Escape');
+    await expect(webhookSearchToggle).toBeFocused();
     await page.screenshot({path:'/tmp/kodrik-section-rail-desktop.png',animations:'disabled'});
     await sections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(composer).toHaveValue('Черновик между разделами');
@@ -867,6 +884,7 @@ test('conversation content search, rename, inline edits, versions and deletion w
     await page.getByRole('textbox',{name:'Название диалога',exact:true}).fill('Поиск и версии');
     await page.getByRole('button',{name:'Сохранить название',exact:true}).click();
     await expect(page.getByRole('button',{name:'Поиск и версии',exact:true})).toHaveCount(1);
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('УНИКАЛЬНЫЙ МАЯК');
     await expect(page.locator('nav[aria-label="История диалогов"] [data-conversation-id]')).toHaveCount(1);
     await page.getByRole('button',{name:'Поиск и версии',exact:true}).click();
@@ -1324,8 +1342,18 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
       await checkIcon(name);
     }
     await expect(dialog.getByRole('button',{name:'Выйти',exact:true})).toBeVisible();
-    await expect(dialog.getByRole('textbox',{name:'Поиск диалогов',exact:true})).toBeVisible();
+    const dialogSearch=dialog.getByRole('textbox',{name:'Поиск диалогов',exact:true});
+    const dialogSearchToggle=dialog.getByRole('button',{name:'Поиск диалогов',exact:true});
+    await expect(dialogSearch).toHaveCount(0);
+    await dialogSearchToggle.click();
+    await expect(dialogSearch).toBeFocused();
     await page.screenshot({path:'/tmp/kodrik-chat-mobile-menu.png'});
+    await dialogSearch.fill('нет такого диалога');
+    await expect(dialog.getByText('Диалоги не найдены.',{exact:true})).toBeVisible();
+    await dialogSearch.press('Escape');
+    await expect(dialogSearch).toHaveCount(0);
+    await expect(dialogSearchToggle).toBeFocused();
+    await expect(dialog.getByRole('navigation',{name:'История диалогов'}).locator('[data-conversation-id]').first()).toBeVisible();
     await page.keyboard.press('Escape');await expect(dialog).toHaveCount(0);
     await page.setViewportSize({width:844,height:390});await checkFits(390);
     await page.setViewportSize({width:390,height:844});await checkFits(844);
@@ -1371,11 +1399,13 @@ test('chat UX preserves drafts and attachments across conversations and permits 
     await request(`sessions/${first.id}/stop`,{});
     await expect(page.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
     await page.reload();await expect(input).toHaveValue('Следующий вопрос');
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('нет такого названия');
     await expect(page.getByText('Диалоги не найдены.',{exact:true})).toBeVisible();
     await expect(input).toHaveValue('Следующий вопрос');
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('draft conversation');
     await expect(page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${first.id}"]`)).toBeVisible();
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'История диалогов'}).locator('time').first()).toBeVisible();
     const listed=await(await request('sessions')).json();
     assert.ok(listed.find(session=>session.id===first.id).updated_at);
@@ -1572,6 +1602,7 @@ test('conversation history loads on scroll and the header pencil renames an unlo
     });
     await mobile.evaluate(el=>{el.scrollTop=el.scrollHeight;});
     await started;
+    await page.getByRole('dialog').getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('dialog').getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Старый диалог из заголовка');
     await expect(mobile.locator('[data-conversation-id]')).toHaveCount(1);
     const appended=page.waitForResponse(r=>new URL(r.url()).searchParams.get('offset')==='60');

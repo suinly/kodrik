@@ -32,11 +32,9 @@ watch(() => props.revision, load)
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col gap-3">
-    <div class="sidebar-section-header">
-      <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted">{{ t('Страницы') }}</h2>
-      <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary" :loading="loading" @click="load" />
-    </div>
-    <UInput v-model="search" :aria-label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')" icon="i-lucide-search" size="lg" class="w-full" />
+    <SidebarSearch v-model="search" :title="t('Страницы')" :label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')">
+      <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="loading" @click="load" />
+    </SidebarSearch>
     <p v-if="loading" role="status" class="text-sm text-muted">{{ t('Загружаю страницы…') }}</p>
     <template v-else-if="error">
       <p role="alert" class="text-sm text-error">{{ t(error) }}</p>
