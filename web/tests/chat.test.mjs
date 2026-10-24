@@ -253,15 +253,35 @@ test('section rail switches context menus and main content without losing chat d
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
     await page.setViewportSize({width:390,height:844});
-    await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await expect(sections).toHaveCount(0);
+    await page.getByRole('button',{name:'Показать страницы',exact:true}).click();
     const menu=page.getByRole('dialog');
+    const mobileSections=menu.getByRole('navigation',{name:'Разделы',exact:true});
+    await expect(mobileSections).toBeVisible();
+    const buttons=mobileSections.getByRole('button');
+    await expect(buttons).toHaveText(['Чат','Страницы','Вебхуки']);
+    for(let index=0;index<3;index++) {
+      await expect(buttons.nth(index).locator('[data-slot="leadingIcon"]')).toBeVisible();
+      if(index) assert.ok((await buttons.nth(index).boundingBox()).y>=(await buttons.nth(index-1).boundingBox()).y+(await buttons.nth(index-1).boundingBox()).height);
+    }
+    assert.ok((await mobileSections.boundingBox()).y+(await mobileSections.boundingBox()).height<=(await menu.getByRole('heading',{name:'Страницы',exact:true}).boundingBox()).y);
+    await page.screenshot({path:'/tmp/kodrik-section-menu-mobile.png',animations:'disabled'});
+    await mobileSections.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await expect(mobileSections.getByRole('button',{name:'Вебхуки',exact:true})).toHaveAttribute('aria-current','page');
     await menu.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:'Навигационный вебхук',exact:true}).click();
     await expect(menu).toHaveCount(0);
     await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Навигационный вебхук');
+    assert.equal((await page.locator('[id$="-panel-chat"]').boundingBox()).x,0);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     await page.screenshot({path:'/tmp/kodrik-section-rail-mobile.png',animations:'disabled'});
     await page.getByRole('button',{name:'Удалить вебхук',exact:true}).click();
     await page.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
+    await page.getByRole('button',{name:'Показать вебхуки',exact:true}).click();
+    await mobileSections.getByRole('button',{name:'Чат',exact:true}).click();
+    await expect(menu.getByRole('navigation',{name:'История диалогов'})).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(composer).toHaveValue('Черновик между разделами');
   } finally {await browser.close();}
 });
 

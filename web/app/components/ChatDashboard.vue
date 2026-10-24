@@ -349,7 +349,7 @@ onMounted(() => {
 
 <template>
   <UDashboardGroup unit="rem" class="chat-viewport bg-default">
-    <aside class="flex h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3">
+    <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <nav :aria-label="t('Разделы')" class="flex w-full flex-col items-center gap-2">
         <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :aria-label="t(item.label)" :title="t(item.label)"
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
@@ -362,6 +362,11 @@ onMounted(() => {
       <template #header>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="px-0"><KodrikLogo class="h-6" /></UButton>
       </template>
+      <nav :aria-label="t('Разделы')" class="flex shrink-0 flex-col gap-1 border-b border-default pb-3 lg:hidden">
+        <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :label="t(item.label)"
+          :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
+          :disabled="webhooks.saving" size="xl" class="justify-start" @click="openSection(item.id)" />
+      </nav>
       <h2 class="text-sm font-semibold text-highlighted">{{ sectionTitle }}</h2>
       <template v-if="section==='chat'">
       <UButton :label="t('Новый диалог')" icon="i-lucide-plus" size="xl" block :loading="creating" @click="create()" />
