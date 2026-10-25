@@ -531,14 +531,21 @@ async fn chat_with_ui(
 #[tokio::test]
 async fn dashboard_links_survive_owner_login_redirect() {
     let f = Fixture::new().await;
-    for query in [
-        "page=nutrition",
-        "webhook=incident-hook",
-        "conversation=test-session",
+    for (query, path) in [
+        ("page=nutrition", "app/pages/nutrition"),
+        ("webhook=incident-hook", "app/webhooks/incident-hook"),
+        ("conversation=test-session", "app/chat/test-session"),
+        (
+            "conversation=telegram%3Amain%3A7",
+            "app/chat/telegram:main:7",
+        ),
+        ("section=pages", "app/pages"),
+        ("section=webhooks", "app/webhooks"),
+        ("", "app/chat"),
     ] {
         let response = f
             .client
-            .get(format!("{}chat/?{query}", f.base))
+            .get(format!("{}{path}", f.base))
             .send()
             .await
             .unwrap();
@@ -550,17 +557,32 @@ async fn dashboard_links_survive_owner_login_redirect() {
                 .find(|(key, _)| key == "return_to")
                 .unwrap()
                 .1,
-            format!("/kodrik/chat/?{query}")
+            format!("/kodrik/{path}")
         );
-        let redirect = f
+        for legacy in ["chat", "chat/"] {
+            let redirect = f
+                .client
+                .get(format!("{}{legacy}?{query}", f.base))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(redirect.status(), 303);
+            assert_eq!(redirect.headers()["location"], format!("/kodrik/{path}"));
+        }
+        let response = f
             .client
-            .get(format!("{}chat?{query}", f.base))
+            .get(format!("{}{path}", f.base))
+            .header("Cookie", &f.cookie)
             .send()
             .await
             .unwrap();
-        assert_eq!(
-            redirect.headers()["location"],
-            format!("/kodrik/chat/?{query}")
+        assert_eq!(response.status(), 200);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("id=\"kodrik-config\"")
         );
     }
 }
@@ -772,7 +794,7 @@ async fn chat_nuxt_assets_use_configured_prefix_and_script_nonce() {
     let f = Fixture::new().await;
     let response = f
         .client
-        .get(format!("{}chat/", f.base))
+        .get(format!("{}app/chat", f.base))
         .header("Cookie", &f.cookie)
         .send()
         .await
@@ -823,7 +845,7 @@ async fn chat_home_screen_assets_are_public_and_prefix_relative() {
     );
     let manifest: Value = response.json().await.unwrap();
     assert_eq!(manifest["display"], "standalone");
-    assert_eq!(manifest["start_url"], "./");
+    assert_eq!(manifest["start_url"], "../app/chat");
     assert_eq!(manifest["scope"], "../");
     for filename in ["logo.svg", "logo-dark.svg", "icon.svg"] {
         let response = f

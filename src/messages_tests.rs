@@ -159,7 +159,7 @@ api_base = "{base}"
             let id = result["conversation_id"].as_str().unwrap();
             assert_eq!(
                 result["url"],
-                format!("http://localhost/kodrik/chat/?conversation={id}")
+                format!("http://localhost/kodrik/app/chat/{id}")
             );
             let delivered = sessions.iter().find(|s| s.id().as_str() == id).unwrap();
             assert!(

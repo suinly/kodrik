@@ -319,7 +319,7 @@ async fn login_get(State(state): State<ServerState>, Query(query): Query<LoginQu
 async fn invite_get(State(state): State<ServerState>) -> Response {
     login_form(
         &state.settings,
-        &format!("{}chat/", state.settings.prefix()),
+        &format!("{}app/chat", state.settings.prefix()),
         "",
     )
 }
@@ -824,6 +824,60 @@ mod tests {
             pages::{PageStore, Visibility},
         },
     };
+
+    #[tokio::test]
+    async fn dashboard_routes_preserve_login_destinations_with_and_without_prefix() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        for prefix in ["/", "/kodrik/"] {
+            let settings = Settings {
+                trusted_proxies: vec![],
+                listen: "127.0.0.1:0".parse().unwrap(),
+                base_url: format!("http://localhost{prefix}").parse().unwrap(),
+            };
+            let app = router(settings, dir.path());
+            for section in ["chat", "pages", "webhooks"] {
+                for suffix in ["", "/", "/telegram%3Amain%3A7"] {
+                    let path = format!("{prefix}app/{section}{suffix}");
+                    let response = app
+                        .clone()
+                        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+                    let location =
+                        reqwest::Url::parse(response.headers()[header::LOCATION].to_str().unwrap())
+                            .unwrap();
+                    assert_eq!(location.path(), format!("{prefix}auth/login"));
+                    assert_eq!(
+                        location
+                            .query_pairs()
+                            .find(|(key, _)| key == "return_to")
+                            .unwrap()
+                            .1,
+                        path
+                    );
+                }
+            }
+            for suffix in ["app", "app/"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("{prefix}{suffix}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::SEE_OTHER);
+                assert_eq!(
+                    response.headers()[header::LOCATION],
+                    format!("{prefix}app/chat")
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn page_deletion_requires_owner_and_origin_and_revokes_published_urls() {
@@ -1404,7 +1458,7 @@ mod tests {
         let response = app
             .clone()
             .oneshot(post(
-                "password=password&return_to=%2Fkodrik%2Fchat%2F".into(),
+                "password=password&return_to=%2Fkodrik%2Fapp%2Fchat".into(),
                 "http://127.0.0.1",
             ))
             .await
@@ -1412,7 +1466,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             response.headers()[header::LOCATION],
-            "http://127.0.0.1/kodrik/chat/"
+            "http://127.0.0.1/kodrik/app/chat"
         );
         let cookie = response.headers()[header::SET_COOKIE]
             .to_str()

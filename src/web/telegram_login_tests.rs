@@ -55,7 +55,7 @@ async fn short_invitation_landing_preserves_prefix_and_defaults_to_chat() {
         .await
         .unwrap();
     let body = std::str::from_utf8(&body).unwrap();
-    assert!(body.contains(r#""returnTo":"/kodrik/chat/""#));
+    assert!(body.contains(r#""returnTo":"/kodrik/app/chat""#));
 }
 
 #[tokio::test]
@@ -71,7 +71,7 @@ async fn invitation_http_redemption_is_single_use_and_rejects_invalid_links() {
     let now = chrono::Utc::now().timestamp();
     let invite = auth.create_invite("Friend", now + 3600, now).unwrap();
     let app = super::super::router(settings, dir.path());
-    let body = json!({"return_to":"/kodrik/chat/", "invite":invite.token}).to_string();
+    let body = json!({"return_to":"/kodrik/app/chat", "invite":invite.token}).to_string();
     let started = post(&app, "start", "", "https://example.com", &body).await;
     assert_eq!(started.status(), StatusCode::OK);
     assert_eq!(started.headers()[header::CACHE_CONTROL], "no-store");
@@ -109,7 +109,7 @@ async fn invitation_http_redemption_is_single_use_and_rejects_invalid_links() {
     );
     assert_eq!(
         json_body(approved).await["redirect"],
-        "https://example.com/kodrik/chat/"
+        "https://example.com/kodrik/app/chat"
     );
 
     let revoked = auth.create_invite("Revoked", now + 3600, now).unwrap();
@@ -206,7 +206,7 @@ async fn telegram_login_http_requires_origin_and_browser_binding_before_cookie_i
         "start",
         "",
         "https://example.com",
-        r#"{"return_to":"/kodrik/chat/"}"#,
+        r#"{"return_to":"/kodrik/app/chat"}"#,
     )
     .await;
     assert_eq!(started.status(), StatusCode::OK);
@@ -267,7 +267,7 @@ async fn telegram_login_http_requires_origin_and_browser_binding_before_cookie_i
     assert!(!auth.authenticated(session, now).unwrap());
     assert!(values.iter().any(|value|value.starts_with("kodrik_telegram_login=") && value.contains("Max-Age=0")));
     let body = json_body(approved).await;
-    assert_eq!(body["redirect"], "https://example.com/kodrik/chat/");
+    assert_eq!(body["redirect"], "https://example.com/kodrik/app/chat");
     assert!(!body.to_string().contains(session));
     let replay = post(&app, "poll", &browser, "https://example.com", "{}").await;
     assert!(

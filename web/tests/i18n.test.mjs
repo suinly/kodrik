@@ -78,7 +78,8 @@ test('only explicitly marked default conversation titles translate',()=>{
 });
 
 test('API errors send the selected language and localize known payloads while preserving unknown details',async()=>{
-  globalThis.window={location:{href:'http://localhost/kodrik/chat/'}};
+  globalThis.window={location:new URL('http://localhost/kodrik/app/chat/one')};
+  globalThis.document={getElementById:()=>({textContent:'{"prefix":"/kodrik/"}'})};
   const {checkedFetch,messageOf,AuthenticationError,ConversationNotFoundError}=await import('../app/utils/api.ts');
   const original=globalThis.fetch;
   try {
@@ -100,5 +101,5 @@ test('API errors send the selected language and localize known payloads while pr
     setLanguage('ru');
     globalThis.fetch=async(_,init)=>{assert.equal(init.headers.get('Accept-Language'),'ru-RU');return new Response('',{status:401})};
     await assert.rejects(checkedFetch('/api'),/Сессия истекла/);
-  } finally {globalThis.fetch=original;delete globalThis.window;}
+  } finally {globalThis.fetch=original;delete globalThis.window;delete globalThis.document;}
 });

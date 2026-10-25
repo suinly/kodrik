@@ -1,7 +1,10 @@
 import {locale,t} from './i18n.ts'
-export const base = new URL('../', window.location.href);
+const config = JSON.parse(document.getElementById('kodrik-config')!.textContent!);
+export const base = new URL(config.prefix, window.location.href);
 export const endpoint = (path: string) => new URL(`api/chat/${path}`, base).toString();
-export const login = new URL(`auth/login?return_to=${encodeURIComponent(new URL('chat/', base).pathname)}`, base).toString();
+export const login = () => new URL(`auth/login?return_to=${encodeURIComponent(window.location.pathname+window.location.search)}`, base).toString();
+// Snapshot attachment paths are relative to the original chat directory.
+export const attachmentUrl = (url?: string) => url ? new URL(url, new URL('chat/', base)).href : undefined;
 
 export class AuthenticationError extends Error {}
 export class ConversationNotFoundError extends Error {}

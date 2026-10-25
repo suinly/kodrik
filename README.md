@@ -133,7 +133,7 @@ kodrik web set-password
 kodrik gateway
 ```
 
-Open [the local chat](http://127.0.0.1:8080/chat/) and sign in with the owner
+Open [the local chat](http://127.0.0.1:8080/app/chat) and sign in with the owner
 password or through your configured Telegram bot. The gateway serves both
 Telegram and the enabled web interface; terminal mode does not start the server.
 For remote access, configure HTTPS following [Web pages](docs/web-pages.md).

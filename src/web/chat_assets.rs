@@ -35,7 +35,7 @@ pub(super) fn login(prefix: &str, return_to: &str, error: &str) -> Response {
 
 pub(super) fn document(settings: &super::Settings, slug: &str) -> anyhow::Result<Response> {
     let url = settings.url(&format!("pages/{slug}/document.json"))?;
-    let data=serde_json::json!({"url":url,"chatUrl":settings.url("chat/")?,
+    let data=serde_json::json!({"url":url,"chatUrl":settings.url("app/chat")?,
         "loginUrl":settings.url(&format!("auth/login?return_to={}pages/{slug}/",settings.prefix()))?})
         .to_string().replace('<',"\\u003c");
     Ok(page(
@@ -49,6 +49,9 @@ fn page(prefix: &str, bootstrap: &str) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let config = serde_json::json!({"prefix":prefix})
+        .to_string()
+        .replace('<', "\\u003c");
     // Client head configuration is compiled once; these URLs need the runtime prefix.
     let links = format!(
         "<link rel=\"manifest\" href=\"{prefix}chat/manifest.webmanifest\">\
@@ -57,7 +60,7 @@ fn page(prefix: &str, bootstrap: &str) -> Response {
     );
     let html = String::from_utf8_lossy(file.contents())
         .replace("/__kodrik_chat__/", prefix)
-        .replace("<head>", &format!("<head>{links}{bootstrap}"))
+        .replace("<head>", &format!("<head>{links}<script id=\"kodrik-config\" type=\"application/json\">{config}</script>{bootstrap}"))
         .replace("<script", &format!("<script nonce=\"{nonce}\""));
     ([
         (header::CONTENT_TYPE, "text/html; charset=utf-8".to_owned()),

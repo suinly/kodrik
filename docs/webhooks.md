@@ -6,10 +6,10 @@ icon rail. The sidebar lists your webhooks; selecting one opens its instruction,
 credentials and recent events in the main area. On mobile, select the icon to
 open the list. Invited users cannot manage or invoke owner webhooks with their login.
 
-Selecting a webhook gives it a dashboard link, `/chat/?webhook=WEBHOOK_ID`.
+Selecting a webhook gives it a dashboard link, `/app/webhooks/WEBHOOK_ID`.
 Copy this address to reopen the same settings after a reload or in another tab.
-Pages use `/chat/?page=PAGE_SLUG`, and conversations keep their existing
-`/chat/?conversation=SESSION_ID` links. These dashboard links require your usual
+Pages use `/app/pages/PAGE_SLUG`, and conversations use
+`/app/chat/SESSION_ID` links. These dashboard links require your usual
 login and contain no Bearer credentials; ingestion and published-page URLs are
 separate.
 

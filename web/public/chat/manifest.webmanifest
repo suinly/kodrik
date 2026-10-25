@@ -3,7 +3,7 @@
   "name": "Kodrik",
   "short_name": "Kodrik",
   "lang": "en",
-  "start_url": "./",
+  "start_url": "../app/chat",
   "scope": "../",
   "display": "standalone",
   "background_color": "#1e1e2e",

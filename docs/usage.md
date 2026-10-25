@@ -19,7 +19,7 @@ still lives in `~/.kodrik/`; see [Storage](storage.md).
 
 ## Browser chat
 
-Enable the web server and open `/chat/` at your configured base URL. Sign in
+Enable the web server and open `/app/chat` at your configured base URL. Sign in
 with **Войти через Telegram** or the owner password, create or select a
 conversation, and send text with
 Enter (Shift+Enter for a newline). Responses stream, tool rows expand to show

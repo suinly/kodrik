@@ -508,7 +508,7 @@ const compactionLabels = {
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
           <div class="flex flex-wrap gap-2">
             <UButton v-if="!home" :label="t('Обновить историю')" color="neutral" variant="link" size="sm" @click="problem = ''; reload(true)" />
-            <UButton v-if="authExpired" :label="t('Войти')" :to="login" external color="neutral" variant="link" size="sm" />
+            <UButton v-if="authExpired" :label="t('Войти')" :to="login()" external color="neutral" variant="link" size="sm" />
           </div>
         </div>
         <UAlert v-if="draftState.missingFiles.length" variant="soft" :description="t('Повторно выберите вложения: {0}. Браузер не сохраняет файлы после перезагрузки.', draftState.missingFiles.join(', '))"

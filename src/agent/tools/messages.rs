@@ -221,9 +221,8 @@ impl Tool for MessagesTool {
                 .0
                 .split_once(':')
                 .context("Invalid web message ID")?;
-            let mut url = self.web_url.as_ref().unwrap().join("chat/")?;
-            url.query_pairs_mut()
-                .append_pair("conversation", conversation);
+            let mut url = self.web_url.as_ref().unwrap().join("app/chat")?;
+            url.path_segments_mut().unwrap().push(conversation);
             result["conversation_id"] = conversation.into();
             result["url"] = url.to_string().into();
         }

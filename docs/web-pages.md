@@ -3,7 +3,7 @@
 Kodrik can create persistent native Nuxt UI pages for nutrition logs, reports, expenses
 and other visualizations. Records are updated through conversation with the
 agent. The browser displays the published data without calling the model.
-The same server also hosts the [web chat](web-chat.md) at `/chat/`.
+The same server also hosts the [web chat](web-chat.md) at `/app/chat`.
 
 ## Enable the server
 

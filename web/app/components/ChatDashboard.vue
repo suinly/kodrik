@@ -13,11 +13,8 @@ const error = ref('')
 const menu = ref(false)
 type Section = 'chat'|'pages'|'webhooks'
 function readLocation():{section:Section;id:string|null} {
-  const query=new URL(window.location.href).searchParams
-  if(query.has('page')) return {section:'pages',id:query.get('page') || null}
-  if(query.has('webhook')) return {section:'webhooks',id:query.get('webhook') || null}
-  if(query.get('section')==='pages' || query.get('section')==='webhooks') return {section:query.get('section') as Section,id:null}
-  return {section:'chat',id:query.get('conversation') || null}
+  const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
+  return {section:section==='pages' || section==='webhooks'?section:'chat',id:id?decodeURIComponent(id):null}
 }
 const section = ref<Section>(readLocation().section)
 const restoring = ref(false)
@@ -119,17 +116,16 @@ watch([search,showEvents],()=>{
 })
 onBeforeUnmount(()=>{disposed=true;clearTimeout(searchTimer);listRevision++;navigationRevision++})
 const dateFormat = computed(() => new Intl.DateTimeFormat(locale.value,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))
-const chatUrl = new URL('chat/', base).pathname
+const chatUrl = new URL('app/chat', base).pathname
 const logoutUrl = new URL('auth/logout', base).pathname
 
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
   const id=section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:webhooks.selected
   const url=new URL(window.location.href)
-  for(const key of ['conversation','page','webhook','section']) url.searchParams.delete(key)
+  url.pathname=new URL(`app/${section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
+  url.search=''
   url.hash=''
-  if(id) url.searchParams.set(section.value==='chat'?'conversation':section.value==='pages'?'page':'webhook',id)
-  else if(section.value!=='chat') url.searchParams.set('section',section.value)
   if(url.href===window.location.href) return
   window.history.replaceState(window.history.state,'',url)
 }
@@ -518,12 +514,12 @@ onMounted(() => {
           <p role="alert" class="text-sm text-error break-words">{{ t(error) }}</p>
           <div class="flex flex-wrap gap-2">
             <UButton :label="t('Повторить')" color="neutral" variant="link" size="sm" @click="restoreLocation" />
-            <UButton :label="t('Войти')" :to="login" external color="neutral" variant="link" size="sm" />
+            <UButton :label="t('Войти')" :to="login()" external color="neutral" variant="link" size="sm" />
           </div>
         </div>
         <section v-if="section==='pages'" :aria-label="t('Просмотр страницы')" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <template v-if="selectedPage">
-            <DocumentPage v-if="selectedPage.document" :key="`${selectedPage.slug}:${pageRevision}`" :url="pageDocumentUrl" :chat-url="chatUrl" :login-url="login" embedded />
+            <DocumentPage v-if="selectedPage.document" :key="`${selectedPage.slug}:${pageRevision}`" :url="pageDocumentUrl" :chat-url="chatUrl" :login-url="login()" embedded />
             <iframe v-else :key="`${selectedPage.slug}:${pageRevision}`" :src="selectedPage.url" :title="selectedPage.title" class="min-h-0 w-full flex-1 border-0 bg-default" />
           </template>
           <p v-else-if="!restoring" class="p-6 text-sm text-muted">{{ t('Выберите страницу в боковом меню.') }}</p>

@@ -24,7 +24,7 @@ useHead(() => ({ title: t("Кодрик — личный AI-компаньон")
           <UIcon name="i-lucide-orbit" class="size-4" /> {{ t("Личный AI-компаньон") }} </p>
         <h1 id="home-title" class="text-4xl leading-tight font-semibold tracking-tight text-highlighted text-balance sm:text-6xl"> {{ t("Для идей, вопросов и повседневных дел.") }} </h1>
         <p class="mt-6 max-w-xl text-lg leading-relaxed text-muted text-pretty"> {{ t("Обсуждайте то, что вам интересно, разбирайтесь в сложном и решайте задачи. Кодрик помнит ваши предпочтения и сохраняет историю разговоров.") }} </p>
-        <UButton :to="`${prefix}chat/`" external :label="t('Открыть чат')" trailing-icon="i-lucide-arrow-right" size="xl" class="mt-8" />
+        <UButton :to="`${prefix}app/chat`" external :label="t('Открыть чат')" trailing-icon="i-lucide-arrow-right" size="xl" class="mt-8" />
       </section>
 
       <section aria-labelledby="pages-title" class="mt-14 flex max-w-xl items-start gap-4 border-t border-default pt-6 sm:mt-20">

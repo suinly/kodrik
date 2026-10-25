@@ -29,7 +29,7 @@ before(async () => {
   await start();
   const response = await fetch(new URL('auth/login', base), {
     method: 'POST', redirect: 'manual', headers: { Origin: new URL(base).origin },
-    body: new URLSearchParams({ password: 'preview-password', return_to: new URL('chat/', base).pathname }),
+    body: new URLSearchParams({ password: 'preview-password', return_to: new URL('app/chat', base).pathname }),
   });
   assert.equal(response.status, 303);
   cookie = response.headers.get('set-cookie').split(';')[0];
@@ -68,7 +68,7 @@ test('Telegram approval login shows only that user shared history without a code
   const browser=await chromium.launch({headless:true});
   try {
     const page=await browser.newPage({locale:'ru-RU'});
-    await page.goto(new URL('auth/login?return_to=/kodrik/chat/',base).href);
+    await page.goto(new URL('auth/login?return_to=/kodrik/app/chat',base).href);
     await expect(page.getByLabel('Пароль',{exact:true})).toBeVisible();
     await expect(page.locator('input[name="code"]')).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Войти по коду из Telegram',exact:true})).toHaveCount(0);
@@ -76,7 +76,7 @@ test('Telegram approval login shows only that user shared history without a code
     const open=page.getByRole('link',{name:'Открыть Telegram',exact:true});
     await expect(open).toBeVisible();
     assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true)).ok,true);
-    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await expect(page).toHaveURL(new URL('app/chat',base).href);
     const rows=page.locator('nav[aria-label="История диалогов"] [data-conversation-id]');
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toHaveAttribute('data-conversation-id','telegram:main:7');
@@ -93,7 +93,7 @@ test('pages catalog searches published titles and addresses without losing the c
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const pages=page.getByRole('button',{name:'Страницы',exact:true});
     const dialogs=page.getByRole('button',{name:'Чат',exact:true});
     await pages.click();
@@ -126,7 +126,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await searchToggle.click();
     await expect(search).toHaveValue('');
     await link.click();
-    await expect(page).toHaveURL(new URL('chat/?page=nutrition',base).href);
+    await expect(page).toHaveURL(new URL('app/pages/nutrition',base).href);
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
     await expect(viewer.getByRole('heading',{name:'Дневник питания',exact:true})).toBeVisible();
     await expect(viewer.getByRole('table')).toBeVisible();
@@ -219,7 +219,7 @@ test('page access indicators stay visible beside long addresses on desktop and t
   try {
     for(const mobile of [false,true]) {
       const page=await signedPage(browser,mobile?{viewport:{width:320,height:720},isMobile:true,hasTouch:true}:{});
-      await page.goto(new URL('chat/?section=pages',base).href);
+      await page.goto(new URL('app/pages',base).href);
       if(mobile) await page.getByRole('button',{name:'Показать страницы',exact:true}).click();
       const catalog=page.getByRole('navigation',{name:'Каталог страниц'});
       for(const {slug,label} of pages) {
@@ -254,12 +254,12 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
   const browser=await chromium.launch({headless:true});
   try {
     const page=await browser.newPage({locale:'ru-RU'});
-    await page.goto(new URL('auth/login?return_to=/kodrik/chat/',base).href);
+    await page.goto(new URL('auth/login?return_to=/kodrik/app/chat',base).href);
     await page.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
     const open=page.getByRole('link',{name:'Открыть Telegram',exact:true});
     await expect(open).toBeVisible();
     assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true,42)).ok,true);
-    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await expect(page).toHaveURL(new URL('app/chat',base).href);
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
     await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     const viewer=page.getByRole('region',{name:'Просмотр страницы'});
@@ -282,7 +282,7 @@ test('section rail switches context menus and main content without losing chat d
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{viewport:{width:1280,height:900}});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const sections=page.getByRole('navigation',{name:'Разделы',exact:true});
     await expect(sections).toBeVisible();
     assert.ok((await sections.boundingBox()).width<=64);
@@ -375,7 +375,7 @@ test('page deletion confirms, keeps failed attempts and clears selected pages on
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL('chat/?page=delete-desktop',base).href);
+    await page.goto(new URL('app/pages/delete-desktop',base).href);
     await expect(page.locator('iframe[title="delete-desktop"]')).toBeVisible();
     const remove=page.getByRole('button',{name:'Удалить страницу «delete-desktop»',exact:true});
     await expect(remove).toHaveCSS('opacity','0');
@@ -401,12 +401,12 @@ test('page deletion confirms, keeps failed attempts and clears selected pages on
     await expect(confirmation).toHaveCount(0);
     await expect(remove).toHaveCount(0);
     await expect(page.locator('iframe[title="delete-desktop"]')).toHaveCount(0);
-    await expect(page).toHaveURL(new URL('chat/?section=pages',base).href);
+    await expect(page).toHaveURL(new URL('app/pages',base).href);
     assert.equal((await fetch(new URL('pages/delete-desktop/',base))).status,404);
     await page.reload();
     await expect(remove).toHaveCount(0);
     const mobile=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-    await mobile.goto(new URL('chat/?section=pages',base).href);
+    await mobile.goto(new URL('app/pages',base).href);
     await mobile.getByRole('button',{name:'Показать страницы',exact:true}).click();
     const mobileRemove=mobile.getByRole('dialog').getByRole('button',{name:'Удалить страницу «delete-mobile»',exact:true});
     await expect(mobileRemove).toHaveCSS('opacity','1');
@@ -430,11 +430,11 @@ test('page and webhook links restore selections on reload and in a fresh tab', {
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
     await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
-    await expect.poll(()=>new URL(page.url()).searchParams.get('page')).toBe('nutrition');
-    assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
+    await expect.poll(()=>new URL(page.url()).pathname).toBe(new URL('app/pages/nutrition',base).pathname);
+    assert.equal(new URL(page.url()).search,'');
     const pageUrl=page.url();
     await page.reload();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
@@ -445,7 +445,7 @@ test('page and webhook links restore selections on reload and in a fresh tab', {
     await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
     const token=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
-    await expect.poll(()=>new URL(page.url()).searchParams.get('webhook')).not.toBeNull();
+    await expect(page).toHaveURL(/\/app\/webhooks\/[^/]+$/);
     const hookUrl=page.url();
     assert.equal(hookUrl.includes(token),false);
     const anonymous=await browser.newPage({locale:'ru-RU'});
@@ -466,11 +466,11 @@ test('page and webhook links restore selections on reload and in a fresh tab', {
     await expect(fresh.getByLabel('Название вебхука',{exact:true})).toHaveValue('Вебхук по ссылке');
     await fresh.getByRole('button',{name:'Удалить вебхук',exact:true}).click();
     await fresh.getByRole('button',{name:'Подтвердить удаление',exact:true}).click();
-    await expect.poll(()=>new URL(fresh.url()).searchParams.has('webhook')).toBe(false);
+    await expect(fresh).toHaveURL(new URL('app/webhooks',base).href);
     await fresh.goto(hookUrl);
     await expect(fresh.getByRole('alert')).toContainText('Вебхук удалён или не найден.');
     await expect(fresh.getByLabel('Название вебхука',{exact:true})).toHaveCount(0);
-    await fresh.goto(new URL('chat/?page=does-not-exist',base).href);
+    await fresh.goto(new URL('app/pages/does-not-exist',base).href);
     await expect(fresh.getByRole('alert')).toContainText('Страница удалена или не найдена.');
     await expect(fresh.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toHaveCount(0);
     await fresh.route('**/api/webhooks',route=>route.fulfill({status:503,body:''}));
@@ -491,7 +491,7 @@ test('a delayed new conversation response cannot override a newer section', {tim
   let created;
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL('chat/?page=nutrition',base).href);
+    await page.goto(new URL('app/pages/nutrition',base).href);
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
     await page.getByRole('button',{name:'Чат',exact:true}).click();
     let started;const creating=new Promise(resolve=>{started=resolve});
@@ -506,7 +506,7 @@ test('a delayed new conversation response cannot override a newer section', {tim
     const completed=page.waitForResponse(response=>response.request().method()==='POST' && response.url().endsWith('/api/chat/sessions'));
     release();created=(await(await completed).json()).id;
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-    await expect(page).toHaveURL(new URL('chat/?page=nutrition',base).href);
+    await expect(page).toHaveURL(new URL('app/pages/nutrition',base).href);
     await expect(page.getByRole('region',{name:'Просмотр страницы'})).toBeVisible();
   } finally {
     release();await browser.close();
@@ -520,7 +520,7 @@ test('composer edits Markdown tables and preserves formatting in drafts and sent
   try {
     const page=await signedPage(browser),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await pasteText(input,'**План**\n\n| Задача | Статус |\n| --- | --- |\n| Проверка | Готово |');
@@ -549,7 +549,7 @@ test('Markdown paste keeps inline text and code indentation in their editing con
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     const paste=text=>pasteText(input,text);
     await input.fill('beforeafter');
@@ -575,7 +575,7 @@ test('typing restores composer focus without losing the first character or curso
     const page=await signedPage(browser);
     const keyboard=await page.context().newCDPSession(page);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    for(const path of ['chat/',`chat/?conversation=${id}`]) {
+    for(const path of ['app/chat',`app/chat/${encodeURIComponent(id)}`]) {
       await page.goto(new URL(path,base).href);
       await expect(input).toBeFocused();
       for(const [key,text] of [['x','x'],['Shift+!','!'],['Space',' ']]) {
@@ -586,7 +586,7 @@ test('typing restores composer focus without losing the first character or curso
         await expect(input).toHaveText(text);
       }
       await input.fill('до конца');
-      const draftId=path==='chat/'?'new':id;
+      const draftId=path==='app/chat'?'new':id;
       await expect.poll(()=>page.evaluate(id=>JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)||'null')?.text,draftId)).toBe('до конца');
       await page.reload();
       await expect(input).toBeFocused();
@@ -607,7 +607,7 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.locator('[role="textbox"][aria-label="Сообщение"]');
     await input.fill('Черновик');
     await input.evaluate(el=>el.blur());
@@ -672,7 +672,7 @@ test('home composer starts one conversation and moves down without replacing the
       if(request.method()==='POST' && new URL(request.url()).pathname.endsWith('/api/chat/sessions')) created.push(request);
       if(request.method()==='POST' && new URL(request.url()).pathname.endsWith('/api/chat/send')) sent.push(request);
     });
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeFocused();
     await expect(input).toBeEditable();
@@ -689,7 +689,7 @@ test('home composer starts one conversation and moves down without replacing the
     await input.evaluate(element=>element.dataset.homeInput='preserved');
     await page.screenshot({path:'/tmp/kodrik-home-composer-desktop.png',fullPage:true,animations:'disabled'});
     await input.press('Enter');await input.press('Enter');
-    await expect(page).toHaveURL(/conversation=/);
+    await expect(page).toHaveURL(/\/app\/chat\/[^/]+$/);
     await expect(page.locator('.message').getByText('Первый вопрос с главной',{exact:true})).toHaveCount(1);
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     assert.equal(created.length,1);assert.equal(sent.length,1);
@@ -719,7 +719,7 @@ test('mobile app keeps its shell still during swipes while content and normal pa
     await addRootOverflow();
     await swipe(200,600,-300);
     await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(composer).toBeVisible();
     await composer.fill('Черновик после свайпа');
@@ -729,7 +729,7 @@ test('mobile app keeps its shell still during swipes while content and normal pa
     await swipe(200,200,300);
     assert.equal(await page.evaluate(()=>scrollY),0);
     await expect(composer).toHaveText('Черновик после свайпа');
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const transcript=page.getByTestId('chat-transcript');
     await expect(page.getByRole('heading',{name:'Дневник питания',exact:true})).toBeAttached();
     await transcript.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
@@ -743,7 +743,7 @@ test('home composer keeps failed drafts and starts mobile conversations with att
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     const composer=page.getByTestId('chat-composer');
@@ -755,7 +755,7 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     await expect(page.getByRole('alert')).toBeVisible();
     await expect(input).toHaveText('Сохранить при ошибке');
     await expect(input).toBeEditable();
-    assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
+    assert.equal(new URL(page.url()).search,'');
     await page.unroute('**/api/chat/sessions');
     await input.fill('');
     await page.getByRole('button',{name:'Прикрепить файлы и фото',exact:true}).click();
@@ -764,7 +764,7 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     await expect(page.getByText('first.txt',{exact:true})).toBeInViewport();
     await page.screenshot({path:'/tmp/kodrik-home-composer-attachment-mobile.png',fullPage:true,animations:'disabled'});
     await input.press('Enter');
-    await expect(page).toHaveURL(/conversation=/);
+    await expect(page).toHaveURL(/\/app\/chat\/[^/]+$/);
     await expect(page.locator('.message').getByRole('link',{name:'first.txt',exact:true})).toBeVisible();
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     await expect(input).toHaveText('');
@@ -778,7 +778,7 @@ test('conversation menus appear on hover or focus and pins survive reload', {tim
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const rows=page.locator('nav[aria-label="История диалогов"] [data-conversation-id]');
     const row=page.locator(`[data-conversation-id="${older.id}"]`).locator('..');
     const actions=row.locator('button[aria-label^="Действия с диалогом"]');
@@ -806,7 +806,7 @@ test('conversation menus appear on hover or focus and pins survive reload', {tim
     await expect(rows.first()).toHaveAttribute('data-conversation-id',newer.id);
     const context=await browser.newContext({locale:'ru-RU',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
-    const mobile=await context.newPage();await mobile.goto(new URL('chat/',base).href);
+    const mobile=await context.newPage();await mobile.goto(new URL('app/chat',base).href);
     await mobile.getByRole('button',{name:'Показать диалоги',exact:true}).click();
     const mobileActions=mobile.locator(`[data-conversation-id="${older.id}"]`).locator('..').getByRole('button',{name:/Действия с диалогом/});
     await expect.poll(()=>mobileActions.evaluate(el=>getComputedStyle(el).opacity)).toBe('1');
@@ -827,7 +827,7 @@ test('message timestamps use the browser timezone and survive reload', {timeout:
   try {
     const page=await browser.newPage({locale:'ru-RU',timezoneId:'Europe/Moscow'});
     await page.context().addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     for(const message of snapshot.messages) {
       const item=page.locator('.message').filter({has:page.getByText(message.parts[0].text,{exact:true})});
       const time=item.locator('time');
@@ -871,7 +871,7 @@ test('conversation search scrolls to matches and navigates in both directions', 
       messages:Array.from({length:40},(_,index)=>({id:`${id}:${index}`,role:index%2?'assistant':'user',parts:[{type:'text',text:`Сообщение ${index}: ${index===2 || index===21?'Поисковый маяк':'Обычный текст'}`}]}))};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const transcript=page.getByTestId('chat-transcript');
     await expect(page.locator('.message')).toHaveCount(40);
     await expect.poll(()=>transcript.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight)).toBeLessThan(2);
@@ -912,7 +912,7 @@ test('conversation search highlights literal text in Markdown and clears it when
     ]};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.locator('.message strong')).toHaveText('МАЯК');
     await expect(page.locator('.message code')).toHaveText('маяк');
     await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
@@ -947,11 +947,11 @@ test('chat logo navigates in the current tab', {timeout:30000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const logo=page.getByRole('link',{name:'kodrik',exact:true});
     await expect(logo).toHaveAttribute('target','_self');
     await logo.click();
-    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await expect(page).toHaveURL(new URL('app/chat',base).href);
     assert.equal(page.context().pages().length,1);
   } finally {await browser.close();}
 });
@@ -966,7 +966,7 @@ test('home Open Chat and sign-in links stay in the current tab', {timeout:30000}
     await expect(open).not.toHaveAttribute('target','_blank');
     await page.screenshot({path:'/tmp/kodrik-home-light.png',fullPage:true});
     await open.click();
-    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await expect(page).toHaveURL(new URL('app/chat',base).href);
     assert.equal(page.context().pages().length,1);
     const anonymous=await browser.newPage({locale:'en-US'});
     await anonymous.goto(base);
@@ -983,7 +983,7 @@ test('Markdown and document links use the current tab only for local URLs', {tim
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    const local=new URL('chat/',base),external='https://example.com/docs';
+    const local=new URL('app/chat',base),external='https://example.com/docs';
     const links=[['Relative',local.pathname,'_self'],['Absolute',local.href,'_self'],['Same host',`//${local.host}${local.pathname}`,'_self'],['Fragment','#inside','_self'],['Query',`?conversation=${id}`,'_self'],['Outside',external,'_blank'],['Other host','//example.com/docs','_blank'],['Other scheme',local.href.replace('http:','https:'),'_blank'],['Other port',`http://${local.hostname}:1/docs`,'_blank']];
     const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[{id:`${id}:0`,role:'assistant',parts:[
       {type:'text',text:links.map(([name,url])=>`[${name}](${url})`).join('\n\n')},
@@ -991,7 +991,7 @@ test('Markdown and document links use the current tab only for local URLs', {tim
     ]}]};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     for(const [name,,target] of [...links,['Local document',local.pathname,'_self'],['External document',external,'_blank'],['Local button',local.pathname,'_self'],['External button',external,'_blank'],['Local UI link',local.pathname,'_self']]) {
       const link=page.getByRole('link',{name,exact:true});
       await expect(link).toHaveAttribute('target',target);
@@ -1012,7 +1012,7 @@ test('conversation content search, rename, inline edits, versions and deletion w
   try {
     const page=await signedPage(browser),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const editButton=page.getByRole('button',{name:'Редактировать сообщение',exact:true});
     await editButton.waitFor();
     await page.mouse.move(0,0);
@@ -1034,7 +1034,7 @@ test('conversation content search, rename, inline edits, versions and deletion w
     await page.getByRole('button',{name:'Сохранить и отправить',exact:true}).click();
     await expect(page.locator('.message').getByText('Исправленный вопрос',{exact:true})).toHaveCount(1);
     await page.getByRole('button',{name:'Редактировать сообщение',exact:true}).waitFor();
-    const branch=new URL(page.url()).searchParams.get('conversation');
+    const branch=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     assert.notEqual(branch,id);
     await page.getByRole('button',{name:'Предыдущая версия сообщения',exact:true}).click();
     await expect(page.locator('.message').getByText('Уникальный маяк для поиска',{exact:true})).toHaveCount(1);
@@ -1080,7 +1080,7 @@ test('native MDC UI persists in chat and uses live paginated sources on its page
     const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
     const page=await context.newPage(),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await page.getByRole('heading',{name:'Дневник питания',exact:true}).waitFor();
     await page.getByRole('img',{name:'Калории по дням',exact:true}).waitFor();
     await page.getByRole('img',{name:'Калории по дням',exact:true}).focus();
@@ -1108,7 +1108,7 @@ test('native MDC UI persists in chat and uses live paginated sources on its page
     await page.emulateMedia({colorScheme:'dark'});await page.setViewportSize({width:1280,height:900});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-mdc-page-desktop.png',fullPage:true});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await page.getByRole('heading',{name:'Дневник питания',exact:true}).waitFor();
     await expect(page.getByRole('table')).toContainText('Breakfast');
     assert.equal(await page.getByRole('button',{name:'Далее',exact:true}).count(),0);
@@ -1122,7 +1122,7 @@ test('unknown MDC components show an error without mounting app components',{tim
   const browser=await chromium.launch({headless:true});
   try {
     const context=await browser.newContext({locale:'ru-RU'});const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
-    const page=await context.newPage();await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const page=await context.newPage();await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await page.getByTestId('ui-document').getByText('Не удалось отобразить документ',{exact:true}).waitFor();
     await expect(page.getByTestId('ui-document')).toContainText('nuxt-link');
     await expect(page.getByTestId('ui-document').getByRole('alert')).toHaveClass(/text-error/);
@@ -1139,7 +1139,7 @@ test('Nuxt UI components retain local state, named slots, scoped cells and nativ
     const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
     const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
     page.on('console',message=>{if(message.type()==='error') console.error(message.text())});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const document=page.getByTestId('ui-document');
     await expect(document).toContainText('Заголовок слота');
     await expect(document.locator('code')).toHaveText('value');
@@ -1325,7 +1325,7 @@ test('private MDC forms insert and edit dataset records and refresh dependent vi
   try{
     const context=await browser.newContext({locale:'ru-RU'});const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
     const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.getByRole('button',{name:'Добавить запись',exact:true})).toBeDisabled();
     const url=await page.getByRole('link',{name:'Открыть страницу',exact:true}).getAttribute('href');await page.goto(url);
     await page.getByLabel('Дата нового приёма',{exact:true}).fill('2026-10-22');
@@ -1379,7 +1379,7 @@ test('LLM titles update the sidebar and navbar without reload and survive refres
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const entry=page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`);
     await expect(entry).toHaveAttribute('title','Новый диалог');
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
@@ -1396,8 +1396,8 @@ test('LLM titles update the sidebar and navbar without reload and survive refres
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(2);
     await expect(entry).toHaveAttribute('title','Обсуждение: Меню на неделю');
     await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();
-    await expect.poll(()=>new URL(page.url()).searchParams.get('conversation')).not.toBe(id);
-    const otherId=new URL(page.url()).searchParams.get('conversation');
+    await expect.poll(()=>decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1))).not.toBe(id);
+    const otherId=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     await input.fill('delayed title');await input.press('Enter');
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     const otherEntry=page.locator(`[data-conversation-id="${otherId}"]`);
@@ -1420,7 +1420,7 @@ test('active conversation shows activity before its title', {timeout:30000}, asy
       const sessions=await response.json();
       await route.fulfill({response,json:sessions.map(session=>session.id===id?{...session,busy:true}:session)});
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const entry=page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`);
     await expect(entry.getByLabel('Выполняется')).toBeVisible();
     assert.ok(await entry.evaluate(el=>el.querySelector('[aria-label="Выполняется"]').compareDocumentPosition(el.querySelector('span.text-left')) & Node.DOCUMENT_POSITION_FOLLOWING));
@@ -1436,7 +1436,7 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     const context=await browser.newContext({locale:'ru-RU',viewport:{width:320,height:568},isMobile:true,hasTouch:true,deviceScaleFactor:2});
     const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
     const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeFocused();
     const editButton=page.getByRole('button',{name:'Редактировать сообщение',exact:true});
@@ -1540,7 +1540,7 @@ test('chat UX preserves drafts and attachments across conversations and permits 
   const browser=await chromium.launch({headless:true});
   try{
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${first.id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(first.id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await input.fill('Сохранённый черновик');
@@ -1581,7 +1581,7 @@ test('web chat steers the current answer after a tool with text, files and photo
   const browser=await chromium.launch({headless:true});
   try{
     const page=await signedPage(browser);await page.setViewportSize({width:390,height:844});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:2}});
@@ -1623,7 +1623,7 @@ test('web chat steers a changed draft after uncertain admission and Stop cancels
       sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:requestId,text:'wait',files:[]}));
       sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'queued after uncertain response',files:[]}));
     },{id,requestId});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(page.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
     await input.press('Enter');
@@ -1650,7 +1650,7 @@ test('composer switches one action and keeps its plan and hints attached on mobi
       plan:{explanation:'Сначала данные, затем проверка результата.',plan:[{step:'Подготовить данные',status:'completed'},{step:'Создать страницу и проверить длинный заголовок текущего шага на телефоне',status:'in_progress'},{step:'Проверить результат',status:'pending'}]}};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     const prompt=page.locator('.chat-prompt').filter({has:input});
     const working=page.getByTestId('chat-transcript').getByText('Кодрик работает…',{exact:true});
@@ -1723,7 +1723,7 @@ test('conversation history loads on scroll and the header pencil renames an unlo
   try {
     const page=await signedPage(browser),lists=[];
     page.on('request',r=>{const url=new URL(r.url());if(url.pathname.endsWith('/api/chat/sessions')&&r.method()==='GET') lists.push(url);});
-    await page.goto(new URL(`chat/?conversation=${ids[0]}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(ids[0])}`,base).href);
     const nav=page.getByRole('navigation',{name:'История диалогов'}),rows=nav.locator('[data-conversation-id]');
     await expect(rows).toHaveCount(30);
     assert.equal(lists.length,1,'initial navigation must fetch just one page');
@@ -1788,7 +1788,7 @@ test('conversation list retry restores a direct link and refreshes an exhausted 
       // Exercise an exhausted archive using real conversation metadata.
       await route.fulfill({response,json:(await response.json()).slice(0,5)});
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.getByRole('button',{name:'Повторить загрузку',exact:true})).toBeVisible();
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toHaveText('');
@@ -1824,7 +1824,7 @@ test('chat UX groups technical steps, folds old documents and expands the latest
     ]}]};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.getByRole('button',{name:'Выполнено шагов: 3',exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:/^exec_command\b/})).toHaveCount(0);
     await expect(page.getByText('Не удалось отобразить документ',{exact:true})).toHaveCount(0);
@@ -1872,7 +1872,7 @@ test('long tool lists keep compact summaries and collapse back to their header',
     const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'steps',role:'assistant',parts:tools}]};
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const header=page.getByRole('button',{name:'Выполнено шагов: 20',exact:true});
     for(const viewport of [{width:1280,height:900},{width:390,height:844}]) {
       await page.setViewportSize(viewport);
@@ -1925,7 +1925,7 @@ test('child task panel shows live outcomes and handles cancellation without losi
       agents[0]={...agents[0],status:'stopped'};snapshot.revision++;
       await route.fulfill({json:agents[0]});
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
     await expect(panel).toBeVisible();
     const active=panel.getByTestId('subagent-companion:subagent:active');
@@ -1999,7 +1999,7 @@ test('a terminal stop response does not leave a restarted child stuck in stoppin
     await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',route=>route.fulfill({json:snapshot}));
     await page.route('**/subagents/*/stop',route=>{snapshot.revision++;return route.fulfill({json:{...child,status:'stopped'}})});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
     const stop=panel.getByRole('button',{name:'Остановить задачу «Проверить авторизацию»',exact:true});
     await stop.click();
@@ -2014,7 +2014,7 @@ test('child task controls work with live delegation and snapshots',{timeout:6000
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await input.fill('subagents');await input.press('Enter');
     const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
@@ -2043,7 +2043,7 @@ test('chat UX returns to latest message without forcing readers down on updates'
   const browser=await chromium.launch({headless:true});
   try{
     const page=await signedPage(browser);await page.setViewportSize({width:390,height:844});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await page.getByRole('heading',{name:'Дневник питания',exact:true}).waitFor();
     const transcript=page.getByRole('region',{name:'Разговор с Кодриком'}).locator('.overflow-y-auto').first();
     await transcript.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
@@ -2093,7 +2093,7 @@ for(const returnBeforeReply of [false,true]) test(`chat UX clears submitted atta
       types.push(route.request().headers()['content-type']);
       const response=await route.fetch();admitted();await gate;await route.fulfill({response});
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await input.fill('attachment first');
@@ -2128,7 +2128,7 @@ test('chat UX sends a different saved draft after reconciling a completed pendin
       sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:requestId,text:'original accepted',files:[]}));
       sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'Different next question',files:[]}));
     },{id,requestId});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toHaveText('Different next question');
     await expect(input).toBeEditable();
@@ -2148,7 +2148,7 @@ test('chat UX does not resend an accepted attachment with a different draft afte
       if(types.length===1) {await route.fetch();await route.abort('failed');}
       else await route.continue();
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await input.fill('accepted attachment');
@@ -2173,7 +2173,7 @@ test('chat UX retains bytes for an unaccepted attachment after switching convers
       if(++sends===1) {intercepted();await gate;await route.abort('failed');}
       else await route.continue();
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await input.fill('retry retained bytes');
@@ -2201,7 +2201,7 @@ test('chat UX keeps a newer same-text draft when an older send reply arrives lat
       if(++sends===1) {admitted();await gate;}
       await route.fulfill({response});
     });
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeEditable();
     await input.fill('continue');await input.press('Enter');await accepted;
@@ -2222,7 +2222,7 @@ test('chat UX keeps a newer same-text draft when an older send reply arrives lat
 
 test('Nuxt UI login preserves errors and return path on mobile and desktop', { timeout: 60000 }, async () => {
   const {id}=await (await request('sessions',{})).json();
-  const target=new URL(`chat/?conversation=${id}`,base);
+  const target=new URL(`app/chat/${encodeURIComponent(id)}`,base);
   const url=new URL('auth/login',base);
   url.searchParams.set('return_to',target.pathname+target.search);
   const browser=await chromium.launch({headless:true});
@@ -2269,7 +2269,7 @@ test('browser login, text, tools, stop, history and mobile layout', { timeout: 6
     const page = await browser.newPage({locale:'ru-RU', viewport: { width: 1280, height: 900 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.goto(new URL('chat/', base).href);
+    await page.goto(new URL('app/chat', base).href);
     const loginResponse=page.waitForResponse(response=>response.request().method()==='POST' && new URL(response.url()).pathname.endsWith('/auth/login'));
     await page.locator('input[type=password]').fill('preview-password');
     await page.locator('button[type=submit]').click();
@@ -2277,7 +2277,7 @@ test('browser login, text, tools, stop, history and mobile layout', { timeout: 6
     await newConversation(page);
     const input = page.getByRole('textbox', { name: 'Сообщение' });
     await input.fill('tools');
-    const toolsId=new URL(page.url()).searchParams.get('conversation');
+    const toolsId=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     await page.getByRole('button', { name: 'Отправить' }).click();
     await page.getByText('Привет!', { exact: true }).waitFor();
     await page.getByRole('button',{name:'Выполнено шагов: 1',exact:true}).click();
@@ -2291,7 +2291,7 @@ test('browser login, text, tools, stop, history and mobile layout', { timeout: 6
     await page.getByRole('button', { name: 'Новый диалог', exact: true }).first().click();
     await page.getByRole('heading', { name: 'Есть мысль?' }).waitFor();
     await input.fill('retry');
-    const retryId=new URL(page.url()).searchParams.get('conversation');
+    const retryId=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     await page.getByRole('button', { name: 'Отправить' }).click();
     await page.getByText('Привет!', { exact: true }).waitFor();
     assert.equal(await page.getByText('Неверная попытка', { exact: true }).count(), 0);
@@ -2316,7 +2316,7 @@ test('composer waits for authoritative snapshot after admission', { timeout: 300
   try {
     const page = await browser.newPage({locale:'ru-RU'});
     await page.context().addCookies([{ name: cookie.split('=')[0], value: cookie.split('=')[1], url: base }]);
-    await page.goto(new URL('chat/', base).href);
+    await page.goto(new URL('app/chat', base).href);
     await newConversation(page);
     await page.getByRole('heading', { name: 'Есть мысль?' }).waitFor();
     const held = new Promise(resolve => { release = resolve; });
@@ -2352,12 +2352,12 @@ test('composer keeps focus after Enter and button submission without stealing it
   try {
     const page = await browser.newPage({locale:'ru-RU'});
     await page.context().addCookies([{ name: cookie.split('=')[0], value: cookie.split('=')[1], url: base }]);
-    await page.goto(new URL('chat/', base).href);
+    await page.goto(new URL('app/chat', base).href);
     await newConversation(page);
     await page.getByRole('heading', { name: 'Есть мысль?' }).waitFor();
     const input = page.getByRole('textbox', { name: 'Сообщение' });
     await expect(input).toBeFocused();
-    const firstId=new URL(page.url()).searchParams.get('conversation');
+    const firstId=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     await input.fill('hello');
     await input.press('Enter');
     await page.getByText('Привет!', { exact: true }).waitFor();
@@ -2374,14 +2374,14 @@ test('composer keeps focus after Enter and button submission without stealing it
     await expect(input).not.toBeFocused();
     await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();
     await expect(input).toBeFocused();
-    const secondId=new URL(page.url()).searchParams.get('conversation');
+    const secondId=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${firstId}"]`).click();
     await expect(input).toBeFocused();
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${firstId}"]`).click();
     await expect(input).toBeFocused();
     const mobile=await browser.newPage({locale:'ru-RU',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     await mobile.context().addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
-    await mobile.goto(new URL(`chat/?conversation=${secondId}`,base).href);
+    await mobile.goto(new URL(`app/chat/${encodeURIComponent(secondId)}`,base).href);
     await mobile.getByRole('button',{name:'Показать диалоги',exact:true}).click();
     await mobile.getByRole('dialog').locator(`[data-conversation-id="${firstId}"]`).click();
     await expect(mobile.getByRole('dialog')).toHaveCount(0);
@@ -2404,7 +2404,7 @@ test('lost send response reconciles a legacy multiline draft after Markdown norm
     const [name,...value]=cookie.split('=');
     await page.context().addCookies([{name,value:value.join('='),url:base}]);
     const {id}=await(await request('sessions',{})).json();
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const text='lost response\nlegacy draft';
     await page.evaluate(({id,text})=>sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text,files:[]})),{id,text});
     await page.reload();
@@ -2440,7 +2440,7 @@ test('blocked accepted request allows a new input to resume the queue', { timeou
     await page.addInitScript(({id})=>sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:'11111111-1111-4111-8111-111111111111',text:'old input'})),{id});
     await page.route('**/requests/*',r=>r.fulfill({json:{status:'Queued',blocked_reason:'Stopped by user'}}));
     let submissions=0;page.on('request',r=>{if(r.url().endsWith('/api/chat/send'))submissions++;});
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`).click();
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await input.fill('continue please');await input.press('Enter');
@@ -2455,7 +2455,7 @@ test('refresh and two observers preserve execution; Stop is shared', {timeout:30
   try {
     const context=await browser.newContext({locale:'ru-RU'});
     await context.addCookies([{name:cookie.split('=')[0],value:cookie.split('=')[1],url:base}]);
-    const page=await context.newPage();await page.goto(new URL('chat/',base).href);
+    const page=await context.newPage();await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await input.fill('wait');await input.press('Enter');
@@ -2490,7 +2490,7 @@ test('queued webhook payloads render as code while owner followups keep Markdown
     await page.route(`**/api/chat/sessions/${id}`,route=>route.fulfill({json:{id,title:'Ожидающее событие',busy:true,updated_at:null,webhook:{id:'hook',name:'Incident hook'}}}));
     await page.route(`**/api/chat/sessions/${id}/run`,route=>route.fulfill({json:snapshot}));
     await page.route(`**/api/chat/sessions/${id}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const messages=page.locator('.message[data-role="user"]');
     await expect(messages.first().locator('pre code')).toHaveText(raw);
     await expect(messages.last().locator('strong')).toHaveText('Уточнение');
@@ -2512,7 +2512,7 @@ test('Dialogs and Events menus separate histories and preserve webhook conversat
     assert.equal(delivered.status,202);
     const {conversation_id:id}=await delivered.json();
     await expect.poll(async()=>(await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     const navigation=page.getByRole('navigation',{name:'История диалогов'});
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
     await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
@@ -2561,7 +2561,7 @@ test('owner manages webhooks, rotates one-time tokens and opens arbitrary event 
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{viewport:{width:1280,height:900}});
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
     await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки checkout');
@@ -2574,7 +2574,7 @@ test('owner manages webhooks, rotates one-time tokens and opens arbitrary event 
     const event=await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Idempotency-Key':'browser-event'},body:'checkout error\nraw stack trace'});
     assert.equal(event.status,202);const accepted=await event.json();
     await page.getByRole('button',{name:'Открыть обработку',exact:true}).first().click();
-    await expect(page).toHaveURL(new RegExp(`conversation=${accepted.conversation_id}`));
+    await expect(page).toHaveURL(new URL(`app/chat/${encodeURIComponent(accepted.conversation_id)}`,base).href);
     await expect(page.locator('.message[data-role="user"]').first()).toContainText('checkout error');
     await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
@@ -2600,7 +2600,7 @@ test('webhook form works in the mobile sidebar and English interface', {timeout:
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await page.getByRole('button',{name:'Show conversations',exact:true}).click();
     await page.getByRole('button',{name:'Webhooks',exact:true}).click();
     await page.getByRole('button',{name:'Create webhook',exact:true}).click();
@@ -2632,7 +2632,7 @@ test('language and theme icon menus preserve manual choices and follow system se
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{locale:'ru-RU',colorScheme:'light'});
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
     await expect(page.locator('select')).toHaveCount(0);
     await page.getByRole('button',{name:'Язык',exact:true}).click();
@@ -2705,7 +2705,7 @@ test('English fallback, locale persistence, localized API errors and timestamps 
       localStorage.setItem('kodrik.language','unsupported');
       sessionStorage.setItem('locale-test-seeded','1');
     });
-    const url=new URL(`chat/?conversation=${id}`,base).href;
+    const url=new URL(`app/chat/${encodeURIComponent(id)}`,base).href;
     await page.goto(url);
     await expect(page.locator('html')).toHaveAttribute('lang','en');
     await expect(page.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
@@ -2752,7 +2752,7 @@ test('English document chrome switches language without changing document titles
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{locale:'en-US'});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.getByRole('heading',{name:'Дневник питания',exact:true})).toBeVisible();
     await expect(page.getByRole('textbox',{name:'Filter table',exact:true})).toBeVisible();
     const url=await page.getByRole('link',{name:'Open page',exact:true}).getAttribute('href');
@@ -2781,7 +2781,7 @@ test('English mobile chat keeps keyboard sending, saved drafts and language sele
       sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'Saved unsent draft',files:[]}));
       sessionStorage.setItem('draft-test-seeded','1');
     },{id});
-    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const editor=page.getByRole('textbox',{name:'Message',exact:true});
     await expect(editor).toHaveText('Saved unsent draft');
     await editor.fill('English mobile question');
@@ -2810,7 +2810,7 @@ test('files and photos send without text, survive reload and download; mobile th
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     await page.getByRole('heading',{name:'Есть мысль?'}).waitFor();
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:3}});
@@ -2863,7 +2863,7 @@ test('files and photos send without text, survive reload and download; mobile th
 test('paste and drop attach files; lost multipart response reconciles after reload without resubmission', {timeout:60000}, async()=>{
   const browser=await chromium.launch({headless:true});
   try {
-    const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
+    const page=await signedPage(browser);await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await expect(input).toBeEditable();
@@ -2903,7 +2903,7 @@ test('paste and drop attach files; lost multipart response reconciles after relo
 test('Markdown renders formatting without executing HTML, Vue components or unsafe links', {timeout:30000}, async()=>{
   const browser=await chromium.launch({headless:true});
   try {
-    const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
+    const page=await signedPage(browser);await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
     await pasteText(input,'**Safe bold**\n\n[Safe link](https://example.com/)\n\n<script>window.chatInjection = true</script>\n\n<img src=x onerror="window.chatInjection=true">\n\n[unsafe](javascript:alert(1))\n\n::u-button\nInjected component\n::');
@@ -2931,7 +2931,7 @@ test('closing tab during a tool preserves one effect and one answer', {timeout:3
   const browser=await chromium.launch({headless:true});
   const priorEffects=(await readFile(join(storage,'effects.txt'),'utf8').catch(()=> '')).trim().split('\n').filter(Boolean).length;
   try {
-    const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
+    const page=await signedPage(browser);await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('slowtool');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByRole('button',{name:'Выполняются шаги: 1',exact:true}).click();
@@ -2949,7 +2949,7 @@ test('closing tab during a tool preserves one effect and one answer', {timeout:3
 test('network loss reconnects without cancelling; stop interrupts persisted retry', {timeout:30000}, async()=>{
   const browser=await chromium.launch({headless:true});
   try {
-    const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
+    const page=await signedPage(browser);await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('backoff');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByRole('button',{name:'Остановить',exact:false}).waitFor();
@@ -2968,11 +2968,11 @@ test('network loss reconnects without cancelling; stop interrupts persisted retr
 test('backend process restart restores the same run and attached browser', {timeout:60000}, async()=>{
   const browser=await chromium.launch({headless:true});
   try {
-    const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
+    const page=await signedPage(browser);await page.goto(new URL('app/chat',base).href);
     await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('restart');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
     await page.getByText('Перед перезапуском',{exact:true}).waitFor();
-    const id=new URL(page.url()).searchParams.get('conversation');
+    const id=decodeURIComponent(new URL(page.url()).pathname.split('/').at(-1));
     const before=await (await request(`sessions/${id}/run`)).json();
     const listen=new URL(base).host;
     const exited=once(server,'exit');process.kill(-server.pid,'SIGKILL');await exited;
@@ -2989,7 +2989,7 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
   try {
     // Use a separate login: revoking it must not invalidate the fixture cookie.
     const context=await browser.newContext({locale:'ru-RU'});const page=await context.newPage();
-    await page.goto(new URL('chat/',base).href);
+    await page.goto(new URL('app/chat',base).href);
     await page.locator('input[type=password]').fill('preview-password');await page.locator('button[type=submit]').click();
     await newConversation(page);
     await page.getByRole('textbox',{name:'Сообщение',exact:true}).fill('wait');await page.getByRole('textbox',{name:'Сообщение',exact:true}).press('Enter');
@@ -3001,7 +3001,7 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
     await page.getByText('Сессия истекла. Войдите снова.',{exact:false}).waitFor();
     const count=watches;await new Promise(resolve=>setTimeout(resolve,1500));assert.equal(watches,count);
     assert.ok(await page.getByRole('link',{name:'Войти',exact:true}).count());
-    const id=new URL(url).searchParams.get('conversation');
+    const id=decodeURIComponent(new URL(url).pathname.split('/').at(-1));
     assert.equal((await (await request(`sessions/${id}/run`)).json()).busy,true);
     await request(`sessions/${id}/stop`,{});
   }finally{await browser.close();}
@@ -3021,7 +3021,7 @@ test(`${short?'short':'legacy'} invitation landing scrubs the secret and sends i
   const browser=await chromium.launch({headless:true});
   try {
     const page=await browser.newPage({locale:'ru-RU'}),invite=short?'AbCdEfGhIjKlMnOpQrSt_w':'ab'.repeat(32),requests=[],bodies=[];
-    const url=new URL(short?'i':'auth/login?return_to=/kodrik/chat/',base);url.hash=short?invite:`invite=${invite}`;
+    const url=new URL(short?'i':'auth/login?return_to=/kodrik/app/chat',base);url.hash=short?invite:`invite=${invite}`;
     const redirect=new URL('chat/?invitation-accepted',base).href;
     let approved=false;
     page.on('request',request=>requests.push({url:request.url(),referer:request.headers().referer || ''}));
@@ -3040,7 +3040,7 @@ test(`${short?'short':'legacy'} invitation landing scrubs the secret and sends i
     await expect(page.getByRole('button',{name:'Войти по коду из Telegram',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
     await expect(page.getByRole('link',{name:'Открыть Telegram',exact:true})).toBeVisible();
-    assert.deepEqual(bodies,[{return_to:'/kodrik/chat/',invite}]);
+    assert.deepEqual(bodies,[{return_to:'/kodrik/app/chat',invite}]);
     assert.ok(!(await page.content()).includes(invite));
     assert.ok(!(await page.evaluate(()=>JSON.stringify({local:{...localStorage},session:{...sessionStorage}}))).includes(invite));
     await page.getByRole('button',{name:'Отменить',exact:true}).click();
@@ -3076,7 +3076,7 @@ test('Telegram approval login uses local QR and enters only the initiating brows
   try {
     const page=await browser.newPage({locale:'ru-RU',viewport:{width:390,height:844}}),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
-    await page.goto(new URL('auth/login?return_to=/kodrik/chat/',base).href);
+    await page.goto(new URL('auth/login?return_to=/kodrik/app/chat',base).href);
     await page.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
     const open=page.getByRole('link',{name:'Открыть Telegram',exact:true});
     await expect(open).toBeVisible();
@@ -3093,7 +3093,7 @@ test('Telegram approval login uses local QR and enters only the initiating brows
     await page.setViewportSize({width:1280,height:900});
     await page.screenshot({path:'/tmp/kodrik-telegram-login-desktop.png',fullPage:true});
     assert.equal((await decideTelegram(id,true)).ok,true);
-    await expect(page).toHaveURL(new URL('chat/',base).href);
+    await expect(page).toHaveURL(new URL('app/chat',base).href);
     await expect(page.locator('nav[aria-label="История диалогов"] [data-conversation-id]')).toHaveCount(1);
     assert.deepEqual(errors,[]);
   } finally {await browser.close();}
@@ -3103,7 +3103,7 @@ test('Telegram denial allows retry and cancellation restores password login', {t
   const browser=await chromium.launch({headless:true});
   try {
     const page=await browser.newPage({locale:'ru-RU'});
-    await page.goto(new URL('auth/login?return_to=/kodrik/chat/',base).href);
+    await page.goto(new URL('auth/login?return_to=/kodrik/app/chat',base).href);
     await page.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
     const open=page.getByRole('link',{name:'Открыть Telegram',exact:true});
     await expect(open).toBeVisible();

@@ -48,9 +48,13 @@ base_url = "http://127.0.0.1:8080/"
 ./target/release/kodrik gateway
 ```
 
-Open `http://127.0.0.1:8080/chat/`. For remote access use HTTPS through a reverse
+Open `http://127.0.0.1:8080/app/chat`. For remote access use HTTPS through a reverse
 proxy, following [Web pages](web-pages.md#reverse-proxy). With a configured
-prefix such as `/kodrik/`, the chat is at `/kodrik/chat/`.
+prefix such as `/kodrik/`, the chat is at `/kodrik/app/chat`.
+
+Dashboard sections use `/app/chat`, `/app/pages` and `/app/webhooks`. A selected
+object appends its session ID, page slug or webhook ID to the section path.
+Old `/chat/` links with selection query parameters redirect to these paths.
 
 The sign-in page uses the same Nuxt UI components and Catppuccin theme as the
 chat. Choose **Войти через Telegram**, then open the bot with the button or scan

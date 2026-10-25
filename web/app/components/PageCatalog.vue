@@ -39,7 +39,7 @@ watch(() => props.revision, load)
     <template v-else-if="error">
       <p role="alert" class="text-sm text-error">{{ t(error) }}</p>
       <UButton :label="t('Повторить загрузку')" color="neutral" variant="link" @click="load" />
-      <UButton v-if="expired" :label="t('Войти')" :to="login" external color="neutral" variant="link" />
+      <UButton v-if="expired" :label="t('Войти')" :to="login()" external color="neutral" variant="link" />
     </template>
     <template v-else>
       <nav :aria-label="t('Каталог страниц')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">

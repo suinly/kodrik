@@ -423,8 +423,19 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .merge(api)
         .merge(webhooks::routes(state.clone()))
         .route("/chat", get(chat_redirect))
-        .route("/chat/", get(index))
+        .route("/chat/", get(chat_redirect))
         .route("/chat/{*path}", get(asset))
+        .route("/app", get(app_redirect))
+        .route("/app/", get(app_redirect))
+        .route("/app/chat", get(index))
+        .route("/app/chat/", get(index))
+        .route("/app/chat/{id}", get(index))
+        .route("/app/pages", get(index))
+        .route("/app/pages/", get(index))
+        .route("/app/pages/{id}", get(index))
+        .route("/app/webhooks", get(index))
+        .route("/app/webhooks/", get(index))
+        .route("/app/webhooks/{id}", get(index))
         .with_state(state)
 }
 
@@ -468,11 +479,29 @@ async fn authorize(
 }
 
 async fn chat_redirect(State(state): State<WebState>, OriginalUri(uri): OriginalUri) -> Redirect {
-    let query = uri
-        .query()
-        .map(|query| format!("?{query}"))
-        .unwrap_or_default();
-    Redirect::to(&format!("{}chat/{query}", state.settings.prefix()))
+    let mut url = state.settings.base_url.join("app/chat").unwrap();
+    url.set_query(uri.query());
+    let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    url.set_query(None);
+    let (section, id) = if let Some(id) = params.get("page") {
+        ("pages", Some(id))
+    } else if let Some(id) = params.get("webhook") {
+        ("webhooks", Some(id))
+    } else if let Some(section @ ("pages" | "webhooks")) = params.get("section").map(String::as_str)
+    {
+        (section, None)
+    } else {
+        ("chat", params.get("conversation"))
+    };
+    url.set_path(&format!("{}app/{section}", state.settings.prefix()));
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        url.path_segments_mut().unwrap().push(id);
+    }
+    Redirect::to(url.path())
+}
+
+async fn app_redirect(State(state): State<WebState>) -> Redirect {
+    Redirect::to(&format!("{}app/chat", state.settings.prefix()))
 }
 
 async fn index(
