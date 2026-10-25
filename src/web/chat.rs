@@ -504,6 +504,17 @@ fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
 
+fn webhook_source(session: &Session) -> Option<Value> {
+    let recorded = session
+        .webhook_instruction
+        .as_deref()?
+        .strip_prefix("## Recorded delivery source\n")?
+        .lines()
+        .next()?;
+    let source: Value = serde_json::from_str(recorded).ok()?;
+    Some(json!({"id":source["webhook_id"].as_str()?,"name":source["webhook_name"].as_str()?}))
+}
+
 fn personal_session_id(id: &str) -> bool {
     !id.starts_with("companion:")
         && !id.ends_with(":guest")
@@ -553,7 +564,7 @@ async fn read(
     let (title, title_default) = chat.display_title(session).await.map_err(internal)?;
     Ok(Json(
         json!({"id":id, "root_id":root, "title_pending":title_pending,
-        "title":title, "title_default":title_default,
+        "title":title, "title_default":title_default,"webhook":webhook_source(session),
         "updated_at":session.last_message_at(),
         "messages":history(session), "busy":view.busy, "blocked_reason":view.blocked_reason}),
     ))

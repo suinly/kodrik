@@ -35,7 +35,7 @@ const sections = [
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
 ] as const
 const visibleSections = computed(()=>sections.filter(item=>item.id!=='webhooks' || webhooks.allowed))
-const sectionTitle = computed(()=>section.value==='chat'?t('Диалоги'):section.value==='pages'?t('Страницы'):t('Вебхуки'))
+const sectionTitle = computed(()=>section.value==='chat'?t(showEvents.value?'События':'Диалоги'):section.value==='pages'?t('Страницы'):t('Вебхуки'))
 const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
@@ -49,6 +49,11 @@ const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
 const search = ref('')
+const showEvents = ref(false)
+const conversationTypes = computed(()=>[
+  {label:t('Диалоги'),type:'checkbox' as const,checked:!showEvents.value,onSelect:()=>{showEvents.value=false}},
+  {label:t('События'),type:'checkbox' as const,checked:showEvents.value,onSelect:()=>{showEvents.value=true}},
+])
 const listing = ref(false)
 const listError = ref('')
 const retryReset = ref(true)
@@ -70,8 +75,10 @@ let disposed=false
 let searchTimer:ReturnType<typeof setTimeout>|undefined
 async function loadSessions(reset=false) {
   const query=search.value.trim()
-  if(disposed || !reset && (listing.value || !hasMore.value || listQuery!==query)) return false
-  const target=reset && listQuery===query ? Math.max(pageSize,nextOffset) : pageSize
+  const webhookEvents=showEvents.value
+  const queryKey=`${webhookEvents}:${query}`
+  if(disposed || !reset && (listing.value || !hasMore.value || listQuery!==queryKey)) return false
+  const target=reset && listQuery===queryKey ? Math.max(pageSize,nextOffset) : pageSize
   const revision=++listRevision
   let offset=reset ? 0 : nextOffset
   const items=reset ? [] : [...sessions.value]
@@ -80,7 +87,7 @@ async function loadSessions(reset=false) {
   listError.value=''
   try {
     do {
-      const found=await api<Conversation[]>(`sessions?limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}`)
+      const found=await api<Conversation[]>(`sessions?limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}&webhooks=${webhookEvents}`)
       if(disposed || revision!==listRevision) return false
       for(const item of found) {
         const index=items.findIndex(existing=>(existing.root_id ?? existing.id)===(item.root_id ?? item.id))
@@ -91,7 +98,7 @@ async function loadSessions(reset=false) {
       more=found.length===pageSize
     } while(reset && more && offset<target)
     sessions.value=items
-    listQuery=query
+    listQuery=queryKey
     nextOffset=offset
     hasMore.value=more
     return true
@@ -105,7 +112,7 @@ function scrollSessions(event:Event) {
   const list=event.currentTarget as HTMLElement
   if(list.scrollHeight-list.scrollTop-list.clientHeight<80) void loadSessions()
 }
-watch(search,()=>{
+watch([search,showEvents],()=>{
   clearTimeout(searchTimer);listRevision++;listing.value=false
   sessions.value=[];nextOffset=0;hasMore.value=false
   searchTimer=setTimeout(()=>{void loadSessions(true)},200)
@@ -140,6 +147,7 @@ async function restoreLocation() {
       if(revision!==navigationRevision) return
       if(selected.value?.id!==conversation?.id) conversationKey.value++
       selected.value=conversation
+      showEvents.value=!!conversation?.webhook
     } else if(target.section==='pages') {
       selectedPage.value=null
       if(target.id) {
@@ -223,6 +231,7 @@ function select(conversation: Conversation, preserveView = false) {
     sessionStorage.setItem(key,JSON.stringify([...new Set([...ids,conversation.id])]))
   } catch {}
   selected.value = conversation
+  showEvents.value = !!conversation.webhook
   writeLocation()
   conversationSearch.value=conversation.snippet ? search.value.trim() : ''
   conversationSearchOpen.value=!!conversationSearch.value
@@ -412,7 +421,12 @@ onMounted(() => {
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
           :disabled="webhooks.saving" size="xl" class="justify-start" @click="openSection(item.id)" />
       </nav>
-      <SidebarSearch v-if="section==='chat'" v-model="search" :title="sectionTitle" :label="t('Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
+      <SidebarSearch v-if="section==='chat'" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
+          <template #title>
+            <UDropdownMenu :items="conversationTypes">
+              <UButton :label="sectionTitle" trailing-icon="i-lucide-chevron-down" color="neutral" variant="ghost" size="sm" class="-ml-2 max-w-full font-semibold text-highlighted" />
+            </UDropdownMenu>
+          </template>
           <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="listing" :disabled="creating" @click="refresh" />
           <UButton :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
       </SidebarSearch>
@@ -431,7 +445,7 @@ onMounted(() => {
           @click="select(session)">
           <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="sidebar-icon" />
           <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="sidebar-icon animate-spin" :aria-label="t('Выполняется')" />
-          <UIcon v-if="!session.pinned && !session.busy" name="i-lucide-message-square" class="sidebar-icon" />
+          <UIcon v-if="!session.pinned && !session.busy" :name="session.webhook?'i-lucide-webhook':'i-lucide-message-square'" class="sidebar-icon" />
           <span class="min-w-0 flex-1 text-left">
             <UChatShimmer v-if="session.title_pending" :text="shortConversationTitle(session.title)" data-testid="title-shimmer" :aria-label="t('Создаю название диалога')" class="block truncate motion-reduce:animate-none" />
             <span v-else class="block truncate">{{ shortConversationTitle(conversationTitle(session)) }}</span>
@@ -447,7 +461,7 @@ onMounted(() => {
         <UButton v-if="listError || hasMore" :label="listError ? t('Повторить загрузку') : t('Показать ещё')" :loading="listing" color="neutral" variant="link" class="shrink-0 justify-center" @click="listError && retryReset ? refresh() : loadSessions()" />
         <p v-else-if="listing" role="status" class="text-sm text-muted"> {{ t("Загружаю диалоги…") }} </p>
       </nav>
-      <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t("Диалоги не найдены.") : t("Здесь появятся ваши разговоры.") }}</p>
+      <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
       <div v-else-if="webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
@@ -475,10 +489,15 @@ onMounted(() => {
               <h1 class="min-w-0 truncate font-semibold text-highlighted">{{ selectedPage.title }}</h1>
             </div>
             <div v-else-if="section==='chat'" class="conversation-heading flex min-w-0 items-center gap-1.5">
+              <div class="min-w-0 flex-1 sm:flex sm:items-center sm:gap-1.5">
               <h1 class="min-w-0 truncate font-semibold text-highlighted">
                 <UChatShimmer v-if="selected?.title_pending" :text="selected.title" data-testid="navbar-title-shimmer" :aria-label="t('Создаю название диалога')" class="truncate motion-reduce:animate-none" />
                 <span v-else>{{ selected ? conversationTitle(selected) : t("Кодрик") }}</span>
               </h1>
+              <UBadge v-if="selected?.webhook" icon="i-lucide-webhook" color="neutral" variant="subtle" :title="t('Вебхук: {0}', selected.webhook.name)" class="mt-0.5 max-w-full sm:mt-0 sm:max-w-64 sm:shrink-0">
+                <span class="truncate">{{ t('Вебхук: {0}', selected.webhook.name) }}</span>
+              </UBadge>
+              </div>
               <UButton v-if="selected" icon="i-lucide-pencil" :aria-label="t('Переименовать диалог')" color="neutral" variant="ghost" size="sm" class="conversation-rename shrink-0" @click="manage(selected,'rename')" />
             </div>
             <h1 v-else class="min-w-0 truncate font-semibold text-highlighted">{{ mainTitle }}</h1>

@@ -548,6 +548,111 @@ async fn webhook_bearer_is_required_before_reading_body_or_creating_work() {
 }
 
 #[tokio::test]
+async fn webhook_conversations_are_filtered_before_paging_and_keep_their_source() {
+    async fn get(f: &Fixture, path: &str) -> Value {
+        let token = AuthStore::new(f._data.path())
+            .test_session(Identity::Owner, chrono::Utc::now().timestamp())
+            .unwrap()
+            .unwrap();
+        let response = f
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/kodrik/api/chat/{path}"))
+                    .header("cookie", format!("kodrik_web_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+    }
+    let f = Fixture::new().await;
+    let mut normal = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+    normal.push(crate::agent::message::Message::User(
+        crate::agent::UserMessage {
+            content: "KOD-2-event ordinary conversation".into(),
+            images: vec![],
+            files: vec![],
+        },
+    ));
+    f.chat.sessions.save(&normal).await.unwrap();
+    let hook = f.create().await;
+    let body = r#"{"event":"KOD-2-event","items":[1,2]}"#;
+    let (status, delivery) = f.deliver(&hook, "source-test", body).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let id = delivery["conversation_id"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.chat.sessions.conversation_view(id).await.unwrap().busy {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let page = get(&f, "sessions?limit=1").await;
+    assert_eq!(page.as_array().unwrap().len(), 1);
+    assert_eq!(page[0]["id"], normal.id().as_str());
+    assert!(
+        get(&f, "sessions?limit=1&offset=1")
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        get(&f, "sessions?q=items")
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        get(&f, "sessions?webhooks=true&limit=1&offset=1")
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let found = get(&f, "sessions?webhooks=true&q=KOD-2-event").await;
+    assert_eq!(found.as_array().unwrap().len(), 1);
+    assert_eq!(found[0]["id"], id);
+    assert_eq!(
+        found[0]["webhook"],
+        json!({"id":hook["id"],"name":"Site errors"})
+    );
+    assert_eq!(
+        f.manage(
+            "DELETE",
+            &format!("/{}", hook["id"].as_str().unwrap()),
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let shown = get(&f, &format!("sessions/{id}")).await;
+    assert_eq!(shown["webhook"], found[0]["webhook"]);
+    assert_eq!(shown["messages"][0]["parts"][0]["text"], body);
+    assert_eq!(shown["messages"][0]["parts"][0]["format"], "code");
+    let mut session = f.chat.sessions.conversation_view(id).await.unwrap().session;
+    session.push(crate::agent::message::Message::User(
+        crate::agent::UserMessage {
+            content: "**follow up**".into(),
+            files: vec![],
+            images: vec![],
+        },
+    ));
+    f.chat.sessions.save(&session).await.unwrap();
+    let snapshot = f.chat.snapshot(id).await.unwrap();
+    assert_eq!(snapshot["messages"][0]["parts"][0]["format"], "code");
+    assert!(
+        snapshot["messages"].as_array().unwrap().last().unwrap()["parts"][0]["format"].is_null()
+    );
+}
+
+#[tokio::test]
 async fn webhook_arbitrary_body_runs_once_and_changed_retry_conflicts() {
     let f = Fixture::new().await;
     let hook = f.create().await;

@@ -22,7 +22,7 @@ function close() {
 
 <template>
   <div class="sidebar-section-header">
-    <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted">{{ title }}</h2>
+    <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted"><slot name="title">{{ title }}</slot></h2>
     <UButton ref="button" :aria-label="label" :title="label" :aria-expanded="open" :aria-controls="id" icon="i-lucide-search" color="neutral" :variant="open ? 'soft' : 'ghost'" size="sm" class="sidebar-action" @click="toggle" />
     <slot />
   </div>

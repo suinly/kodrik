@@ -7,11 +7,11 @@ export class AuthenticationError extends Error {}
 export class ConversationNotFoundError extends Error {}
 export const messageOf = (error: unknown) => error instanceof TypeError ? t('Не удалось подключиться к серверу.') : error instanceof Error ? t(error.message) : t("Не удалось подключиться к серверу.");
 
-export type Conversation = { id: string; root_id?:string; title: string; title_default?:boolean; title_pending?: boolean; pinned?:boolean; busy: boolean; updated_at: string | null; snippet?:string|null; match_message?:string|null };
+export type Conversation = { id: string; root_id?:string; title: string; title_default?:boolean; title_pending?: boolean; pinned?:boolean; busy: boolean; updated_at: string | null; snippet?:string|null; match_message?:string|null;webhook?:{id:string;name:string}|null };
 export type PublishedPage = {slug: string; title: string; url: string; visibility: 'private' | 'public'; document: boolean};
 export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; pendingFiles?: {id:string;files:File[]} };
 export type MessagePart =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string;format?:'code' }
   | { type: 'file'; filename: string; mediaType: string; url?: string }
   | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };

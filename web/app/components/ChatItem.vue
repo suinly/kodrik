@@ -2,7 +2,7 @@
 import {t} from '../utils/i18n'
 import {linkTarget} from '../utils/link-target'
 import type { ChatMessage } from '../utils/api'
-import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
+import {groupMessageParts,formatMessageTime,formatWebhookBody} from '../utils/chat-presentation'
 const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
 const blocks=computed(()=>groupMessageParts(props.message.parts))
@@ -31,7 +31,8 @@ function beginEdit() {
       <div class="min-w-0 space-y-3">
         <template v-for="(block,index) in blocks" :key="index">
           <template v-if="block.kind==='content'">
-            <ChatMarkdown v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" data-search-text />
+            <pre v-if="block.part.type==='text' && block.part.format==='code' && !editing" class="max-w-full overflow-x-auto rounded-md bg-muted p-3 text-sm/6" data-search-text><code>{{ formatWebhookBody(block.part.text) }}</code></pre>
+            <ChatMarkdown v-else-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" data-search-text />
             <div v-else-if="block.part.type==='file'" class="flex flex-col items-start gap-2">
               <img v-if="block.part.url && block.part.mediaType.startsWith('image/')" :src="block.part.url" :alt="block.part.filename" loading="lazy" class="max-h-72 max-w-full rounded-lg object-contain">
               <UButton :to="block.part.url" :target="linkTarget(block.part.url)" :disabled="!block.part.url" external download color="neutral" variant="outline"

@@ -2,7 +2,19 @@ import {setLanguage} from '../app/utils/i18n.ts';
 setLanguage('ru');
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime} from '../app/utils/chat-presentation.ts';
+import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody} from '../app/utils/chat-presentation.ts';
+
+test('webhook code displays JSON with indentation and keeps non-JSON payloads literal',()=>{
+  for(const [raw,formatted] of [
+    ['{"event":"failed","items":[1,2]}','{\n  "event": "failed",\n  "items": [\n    1,\n    2\n  ]\n}'],
+    ['null','null'],['"text"','"text"'],
+    ['# Incident\n<script>unsafe()</script>\n```json','# Incident\n<script>unsafe()</script>\n```json'],
+    ['{"event":','{"event":'],
+    ['{"id":9007199254740993}','{"id":9007199254740993}'],
+    ['{"value":1e400}','{"value":1e400}'],
+    ['{"key":1,"key":2}','{"key":1,"key":2}'],
+  ]) assert.equal(formatWebhookBody(raw),formatted);
+});
 
 test('message dates use local calendar days and show the year only when needed',()=>{
   const now=new Date(2026,9,22,12);

@@ -2480,6 +2480,83 @@ async function signedPage(browser,options={}) {
   return page;
 }
 
+test('queued webhook payloads render as code while owner followups keep Markdown', {timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),id=crypto.randomUUID();
+    const raw='# Incident\n<script>window.eventInjection=true</script>\n```json\n{"id":9007199254740993}';
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:true,cancel_requested:false,phase:null,blocked_reason:null,
+      messages:[],live:{current:null,interrupted:null},plan:null,queued:[{id:'event',text:raw},{id:'owner',text:'**Уточнение**'}]};
+    await page.route(`**/api/chat/sessions/${id}`,route=>route.fulfill({json:{id,title:'Ожидающее событие',busy:true,updated_at:null,webhook:{id:'hook',name:'Incident hook'}}}));
+    await page.route(`**/api/chat/sessions/${id}/run`,route=>route.fulfill({json:snapshot}));
+    await page.route(`**/api/chat/sessions/${id}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const messages=page.locator('.message[data-role="user"]');
+    await expect(messages.first().locator('pre code')).toHaveText(raw);
+    await expect(messages.last().locator('strong')).toHaveText('Уточнение');
+    assert.equal(await messages.first().locator('h1,script').count(),0);
+    assert.equal(await page.evaluate(()=>window.eventInjection),undefined);
+  } finally {await browser.close();}
+});
+
+test('Dialogs and Events menus separate histories and preserve webhook conversations on desktop and mobile', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  let hook;
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    const normal=await(await request('sessions',{})).json();
+    const response=await page.request.post(new URL('api/webhooks',base).href,{headers:{Origin:new URL(base).origin},data:{name:'События KOD-2',instruction:'Обработай событие.'}});
+    assert.equal(response.status(),201);hook=await response.json();
+    const raw='{"event":"KOD-2-event","details":{"message":"# Literal <script>window.eventInjection=true</script>"}}';
+    const delivered=await fetch(hook.url,{method:'POST',headers:{Authorization:`Bearer ${hook.token}`},body:raw});
+    assert.equal(delivered.status,202);
+    const {conversation_id:id}=await delivered.json();
+    await expect.poll(async()=>(await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+    await page.goto(new URL('chat/',base).href);
+    const navigation=page.getByRole('navigation',{name:'История диалогов'});
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
+    await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
+    await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
+    await page.getByRole('button',{name:'Диалоги',exact:true}).focus();
+    await page.keyboard.press('Enter');await page.keyboard.press('End');await page.keyboard.press('Enter');
+    await expect(page.getByRole('button',{name:'События',exact:true})).toBeVisible();
+    await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toHaveCount(0);
+    await navigation.locator(`[data-conversation-id="${id}"]`).click();
+    await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
+    const event=page.locator('.message[data-role="user"]').first();
+    await expect(event.locator('pre code')).toHaveText(JSON.stringify(JSON.parse(raw),null,2));
+    assert.equal(await event.locator('h1,script').count(),0);
+    assert.equal(await page.evaluate(()=>window.eventInjection),undefined);
+    await page.screenshot({path:'/tmp/kodrik-webhook-conversation-desktop.png',fullPage:true});
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await pasteText(input,'**Уточнение**');await input.press('Enter');
+    await expect(page.locator('.message[data-role="user"]').last().locator('strong')).toHaveText('Уточнение');
+    await page.getByRole('button',{name:'События',exact:true}).click();
+    await page.getByRole('menuitemcheckbox',{name:'Диалоги',exact:true}).click();
+    await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
+    await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
+    await expect(event.locator('pre code')).toHaveText(JSON.stringify(JSON.parse(raw),null,2));
+    assert.equal((await fetch(hook.url,{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}})).status,204);
+    hook=undefined;
+    await page.reload();
+    await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kodrik-webhook-conversation-mobile.png',fullPage:true});
+    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await page.getByRole('button',{name:'События',exact:true}).click();
+    await page.getByRole('menuitemcheckbox',{name:'Диалоги',exact:true}).click();
+    await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
+    await page.getByRole('button',{name:'Диалоги',exact:true}).click();
+    await page.getByRole('menuitemcheckbox',{name:'События',exact:true}).click();
+    await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toBeVisible();
+  } finally {
+    if(hook) await fetch(hook.url,{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}});
+    await browser.close();
+  }
+});
+
 test('owner manages webhooks, rotates one-time tokens and opens arbitrary event conversations', {timeout:60000}, async()=>{
   const browser=await chromium.launch({headless:true});
   try {

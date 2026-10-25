@@ -5,7 +5,11 @@ pub(super) fn history(session: &Session) -> Vec<Value> {
     let mut messages: Vec<Value> = vec![];
     for (index, message) in session.messages().iter().enumerate() {
         if let Message::User(user) = message {
-            let mut parts = vec![json!({"type":"text", "text":user.content})];
+            let mut text = json!({"type":"text", "text":user.content});
+            if index == 0 && session.webhook_instruction.is_some() {
+                text["format"] = json!("code");
+            }
+            let mut parts = vec![text];
             for (file_index, file) in user.files.iter().enumerate() {
                 parts.push(json!({"type":"file", "filename":file.filename, "mediaType":file.mime_type,
                     "url":format!("../api/chat/sessions/{}/attachments/{index}/files/{file_index}", session.id().as_str())}));

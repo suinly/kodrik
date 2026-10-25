@@ -1,5 +1,10 @@
 // Russian source phrases are stable keys; document content never goes through this catalog.
 export const en = {
+  'События': 'Events',
+  'Поиск событий': 'Search events',
+  'События не найдены.': 'No events found.',
+  'Здесь появятся события вебхуков.': 'Webhook events will appear here.',
+  'Вебхук: {0}': 'Webhook: {0}',
   'Дочерние задачи': 'Child tasks',
   'Дочерняя задача': 'Child task',
   'Дочерние задачи · в работе: {0}': 'Child tasks · running: {0}',

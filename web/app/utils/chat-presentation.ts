@@ -4,6 +4,16 @@ import type {ChatMessage,MessagePart} from './api'
 export type ToolPart = Extract<MessagePart,{type:'dynamic-tool'}>
 type MessageBlock = {kind:'tools';tools:ToolPart[]} | {kind:'content';part:Exclude<MessagePart,ToolPart>}
 
+export function formatWebhookBody(text:string):string {
+  try {
+    const formatted=JSON.stringify(JSON.parse(text),null,2)
+    const tokens=(value:string)=>value.match(/"(?:\\.|[^"\\])*"|[^\s]/g)?.join('')
+    // Keep the raw payload if parsing changes numbers, duplicate keys or string escapes.
+    return tokens(formatted)===tokens(text) ? formatted : text
+  }
+  catch {return text}
+}
+
 export function conversationTitle(conversation:{title:string;title_default?:boolean}):string {
   return conversation.title_default ? t('Новый диалог') : conversation.title
 }

@@ -154,6 +154,8 @@ pub(super) struct Search {
     limit: usize,
     #[serde(default)]
     offset: usize,
+    #[serde(default)]
+    webhooks: bool,
 }
 fn page_size() -> usize {
     30
@@ -163,6 +165,7 @@ async fn page_sessions(
     chat: &Chat,
     limit: usize,
     offset: usize,
+    webhook_events: bool,
 ) -> anyhow::Result<(Vec<Session>, Vec<String>)> {
     chat.sessions.with_connection(move |db| {
         let mut groups: HashMap<String,(bool,i64)> = HashMap::new();
@@ -170,8 +173,9 @@ async fn page_sessions(
             json_type(s.payload,'$.telegram_group') IS NOT NULL AND json_type(s.payload,'$.telegram_group')!='null',
             p.root_id IS NOT NULL FROM sessions s
             LEFT JOIN web_chat_branches b ON b.session_id=s.id
-            LEFT JOIN web_chat_pins p ON p.root_id=coalesce(b.root_id,s.id)")?;
-        let mut rows = statement.query([])?;
+            LEFT JOIN web_chat_pins p ON p.root_id=coalesce(b.root_id,s.id)
+            WHERE (json_extract(s.payload,'$.webhook_instruction') IS NOT NULL)=?1")?;
+        let mut rows = statement.query([webhook_events])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             if row.get::<_,bool>(3)? || !super::personal_session_id(&id) { continue; }
@@ -211,7 +215,7 @@ pub(super) async fn list(
     let chat = state.chat().map_err(IntoResponse::into_response)?;
     let query = search.q.trim().to_lowercase();
     let (sessions, page_roots) = if query.is_empty() {
-        let (sessions, roots) = page_sessions(chat, search.limit, search.offset)
+        let (sessions, roots) = page_sessions(chat, search.limit, search.offset, search.webhooks)
             .await
             .map_err(internal)?;
         (sessions, Some(roots))
@@ -249,10 +253,9 @@ pub(super) async fn list(
         .map(|b| (b.id.as_str(), b.root.as_str()))
         .collect();
     let mut groups: HashMap<&str, Vec<&Session>> = HashMap::new();
-    for session in sessions
-        .iter()
-        .filter(|session| super::personal_session(session))
-    {
+    for session in sessions.iter().filter(|session| {
+        super::personal_session(session) && session.webhook_instruction.is_some() == search.webhooks
+    }) {
         let id = session.id().as_str();
         groups
             .entry(roots.get(id).copied().unwrap_or(id))
@@ -260,10 +263,9 @@ pub(super) async fn list(
             .push(session);
     }
     let mut result = vec![];
-    for session in sessions
-        .iter()
-        .filter(|session| super::personal_session(session))
-    {
+    for session in sessions.iter().filter(|session| {
+        super::personal_session(session) && session.webhook_instruction.is_some() == search.webhooks
+    }) {
         let id = session.id().as_str();
         let root = roots.get(id).copied().unwrap_or(id);
         if !seen.insert(root) {
@@ -322,7 +324,7 @@ pub(super) async fn list(
                 .await
                 .map_err(internal)?;
         let updated = group.iter().filter_map(|s| s.last_message_at()).max();
-        result.push(json!({"id":shown.id().as_str(),"root_id":root,"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message}));
+        result.push(json!({"id":shown.id().as_str(),"root_id":root,"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown)}));
     }
     if let Some(roots) = page_roots {
         result.sort_by_key(|session| {
@@ -701,6 +703,7 @@ mod shared_store_tests {
                     q: String::new(),
                     limit: 30,
                     offset: 0,
+                    webhooks: false,
                 }),
             )
             .await
