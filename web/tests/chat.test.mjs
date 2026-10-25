@@ -715,7 +715,7 @@ test('mobile app keeps its shell still during swipes while content and normal pa
       const spacer=document.createElement('div');spacer.style.height='200vh';document.body.append(spacer);
     });
     await page.goto(base);
-    await expect(page.getByRole('link',{name:'Открыть чат',exact:true})).toBeVisible();
+    await expect(page.getByRole('link',{name:'Установка и настройка',exact:true})).toBeVisible();
     await addRootOverflow();
     await swipe(200,600,-300);
     await expect.poll(()=>page.evaluate(()=>scrollY)).toBeGreaterThan(0);
@@ -956,25 +956,93 @@ test('chat logo navigates in the current tab', {timeout:30000},async()=>{
   } finally {await browser.close();}
 });
 
-test('home Open Chat and sign-in links stay in the current tab', {timeout:30000},async()=>{
+test('home introduces the agent and installation without account links in both languages and themes', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
-    const page=await signedPage(browser,{locale:'en-US'});
-    await page.goto(base);
-    await page.emulateMedia({colorScheme:'light'});
-    const open=page.getByRole('link',{name:'Open chat',exact:true});
-    await expect(open).not.toHaveAttribute('target','_blank');
-    await page.screenshot({path:'/tmp/kodrik-home-light.png',fullPage:true});
-    await open.click();
-    await expect(page).toHaveURL(new URL('app/chat',base).href);
-    assert.equal(page.context().pages().length,1);
-    const anonymous=await browser.newPage({locale:'en-US'});
-    await anonymous.goto(base);
-    const login=anonymous.getByRole('link',{name:'Sign in',exact:true});
-    await expect(login).not.toHaveAttribute('target','_blank');
-    await login.click();
-    await expect(anonymous).toHaveURL(new URL('auth/login',base).href);
-    assert.equal(anonymous.context().pages().length,1);
+    for(const locale of ['ru-RU','en-US']) for(const loggedIn of [false,true]) {
+      const page=loggedIn?await signedPage(browser,{locale}):await browser.newPage({locale});
+      for(const colorScheme of ['light','dark']) for(const width of [320,1280]) {
+        await page.setViewportSize({width,height:900});
+        await page.emulateMedia({colorScheme});
+        await page.goto(base);
+        const install=page.getByRole('link',{name:locale==='ru-RU'?'Установка и настройка':'Install and configure',exact:true});
+        await expect(install).toBeVisible();
+        await expect(install).toHaveAttribute('href','#installation');
+        await expect(page.locator('header').first().getByRole('link',{name:'GitHub',exact:true})).toHaveAttribute('href','https://github.com/suinly/kodrik');
+        await expect(page.locator('#capabilities article')).toHaveCount(6);
+        await expect(page.locator('#capabilities')).toContainText(locale==='ru-RU'?'дневник тренировок':'workout journal');
+        await expect(page.locator('#local-first')).toContainText(locale==='ru-RU'?'на вашем компьютере':'on your computer');
+        await expect(page.locator('#local-first-title')).toHaveText(locale==='ru-RU'?'Данные на вашем компьютере':'Your data stays local');
+        await expect(page.locator('a[href*="auth/"], a[href*="app/chat"], form[action*="auth/"]')).toHaveCount(0);
+        await expect(page.locator('html')).toHaveAttribute('lang',locale.slice(0,2));
+        if(locale==='en-US') assert.doesNotMatch(await page.locator('main').innerText(),/[А-Яа-яЁё]/);
+        else assert.doesNotMatch(await page.locator('main').innerText(),/Local-first|\bAI\b/);
+        await expect(page.locator('#installation code').filter({hasText:'brew install suinly/tap/kodrik'})).toBeVisible();
+        await expect(page.locator('#installation code').filter({hasText:'[gateway]'})).toBeVisible();
+        await expect(page.locator('#installation code').filter({hasText:'chmod 600 ~/.kodrik/config.toml'})).toBeVisible();
+        assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+        await install.click();
+        await page.waitForLoadState('networkidle');
+        await expect(page).toHaveURL(new URL('#installation',base).href);
+        await expect(page.locator('#installation')).toBeFocused();
+        if(width===1280) {
+          await page.getByRole('link',{name:locale==='ru-RU'?'Возможности':'Capabilities',exact:true}).click();
+          await expect(page).toHaveURL(new URL('#capabilities',base).href);
+          await expect(page.locator('#capabilities')).toBeFocused();
+        }
+        await page.getByRole('link',{name:locale==='ru-RU'?'К содержимому':'Skip to content',exact:true}).focus();
+        await page.keyboard.press('Enter');
+        await expect(page).toHaveURL(new URL('#main',base).href);
+        await expect(page.locator('main')).toBeFocused();
+        assert.equal(page.context().pages().length,1);
+      }
+      await page.context().close();
+    }
+  } finally {await browser.close();}
+});
+
+test('home workout example updates its journal and chart locally and can be reset', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    for(const locale of ['ru-RU','en-US']) for(const reducedMotion of ['no-preference','reduce']) {
+      const page=await browser.newPage({locale,reducedMotion,viewport:{width:390,height:844}});
+      const errors=[];
+      page.on('pageerror',error=>errors.push(error.message));
+      await page.goto(base);
+      const demo=page.getByRole('region',{name:locale==='ru-RU'?'Дневник тренировок':'Workout journal',exact:true});
+      await expect(demo).toBeVisible();
+      const input=demo.getByRole('spinbutton');
+      const add=demo.getByRole('button',{name:locale==='ru-RU'?'Добавить тренировку':'Add workout',exact:true});
+      const chart=demo.getByRole('img',{name:locale==='ru-RU'?/Длительность тренировок/:/Workout duration/});
+      await expect(chart).toHaveAccessibleName(/80/);
+      const originalPlot=await chart.screenshot({animations:'disabled'});
+      await input.fill('');
+      await input.press('Tab');
+      await expect(add).toBeDisabled();
+      await input.fill('45');
+      await input.press('Tab');
+      await expect(add).toBeEnabled();
+      const apiRequests=[];
+      page.on('request',request=>{if(new URL(request.url()).pathname.includes('/api/')) apiRequests.push(request.url())});
+      await add.click();
+      await expect(demo.getByTestId('workout-entry')).toContainText('45');
+      await expect(chart).toHaveAccessibleName(/125/);
+      if(reducedMotion==='reduce') assert.equal(await demo.locator('.workout-chart-updated').evaluate(element=>getComputedStyle(element).animationName),'none');
+      assert.notDeepEqual(await chart.screenshot({animations:'disabled'}),originalPlot);
+      await expect(add).toBeDisabled();
+      await demo.getByRole('button',{name:locale==='ru-RU'?'Сбросить пример':'Reset example',exact:true}).click();
+      await expect(input).toHaveValue('30');
+      await expect(chart).toHaveAccessibleName(/80/);
+      await expect(demo.getByTestId('workout-entry')).toHaveCount(0);
+      await expect(add).toBeEnabled();
+      await input.press('Enter');
+      await expect(demo.getByTestId('workout-entry')).toContainText('30');
+      await expect(chart).toHaveAccessibleName(/110/);
+      assert.deepEqual(apiRequests,[]);
+      assert.deepEqual(errors,[]);
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.context().close();
+    }
   } finally {await browser.close();}
 });
 
@@ -2733,7 +2801,7 @@ test('English fallback, locale persistence, localized API errors and timestamps 
     await chooseLanguage(other,'en');
     await expect(other.getByRole('heading',{name:'Sign in to Kodrik',exact:true})).toBeVisible();
     await other.goto(base);
-    await expect(other.getByRole('heading',{name:'For ideas, questions and everyday tasks.',exact:true})).toBeVisible();
+    await expect(other.getByRole('heading',{name:/From conversation/})).toBeVisible();
     await other.getByRole('button',{name:'Language',exact:true}).click();
     await expect(other.getByRole('menuitemcheckbox',{name:'English',exact:true})).toBeChecked();
     await other.keyboard.press('Escape');
