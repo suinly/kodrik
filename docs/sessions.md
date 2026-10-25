@@ -41,11 +41,13 @@ budget. Tool calls, tool outputs and image payloads are excluded; image captions
 remain. Personality, skills and memory snapshots are not included in the decision
 request. Empty sessions and incoming messages without text bypass classification.
 
-The model chooses `continue`, `new` or `uncertain`. One request has a three-second
-provider deadline, at most 128 output tokens and no retries. The response must be
+The model chooses `continue`, `new` or `uncertain`. One request has a 15-second
+provider deadline, at most 128 output tokens and no retries. The same deadline
+applies to System One decisions about group participation. The response must be
 exactly a JSON object such as `{"choice":"new"}`; unknown values, extra fields,
 invalid JSON, provider failures and timeouts retain the current session and log
-the error. An oversized history is not silently shortened; a context-limit error
+the error. Timeout errors include the deadline (`System One decision timed out
+after 15s`). An oversized history is not silently shortened; a context-limit error
 also retains the session. These limits bound the extra decision call, not the
 main agent's answer. No numeric confidence is invented by the model.
 

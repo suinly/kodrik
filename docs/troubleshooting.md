@@ -21,7 +21,9 @@ By default, routing only runs after a 30-minute pause since the last user or
 assistant message. It also keeps the current session on ambiguity, timeout,
 invalid output or provider failure. Legacy sessions without a saved timestamp
 skip their first check. Full text history is sent without truncation, so a model
-context limit can cause a fallback. Use `/new` for a definite fresh start.
+context limit can cause a fallback. A `System One decision timed out after 15s`
+log entry means classification exceeded its deadline and was cancelled; consider
+a faster `provider.system_one` model if this recurs. Use `/new` for a definite fresh start.
 See [Sessions](sessions.md).
 
 ## Changed memory, personality or skills are not reflected

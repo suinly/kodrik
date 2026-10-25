@@ -1,5 +1,5 @@
 use super::{LlmContext, UserMessage, llm::LlmProvider, message::Message};
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -14,7 +14,7 @@ impl SystemOne {
     pub(crate) fn new(llm: Arc<dyn LlmProvider>) -> Self {
         Self {
             llm,
-            timeout: Duration::from_secs(3),
+            timeout: Duration::from_secs(15),
         }
     }
 
@@ -45,7 +45,11 @@ impl SystemOne {
             messages: messages.as_slice().into(),
         };
         let (messages, _) =
-            tokio::time::timeout(self.timeout, self.llm.generate(&context, &[], None)).await??;
+            tokio::time::timeout(self.timeout, self.llm.generate(&context, &[], None))
+                .await
+                .with_context(|| {
+                    format!("System One decision timed out after {:?}", self.timeout)
+                })??;
         let [Message::Assistant(reply)] = messages.as_slice() else {
             anyhow::bail!("Expected one choice response");
         };
@@ -66,7 +70,10 @@ mod tests {
     use super::*;
     use crate::agent::{AssistantMessage, tools::Tool};
 
-    struct Reply(&'static str);
+    struct Reply {
+        content: &'static str,
+        delay: Duration,
+    }
     #[async_trait::async_trait]
     impl LlmProvider for Reply {
         async fn generate(
@@ -83,12 +90,10 @@ mod tests {
             let request: Value = serde_json::from_str(&input.content)?;
             assert_eq!(request["state"]["text"], "sample");
             assert_eq!(request["questions"]["decision"]["type"], "choice");
-            if self.0 == "wait" {
-                std::future::pending::<()>().await;
-            }
+            tokio::time::sleep(self.delay).await;
             Ok((
                 vec![Message::Assistant(AssistantMessage {
-                    content: self.0.into(),
+                    content: self.content.into(),
                 })],
                 None,
             ))
@@ -103,7 +108,10 @@ mod tests {
             (r#"{"choice":"archive","reason":"extra"}"#, false),
             ("```json\n{\"choice\":\"archive\"}\n```", false),
         ] {
-            let service = SystemOne::new(Arc::new(Reply(reply)));
+            let service = SystemOne::new(Arc::new(Reply {
+                content: reply,
+                delay: Duration::ZERO,
+            }));
             let result = service
                 .choose(
                     json!({"text":"sample"}),
@@ -118,17 +126,37 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn slow_decisions_time_out() {
-        let mut service = SystemOne::new(Arc::new(Reply("wait")));
-        service.timeout = Duration::from_millis(10);
-        assert!(
+    #[tokio::test(start_paused = true)]
+    async fn decisions_accept_replies_within_fifteen_seconds() {
+        let service = SystemOne::new(Arc::new(Reply {
+            content: r#"{"choice":"keep"}"#,
+            delay: Duration::from_secs(14),
+        }));
+        assert_eq!(
             service
                 .choose(json!({"text":"sample"}), "What next?", &[("keep", "Keep")])
                 .await
-                .unwrap_err()
+                .unwrap(),
+            "keep"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_decisions_time_out() {
+        let service = SystemOne::new(Arc::new(Reply {
+            content: r#"{"choice":"keep"}"#,
+            delay: Duration::from_secs(60),
+        }));
+        let started = tokio::time::Instant::now();
+        let error = service
+            .choose(json!({"text":"sample"}), "What next?", &[("keep", "Keep")])
+            .await
+            .unwrap_err();
+        assert_eq!(started.elapsed(), Duration::from_secs(15));
+        assert!(
+            error
                 .to_string()
-                .contains("elapsed")
+                .contains("System One decision timed out after 15s")
         );
     }
 }
