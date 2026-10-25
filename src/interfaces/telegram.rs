@@ -32,6 +32,8 @@ mod language;
 mod outbound;
 #[path = "telegram_picker.rs"]
 mod picker;
+#[path = "telegram_rich.rs"]
+mod rich;
 
 fn login_start(text: &str) -> bool {
     let mut words = text.split_whitespace();
@@ -115,6 +117,25 @@ enum IncomingUpdate {
 impl From<Update> for IncomingUpdate {
     fn from(update: Update) -> Self {
         Self::Regular(update)
+    }
+}
+
+impl IncomingUpdate {
+    fn from_raw(raw: &Value) -> anyhow::Result<Self> {
+        let mut raw = raw.clone();
+        for key in ["message", "guest_message"] {
+            if let Some(message) = raw.get_mut(key) {
+                rich::normalize(message);
+            }
+        }
+        Ok(if let Some(guest) = raw.get("guest_message") {
+            Self::Guest(guest.clone())
+        } else if raw.get("poll").is_some() || raw.get("poll_answer").is_some() {
+            Self::Poll(raw.clone())
+        } else {
+            // teloxide's flattened update decoder needs borrowed JSON keys.
+            Self::Regular(Update::deserialize(&raw)?)
+        })
     }
 }
 
@@ -501,8 +522,30 @@ impl TelegramInterface {
             if let Some(reply_to) = reply_to {
                 sender["reply_to"] = reply_to;
             }
+            if let Some(quote) = message.quote() {
+                sender["quote"] = json!(quote);
+            }
             text = format!("[Telegram group sender] {sender}\n{text}");
             telegram_group = Some(group);
+        } else if !is_group && !control && !personal_command {
+            let mut context = json!({});
+            if let Some(reply) = message.reply_to_message() {
+                context["reply_to"] = json!({
+                    "message_id": reply.id.0,
+                    "sender": reply.from,
+                    "sender_chat": reply.sender_chat,
+                    "text": reply.text().or_else(|| reply.caption()),
+                });
+            }
+            if let Some(quote) = message.quote() {
+                context["quote"] = json!(quote);
+            }
+            if context
+                .as_object()
+                .is_some_and(|context| !context.is_empty())
+            {
+                text = format!("[Telegram reply context] {context}\n{text}");
+            }
         }
 
         let mut incoming = IncomingMessage::new(self.id(), message.chat.id.to_string(), text);
@@ -646,6 +689,9 @@ impl TelegramInterface {
                     "text": reply.get("text").or_else(|| reply.get("caption")),
                 });
             }
+            if guest["quote"].is_object() {
+                sender["quote"] = guest["quote"].clone();
+            }
             text = format!("[Telegram guest sender] {sender}\n{text}");
         }
         if is_group
@@ -697,7 +743,12 @@ impl TelegramInterface {
             }
             sender["message_id"] = guest["message_id"].clone();
             if !guest["reply_to_message"].is_null() {
-                sender["reply_to"] = json!({"text": guest["reply_to_message"]["text"]});
+                let reply = &guest["reply_to_message"];
+                sender["reply_to"] =
+                    json!({"text": reply["text"].as_str().or_else(|| reply["caption"].as_str())});
+            }
+            if guest["quote"].is_object() {
+                sender["quote"] = guest["quote"].clone();
             }
             text = format!("[Telegram group sender] {sender}\n{text}");
             incoming.telegram_group = Some(group);
@@ -1039,15 +1090,7 @@ impl Interface for TelegramInterface {
                         {
                             let id = raw["update_id"].as_u64().context("Missing update ID")?;
                             next_offset = id + 1;
-                            let update = if let Some(guest) = raw.get("guest_message") {
-                                IncomingUpdate::Guest(guest.clone())
-                            } else if raw.get("poll").is_some() || raw.get("poll_answer").is_some()
-                            {
-                                IncomingUpdate::Poll(raw.clone())
-                            } else {
-                                // teloxide's flattened update decoder needs borrowed JSON keys.
-                                IncomingUpdate::Regular(Update::deserialize(raw)?)
-                            };
+                            let update = IncomingUpdate::from_raw(raw)?;
                             let (admitted, receipt) = tokio::sync::oneshot::channel();
                             updates
                                 .send(IncomingUpdate::Tracked(
@@ -1648,6 +1691,217 @@ mod tests {
         );
     }
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn raw_rich_replies_reach_agent_before_teloxide_discards_their_content() {
+        let interface = TelegramInterface::new("test", "token", "/unused");
+        for kind in ["private", "group"] {
+            for guest in [false, true] {
+                let mut message = json!({
+                    "message_id":2127,"date":1,"chat":{"id":42,"type":kind,"first_name":"Test","title":"Test"},
+                    "from":{"id":1,"is_bot":false,"first_name":"Alice"},"text":"О чем речь?",
+                    "reply_to_message":{
+                        "message_id":2112,"date":1,"chat":{"id":42,"type":kind,"first_name":"Test","title":"Test"},
+                        "from":{"id":2,"is_bot":true,"first_name":"Codrik Dev"},
+                        "rich_message":{"blocks":[
+                            {"type":"paragraph","text":["Сейчас ",{"type":"bold","text":"00:00:05"},", 23 октября 2026 года (МСК)."]},
+                            {"type":"paragraph","text":"Хост macbook-pro.local."}
+                        ]}
+                    }
+                });
+                let key = if guest {
+                    message["guest_query_id"] = json!("query");
+                    "guest_message"
+                } else {
+                    "message"
+                };
+                let raw = json!({"update_id":1,key:message});
+                let update = IncomingUpdate::from_raw(&raw).unwrap();
+                let (tx, mut rx) = mpsc::channel(1);
+                interface
+                    .process_updates(
+                        futures::stream::iter([Ok::<_, teloxide::RequestError>(update)]),
+                        tx,
+                        "TestBot",
+                    )
+                    .await
+                    .unwrap();
+                let Some(Event::Message(message)) = rx.recv().await else {
+                    panic!("rich reply was discarded")
+                };
+                let (context, body) = message.text.split_once('\n').unwrap();
+                let context: Value =
+                    serde_json::from_str(context.split_once("] ").unwrap().1).unwrap();
+                assert_eq!(
+                    context["reply_to"]["text"],
+                    "Сейчас 00:00:05, 23 октября 2026 года (МСК).\n\nХост macbook-pro.local."
+                );
+                assert_eq!(body, "О чем речь?");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarded_rich_messages_reach_the_agent_as_readable_text() {
+        let interface = TelegramInterface::new("test", "token", "/unused");
+        for guest in [false, true] {
+            let mut message = json!({
+                "message_id":1,"date":1,"chat":{"id":42,"type":"private","first_name":"Test"},
+                "from":{"id":1,"is_bot":false,"first_name":"Alice"},
+                "forward_origin":{"type":"hidden_user","date":1,"sender_user_name":"Original author"},
+                "rich_message":{"blocks":[{"type":"paragraph","text":["Совет про ",{"type":"bold","text":"творог"}]}]}
+            });
+            let key = if guest {
+                message["guest_query_id"] = json!("query");
+                "guest_message"
+            } else {
+                "message"
+            };
+            let update = IncomingUpdate::from_raw(&json!({"update_id":1,key:message})).unwrap();
+            let (tx, mut rx) = mpsc::channel(1);
+            interface
+                .process_updates(
+                    futures::stream::iter([Ok::<_, teloxide::RequestError>(update)]),
+                    tx,
+                    "TestBot",
+                )
+                .await
+                .unwrap();
+            let Some(Event::Message(message)) = rx.recv().await else {
+                panic!("rich forward was discarded")
+            };
+            assert!(
+                message.text.ends_with("Совет про творог"),
+                "{}",
+                message.text
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn private_replies_keep_original_text_and_caption() {
+        let interface = TelegramInterface::new("test", "token", "/unused");
+        for content in [
+            json!({"text":"Совет про творог\nВторая строка"}),
+            json!({"caption":"Совет про творог\nВторая строка","photo":[]}),
+        ] {
+            let mut reply = json!({
+                "message_id":8,"date":1,
+                "chat":{"id":42,"type":"private","first_name":"Test"},
+                "from":{"id":2,"is_bot":true,"first_name":"Kodrik"}
+            });
+            reply
+                .as_object_mut()
+                .unwrap()
+                .extend(content.as_object().unwrap().clone());
+            let update = Update::deserialize(&json!({"update_id":1,"message":{
+                "message_id":9,"date":2,"chat":{"id":42,"type":"private","first_name":"Test"},
+                "text":"Что в этом сообщении?","reply_to_message":reply
+            }}))
+            .unwrap();
+            let Some(Event::Message(message)) =
+                interface.map_update(update, "TestBot").await.unwrap()
+            else {
+                panic!()
+            };
+            assert!(
+                message.text.contains("Совет про творог"),
+                "{}",
+                message.text
+            );
+            let (context, text) = message.text.split_once('\n').unwrap();
+            let context: Value =
+                serde_json::from_str(context.strip_prefix("[Telegram reply context] ").unwrap())
+                    .unwrap();
+            assert_eq!(context["reply_to"]["message_id"], 8);
+            assert_eq!(context["reply_to"]["sender"]["id"], 2);
+            assert_eq!(
+                context["reply_to"]["text"],
+                "Совет про творог\nВторая строка"
+            );
+            assert_eq!(text, "Что в этом сообщении?");
+            assert!(message.telegram_group.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_reply_quotes_reach_private_group_and_guest_messages() {
+        let interface = TelegramInterface::new("test", "token", "/unused");
+        for kind in ["private", "group"] {
+            for with_reply in [false, true] {
+                let mut raw = json!({
+                    "message_id":9,"date":2,
+                    "chat":{"id":42,"type":kind,"first_name":"Test","title":"Test"},
+                    "from":{"id":1,"is_bot":false,"first_name":"Alice"},
+                    "text":"А так видишь?",
+                    "quote":{"text":"не продлевает срок годности","position":4,"is_manual":true}
+                });
+                if with_reply {
+                    raw["reply_to_message"] = json!({
+                        "message_id":8,"date":1,"chat":raw["chat"],
+                        "from":{"id":2,"is_bot":true,"first_name":"Kodrik"},
+                        "caption":"Это не продлевает срок годности","photo":[]
+                    });
+                }
+                let update = Update::deserialize(&json!({"update_id":1,"message":raw})).unwrap();
+                let Some(Event::Message(message)) =
+                    interface.map_update(update, "TestBot").await.unwrap()
+                else {
+                    panic!()
+                };
+                raw["guest_query_id"] = json!("query");
+                let Some(Event::Message(guest)) = interface.map_guest(raw, "TestBot").unwrap()
+                else {
+                    panic!()
+                };
+                for text in [&message.text, &guest.text] {
+                    let (context, body) = text.split_once('\n').unwrap();
+                    let context: Value =
+                        serde_json::from_str(context.split_once("] ").unwrap().1).unwrap();
+                    assert_eq!(context["quote"]["text"], "не продлевает срок годности");
+                    assert_eq!(context["quote"]["position"], 4);
+                    assert_eq!(context["quote"]["is_manual"], true);
+                    if with_reply {
+                        assert_eq!(
+                            context["reply_to"]["text"],
+                            "Это не продлевает срок годности"
+                        );
+                    }
+                    assert_eq!(body, "А так видишь?");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn private_reply_context_preserves_commands_and_plain_messages() {
+        let interface = TelegramInterface::new("test", "token", "/unused");
+        for text in [
+            "/new",
+            "/stop",
+            "/sessions",
+            "/session abc",
+            "/start login_abc",
+            "hello",
+        ] {
+            let mut raw = json!({
+                "message_id":9,"date":2,"chat":{"id":42,"type":"private","first_name":"Test"},
+                "text":text
+            });
+            if text != "hello" {
+                raw["reply_to_message"] =
+                    json!({"message_id":8,"date":1,"chat":raw["chat"],"text":"old"});
+                raw["quote"] = json!({"text":"old","position":0});
+            }
+            let update = Update::deserialize(&json!({"update_id":1,"message":raw})).unwrap();
+            let Some(Event::Message(message)) =
+                interface.map_update(update, "TestBot").await.unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(message.text, text);
+        }
+    }
 
     #[tokio::test]
     async fn compact_group_metadata_does_not_repeat_profiles_or_empty_fields() {
