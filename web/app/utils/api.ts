@@ -15,6 +15,7 @@ export type MessagePart =
   | { type: 'file'; filename: string; mediaType: string; url?: string }
   | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };
+export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
 
 export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit) {
   const headers=new Headers(init?.headers);
@@ -64,6 +65,7 @@ export type Snapshot = {
   titles_revision?: number;
   title_pending?: boolean;
   messages: ChatMessage[]; busy: boolean; cancel_requested: boolean;
+  subagents?: Subagent[];
   phase: string | { Failed?: { reason: string }; Parked?: { reason: string } } | null;
   blocked_reason: string | null;
   live: { current: Partial | null; interrupted: Partial | null };

@@ -37,6 +37,10 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
+    pub(crate) fn subagents(&self) -> Option<&Arc<super::subagents::Subagents>> {
+        self.agent.subagents()
+    }
+
     pub(crate) fn sqlite_store(&self) -> Option<super::session::SqliteSessionStore> {
         self.sessions.runtime_store().cloned()
     }
@@ -357,7 +361,12 @@ impl AgentRunner {
         mut incoming: Option<&mut mpsc::UnboundedReceiver<UserMessage>>,
         submission: Option<super::inbox::SubmissionRecord>,
     ) -> anyhow::Result<AssistantMessage> {
-        let guard = self.lock_conversation(&session_id).await?;
+        let mut guard = self.lock_conversation(&session_id).await?;
+        if let Some(parent) = super::run_state::execution_ownership() {
+            let mut owners: Vec<_> = guard.ownership.iter().cloned().collect();
+            owners.push(parent);
+            guard.ownership = Some(super::session::ExecutionOwnership::join(owners));
+        }
         super::run_state::CURRENT_EXECUTION
             .scope(guard.ownership.clone(), async {
                 if let Some(record) = &submission {
@@ -472,6 +481,11 @@ impl AgentRunner {
                     .map(|store| Checkpoint::new(store, &session_id, &session));
                 if let Some(cp) = checkpoint.as_mut() {
                     cp.ownership = Some(super::session::ExecutionOwnership::join(ownership));
+                    if session_id.as_str().starts_with(super::subagents::PREFIX) {
+                        cp.record.model_limit = Some(16);
+                        cp.record.deadline_at =
+                            Some(chrono::Utc::now() + chrono::Duration::minutes(5));
+                    }
                 }
                 if let Some(cp) = checkpoint.as_mut()
                     && let Some(record) = &submission

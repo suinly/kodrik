@@ -17,6 +17,7 @@ pub struct LlmContext<'a> {
     pub messages: Cow<'a, [Message]>,
 }
 
+#[derive(Clone)]
 pub struct ContextBuilder {
     system_prompt: String,
     skills_directory: Option<PathBuf>,

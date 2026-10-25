@@ -80,6 +80,7 @@ pub(crate) fn stage_personal_sessions(
                 ("web_chat_pins", &["root_id"][..], 1),
                 ("webhooks", &["id"][..], 6),
                 ("webhook_receipts", &["webhook_id", "request_key"][..], 5),
+                ("subagent_sessions", &["id"][..], 4),
             ] {
                 let definition: Option<String> = snapshot
                     .query_row(

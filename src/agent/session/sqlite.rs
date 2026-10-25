@@ -335,7 +335,7 @@ fn load(db: &Connection, id: &str) -> anyhow::Result<Option<Session>> {
     bytes.map(|bytes| decode(id, &bytes)).transpose()
 }
 
-fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
+pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
     valid_id(session.id().as_str())?;
     db.execute(
         "INSERT INTO sessions(id,payload,updated_at) VALUES (?1,?2,?3)
@@ -559,13 +559,17 @@ impl SessionStore for SqliteSessionStore {
         self.with_connection(move |db| {
             valid_id(id.as_str())?;
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let live: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND terminal=0)", [id.as_str()], |r|r.get(0))?;
-            ensure!(!live, "Session has an unfinished run; recovery required before deletion");
-            tx.execute("DELETE FROM tool_executions WHERE run_id IN (SELECT id FROM runs WHERE session_id=?1)", [id.as_str()])?;
-            tx.execute("DELETE FROM run_controls WHERE run_id IN (SELECT id FROM runs WHERE session_id=?1)", [id.as_str()])?;
-            tx.execute("DELETE FROM runs WHERE session_id=?1", [id.as_str()])?;
-            tx.execute("DELETE FROM compaction_jobs WHERE session_id=?1", [id.as_str()])?;
-            tx.execute("DELETE FROM sessions WHERE id=?1", [id.as_str()])?;
+            for id in crate::agent::subagents::with_children(&tx, vec![id.0])? {
+                ensure!(!crate::agent::inbox::session_busy_in(&tx, &id)?, "Session has unfinished work; stop or recover before deletion");
+                tx.execute("DELETE FROM tool_executions WHERE run_id IN (SELECT id FROM runs WHERE session_id=?1)", [&id])?;
+                tx.execute("DELETE FROM run_controls WHERE run_id IN (SELECT id FROM runs WHERE session_id=?1)", [&id])?;
+                tx.execute("DELETE FROM deliveries WHERE run_id IN (SELECT id FROM runs WHERE session_id=?1)", [&id])?;
+                tx.execute("DELETE FROM submissions WHERE session_id=?1 OR conversation_id=?1 OR run_id IN (SELECT id FROM runs WHERE session_id=?1)", [&id])?;
+                tx.execute("DELETE FROM inbox_controls WHERE conversation_id=?1", [&id])?;
+                tx.execute("DELETE FROM runs WHERE session_id=?1", [&id])?;
+                tx.execute("DELETE FROM compaction_jobs WHERE session_id=?1", [&id])?;
+                tx.execute("DELETE FROM sessions WHERE id=?1", [&id])?;
+            }
             tx.commit()?;
             Ok(())
         })

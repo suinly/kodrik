@@ -24,6 +24,8 @@ const loading = ref(!props.start)
 const submitting = ref(false)
 const busy = ref(props.conversation.busy)
 const stopping = ref(false)
+const childStopping = ref(new Set<string>())
+const childProblems = ref<Record<string,string>>({})
 const resuming = ref(false)
 const problem = ref('')
 const connection = ref('')
@@ -162,6 +164,9 @@ function receive(view: Snapshot) {
     (view.title_default !== undefined && view.title_default !== (snapshot.value?.title_default ?? props.conversation.title_default ?? false))
   revision = view.revision
   snapshot.value = view
+  for(const child of view.subagents ?? []) if(child.status!=='running') {
+    delete childProblems.value[child.id]
+  }
   busy.value = view.busy
   if (view.cancel_requested || !view.busy) stopping.value = false
   hint.value = view.blocked_reason ? view.queued.length ? t("Очередь приостановлена. Нажмите «Продолжить очередь».") : t("Выполнение остановлено. Можно отправить новое сообщение.") :
@@ -397,6 +402,20 @@ async function stop() {
   catch (error) { stopping.value = false; problem.value = messageOf(error) }
 }
 
+async function stopChild(id:string) {
+  if(editorLocked.value || childStopping.value.has(id)) return
+  childStopping.value.add(id)
+  delete childProblems.value[id]
+  try {
+    await api(`sessions/${props.conversation.id}/subagents/${encodeURIComponent(id)}/stop`,'POST')
+    if(mounted) await reload()
+  } catch(error) {
+    if(!mounted) return
+    if(error instanceof AuthenticationError) {authExpired.value=true;problem.value=messageOf(error)}
+    childProblems.value[id]=error instanceof ConversationNotFoundError ? t('Диалог или дочерняя задача недоступны. Обновите историю.') : messageOf(error)
+  } finally {childStopping.value.delete(id)}
+}
+
 async function resumeQueue() {
   resuming.value=true
   try {await api(`sessions/${props.conversation.id}/resume`,'POST');await reload(true);emit('saved')}
@@ -455,7 +474,7 @@ const compactionLabels = {
       </div>
     </div>
     <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent="drop">
-      <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
+      <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
           <div class="flex flex-wrap gap-2">
@@ -470,6 +489,8 @@ const compactionLabels = {
         <UFileUpload v-if="attachmentsOpen || files.length" :model-value="files" multiple layout="list" :disabled="editorLocked" :dropzone="false"
           :label="t('Добавить файлы и фото')" :description="t('До 10 вложений · фото до 10 MiB · файлы до 20 MB')"
           icon="i-lucide-paperclip" class="max-h-56 overflow-y-auto" @update:model-value="selectFiles" />
+        <ChatSubagents v-if="snapshot?.subagents?.length" :agents="snapshot.subagents" :stopping="childStopping" :problems="childProblems" :disabled="editorLocked"
+          @stop="stopChild" @refresh="reload()" />
         <UAccordion v-if="snapshot?.plan" as="section" :aria-label="t('План выполнения')" data-testid="composer-plan"
           :items="[{ label: planSummary, icon: 'i-lucide-list-checks', value: 'plan' }]"
           class="rounded-lg bg-elevated/50 px-3" :ui="{body:'max-h-48 overflow-y-auto'}">

@@ -1584,13 +1584,13 @@ test('composer switches one action and keeps its plan and hints attached on mobi
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    const form=page.locator('form').filter({has:input});
+    const prompt=page.locator('.chat-prompt').filter({has:input});
     const working=page.getByTestId('chat-transcript').getByText('Кодрик работает…',{exact:true});
     await expect(working).toBeVisible();
     await expect(working).toHaveAttribute('data-slot','base');
     await expect(page.getByText('Кодрик работает…',{exact:true})).toHaveCount(1);
-    await expect(form.getByRole('button',{name:'Остановить',exact:true})).toBeVisible();
-    const stop=form.getByRole('button',{name:'Остановить',exact:true});
+    await expect(prompt.getByRole('button',{name:'Остановить',exact:true})).toBeVisible();
+    const stop=prompt.getByRole('button',{name:'Остановить',exact:true});
     assert.equal((await stop.innerText()).trim(),'');
     const initialHeight=await input.evaluate(el=>el.getBoundingClientRect().height);
     for(let rows=2;rows<=4;rows++) {
@@ -1602,9 +1602,9 @@ test('composer switches one action and keeps its plan and hints attached on mobi
     await input.fill(Array(20).fill('Длинная строка черновика').join('\n'));
     await expect.poll(()=>input.evaluate(el=>el.getBoundingClientRect().height)).toBe(maxHeight);
     assert.ok(await input.evaluate(el=>el.scrollHeight>el.clientHeight));
-    const send=form.getByRole('button',{name:'Отправить',exact:true});
+    const send=prompt.getByRole('button',{name:'Отправить',exact:true});
     assert.equal((await send.innerText()).trim(),'');
-    const layout=await form.evaluate(el=>{
+    const layout=await prompt.evaluate(el=>{
       const rect=selector=>el.querySelector(selector).getBoundingClientRect().toJSON();
       return {upload:rect('[aria-label="Прикрепить файлы и фото"]'),input:rect('textarea'),send:rect('[aria-label="Отправить"]')};
     });
@@ -1612,19 +1612,19 @@ test('composer switches one action and keeps its plan and hints attached on mobi
     assert.ok(Math.abs(layout.upload.y-layout.send.y)<2,JSON.stringify(layout));
     await input.fill('');
     await expect.poll(()=>input.evaluate(el=>el.getBoundingClientRect().height)).toBe(initialHeight);
-    await expect(form.getByRole('button',{name:'Отправить',exact:true})).toHaveCount(0);
+    await expect(prompt.getByRole('button',{name:'Отправить',exact:true})).toHaveCount(0);
     await input.fill('Уточнение');
-    await expect(form.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
-    await expect(form.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
+    await expect(prompt.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
+    await expect(prompt.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
     await input.fill('');
     await input.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['attachment'],'draft.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
-    await expect(form.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
-    await expect(form.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
-    await expect(form.getByText('Enter — отправить',{exact:false})).toHaveCount(0);
+    await expect(prompt.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
+    await expect(prompt.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
+    await expect(prompt.getByText('Enter — отправить',{exact:false})).toHaveCount(0);
     await expect(page.getByText('Enter — отправить · Shift + Enter — новая строка',{exact:true})).toBeHidden();
     const planBlock=page.getByTestId('composer-plan');
     const plan=planBlock.getByRole('button');
-    await expect(form.getByTestId('composer-plan')).toHaveCount(0);
+    await expect(prompt.getByTestId('composer-plan')).toHaveCount(0);
     await expect(plan).toHaveText('План · 2 из 3 · Создать страницу и проверить длинный заголовок текущего шага на телефоне');
     await expect(page.getByTestId('chat-transcript').getByTestId('composer-plan')).toHaveCount(0);
     assert.ok(!['transparent','rgba(0, 0, 0, 0)'].includes(await planBlock.evaluate(el=>getComputedStyle(el).backgroundColor)));
@@ -1829,6 +1829,143 @@ test('long tool lists keep compact summaries and collapse back to their header',
       await page.screenshot({path:`/tmp/kodrik-tool-steps-${viewport.width}.png`,fullPage:true,animations:'disabled'});
       await collapse.click();
     }
+  } finally {await browser.close();}
+});
+
+test('child task panel shows live outcomes and handles cancellation without losing the draft',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),errors=[];page.on('pageerror',error=>errors.push(error.message));
+    const agents=[
+      {id:'companion:subagent:active',task:'Проверить авторизацию',status:'running',result:null,error:null},
+      {id:'companion:subagent:done',task:'Проверить тесты\nСверить граничные случаи',status:'completed',result:'Найдены две проверки',error:null},
+      {id:'companion:subagent:failed',task:'Проверить провайдера',status:'failed',result:null,error:'Provider rejected the request'},
+      {id:'companion:subagent:interrupted',task:'Проверить миграцию',status:'interrupted',result:null,error:'Execution outcome unknown'},
+    ];
+    const snapshot={type:'snapshot',session_id:id,run_id:'parent',revision:1,busy:true,cancel_requested:false,phase:'NeedModel',blocked_reason:null,
+      live:{current:null,interrupted:null},plan:null,queued:[],subagents:agents,messages:[{id:'steps',role:'assistant',parts:[
+        {type:'dynamic-tool',toolCallId:'spawn',toolName:'spawn_agent',state:'output-available',input:{task:'Проверить авторизацию'},output:agents[0]},
+      ]}]};
+    await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',route=>route.fulfill({json:snapshot}));
+    let attempts=0,finishStop;
+    await page.route('**/subagents/*/stop',async route=>{
+      assert.equal(decodeURIComponent(new URL(route.request().url()).pathname),`/kodrik/api/chat/sessions/${id}/subagents/${agents[0].id}/stop`);
+      if(++attempts===1) {await route.fulfill({status:503,json:{error:'unavailable'}});return;}
+      await new Promise(resolve=>{finishStop=resolve});
+      agents[0]={...agents[0],status:'stopped'};snapshot.revision++;
+      await route.fulfill({json:agents[0]});
+    });
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
+    await expect(panel).toBeVisible();
+    const active=panel.getByTestId('subagent-companion:subagent:active');
+    await expect(active.getByText('В работе',{exact:true})).toBeVisible();
+    await expect(panel.getByText('Готово',{exact:true})).toBeVisible();
+    await expect(panel.getByText('Ошибка',{exact:true})).toBeVisible();
+    await expect(panel.getByText('Прервано',{exact:true})).toBeVisible();
+    const activeDetails=active.getByRole('button',{name:'Подробности задачи «Проверить авторизацию»',exact:true});
+    await activeDetails.press('Enter');
+    await expect(active.locator('p').filter({hasText:'Проверить авторизацию'})).toBeVisible();
+    await activeDetails.press('Enter');
+    await page.setViewportSize({width:390,height:844});
+    await page.screenshot({path:'/tmp/kodrik-subagents-active-mobile.png',fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:1280,height:900});
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await composer.fill('Черновик остаётся на месте');
+    const stop=active.getByRole('button',{name:'Остановить задачу «Проверить авторизацию»',exact:true});
+    await stop.click();
+    await expect(active.getByRole('alert')).toContainText('503');
+    await expect(stop).toBeEnabled();
+    await stop.click();
+    await expect(stop).toBeDisabled();
+    await expect(active.getByText('Останавливаю…',{exact:true})).toBeVisible();
+    finishStop();
+    await expect(active.getByText('Остановлено',{exact:true})).toBeVisible();
+    await expect(panel.getByRole('status')).toContainText('остановлено 1');
+    await expect(stop).toHaveCount(0);
+    await expect(active.getByRole('alert')).toHaveCount(0);
+    await expect(composer).toHaveValue('Черновик остаётся на месте');
+    const done=panel.getByTestId('subagent-companion:subagent:done');
+    await done.getByRole('button',{name:'Подробности задачи «Проверить тесты»',exact:true}).press('Enter');
+    await expect(done.getByText('Найдены две проверки',{exact:true})).toBeVisible();
+    await expect(done.getByText(/Сверить граничные случаи/)).toBeVisible();
+    await panel.getByTestId('subagent-companion:subagent:failed').getByRole('button',{name:'Подробности задачи «Проверить провайдера»',exact:true}).click();
+    await expect(panel.getByText('Provider rejected the request',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Выполнено шагов: 1',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Запуск дочерней задачи · Проверить авторизацию',exact:true})).toBeVisible();
+    for(const viewport of [{width:1280,height:900},{width:390,height:844}]) {
+      await page.setViewportSize(viewport);
+      await expect(composer).toBeInViewport();
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.screenshot({path:`/tmp/kodrik-subagents-${viewport.width}.png`,fullPage:true,animations:'disabled'});
+    }
+    await page.evaluate(()=>localStorage.setItem('kodrik.language','en'));
+    await page.reload();
+    await page.getByRole('region',{name:'Child tasks',exact:true}).getByRole('button',{name:/Child tasks/}).first().click();
+    await expect(page.getByRole('region',{name:'Child tasks',exact:true}).getByText('Interrupted',{exact:true})).toBeVisible();
+    agents[0]={...agents[0],status:'running',cancel_requested:true};snapshot.revision++;
+    await page.reload();
+    await expect(page.getByRole('region',{name:'Child tasks',exact:true}).getByText('Stopping…',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Stop task “Проверить авторизацию”',exact:true})).toBeDisabled();
+    agents[0]={...agents[0],cancel_requested:false};snapshot.revision++;
+    await page.unroute('**/subagents/*/stop');
+    await page.route('**/subagents/*/stop',route=>route.fulfill({status:401,json:{error:'expired'}}));
+    await page.reload();
+    await page.getByRole('button',{name:'Stop task “Проверить авторизацию”',exact:true}).click();
+    await expect(page.getByRole('link',{name:'Sign in',exact:true})).toBeVisible();
+    await expect(page.getByRole('textbox',{name:'Message',exact:true})).not.toBeEditable();
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close();}
+});
+
+test('a terminal stop response does not leave a restarted child stuck in stopping',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const child={id:'companion:subagent:restart',task:'Проверить авторизацию',status:'running',result:null,error:null,cancel_requested:false};
+    const snapshot={type:'snapshot',session_id:id,run_id:'parent',revision:1,busy:true,cancel_requested:false,phase:'NeedModel',blocked_reason:null,
+      live:{current:null,interrupted:null},plan:null,queued:[],subagents:[child],messages:[]};
+    await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',route=>route.fulfill({json:snapshot}));
+    await page.route('**/subagents/*/stop',route=>{snapshot.revision++;return route.fulfill({json:{...child,status:'stopped'}})});
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
+    const stop=panel.getByRole('button',{name:'Остановить задачу «Проверить авторизацию»',exact:true});
+    await stop.click();
+    await expect(stop).toBeEnabled();
+    await expect(panel.getByText('В работе',{exact:true})).toBeVisible();
+    await expect(panel.getByText('Останавливаю…',{exact:true})).toHaveCount(0);
+  } finally {await browser.close();}
+});
+
+test('child task controls work with live delegation and snapshots',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await input.fill('subagents');await input.press('Enter');
+    const panel=page.getByRole('region',{name:'Дочерние задачи',exact:true});
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText('В работе',{exact:true})).toHaveCount(1);
+    await expect(panel.getByText('Готово',{exact:true})).toBeVisible();
+    await panel.getByRole('button',{name:'Подробности задачи «Проверить тесты»',exact:true}).click();
+    await expect(panel.getByText('Проверка тестов завершена',{exact:true})).toBeVisible();
+    for(const viewport of [{width:1280,height:900},{width:390,height:844}]) {
+      await page.setViewportSize(viewport);
+      await expect(input).toBeInViewport();
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.screenshot({path:`/tmp/kodrik-subagents-live-${viewport.width}.png`,fullPage:true,animations:'disabled'});
+    }
+    await input.fill('Уточнение остаётся в черновике');
+    await panel.getByRole('button',{name:'Остановить задачу «Проверить авторизацию»',exact:true}).click();
+    await expect(panel.getByText('Остановлено',{exact:true})).toBeVisible();
+    await expect(page.locator('.message').getByText('Дочерняя задача остановлена',{exact:true})).toBeVisible();
+    await expect(input).toHaveValue('Уточнение остаётся в черновике');
   } finally {await browser.close();}
 });
 

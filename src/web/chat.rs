@@ -33,6 +33,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 
 #[path = "chat_management.rs"]
 mod management;
+#[path = "chat_subagents.rs"]
+mod subagents;
 #[path = "chat_titles.rs"]
 mod titles;
 #[cfg(test)]
@@ -271,6 +273,16 @@ impl Chat {
         snapshot["titles_revision"] = json!(self.titles_revision().await?);
         let root = self.root_id(id).await?;
         snapshot["title_pending"] = json!(self.title_jobs.lock().await.contains(&root));
+        let mut children = Vec::new();
+        if let Some(manager) = self.runner.subagents() {
+            for child in manager.list(&view.session).await? {
+                let mut value = child.view();
+                value["task"] = json!(child.task);
+                value["cancel_requested"] = json!(manager.cancellation_requested(&child.id).await?);
+                children.push(value);
+            }
+        }
+        snapshot["subagents"] = json!(children);
         self.decorate_versions(id, &mut snapshot).await?;
         Ok(snapshot)
     }
@@ -386,6 +398,10 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
             post(management::edit),
         )
         .route("/api/chat/sessions/{id}/stop", post(stop))
+        .route(
+            "/api/chat/sessions/{id}/subagents/{agent}/stop",
+            post(subagents::stop),
+        )
         .route("/api/chat/sessions/{id}/resume", post(resume))
         .route("/api/chat/sessions/{id}/run", get(run_snapshot))
         .route("/api/chat/sessions/{id}/events", get(events))

@@ -184,6 +184,11 @@ The agent chooses tools from your request; these names are not slash commands.
 | Tool | Purpose |
 | --- | --- |
 | `update_plan` | Show and update a task plan |
+| `spawn_agent` | Start an independent child session and return its ID immediately |
+| `send_message` | Steer an active child or start a follow-up in its existing session |
+| `list_agents` | Inspect this session's children, statuses and results |
+| `wait_agent` | Wait up to 60 seconds for a child result |
+| `stop_agent` | Cancel a child and its queued inputs while retaining its history |
 | `telegram_reply` | Reply to the active Telegram request with media, a poll, location or formatted post |
 | `telegram_results` | Read saved poll results in the current Telegram chat; unavailable in guest mode |
 | `exec_command` | Run commands in Bashkit for isolated chats; native shell for CLI/TUI and the owner's private chat |
@@ -205,6 +210,56 @@ For example: “Find our earlier discussion about cities”, “Show your learne
 facts and their sources”, or “Use skill-creator to create a release-notes skill”.
 See [Memory](memory.md), [Datasets](datasets.md), [Companion](companion.md), [Skills](skills.md) and
 [Web research](web-research.md).
+
+## Child agent sessions
+
+The web chat shows child tasks above the message composer. Expand a task to read
+its instruction, result or error; statuses update live, including while the
+parent is waiting. Stop cancels only the selected child, leaving the parent
+conversation and your draft intact. Cancellation stays visible until pending
+effects finish. Completed actions are not undone. Send corrections and follow-up
+instructions through the main chat as usual. Technical tool details remain
+available in the message's expandable steps.
+
+Ask Kodrik to split independent work between subagents, for example: “Have one
+agent inspect authentication and another inspect its tests; collect both results.”
+The parent can continue working while children run. Each child has its own
+history and inherits the parent's instruction, memory and skill snapshots and
+the same execution sandbox. The conversation history is not copied: the parent
+passes the needed context in the task. Children can edit files, including shared
+host files in owner/CLI mode, so assign non-overlapping changes.
+
+`spawn_agent` takes `task` and returns `id` and `status`. `send_message` takes
+`agent_id` and `message`; corrections are persisted before acknowledgement and
+consumed between execution steps. A message to a finished child starts another
+turn in that history. `list_agents` takes no arguments. `wait_agent` takes
+`agent_id` and nullable `timeout_ms` (default 10000, range 1–60000); a timeout
+returns `running` without stopping work. `stop_agent` takes `agent_id` and waits
+up to 60 seconds for cancellation; if still running, inspect or wait again.
+Other statuses are `completed`, `stopped`, `failed` and `interrupted`.
+
+Tasks/messages must contain 1–16384 UTF-8 bytes. Up to three children can run
+concurrently per application worker, with sixteen child sessions per parent
+session. Each child turn has sixteen model attempts, five minutes and a bounded
+input context. Returned results/errors are limited to 16384 characters; the full
+history remains in SQLite. Children cannot delegate, reply directly to the user,
+schedule wakeups, manage webhooks or run automatic learning reviews.
+
+Active children stop when the parent's current run completes, fails or is
+cancelled. The parent should collect their results before finishing. Completed
+histories can be reused in later turns of the same parent session. Child access
+is bound to the parent's session ID and generation; resetting the parent does
+not grant access to its previous children. Internal `companion:subagent:*`
+histories do not appear in ordinary chat lists or session searches.
+Deleting a parent chat also deletes its child histories; active children must
+finish or be stopped before deletion.
+
+Child transcripts, accepted messages and execution checkpoints survive process
+restarts. Interrupted work is not automatically replayed: the next inspection
+marks abandoned execution `interrupted` and cancels its pending inputs. Inspect
+external state before sending a new instruction, because a tool may have taken
+effect before interruption. An uncertain spawn/send is not safe to repeat
+blindly; inspect `list_agents` first. Stopping a child does not undo its changes.
 
 ## Agent wakeups
 

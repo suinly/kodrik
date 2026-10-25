@@ -11,6 +11,7 @@ use crate::agent::{
     tools::{TaskPlan, ToolRegistry},
 };
 
+#[derive(Clone)]
 pub struct Agent {
     llm: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
@@ -20,6 +21,7 @@ pub struct Agent {
     compact_background_margin: u64,
     journal: Option<crate::audit::Journal>,
     sandbox: Option<Arc<super::sandbox::Sandbox>>,
+    subagents: Option<Arc<super::subagents::Subagents>>,
 }
 
 #[derive(Debug)]
@@ -47,6 +49,34 @@ pub enum AgentEvent {
 }
 
 impl Agent {
+    pub(crate) fn child_agent(&self) -> Self {
+        let mut agent = self.clone();
+        agent.subagents = None;
+        agent.tools = self.tools.without(&[
+            "spawn_agent",
+            "send_message",
+            "list_agents",
+            "wait_agent",
+            "stop_agent",
+            "messages",
+            "telegram_reply",
+            "telegram_results",
+            "wakeups",
+            "webhooks",
+        ]);
+        agent.with_limits(16, 64_000)
+    }
+
+    pub(crate) fn with_subagents(mut self, manager: Arc<super::subagents::Subagents>) -> Self {
+        self.tools = super::tools::subagents::register(self.tools, manager.clone());
+        self.subagents = Some(manager);
+        self
+    }
+
+    pub(super) fn subagents(&self) -> Option<&Arc<super::subagents::Subagents>> {
+        self.subagents.as_ref()
+    }
+
     pub(super) fn llm(&self) -> &dyn LlmProvider {
         self.llm.as_ref()
     }
@@ -61,6 +91,7 @@ impl Agent {
             compact_background_margin: 0,
             journal: None,
             sandbox: None,
+            subagents: None,
         }
     }
 
@@ -310,6 +341,8 @@ impl Agent {
         call_budget: Option<usize>,
         mut checkpoint: Option<&mut Checkpoint>,
     ) -> anyhow::Result<AssistantMessage> {
+        // Dropping this sender also stops children when the parent future is cancelled.
+        let (_children, child_lifetime) = tokio::sync::watch::channel(false);
         let audit_context = crate::audit::Context::current_or(session.id().as_str(), "message");
         if let Some(mut input) = input {
             self.prepare_input(session, &mut input).await?;
@@ -644,7 +677,23 @@ impl Agent {
                                 delivery,
                                 super::run_state::CURRENT_TOOL.scope(
                                     identity,
-                                    self.tools.execute(&call.name, call.arguments.clone()),
+                                    super::subagents::CURRENT_PARENT.scope(
+                                        matches!(
+                                            call.name.as_str(),
+                                            "spawn_agent"
+                                                | "send_message"
+                                                | "list_agents"
+                                                | "wait_agent"
+                                                | "stop_agent"
+                                        )
+                                        .then(|| {
+                                            super::subagents::ParentContext {
+                                                session: session.clone(),
+                                                finished: child_lifetime.clone(),
+                                            }
+                                        }),
+                                        self.tools.execute(&call.name, call.arguments.clone()),
+                                    ),
                                 ),
                             )
                             .await;

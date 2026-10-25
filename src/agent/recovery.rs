@@ -12,6 +12,10 @@ pub(crate) enum RecoveryTarget {
 }
 impl RecoveryTarget {
     fn matches(&self, id: &str) -> bool {
+        // Child checkpoints are supervised by their parent, never a foreground agent.
+        if id.starts_with(super::subagents::PREFIX) {
+            return false;
+        }
         match self {
             Self::Conversation(c) => c.as_str() == id,
             Self::OneShots => id.starts_with("cli:once:"),
@@ -54,9 +58,13 @@ impl AgentRunner {
                     .unfinished_runs()
                     .await?
                     .into_iter()
+                    .filter(|r| !r.conversation_id.starts_with(super::subagents::PREFIX))
                     .map(|r| SessionId::new(r.conversation_id))
                     .collect();
                 for id in store.queued_conversations().await? {
+                    if id.as_str().starts_with(super::subagents::PREFIX) {
+                        continue;
+                    }
                     if !ids.contains(&id) {
                         ids.push(id);
                     }

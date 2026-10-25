@@ -47,6 +47,7 @@ release workflows. Neither check installs Kodrik or starts a service.
 | `src/main.rs`, `src/commands/` | CLI dispatch, one-shot mode, TUI and gateway entry points |
 | `src/config.rs`, `src/bootstrap.rs` | Configuration, providers, tools and service assembly |
 | `src/agent/core.rs`, `runner.rs` | Agent execution and conversation lifecycle |
+| `src/agent/subagents.rs`, `tools/subagents.rs` | Parent-bound child sessions, durable input, lifecycle controls and tool schemas |
 | `src/agent/context.rs` | Prompt and session context snapshots |
 | `src/agent/session/` | Transactional SQLite sessions, checkpoints and legacy JSON import |
 | `src/agent/system_one.rs`, `session_router.rs`, `group_reply.rs` | Reusable decision service, session routing and group participation policy |

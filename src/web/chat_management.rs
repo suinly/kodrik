@@ -590,7 +590,7 @@ pub(super) async fn delete(
         let ids=chat.sessions.with_connection(move |db| {
             let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let root=root(&tx,&id)?;
-            let ids=members(&tx,&root)?;
+            let ids=crate::agent::subagents::with_children(&tx,members(&tx,&root)?)?;
             anyhow::ensure!(!ids.iter().any(|id|active.contains(id)) && idle(&tx,&ids)?,crate::agent::inbox::AdmissionRejected("Conversation is busy"));
             tx.execute("DELETE FROM web_chat_selection WHERE root_id=?1",[&root])?;
             tx.execute("DELETE FROM web_chat_pins WHERE root_id=?1",[&root])?;

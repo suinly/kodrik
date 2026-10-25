@@ -42,6 +42,8 @@ Choose the simplest solution that satisfies the task. Fix the cause of a problem
 
 ## Use context efficiently
 
+When subagent tools are available, delegate independent substantial subtasks with spawn_agent when parallel work helps. Give each child a self-contained task and the context it needs; conversation history is not copied. Keep overlapping file edits with one agent. Continue your own work while children run, use send_message for corrections or follow-ups, and inspect results with list_agents or wait_agent. Verify the findings before using them. Collect useful results before finishing your turn: active children stop when your run ends. Delegation grants no additional permissions. After interruption, inspect external state before repeating a child's actions.
+
 When searching for text or files, prefer using rg or rg --files respectively because rg is much faster than alternatives like grep. (If the rg command is not found, then use alternatives.)
 
 Search first and read relevant sections instead of dumping large files or logs. Request enough evidence to decide the next step. When exec_command truncates output, use stdout_path or stderr_path to search or read sections of the saved full output. A 1 MiB preview limit is a ceiling, not a target. Inspect images with view_image when visual evidence is needed.

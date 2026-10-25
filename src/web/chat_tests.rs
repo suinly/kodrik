@@ -18,6 +18,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+#[path = "chat_subagents_tests.rs"]
+mod subagents;
+
 struct FakeLlm;
 
 #[async_trait::async_trait]
@@ -84,6 +87,50 @@ impl LlmProvider for FakeLlm {
                 _ => None,
             })
             .unwrap_or("");
+        if context.instructions.contains("## Delegated task") {
+            if text == "Проверить авторизацию" {
+                return std::future::pending().await;
+            }
+            if text == "Проверить тесты" {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                return Ok((
+                    vec![Message::Assistant(AssistantMessage {
+                        content: "Проверка тестов завершена".into(),
+                    })],
+                    None,
+                ));
+            }
+        }
+        if text == "subagents" {
+            let first = context.messages.iter().find_map(|message| {
+                if let Message::ToolResult(result) = message {
+                    result.content.output["id"].as_str().map(str::to_owned)
+                } else {
+                    None
+                }
+            });
+            let messages = if let Some(id) = first {
+                if context.messages.iter().any(|message| matches!(message,Message::ToolResult(result) if result.content.output["status"]=="stopped")) {
+                    vec![Message::Assistant(AssistantMessage {content:"Дочерняя задача остановлена".into()})]
+                } else {
+                    vec![Message::ToolCall(ToolCall {call_id:format!("wait-{}",context.messages.len()),name:"wait_agent".into(),
+                        arguments:json!({"agent_id":id,"timeout_ms":10000})})]
+                }
+            } else {
+                ["Проверить авторизацию", "Проверить тесты"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, task)| {
+                        Message::ToolCall(ToolCall {
+                            call_id: format!("child-{index}"),
+                            name: "spawn_agent".into(),
+                            arguments: json!({"task":task}),
+                        })
+                    })
+                    .collect()
+            };
+            return Ok((messages, None));
+        }
         if [
             "componentsui",
             "formsui",
@@ -458,19 +505,25 @@ async fn chat_with_ui(
     publication: Option<(std::path::PathBuf, Settings)>,
 ) -> Chat {
     let datasets = crate::agent::datasets::DatasetStore::open(data.join("datasets")).unwrap();
+    let sessions = SqliteSessionStore::open(data.join("owner-sessions")).unwrap();
+    let agent = Agent::new(
+        Arc::new(FakeLlm),
+        ToolRegistry::default()
+            .register(Arc::new(UpdatePlanTool))
+            .register(Arc::new(crate::agent::tools::ShowUiTool::new(
+                datasets,
+                publication,
+            )))
+            .register(Arc::new(SlowTool(data.join("effects.txt")))),
+        ContextBuilder::new("test"),
+    );
+    let subagents =
+        crate::agent::subagents::Subagents::new(Arc::new(agent.child_agent()), sessions.clone())
+            .await
+            .unwrap();
     let owner = AgentRunner::new(
-        Arc::new(Agent::new(
-            Arc::new(FakeLlm),
-            ToolRegistry::default()
-                .register(Arc::new(UpdatePlanTool))
-                .register(Arc::new(crate::agent::tools::ShowUiTool::new(
-                    datasets,
-                    publication,
-                )))
-                .register(Arc::new(SlowTool(data.join("effects.txt")))),
-            ContextBuilder::new("test"),
-        )),
-        Arc::new(SqliteSessionStore::open(data.join("owner-sessions")).unwrap()),
+        Arc::new(agent.with_subagents(subagents)),
+        Arc::new(sessions),
     );
     Chat::new(&owner, data).await.unwrap()
 }
@@ -1714,7 +1767,7 @@ async fn chat_title_failure_or_delay_does_not_block_answers() {
             .await
             .unwrap();
         assert_eq!(f.idle(&id).await["messages"].as_array().unwrap().len(), 2);
-        let snapshot: Value = f
+        let mut snapshot: Value = f
             .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
             .send()
             .await
@@ -1724,7 +1777,23 @@ async fn chat_title_failure_or_delay_does_not_block_answers() {
             .unwrap();
         assert_eq!(snapshot["title"], text);
         if text == "title unavailable" {
-            assert_eq!(snapshot["title_pending"], false);
+            tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                while snapshot["title_pending"] == true {
+                    assert_eq!(snapshot["busy"], false);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    snapshot = f
+                        .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+                        .send()
+                        .await
+                        .unwrap()
+                        .json()
+                        .await
+                        .unwrap();
+                }
+                assert_eq!(snapshot["title_pending"], false);
+            })
+            .await
+            .unwrap();
         }
     }
 }

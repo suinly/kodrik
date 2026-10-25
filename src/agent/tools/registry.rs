@@ -24,12 +24,23 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput>;
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
+    pub(crate) fn without(&self, names: &[&str]) -> Self {
+        Self {
+            tools: self
+                .tools
+                .iter()
+                .filter(|(name, _)| !names.contains(&name.as_str()))
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect(),
+        }
+    }
+
     pub fn list(&self) -> Vec<&dyn Tool> {
         self.tools
             .values()

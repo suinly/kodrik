@@ -43,7 +43,23 @@ pub(super) fn history(session: &Session) -> Vec<Value> {
                 "toolName":call.name, "input":call.arguments, "state":"input-available"})),
             Message::ToolResult(result) => {
                 if let Some(part) = parts.iter_mut().find(|p| p["toolCallId"] == result.call_id) {
-                    if result.content.output.get("error").is_some() {
+                    let child_outcome = matches!(
+                        part["toolName"].as_str(),
+                        Some("spawn_agent" | "send_message" | "wait_agent" | "stop_agent")
+                    ) && result.content.output["id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with(crate::agent::subagents::PREFIX))
+                        && serde_json::from_value::<crate::agent::subagents::Status>(
+                            result.content.output["status"].clone(),
+                        )
+                        .is_ok();
+                    if result
+                        .content
+                        .output
+                        .get("error")
+                        .is_some_and(|value| !value.is_null())
+                        && !child_outcome
+                    {
                         part["state"] = json!("output-error");
                         part["errorText"] = json!(result.content.output.to_string());
                     } else {
@@ -101,6 +117,28 @@ impl SnapshotProjection {
 #[cfg(test)]
 mod run_view_tests {
     use super::*;
+    #[test]
+    fn child_outcomes_are_preserved_and_null_errors_do_not_fail_tools() {
+        use crate::agent::{
+            message::{ToolCall, ToolResult},
+            session::SessionId,
+        };
+        let mut session = Session::new(SessionId::new("parent"));
+        for (index, output) in [
+            json!({"id":"companion:subagent:one","status":"running","result":null,"error":null}),
+            json!({"id":"companion:subagent:two","status":"failed","result":null,"error":"Child request budget exhausted"}),
+            json!({"error":"Unknown child agent"}),
+        ].into_iter().enumerate() {
+            session.push(Message::ToolCall(ToolCall {call_id:index.to_string(),name:"wait_agent".into(),arguments:json!({})}));
+            session.push(Message::ToolResult(ToolResult {call_id:index.to_string(),content:output.into()}));
+        }
+        let parts = history(&session)[0]["parts"].as_array().unwrap().clone();
+        assert_eq!(parts[0]["state"], "output-available");
+        assert_eq!(parts[0]["output"]["status"], "running");
+        assert_eq!(parts[1]["state"], "output-available");
+        assert_eq!(parts[1]["output"]["status"], "failed");
+        assert_eq!(parts[2]["state"], "output-error");
+    }
     #[test]
     fn message_timestamps_survive_reload_edits_and_legacy_history() {
         use crate::agent::{AssistantMessage, UserMessage, session::SessionId};

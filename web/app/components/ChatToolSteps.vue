@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
-import {toolSummary,type ToolPart} from '../utils/chat-presentation'
+import {toolLabel,toolSummary,type ToolPart} from '../utils/chat-presentation'
 const props=defineProps<{tools:ToolPart[]}>()
 const open=ref(false)
 const steps=useTemplateRef('steps')
@@ -20,7 +20,7 @@ async function collapseSteps() {
   <UChatTool v-model:open="open" :text="running ? t('Выполняются шаги: {0}', tools.length) : t('Выполнено шагов: {0}', tools.length)"
     :loading="running" icon="i-lucide-list-checks" :ui="{body:'space-y-2 border-l border-default ml-2 pl-3'}" unmount-on-hide>
     <p v-if="failed" class="text-sm text-muted">{{ t('Шагов с ошибкой: {0}. Подробности доступны ниже.', failed) }}</p>
-    <UChatTool v-for="tool in tools" :key="tool.toolCallId" :text="tool.toolName" :suffix="toolSummary(tool) && ` · ${toolSummary(tool)}`" unmount-on-hide
+    <UChatTool v-for="tool in tools" :key="tool.toolCallId" :text="toolLabel(tool)" :suffix="toolSummary(tool) && ` · ${toolSummary(tool)}`" unmount-on-hide
       :loading="!['output-available','output-error'].includes(tool.state)"
       :ui="{leadingIcon:tool.state==='output-error'?'text-error':undefined}"
       :icon="tool.state === 'output-error' ? 'i-lucide-circle-alert' : 'i-lucide-check'">

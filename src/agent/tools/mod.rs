@@ -10,6 +10,7 @@ mod publish_page;
 mod registry;
 mod session_search;
 mod show_ui;
+pub(crate) mod subagents;
 pub(crate) mod telegram_reply;
 mod telegram_results;
 mod ui_components;

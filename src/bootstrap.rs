@@ -116,6 +116,15 @@ api_base = "{base}"
                     }
                     assert!(names.contains(&"encyclopedia_search"));
                     assert_eq!(names.contains(&"datasets"), foreground);
+                    for name in [
+                        "spawn_agent",
+                        "send_message",
+                        "list_agents",
+                        "wait_agent",
+                        "stop_agent",
+                    ] {
+                        assert_eq!(names.contains(&name), foreground, "{name}: {names:?}");
+                    }
                 }
             }
         }
@@ -297,6 +306,10 @@ pub(crate) async fn build_app_with_access(
     if let Some(sandbox) = sandbox {
         agent = agent.with_sandbox(sandbox);
     }
+    let subagents =
+        crate::agent::subagents::Subagents::new(Arc::new(agent.child_agent()), sessions.clone())
+            .await?;
+    agent = agent.with_subagents(subagents);
 
     let mut proactive_tools = ToolRegistry::default()
         .register(Arc::new(EncyclopediaTool))

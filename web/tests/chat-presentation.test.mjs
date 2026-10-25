@@ -2,7 +2,7 @@ import {setLanguage} from '../app/utils/i18n.ts';
 setLanguage('ru');
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,formatMessageTime} from '../app/utils/chat-presentation.ts';
+import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime} from '../app/utils/chat-presentation.ts';
 
 test('message dates use local calendar days and show the year only when needed',()=>{
   const now=new Date(2026,9,22,12);
@@ -16,6 +16,16 @@ test('message dates use local calendar days and show the year only when needed',
 });
 
 const tool=(id,name='exec_command',url)=>({type:'dynamic-tool',toolCallId:id,toolName:name,state:'output-available',input:{},output:url?{url}: {}});
+test('child tools have localized names while technical names remain available for other tools',()=>{
+  assert.equal(toolLabel(tool('a','spawn_agent')),'Запуск дочерней задачи');
+  assert.equal(toolLabel(tool('a','exec_command')),'exec_command');
+  assert.equal(toolLabel(tool('a','constructor')),'constructor');
+  try {
+    setLanguage('en');
+    assert.equal(toolLabel(tool('a','wait_agent')),'Waiting for child task');
+    assert.equal(toolLabel(tool('a','stop_agent')),'Stopping child task');
+  } finally {setLanguage('ru');}
+});
 test('tool summaries show a compact primary argument without dumping payloads',()=>{
   for(const [name,input,expected] of [
     ['exec_command',{cmd:'cargo test\n  --locked',workdir:'/tmp'},'cargo test --locked'],
@@ -25,6 +35,8 @@ test('tool summaries show a compact primary argument without dumping payloads',(
     ['show_ui',{title:'Дневник',body:'# Long document'},'Дневник'],
     ['apply_patch',{patch:'*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch'},'README.md'],
     ['view_image',{path:'/tmp/image.png'},'/tmp/image.png'],
+    ['spawn_agent',{task:'Проверить\n авторизацию'},'Проверить авторизацию'],
+    ['send_message',{agent_id:'internal-id',message:'Проверь обновление токена'},'Проверь обновление токена'],
     ['unknown',{payload:'large payload'},''],
     ['constructor',{cmd:'hidden'},''],
     ['exec_command',null,''],

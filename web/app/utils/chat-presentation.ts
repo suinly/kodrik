@@ -24,6 +24,7 @@ export function toolSummary(tool:ToolPart):string {
     exec_command:['cmd'],web_search:['query'],web_read:['url'],encyclopedia:['query'],
     session_search:['query','session_id'],view_image:['path'],show_ui:['title'],
     datasets:['action','dataset'],memory:['action','target'],companion:['action','topic'],
+    spawn_agent:['task'],send_message:['message'],
   }
   const summary=tool.toolName==='apply_patch' && typeof input.patch==='string'
     ? input.patch.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m)?.[1] ?? ''
@@ -31,6 +32,12 @@ export function toolSummary(tool:ToolPart):string {
   const text=summary.replace(/\s+/g,' ').trim()
   const chars=Array.from(text)
   return chars.length>96 ? `${chars.slice(0,95).join('')}…` : text
+}
+
+export function toolLabel(tool:ToolPart):string {
+  const labels:Record<string,string>={spawn_agent:'Запуск дочерней задачи',send_message:'Уточнение дочерней задачи',
+    list_agents:'Проверка дочерних задач',wait_agent:'Ожидание дочерней задачи',stop_agent:'Остановка дочерней задачи'}
+  return Object.hasOwn(labels,tool.toolName) ? t(labels[tool.toolName]!) : tool.toolName
 }
 
 export function matchingMessages(messages:ChatMessage[],query:string):string[] {
