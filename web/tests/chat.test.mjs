@@ -2595,13 +2595,14 @@ test('queued webhook payloads render as code while owner followups keep Markdown
     const page=await signedPage(browser),id=crypto.randomUUID();
     const raw='# Incident\n<script>window.eventInjection=true</script>\n```json\n{"id":9007199254740993}';
     const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:true,cancel_requested:false,phase:null,blocked_reason:null,
-      messages:[],live:{current:null,interrupted:null},plan:null,queued:[{id:'event',text:raw},{id:'owner',text:'**Уточнение**'}]};
+      messages:[],live:{current:null,interrupted:null},plan:null,queued:[{id:'event',text:raw},{id:'second-event',text:'# Second webhook event',webhook:true},{id:'owner',text:'**Уточнение**',webhook:false}]};
     await page.route(`**/api/chat/sessions/${id}`,route=>route.fulfill({json:{id,title:'Ожидающее событие',busy:true,updated_at:null,webhook:{id:'hook',name:'Incident hook'}}}));
     await page.route(`**/api/chat/sessions/${id}/run`,route=>route.fulfill({json:snapshot}));
     await page.route(`**/api/chat/sessions/${id}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const messages=page.locator('.message[data-role="user"]');
     await expect(messages.first().locator('pre code')).toHaveText(raw);
+    await expect(messages.nth(1).locator('pre code')).toHaveText('# Second webhook event');
     await expect(messages.last().locator('strong')).toHaveText('Уточнение');
     assert.equal(await messages.first().locator('h1,script').count(),0);
     assert.equal(await page.evaluate(()=>window.eventInjection),undefined);

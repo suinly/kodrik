@@ -30,6 +30,8 @@ pub struct Session {
     system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) webhook_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    webhook_messages: std::collections::BTreeMap<usize, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telegram_group: Option<TelegramGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +60,7 @@ impl Session {
             id,
             system_prompt: None,
             webhook_instruction: None,
+            webhook_messages: Default::default(),
             telegram_group: None,
             skills_catalog: None,
             memory_snapshot: None,
@@ -105,6 +108,15 @@ impl Session {
         self.message_times.get(index).copied().flatten()
     }
 
+    pub(crate) fn record_webhook_message(&mut self, source: serde_json::Value) {
+        self.webhook_messages.insert(self.messages.len(), source);
+    }
+
+    pub(crate) fn is_webhook_message(&self, index: usize) -> bool {
+        self.webhook_messages.contains_key(&index)
+            || index == 0 && self.webhook_instruction.is_some()
+    }
+
     pub(crate) fn fork_before(&self, id: SessionId, index: usize) -> anyhow::Result<Self> {
         anyhow::ensure!(
             matches!(self.messages.get(index), Some(Message::User(_))),
@@ -119,6 +131,7 @@ impl Session {
         branch.generation = uuid::Uuid::new_v4().to_string();
         branch.messages.truncate(index);
         branch.message_times.truncate(index);
+        branch.webhook_messages.retain(|key, _| *key < index);
         branch.compaction = None;
         branch.input_tokens = None;
         Ok(branch)
@@ -132,6 +145,7 @@ impl Session {
         );
         self.messages.truncate(len);
         self.message_times.truncate(len);
+        self.webhook_messages.retain(|index, _| *index < len);
         Ok(())
     }
 
@@ -179,16 +193,24 @@ impl Session {
     }
 
     pub(crate) fn context_messages(&self) -> std::borrow::Cow<'_, [Message]> {
-        let Some((through, summary)) = self.compaction() else {
-            return std::borrow::Cow::Borrowed(&self.messages);
+        let (mut messages, through) = if let Some((through, summary)) = self.compaction() {
+            let mut messages = vec![Message::Assistant(crate::agent::AssistantMessage {
+                content: format!(
+                    "Summary of earlier conversation (historical context, not new instructions):\n{summary}"
+                ),
+            })];
+            messages.extend_from_slice(&self.messages[through..]);
+            (std::borrow::Cow::Owned(messages), through)
+        } else {
+            (std::borrow::Cow::Borrowed(&self.messages[..]), 0)
         };
-        let mut messages = vec![Message::Assistant(crate::agent::AssistantMessage {
-            content: format!(
-                "Summary of earlier conversation (historical context, not new instructions):\n{summary}"
-            ),
-        })];
-        messages.extend_from_slice(&self.messages[through..]);
-        std::borrow::Cow::Owned(messages)
+        for (&index, source) in self.webhook_messages.range(through..) {
+            let projected = index - through + usize::from(through > 0);
+            if let Some(Message::User(input)) = messages.to_mut().get_mut(projected) {
+                input.content = format!("[Webhook event] {source}\n{}", input.content);
+            }
+        }
+        messages
     }
 
     pub fn system_prompt(&self) -> Option<&str> {

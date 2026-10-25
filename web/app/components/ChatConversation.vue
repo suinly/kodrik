@@ -47,7 +47,7 @@ const hasInput = computed(() => hasDraft.value || !!pending)
 const superseded = computed(()=>supersededDocuments(snapshot.value?.messages ?? []))
 const queuedMessages = computed<ChatMessage[]>(()=>(snapshot.value?.queued ?? []).map((item,index)=>({
   id:item.id,role:'user',parts:[
-    {type:'text',text:item.text,format:props.conversation.webhook && !snapshot.value?.messages.some(message=>message.role==='user') && index===0 ? 'code' : undefined},
+    {type:'text',text:item.text,format:(item.webhook ?? (props.conversation.webhook && !snapshot.value?.messages.some(message=>message.role==='user') && index===0)) ? 'code' : undefined},
     ...(item.files ?? []).map(filename=>({type:'file' as const,filename,mediaType:'application/octet-stream'})),
     ...Array.from({length:item.photos ?? 0},(_,index)=>({type:'file' as const,filename:t("Фото {0}", index+1),mediaType:'image/png'})),
   ],

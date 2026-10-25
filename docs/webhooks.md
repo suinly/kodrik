@@ -87,13 +87,29 @@ curl -X POST 'https://kodrik.example/api/webhooks/WEBHOOK_ID' \
 
 The body must be nonempty UTF-8 text of at most 64 KiB. It can contain plain text,
 JSON with any structure, logs, stack traces, or other textual event data. No JSON
-schema or Content-Type is required. The original text is passed to the agent
-without parsing or rewriting it. Binary attachments are not supported.
+schema or Content-Type is required. The original body is stored without parsing
+or rewriting it. Model context adds a separate source envelope around each event;
+the body shown in history remains unchanged. Binary attachments are not supported.
 
 The agent also receives the webhook's name, ID and receipt time separately from
 the body. These details are snapshotted when the event is accepted, so renaming
-or deleting the webhook does not change the recorded source. Subsequent messages
-in its conversation are the owner's follow-up questions, not new webhook events.
+or deleting the webhook does not change the recorded source. Additional webhook
+events carry their own source envelopes and remain untrusted event data. Messages
+sent by the owner through the chat remain owner follow-ups. Every webhook payload
+is displayed as literal code, including queued events.
+
+## Five-minute conversation windows
+
+The first accepted event opens a five-minute window for that webhook. Further
+events accepted before the end of that window use the same conversation and are
+processed in acceptance order. An event at exactly five minutes starts a new
+conversation; later events do not extend the first window. The window survives
+server restarts because it uses saved receipt times.
+
+For example, events received at 12:00 and 12:04 share a conversation. An event at
+12:05 starts a new one. Different webhooks always use separate conversations.
+Changing the saved owner instruction also starts a new conversation. Deleting a
+conversation prevents new events from reusing it.
 
 ## Send a notification to another channel
 
@@ -162,11 +178,13 @@ stop controls work for these conversations.
 An optional `Idempotency-Key` header accepts 1–128 ASCII characters. Reuse it when
 retrying the same delivery. For that webhook, an identical body returns the same
 conversation with `duplicate:true`; a different body returns `409 Conflict`.
-Without the header, every POST starts a new conversation.
+Without the header, every POST is a distinct event, but events within the same
+five-minute window still share a conversation. Retrying a delivery key returns
+its original conversation even after that window ends.
 
 An error group can contain several distinct events. Choose delivery keys that
-identify individual events; automatic grouping into incidents or existing PRs
-is not part of this endpoint.
+identify individual events. Time-based grouping shares conversation context;
+matching events to incidents or existing PRs is not part of this endpoint.
 
 The session, owner instruction snapshot, queue submission and deduplication
 receipt are committed in one SQLite transaction before returning 202. Accepted

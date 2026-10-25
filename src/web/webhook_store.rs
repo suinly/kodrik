@@ -33,7 +33,8 @@ pub(crate) async fn init(store: &SqliteSessionStore) -> anyhow::Result<()> {
             session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
             accepted_at TEXT NOT NULL,
             PRIMARY KEY(webhook_id,request_key));
-            CREATE INDEX IF NOT EXISTS webhook_receipts_time ON webhook_receipts(webhook_id,accepted_at);")?;
+            CREATE INDEX IF NOT EXISTS webhook_receipts_time ON webhook_receipts(webhook_id,accepted_at);
+            CREATE INDEX IF NOT EXISTS webhook_receipts_session ON webhook_receipts(webhook_id,session_id,accepted_at);")?;
         Ok(())
     }).await
 }
@@ -202,7 +203,8 @@ impl WebhookStore {
     pub(crate) async fn events(&self, id: String) -> anyhow::Result<Value> {
         let events = self.sessions.with_connection(move |db| {
             Ok(db.prepare("SELECT w.session_id,w.accepted_at,coalesce(s.status,'Deleted') FROM webhook_receipts w
-                LEFT JOIN submissions s ON s.id=(SELECT id FROM submissions WHERE conversation_id=w.session_id ORDER BY sequence LIMIT 1)
+                LEFT JOIN submissions s ON s.conversation_id=w.session_id
+                    AND s.request_id='webhook:'||w.webhook_id||':'||w.request_key
                 WHERE w.webhook_id=?1 ORDER BY w.accepted_at DESC LIMIT 30")?
                 .query_map([id], |row| Ok(json!({"conversation_id":row.get::<_,Option<String>>(0)?,"accepted_at":row.get::<_,String>(1)?,"status":row.get::<_,String>(2)?})))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)

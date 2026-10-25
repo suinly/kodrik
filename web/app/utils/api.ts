@@ -74,7 +74,7 @@ export type Snapshot = {
   blocked_reason: string | null;
   live: { current: Partial | null; interrupted: Partial | null };
   plan: { explanation?: string; plan: { step: string; status: string }[] } | null;
-  queued: { id: string; text: string; files?: string[]; photos?: number }[];
+  queued: { id: string; text: string; files?: string[]; photos?: number; webhook?: boolean }[];
   compaction?: { status: 'preparing' | 'ready' | 'applied' | 'stale' | 'failed' | 'cancelled' } | null;
 };
 type Partial = { attempt: number; text: string; status: 'Active' | 'Ready' | 'Interrupted' | 'Committed' };

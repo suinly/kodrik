@@ -380,6 +380,31 @@ impl Fixture {
         hook
     }
 
+    async fn idle(&self, id: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while self.chat.sessions.conversation_view(id).await.unwrap().busy
+                || self.chat.runs.lock().await.contains(id)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn reopen(&mut self) {
+        self.chat = crate::web::chat_tests::chat(self._data.path()).await;
+        self.router = crate::web::server::router_with_chat(
+            Settings {
+                trusted_proxies: vec![],
+                listen: "127.0.0.1:0".parse().unwrap(),
+                base_url: "http://localhost/kodrik/".parse().unwrap(),
+            },
+            self._data.path(),
+            Some(self.chat.clone()),
+        );
+    }
+
     async fn deliver(&self, hook: &Value, key: &str, body: impl Into<Body>) -> (StatusCode, Value) {
         self.request(
             "POST",
@@ -653,6 +678,322 @@ async fn webhook_conversations_are_filtered_before_paging_and_keep_their_source(
 }
 
 #[tokio::test]
+async fn webhook_deliveries_share_fixed_window() {
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    let hook = f.create().await;
+    let ((first_status, first), (second_status, second)) = tokio::join!(
+        f.deliver(&hook, "first", "first event"),
+        f.deliver(&hook, "second", "second event")
+    );
+    assert_eq!(first_status, StatusCode::ACCEPTED, "{first}");
+    assert_eq!(second_status, StatusCode::ACCEPTED, "{second}");
+    assert_eq!(first["conversation_id"], second["conversation_id"]);
+    assert_eq!(first["duplicate"], false);
+    assert_eq!(second["duplicate"], false);
+    assert_eq!(f.chat.sessions.list().await.unwrap().len(), 1);
+    let (receipts, submissions): (i64, i64) = f
+        .chat
+        .sessions
+        .with_connection(|db| {
+            Ok((
+                db.query_row("SELECT count(*) FROM webhook_receipts", [], |r| r.get(0))?,
+                db.query_row("SELECT count(*) FROM submissions", [], |r| r.get(0))?,
+            ))
+        })
+        .await
+        .unwrap();
+    assert_eq!(receipts, 2);
+    assert_eq!(submissions, 2);
+}
+
+#[tokio::test]
+async fn webhook_window_boundary_is_fixed_at_the_first_receipt() {
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    let hook = f.create().await;
+    let (_, first) = f.deliver(&hook, "first", "first event").await;
+    let hook_id = hook["id"].as_str().unwrap().to_owned();
+    let instruction = hook["instruction"].as_str().unwrap().to_owned();
+    let expected = first["conversation_id"].as_str().unwrap().to_owned();
+    f.chat
+        .sessions
+        .with_connection(move |db| {
+            let opened: String =
+                db.query_row("SELECT accepted_at FROM webhook_receipts", [], |row| {
+                    row.get(0)
+                })?;
+            let opened = chrono::DateTime::parse_from_rfc3339(&opened)?.with_timezone(&chrono::Utc);
+            assert_eq!(
+                super::webhooks::window_session(db, &hook_id, &instruction, opened)?,
+                Some(expected.clone())
+            );
+            assert_eq!(
+                super::webhooks::window_session(
+                    db,
+                    &hook_id,
+                    &instruction,
+                    opened + chrono::Duration::minutes(5) - chrono::Duration::nanoseconds(1)
+                )?,
+                Some(expected)
+            );
+            assert_eq!(
+                super::webhooks::window_session(
+                    db,
+                    &hook_id,
+                    &instruction,
+                    opened + chrono::Duration::minutes(5)
+                )?,
+                None
+            );
+            assert_eq!(
+                super::webhooks::window_session(
+                    db,
+                    &hook_id,
+                    &instruction,
+                    opened - chrono::Duration::nanoseconds(1)
+                )?,
+                None
+            );
+            db.execute(
+                "UPDATE webhook_receipts SET accepted_at=?1",
+                [(chrono::Utc::now() - chrono::Duration::minutes(4)).to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (_, second) = f.deliver(&hook, "second", "second event").await;
+    assert_eq!(first["conversation_id"], second["conversation_id"]);
+    f.chat
+        .sessions
+        .with_connection(|db| {
+            db.execute(
+                "UPDATE webhook_receipts SET accepted_at=?1 WHERE request_key='first'",
+                [(chrono::Utc::now() - chrono::Duration::minutes(6)).to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (_, third) = f.deliver(&hook, "third", "third event").await;
+    assert_ne!(first["conversation_id"], third["conversation_id"]);
+    let (status, duplicate) = f.deliver(&hook, "first", "first event").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(duplicate["conversation_id"], first["conversation_id"]);
+    assert_eq!(duplicate["duplicate"], true);
+}
+
+#[tokio::test]
+async fn webhook_windows_separate_hooks_and_changed_instructions() {
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    let first_hook = f.create().await;
+    let second_hook = f.create().await;
+    let (_, first) = f.deliver(&first_hook, "one", "event").await;
+    let (_, other) = f.deliver(&second_hook, "one", "event").await;
+    assert_ne!(first["conversation_id"], other["conversation_id"]);
+    let (status, _) = f
+        .manage(
+            "PATCH",
+            &format!("/{}", first_hook["id"].as_str().unwrap()),
+            json!({"name":"Site errors","instruction":"Use the new instruction"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, changed) = f.deliver(&first_hook, "two", "event").await;
+    assert_ne!(first["conversation_id"], changed["conversation_id"]);
+    let (status, duplicate) = f.deliver(&first_hook, "one", "event").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(duplicate["conversation_id"], first["conversation_id"]);
+}
+
+#[tokio::test]
+async fn webhook_grouped_events_recover_with_individual_statuses_and_raw_bodies() {
+    let mut f = Fixture::new().await;
+    let hook = f.create().await;
+    let (status, first) = f.deliver(&hook, "first", "**First raw payload**").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let id = first["conversation_id"].as_str().unwrap().to_owned();
+    f.idle(&id).await;
+    f.chat.runner.suspend();
+    let (status, second) = f.deliver(&hook, "second", "/stop").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(second["conversation_id"], first["conversation_id"]);
+    let (_, events) = f
+        .manage(
+            "GET",
+            &format!("/{}/events", hook["id"].as_str().unwrap()),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(events[0]["status"], "Queued");
+    assert_eq!(events[1]["status"], "Done");
+    let queued = f.chat.snapshot(&id).await.unwrap();
+    assert_eq!(queued["queued"][0]["webhook"], true);
+    assert_eq!(queued["queued"][0]["text"], "/stop");
+    f.reopen().await;
+    f.idle(&id).await;
+    let (_, third) = f.deliver(&hook, "third", "Third raw payload").await;
+    assert_eq!(third["conversation_id"], first["conversation_id"]);
+    f.idle(&id).await;
+    f.chat
+        .runner
+        .run(
+            SessionId::new(&id),
+            crate::gateway::IncomingMessage::new(
+                crate::gateway::InterfaceId("web".into()),
+                &id,
+                "**Owner follow-up**",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let view = f.chat.sessions.conversation_view(&id).await.unwrap();
+    let builder = crate::agent::ContextBuilder::new("base");
+    let context = builder.build(&view.session);
+    let event_count = context.messages.iter().filter(|message| matches!(message,
+        crate::agent::message::Message::User(input) if input.content.starts_with("[Webhook event] "))).count();
+    assert_eq!(event_count, 3);
+    assert!(
+        matches!(context.messages.iter().rev().find(|message| matches!(message, crate::agent::message::Message::User(_))).unwrap(), crate::agent::message::Message::User(input) if input.content=="**Owner follow-up**")
+    );
+    let snapshot = f.chat.snapshot(&id).await.unwrap();
+    let users: Vec<_> = snapshot["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .collect();
+    assert_eq!(users.len(), 4);
+    for (message, text) in
+        users[..3]
+            .iter()
+            .zip(["**First raw payload**", "/stop", "Third raw payload"])
+    {
+        assert_eq!(message["parts"][0]["text"], text);
+        assert_eq!(message["parts"][0]["format"], "code");
+    }
+    assert!(users[3]["parts"][0]["format"].is_null());
+}
+
+#[tokio::test]
+async fn webhook_full_shared_inbox_returns_429_without_losing_retries() {
+    use crate::agent::inbox::{BusyMode, MAX_QUEUED_SUBMISSIONS, SubmissionRequest};
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    let hook = f.create().await;
+    let (_, first) = f.deliver(&hook, "first", "event").await;
+    let id = SessionId::new(first["conversation_id"].as_str().unwrap());
+    for _ in 1..MAX_QUEUED_SUBMISSIONS {
+        let message = crate::gateway::IncomingMessage::new(
+            crate::gateway::InterfaceId("web".into()),
+            id.as_str(),
+            "queued owner follow-up",
+        );
+        f.chat
+            .runner
+            .submit(SubmissionRequest::new(&id, message, BusyMode::FollowUp))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        f.deliver(&hook, "full", "new event").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let (status, duplicate) = f.deliver(&hook, "first", "event").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(duplicate["duplicate"], true);
+    let (_, events) = f
+        .manage(
+            "GET",
+            &format!("/{}/events", hook["id"].as_str().unwrap()),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(events.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn webhook_shared_session_busy_in_another_channel_returns_conflict() {
+    use crate::agent::inbox::{BusyMode, SubmissionRequest};
+    let f = Fixture::new().await;
+    let hook = f.create().await;
+    let (_, first) = f.deliver(&hook, "first", "event").await;
+    let id = first["conversation_id"].as_str().unwrap();
+    f.idle(id).await;
+    let channel = SessionId::new("telegram:test:42");
+    f.chat
+        .sessions
+        .select(&channel, &SessionId::new(id))
+        .await
+        .unwrap();
+    let message = crate::gateway::IncomingMessage::new(
+        crate::gateway::InterfaceId("telegram:test".into()),
+        "42",
+        "queued owner question",
+    );
+    f.chat
+        .runner
+        .submit(SubmissionRequest::new(
+            &channel,
+            message,
+            BusyMode::FollowUp,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.deliver(&hook, "busy", "new event").await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.deliver(&hook, "first", "event").await.0,
+        StatusCode::ACCEPTED
+    );
+}
+
+#[tokio::test]
+async fn webhook_window_keeps_its_original_session_after_selection_changes() {
+    let f = Fixture::new().await;
+    let hook = f.create().await;
+    let (_, first) = f.deliver(&hook, "first", "first event").await;
+    let id = first["conversation_id"].as_str().unwrap();
+    f.idle(id).await;
+    let other =
+        crate::agent::session::Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+    f.chat.sessions.save(&other).await.unwrap();
+    f.chat
+        .sessions
+        .select(&SessionId::new(id), other.id())
+        .await
+        .unwrap();
+    let (status, next) = f.deliver(&hook, "next", "next event").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(next["conversation_id"], first["conversation_id"]);
+    f.idle(id).await;
+    let original = f
+        .chat
+        .sessions
+        .load(&SessionId::new(id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(original.messages().iter().any(|message| matches!(message,
+        crate::agent::message::Message::User(input) if input.content=="next event")));
+    assert!(
+        f.chat
+            .sessions
+            .load(other.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .messages()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn webhook_arbitrary_body_runs_once_and_changed_retry_conflicts() {
     let f = Fixture::new().await;
     let hook = f.create().await;
@@ -858,7 +1199,7 @@ async fn webhook_accepted_work_recovers_after_settings_are_changed_and_deleted()
 }
 
 #[tokio::test]
-async fn webhook_without_idempotency_key_creates_separate_sessions_and_stores_no_token() {
+async fn webhook_without_idempotency_key_groups_distinct_events_and_stores_no_token() {
     let f = Fixture::new().await;
     f.chat.runner.suspend();
     let hook = f.create().await;
@@ -883,7 +1224,9 @@ async fn webhook_without_idempotency_key_creates_separate_sessions_and_stores_no
         .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(other_status, StatusCode::ACCEPTED);
-    assert_ne!(first["conversation_id"], second["conversation_id"]);
+    assert_eq!(first["conversation_id"], second["conversation_id"]);
+    assert_eq!(first["duplicate"], false);
+    assert_eq!(second["duplicate"], false);
     let stored: String = f
         .chat
         .sessions
@@ -965,4 +1308,8 @@ async fn webhook_receipt_prevents_reexecution_after_owner_deletes_conversation()
     assert_eq!(repeated["duplicate"], true);
     assert_eq!(repeated["conversation_id"], Value::Null);
     assert!(f.chat.sessions.list().await.unwrap().is_empty());
+    let (status, fresh) = f.deliver(&hook, "fresh-after-delete", "new event").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_ne!(fresh["conversation_id"], first["conversation_id"]);
+    f.idle(fresh["conversation_id"].as_str().unwrap()).await;
 }

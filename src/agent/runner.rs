@@ -395,6 +395,8 @@ impl AgentRunner {
                     };
                 session.merge_telegram_group(message.telegram_group.as_ref());
 
+                let is_webhook = message.source.interface.0 == "webhook";
+                let webhook_source = message.webhook;
                 let recipient = (message.guest_query_id.is_none()
                     && message.source.interface.0.starts_with("telegram:"))
                 .then_some(super::reminders::Recipient {
@@ -410,21 +412,22 @@ impl AgentRunner {
 
                 // Classify only at turn boundaries; incoming steering stays with this run.
                 let mut routing_stopped = false;
-                let mut switch = if submission.as_ref().is_some_and(|r| r.session_id.is_some()) {
-                    false
-                } else if let Some(router) = &self.session_router {
-                    if let Some(cancel) = cancel.as_mut() {
-                        tokio::select! {
-                            biased;
-                            _ = cancel => { routing_stopped = true; false },
-                            decision = router.should_start_new(&session, &input) => decision,
+                let mut switch =
+                    if is_webhook || submission.as_ref().is_some_and(|r| r.session_id.is_some()) {
+                        false
+                    } else if let Some(router) = &self.session_router {
+                        if let Some(cancel) = cancel.as_mut() {
+                            tokio::select! {
+                                biased;
+                                _ = cancel => { routing_stopped = true; false },
+                                decision = router.should_start_new(&session, &input) => decision,
+                            }
+                        } else {
+                            router.should_start_new(&session, &input).await
                         }
                     } else {
-                        router.should_start_new(&session, &input).await
-                    }
-                } else {
-                    false
-                };
+                        false
+                    };
                 let previous_user_messages = session
                     .messages()
                     .iter()
@@ -469,6 +472,9 @@ impl AgentRunner {
                             previous_user_messages,
                         });
                     }
+                }
+                if let Some(source) = webhook_source {
+                    session.record_webhook_message(*source);
                 }
                 let initial_messages = session.messages().len();
                 let wakeup_context = recipient.map(|recipient| super::reminders::WakeupContext {

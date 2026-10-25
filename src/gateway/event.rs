@@ -19,6 +19,8 @@ pub struct IncomingMessage {
     pub guest_query_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) guest_user_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) webhook: Option<Box<serde_json::Value>>,
     pub(crate) telegram_group: Option<crate::agent::telegram_group::TelegramGroup>,
     pub images: Vec<crate::agent::Image>,
     pub files: Vec<crate::agent::file::FileAttachment>,
@@ -49,6 +51,7 @@ impl IncomingMessage {
             is_group: false,
             guest_query_id: None,
             guest_user_id: None,
+            webhook: None,
             telegram_group: None,
             images: Vec::new(),
             files: Vec::new(),

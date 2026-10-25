@@ -239,6 +239,38 @@ struct Delivery {
     duplicate: bool,
 }
 
+pub(super) fn window_session(
+    db: &rusqlite::Connection,
+    id: &str,
+    instruction: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<Option<String>> {
+    let latest: Option<(String, String, Option<String>)> = db
+        .query_row(
+            "SELECT r.session_id,min(r.accepted_at),json_extract(s.payload,'$.webhook_instruction')
+         FROM webhook_receipts r JOIN sessions s ON s.id=r.session_id
+         WHERE r.webhook_id=?1 AND r.session_id=(
+             SELECT session_id FROM webhook_receipts WHERE webhook_id=?1
+             ORDER BY accepted_at DESC,rowid DESC LIMIT 1)
+         GROUP BY r.session_id",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((session, opened, saved)) = latest else {
+        return Ok(None);
+    };
+    let opened = chrono::DateTime::parse_from_rfc3339(&opened)?;
+    let same_instruction = saved
+        .as_deref()
+        .and_then(|saved| saved.split_once("\n\n## Owner instruction\n"))
+        .is_some_and(|(_, saved)| saved == instruction);
+    Ok((same_instruction
+        && now >= opened
+        && now.signed_duration_since(opened) < chrono::Duration::minutes(5))
+    .then_some(session))
+}
+
 async fn admit(
     state: WebState,
     id: String,
@@ -264,22 +296,33 @@ async fn admit(
         let cutoff = (now - chrono::Duration::minutes(1)).to_rfc3339();
         let recent: i64 = tx.query_row("SELECT count(*) FROM webhook_receipts WHERE webhook_id=?1 AND accepted_at>?2", params![id,cutoff], |row| row.get(0))?;
         if queue_full || recent >= 10 { return Ok(Err(StatusCode::TOO_MANY_REQUESTS)); }
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let mut session = Session::new(SessionId::new(&session_id));
         let source = json!({"transport":"http_webhook","webhook_id":id,"webhook_name":name,"received_at":now.to_rfc3339()});
-        session.webhook_instruction = Some(format!("## Recorded delivery source\n{source}\n\n## Owner instruction\n{instruction}"));
-        tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3)", params![session_id,serde_json::to_vec(&session)?,now.timestamp_nanos_opt().ok_or_else(|| anyhow::anyhow!("Session timestamp overflow"))?])?;
+        let session_id = match window_session(&tx, &id, &instruction, now)? {
+            Some(session) => session,
+            None => {
+                let session_id = uuid::Uuid::new_v4().to_string();
+                let mut session = Session::new(SessionId::new(&session_id));
+                session.webhook_instruction = Some(format!("## Recorded delivery source\n{source}\n\n## Owner instruction\n{instruction}"));
+                tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3)", params![session_id,serde_json::to_vec(&session)?,now.timestamp_nanos_opt().ok_or_else(|| anyhow::anyhow!("Session timestamp overflow"))?])?;
+                session_id
+            }
+        };
         let mut message = crate::gateway::IncomingMessage::new(crate::gateway::InterfaceId("webhook".into()), &session_id, body);
+        message.webhook = Some(Box::new(source));
         message.request_id = format!("webhook:{id}:{key}");
-        let mut request = SubmissionRequest::new(session.id(), message, BusyMode::FollowUp);
+        let mut request = SubmissionRequest::new(&SessionId::new(&session_id), message, BusyMode::FollowUp);
         // Free-form event bodies such as /stop are data, never chat commands.
         request.control = false;
         let hash = request.hash()?;
-        admit_submission(&tx, request, hash)?;
+        admit_submission(&tx, request, hash, Some(&session_id))?;
         tx.execute("INSERT INTO webhook_receipts VALUES(?1,?2,?3,?4,?5)", params![id,key,body_hash,session_id,now.to_rfc3339()])?;
         tx.commit()?;
         Ok(Ok(Delivery {conversation_id:Some(session_id),duplicate:false}))
-    }).await.map_err(internal)?;
+    }).await.map_err(|err| {
+        if let Some(reason) = err.downcast_ref::<crate::agent::inbox::AdmissionRejected>() {
+            error(if reason.0 == "Inbox queue is full" { StatusCode::TOO_MANY_REQUESTS } else { StatusCode::CONFLICT }, reason.0)
+        } else { internal(err) }
+    })?;
     let delivery = result.map_err(|status| {
         error(
             status,
@@ -292,8 +335,8 @@ async fn admit(
     })?;
     if !delivery.duplicate
         && let Some(id) = &delivery.conversation_id
+        && runs.insert(id.clone())
     {
-        runs.insert(id.clone());
         let worker = chat.clone();
         let conversation = SessionId::new(id);
         tokio::spawn(async move {

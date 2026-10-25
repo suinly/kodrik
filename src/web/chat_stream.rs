@@ -6,7 +6,7 @@ pub(super) fn history(session: &Session) -> Vec<Value> {
     for (index, message) in session.messages().iter().enumerate() {
         if let Message::User(user) = message {
             let mut text = json!({"type":"text", "text":user.content});
-            if index == 0 && session.webhook_instruction.is_some() {
+            if session.is_webhook_message(index) {
                 text["format"] = json!("code");
             }
             let mut parts = vec![text];

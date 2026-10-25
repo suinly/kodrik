@@ -370,6 +370,7 @@ pub(crate) fn admit_submission(
     tx: &rusqlite::Transaction<'_>,
     request: SubmissionRequest,
     hash: String,
+    bound_session: Option<&str>,
 ) -> anyhow::Result<SubmissionRecord> {
     let old: Option<String> = tx
         .query_row(
@@ -387,7 +388,10 @@ pub(crate) fn admit_submission(
         record.duplicate = true;
         return Ok(record);
     }
-    let target = active_session(tx, &request.conversation_id)?;
+    let target = match bound_session {
+        Some(id) => id.to_owned(),
+        None => active_session(tx, &request.conversation_id)?,
+    };
     if !request.control {
         let conflict: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND conversation_id<>?2 AND terminal=0)
@@ -460,7 +464,7 @@ pub(crate) fn admit_submission(
         accepted_at: chrono::Utc::now(),
         status: SubmissionStatus::Queued,
         run_id,
-        session_id,
+        session_id: session_id.or_else(|| bound_session.map(str::to_owned)),
         answer: None,
         duplicate: false,
     };
@@ -525,7 +529,7 @@ impl SqliteSessionStore {
         }
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let record = admit_submission(&tx, request, hash)?;
+            let record = admit_submission(&tx, request, hash, None)?;
             #[cfg(test)]
             super::durable_fixture::boundary("before_admission")?;
             tx.commit()?;

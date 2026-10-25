@@ -551,7 +551,7 @@ pub(super) async fn edit(
                         params![saved_id, root, parent, index as i64],
                     )?;
                 }
-                let record = admit_submission(&tx, request, hash)?;
+                let record = admit_submission(&tx, request, hash, None)?;
                 select_branch(&tx, &root, &saved_id)?;
                 tx.commit()?;
                 Ok(record)

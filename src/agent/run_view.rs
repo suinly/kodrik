@@ -144,7 +144,7 @@ fn read_run_view(tx: &Connection, id: &str) -> anyhow::Result<RunView> {
     let mut stmt=tx.prepare("SELECT s.payload FROM submissions s LEFT JOIN active_sessions a ON a.conversation_id=s.conversation_id WHERE s.status='Queued' AND coalesce(s.session_id,a.session_id,s.conversation_id)=?1 ORDER BY s.rowid")?;
     for bytes in stmt.query_map([&run.session_id], |r| r.get::<_, Vec<u8>>(0))? {
         let value: serde_json::Value = serde_json::from_slice(&bytes?)?;
-        queued.push(serde_json::json!({"id":value["id"],"sequence":value["sequence"],"text":value["request"]["message"]["text"],"mode":value["request"]["mode"]}));
+        queued.push(serde_json::json!({"id":value["id"],"sequence":value["sequence"],"text":value["request"]["message"]["text"],"mode":value["request"]["mode"],"webhook":value["request"]["message"]["source"]["interface"]=="webhook"}));
     }
     drop(stmt);
     let mut deliveries = vec![];
@@ -196,7 +196,7 @@ impl SqliteSessionStore {
                 let message=&value["request"]["message"];
                 let files:Vec<_>=message["files"].as_array().into_iter().flatten().filter_map(|file|file["filename"].as_str()).collect();
                 let photos=message["images"].as_array().map_or(0,Vec::len);
-                queued.push(serde_json::json!({"id":value["id"],"text":message["text"],"files":files,"photos":photos}));
+                queued.push(serde_json::json!({"id":value["id"],"text":message["text"],"files":files,"photos":photos,"webhook":message["source"]["interface"]=="webhook"}));
             }
             Ok(ConversationView{revision,session,run,busy,blocked_reason,queued})
         }).await

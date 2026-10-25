@@ -254,7 +254,7 @@ impl Subagents {
                 OR EXISTS(SELECT 1 FROM submissions WHERE conversation_id=?1 AND status='Queued' AND json_extract(payload,'$.request.control')=1)",
                 [&child.id],|r|r.get(0))?;
             ensure!(!stopping,"Child agent is stopping; wait before sending more input");
-            let submission=super::inbox::admit_submission(&tx,request,hash)?;
+            let submission=super::inbox::admit_submission(&tx,request,hash,None)?;
             if !submission.duplicate {
                 child.submission=submission.id;
                 child.status=Status::Running;
