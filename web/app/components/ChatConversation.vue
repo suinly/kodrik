@@ -2,6 +2,10 @@
 import {t} from '../utils/i18n'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
+import { TableKit } from '@tiptap/extension-table'
+import { TaskList, TaskItem } from '@tiptap/extension-list'
+import { CharacterCount } from '@tiptap/extensions/character-count'
+import { Slice } from '@tiptap/pm/model'
 
 const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
 const home = computed(() => !!props.start)
@@ -33,6 +37,7 @@ const hint = ref(pending?.files?.length ? t("Повторно выберите �
 const authExpired = ref(false)
 const snapshot = ref<Snapshot | null>(null)
 const prompt = useTemplateRef('prompt')
+const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
 const transcript = useTemplateRef('transcript')
 const transcriptContent = useTemplateRef('transcriptContent')
 const editorLocked = computed(() => loading.value || submitting.value || props.blocked || authExpired.value)
@@ -227,25 +232,32 @@ onMounted(() => {
 watch(() => props.conversation.id, () => { persistDraft(); void observe() })
 onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect(); searchObserver?.disconnect(); CSS.highlights?.delete('conversation-search') })
 function focusInput() {
-  if (mounted && !editorLocked.value) prompt.value?.textareaRef?.focus({preventScroll:true})
+  if (mounted && !editorLocked.value) prompt.value?.editor?.commands.focus(undefined,{scrollIntoView:false})
 }
 function recoverInputFocus(event:KeyboardEvent) {
   if(event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || [...event.key].length!==1 || editorLocked.value) return
   const target=event.target
   if(target instanceof HTMLElement && (target.isContentEditable || target.closest('input,textarea,select,[role="textbox"],[role="combobox"]'))) return
   if(event.key===' ' && target instanceof HTMLElement && target.closest('button,a,summary,[role="button"]')) return
-  const input=prompt.value?.textareaRef
-  if(!input || input.disabled || input.readOnly || !input.getClientRects().length) return
+  const input=prompt.value?.editor?.view.dom
+  if(!input || !input.isContentEditable || !input.getClientRects().length) return
   if([...document.querySelectorAll('[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"]')].some(element=>element.getClientRects().length)) return
-  // Focus during keydown lets the browser insert this character with normal undo and maxlength.
-  focusInput()
+  // Focus synchronously so the browser inserts the first character at the saved selection.
+  prompt.value?.editor?.view.focus()
 }
 defineExpose({focusInput})
-watch(editorLocked, async locked => {
-  if (locked) return
-  await nextTick()
-  focusInput()
-}, {once:true})
+watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
+  if(!editor) return
+  // UEditor applies options only at creation; keep its live instance in sync.
+  editor.setOptions({editable:!locked,editorProps:{...editor.options.editorProps,attributes:{
+    ...editor.options.editorProps.attributes,'aria-label':label,'aria-readonly':String(locked),
+  }}})
+  editor.view.dispatch(editor.state.tr)
+  if(!locked && (previous[0]!==locked || previous[1]!==editor)) {
+    await nextTick()
+    focusInput()
+  }
+})
 watch(snapshot, async () => {
   await nextTick()
   if (follow.value) scrollToLatest()
@@ -280,12 +292,27 @@ function paste(event: ClipboardEvent) {
   event.preventDefault()
   selectFiles([...files.value, ...event.clipboardData.files])
 }
-function attachmentEnter(event: KeyboardEvent) {
-  // ChatPrompt skips empty text, so attachment-only input needs its own submit.
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !draft.value.trim() && files.value.length) {
+function pasteMarkdown(event:ClipboardEvent):boolean {
+  const editor=prompt.value?.editor
+  const text=event.clipboardData?.getData('text/plain')
+  if(!text || event.clipboardData?.getData('text/html') || !editor?.markdown || editor.isActive('codeBlock') || editor.isActive('code')) return false
+  // Open paragraphs for inline paste, while leaving isolating tables intact.
+  const content=editor.schema.nodeFromJSON(editor.markdown.parse(text)).content
+  editor.view.dispatch(editor.state.tr.replaceSelection(Slice.maxOpen(content,false)).setMeta('paste',true).setMeta('uiEvent','paste').scrollIntoView())
+  return true
+}
+function editorKeydown(event: KeyboardEvent) {
+  if(event.isComposing || event.keyCode===229 || prompt.value?.editor?.view.composing) return false
+  if(event.key==='Escape') {
+    prompt.value?.editor?.view.dom.blur()
+    return true
+  }
+  if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault()
     void submit()
+    return true
   }
+  return false
 }
 
 async function fingerprints(selected: File[]) {
@@ -298,7 +325,7 @@ async function fingerprints(selected: File[]) {
 async function submit() {
   if (locked.value || !hasInput.value) return
   submitting.value = true
-  prompt.value?.textareaRef?.focus({ preventScroll: true })
+  prompt.value?.editor?.view.focus()
   const text = draft.value
   let selectedFiles = [...files.value]
   let sent = false
@@ -316,7 +343,9 @@ async function submit() {
     if (pending) {
       const saved = await requestStatus(props.conversation.id, pending.id)
       if (!mounted) return
-      const changed = pending.text !== text || (selectedFiles.length > 0 && JSON.stringify(pending.files ?? []) !== JSON.stringify(keys))
+      const markdown=prompt.value?.editor?.markdown
+      const sameText=pending.text===text || !!markdown && markdown.serialize(markdown.parse(pending.text))===markdown.serialize(markdown.parse(text))
+      const changed = !sameText || (selectedFiles.length > 0 && JSON.stringify(pending.files ?? []) !== JSON.stringify(keys))
       if(saved && changed && props.draftState.pendingFiles?.id===pending.id) {
         const submitted=props.draftState.pendingFiles.files
         keys=keys.filter((_,index)=>!submitted.includes(selectedFiles[index]!))
@@ -455,7 +484,7 @@ const compactionLabels = {
             :editable="message.role==='user' && !locked && !busy && !snapshot?.queued.length && !editingMessage" :saving="editingMessage===message.id"
             :search-selected="matches[matchIndex]===message.id"
             @edit="text=>editMessage(message,text)" @version="id=>emit('navigate',id)"
-            @prompt="text=>{if(!editorLocked){draft=draft.trim()?`${draft}\n\n${text}`:text;prompt?.textareaRef?.focus({preventScroll:true})}}" />
+            @prompt="text=>{if(!editorLocked){draft=draft.trim()?`${draft}\n\n${text}`:text;focusInput()}}" />
           <div v-if="snapshot?.live.current?.text" data-testid="partial">
             <p v-if="snapshot.live.current.status === 'Interrupted'" class="text-muted text-sm"> {{ t("Незавершённая попытка") }} </p>
             <ChatItem :message="{ id: 'partial', role: 'assistant', parts: [{ type: 'text', text: snapshot.live.current.text }] }" />
@@ -473,7 +502,7 @@ const compactionLabels = {
         <UButton :label="t('К последнему сообщению')" icon="i-lucide-arrow-down" color="neutral" variant="outline" class="pointer-events-auto" @click="scrollToLatest" />
       </div>
     </div>
-    <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent="drop">
+    <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent.capture="drop" @paste.capture="paste">
       <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
@@ -508,12 +537,18 @@ const compactionLabels = {
           </template>
         </UAccordion>
       </div>
-      <UChatPrompt ref="prompt" v-model="draft" as="div" name="chat-message" autocomplete="off" enterkeyhint="send"
-        :aria-label="t('Сообщение')" :placeholder="t('Напишите Кодрику…')"
+      <UChatPrompt v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
         class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
-        :rows="1" autoresize :maxrows="4" :maxlength="32768" :readonly="editorLocked" :autofocus="false"
-        :ui="{body:'min-w-0 flex-1 items-center',base:'min-h-8 resize-none py-1 text-base/6 [scrollbar-width:none]'}"
-        @submit="submit" @paste="paste" @keydown="attachmentEnter">
+        @submit="submit">
+        <template #body>
+          <UEditor ref="prompt" v-model="draft" content-type="markdown" :placeholder="{placeholder:()=>t('Напишите Кодрику…'),mode:'firstLine'}"
+            :editable="!editorLocked" :extensions="editorExtensions" :mention="false"
+            :markdown="{markedOptions:{breaks:true}}"
+            :editor-props="{handleKeyDown:(_view,event)=>editorKeydown(event),handlePaste:(_view,event)=>pasteMarkdown(event)}"
+            :aria-label="t('Сообщение')" role="textbox" aria-multiline="true" :aria-readonly="editorLocked"
+            name="chat-message" autocomplete="off" enterkeyhint="send" class="chat-editor min-w-0 flex-1"
+            :ui="{base:'min-h-8 max-h-26 overflow-auto px-0! py-1 text-base/6 text-default [scrollbar-width:none] *:my-0 [&_p]:leading-6 [&_li]:my-0'}" />
+        </template>
         <template #header>
           <UButton type="button" icon="i-lucide-paperclip" color="neutral" variant="ghost" size="md" :aria-label="t('Прикрепить файлы и фото')" :disabled="editorLocked" @click="attachmentsOpen = !attachmentsOpen" />
         </template>
@@ -536,6 +571,11 @@ const compactionLabels = {
 </template>
 
 <style scoped>
+.chat-editor :deep(table) { border-collapse: collapse; width: 100%; }
+.chat-editor :deep(th), .chat-editor :deep(td) { border: 1px solid var(--ui-border); padding: 0.125rem 0.5rem; min-width: 5rem; }
+.chat-editor :deep(ul[data-type='taskList']) { list-style: none; padding: 0; }
+.chat-editor :deep(li[data-type='taskItem']) { display: flex; align-items: baseline; gap: 0.5rem; padding: 0; }
+.chat-editor :deep(li[data-type='taskItem'] > div) { flex: 1; }
 .conversation-layout { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .conversation-layout-home { display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 0fr); transition: grid-template-rows 280ms ease; }
 .conversation-layout-home > [data-testid='chat-composer'] { max-height: calc(var(--chat-viewport-height, 100dvh) * 0.75); }

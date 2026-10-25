@@ -53,6 +53,16 @@ async function request(path, body) {
   return response;
 }
 
+async function pasteText(input,text) {
+  await expect(input).toBeEditable();
+  await input.focus();
+  await input.evaluate((el,text)=>{
+    document.dispatchEvent(new Event('selectionchange'));
+    const data=new DataTransfer();data.setData('text/plain',text);
+    el.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));
+  },text);
+}
+
 test('Telegram approval login shows only that user shared history without a code form', {timeout:60000},async()=>{
   const owner=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -132,7 +142,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await page.screenshot({path:'/tmp/kodrik-pages-viewer-desktop.png',fullPage:true,animations:'disabled'});
     await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
     await dialogs.click();
-    await expect(composer).toHaveValue('Несохранённый черновик');
+    await expect(composer).toHaveText('Несохранённый черновик');
     await page.route('**/api/pages',route=>route.fulfill({status:503,body:''}));
     await pages.click();
     await expect(page.getByRole('alert')).toContainText('Не удалось загрузить страницы.');
@@ -152,7 +162,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await expect(viewer.getByRole('table')).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-pages-viewer-mobile.png',fullPage:true,animations:'disabled'});
     await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
-    await expect(composer).toHaveValue('Несохранённый черновик');
+    await expect(composer).toHaveText('Несохранённый черновик');
 
     const release=crypto.randomUUID();
     const directory=join(storage,'pages','releases','legacy-preview',release);
@@ -165,7 +175,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await navigation.getByRole('button',{name:/^legacy-preview/}).click();
     await expect(page.frameLocator('iframe[title="legacy-preview"]').getByRole('heading',{name:'Legacy published report'})).toBeVisible();
     await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
-    await expect(composer).toHaveValue('Несохранённый черновик');
+    await expect(composer).toHaveText('Несохранённый черновик');
 
     const nativeRelease=crypto.randomUUID();
     const nativeDirectory=join(storage,'pages','releases','relative-links',nativeRelease);
@@ -313,7 +323,7 @@ test('section rail switches context menus and main content without losing chat d
     await expect(webhookSearchToggle).toBeFocused();
     await page.screenshot({path:'/tmp/kodrik-section-rail-desktop.png',animations:'disabled'});
     await sections.getByRole('button',{name:'Чат',exact:true}).click();
-    await expect(composer).toHaveValue('Черновик между разделами');
+    await expect(composer).toHaveText('Черновик между разделами');
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
@@ -349,7 +359,7 @@ test('section rail switches context menus and main content without losing chat d
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-mobile.png',animations:'disabled'});
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
-    await expect(composer).toHaveValue('Черновик между разделами');
+    await expect(composer).toHaveText('Черновик между разделами');
   } finally {await browser.close();}
 });
 
@@ -504,6 +514,60 @@ test('a delayed new conversation response cannot override a newer section', {tim
   }
 });
 
+test('composer edits Markdown tables and preserves formatting in drafts and sent messages', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(input).toBeEditable();
+    await pasteText(input,'**План**\n\n| Задача | Статус |\n| --- | --- |\n| Проверка | Готово |');
+    await expect(input.locator('strong')).toHaveText('План');
+    await expect(input.getByRole('table')).toBeVisible();
+    await input.getByRole('cell',{name:'Готово',exact:true}).click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+    await page.reload();
+    await expect(input.locator('strong')).toHaveText('План');
+    await expect(input.getByRole('cell',{name:'Готово!',exact:true})).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    const sent=page.waitForRequest(request=>request.method()==='POST' && request.url().endsWith('/api/chat/send'));
+    await input.press('Enter');
+    const payload=(await sent).postDataJSON();
+    assert.match(payload.text,/\*\*План\*\*/);
+    assert.match(payload.text,/\| Проверка\s*\| Готово!\s*\|/);
+    await expect(input).toHaveText('');
+    await expect(page.locator('.message[data-role="user"]').getByRole('table')).toContainText('Готово!');
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close();}
+});
+
+test('Markdown paste keeps inline text and code indentation in their editing context', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('chat/',base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    const paste=text=>pasteText(input,text);
+    await input.fill('beforeafter');
+    for(let i=0;i<5;i++) await input.press('ArrowLeft');
+    await paste('**X**');
+    await expect(input.locator('p')).toHaveCount(1);
+    await expect(input.locator('p')).toHaveText('beforeXafter');
+    await expect(input.locator('strong')).toHaveText('X');
+    await input.fill('');
+    await paste('```js\nseed\n```');
+    await input.locator('pre').click();
+    await input.press('ControlOrMeta+ArrowLeft');
+    await paste('  const a = 1\n  const b = 2\n');
+    await expect(input.locator('pre code')).toHaveText('  const a = 1\n  const b = 2\nseed');
+    await expect(input.locator('p')).toHaveText('');
+  } finally {await browser.close();}
+});
+
 test('typing restores composer focus without losing the first character or cursor position', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -515,21 +579,25 @@ test('typing restores composer focus without losing the first character or curso
       await page.goto(new URL(path,base).href);
       await expect(input).toBeFocused();
       for(const [key,text] of [['x','x'],['Shift+!','!'],['Space',' ']]) {
-        await input.fill('');
-        await input.evaluate(el=>el.blur());
+        await input.press('ControlOrMeta+a');await input.press('Backspace');
+        await input.evaluate(el=>{document.dispatchEvent(new Event('selectionchange'));el.blur();});
         await page.keyboard.press(key);
         await expect(input).toBeFocused();
-        await expect(input).toHaveValue(text);
+        await expect(input).toHaveText(text);
       }
       await input.fill('до конца');
-      await input.evaluate(el=>{el.setSelectionRange(2,3);el.blur();});
+      const draftId=path==='chat/'?'new':id;
+      await expect.poll(()=>page.evaluate(id=>JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)||'null')?.text,draftId)).toBe('до конца');
+      await page.reload();
+      await expect(input).toBeFocused();
+      await input.evaluate(el=>{const range=document.createRange();const text=el.querySelector('p').firstChild;range.setStart(text,2);range.setEnd(text,3);getSelection().removeAllRanges();getSelection().addRange(range);document.dispatchEvent(new Event('selectionchange'));el.blur();});
       await keyboard.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Ж',text:'Ж',code:'Semicolon',modifiers:8});
       await keyboard.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Ж',code:'Semicolon'});
-      await expect(input).toHaveValue('доЖконца');
+      await expect(input).toHaveText('доЖконца');
       await page.keyboard.press('ControlOrMeta+z');
-      await expect(input).toHaveValue('до конца');
+      await expect(input).toHaveText('до конца');
       await page.reload();
-      await expect(input).toHaveValue('до конца');
+      await expect(input).toHaveText('до конца');
     }
   } finally {await browser.close();}
 });
@@ -540,13 +608,13 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
   try {
     const page=await signedPage(browser);
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
-    const input=page.locator('textarea[aria-label="Сообщение"]');
+    const input=page.locator('[role="textbox"][aria-label="Сообщение"]');
     await input.fill('Черновик');
     await input.evaluate(el=>el.blur());
     for(const key of ['Control+x','Meta+x','Alt+x','ArrowLeft','Escape','Enter','Tab']) {
       await page.keyboard.press(key);
       await expect(input).not.toBeFocused();
-      await expect(input).toHaveValue('Черновик');
+      await expect(input).toHaveText('Черновик');
     }
     await page.evaluate(()=>{
       document.activeElement?.blur();
@@ -554,7 +622,7 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
     });
     await page.keyboard.press('x');
     await expect(input).not.toBeFocused();
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
     await page.evaluate(()=>document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'x',isComposing:true,bubbles:true})));
     await expect(input).not.toBeFocused();
     await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
@@ -562,13 +630,13 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
     await expect(search).toBeFocused();
     await page.keyboard.type('query');
     await expect(search).toHaveValue('query');
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
     await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
     const searchButton=page.getByRole('button',{name:'Найти в диалоге',exact:true});
     await searchButton.focus();
     await page.keyboard.press('Space');
     await expect(search).toBeVisible();
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
     await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
     await page.getByRole('button',{name:'Переименовать диалог',exact:true}).click();
     const title=page.getByRole('textbox',{name:'Название диалога',exact:true});
@@ -578,13 +646,13 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
     await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).focus();
     await page.keyboard.press('x');
     await expect(input).not.toBeFocused();
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
     await page.getByRole('dialog').getByRole('button',{name:'Отмена',exact:true}).click();
     await page.locator(`[data-conversation-id="${id}"]`).locator('..').getByRole('button',{name:/Действия с диалогом/}).click();
     await page.keyboard.press('x');
     await expect(page.getByRole('menu')).toBeVisible();
     await expect(input).not.toBeFocused();
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
     await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(input).toBeHidden();
@@ -592,7 +660,7 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
     await page.keyboard.press('x');
     await expect(input).not.toBeFocused();
     await page.getByRole('button',{name:'Чат',exact:true}).click();
-    await expect(input).toHaveValue('Черновик');
+    await expect(input).toHaveText('Черновик');
   } finally {await browser.close();}
 });
 
@@ -607,9 +675,9 @@ test('home composer starts one conversation and moves down without replacing the
     await page.goto(new URL('chat/',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeFocused();
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await expect(input).toHaveAttribute('autocomplete','off');
-    await expect(input).toHaveJSProperty('form',null);
+    assert.equal(await input.evaluate(el=>el.closest('form')),null);
     await expect(input).toHaveJSProperty('enterKeyHint','send');
     assert.equal(created.length,0);
     const view=await page.getByRole('region',{name:'Разговор с Кодриком'}).boundingBox();
@@ -617,7 +685,7 @@ test('home composer starts one conversation and moves down without replacing the
     assert.ok(Math.abs(centered.y+centered.height/2-view.y-view.height/2)<30,'Home composer is centered');
     await input.fill('Первый вопрос с главной');
     await page.reload();
-    await expect(input).toHaveValue('Первый вопрос с главной');
+    await expect(input).toHaveText('Первый вопрос с главной');
     await input.evaluate(element=>element.dataset.homeInput='preserved');
     await page.screenshot({path:'/tmp/kodrik-home-composer-desktop.png',fullPage:true,animations:'disabled'});
     await input.press('Enter');await input.press('Enter');
@@ -627,7 +695,7 @@ test('home composer starts one conversation and moves down without replacing the
     assert.equal(created.length,1);assert.equal(sent.length,1);
     await expect(input).toHaveAttribute('data-home-input','preserved');
     await expect(input).toBeFocused();
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     await expect.poll(async()=> (await input.boundingBox()).y).toBeGreaterThan(centered.y+100);
     await page.screenshot({path:'/tmp/kodrik-home-composer-started.png',fullPage:true,animations:'disabled'});
   } finally {await browser.close();}
@@ -660,7 +728,7 @@ test('mobile app keeps its shell still during swipes while content and normal pa
     assert.equal(await page.evaluate(()=>scrollY),0);
     await swipe(200,200,300);
     assert.equal(await page.evaluate(()=>scrollY),0);
-    await expect(composer).toHaveValue('Черновик после свайпа');
+    await expect(composer).toHaveText('Черновик после свайпа');
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const transcript=page.getByTestId('chat-transcript');
     await expect(page.getByRole('heading',{name:'Дневник питания',exact:true})).toBeAttached();
@@ -677,7 +745,7 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     await page.goto(new URL('chat/',base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     const composer=page.getByTestId('chat-composer');
     await expect.poll(()=>composer.evaluate(el=>Math.round(el.parentElement.getBoundingClientRect().bottom-el.getBoundingClientRect().bottom))).toBe(0);
     await page.screenshot({path:'/tmp/kodrik-home-composer-mobile.png',fullPage:true,animations:'disabled'});
@@ -685,8 +753,8 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     await page.route('**/api/chat/sessions',route=>route.request().method()==='POST'?route.fulfill({status:503,json:{error:'Unavailable'}}):route.continue());
     await input.press('Enter');
     await expect(page.getByRole('alert')).toBeVisible();
-    await expect(input).toHaveValue('Сохранить при ошибке');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('Сохранить при ошибке');
+    await expect(input).toBeEditable();
     assert.equal(new URL(page.url()).searchParams.has('conversation'),false);
     await page.unroute('**/api/chat/sessions');
     await input.fill('');
@@ -699,7 +767,7 @@ test('home composer keeps failed drafts and starts mobile conversations with att
     await expect(page).toHaveURL(/conversation=/);
     await expect(page.locator('.message').getByRole('link',{name:'first.txt',exact:true})).toBeVisible();
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   } finally {await browser.close();}
 });
@@ -1021,7 +1089,7 @@ test('native MDC UI persists in chat and uses live paginated sources on its page
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('ui-document')).toContainText(new Intl.NumberFormat('ru-RU').format(1400));
     await page.getByRole('button',{name:'Добавить приём пищи',exact:true}).click();
-    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveValue('Помоги добавить приём пищи');
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveText('Помоги добавить приём пищи');
     assert.equal(await page.getByRole('button',{name:'Далее',exact:true}).count(),0);
     await page.getByRole('textbox',{name:'Фильтр таблицы',exact:true}).fill('Breakfast');
     await expect(page.getByRole('table')).toContainText('Breakfast');
@@ -1315,14 +1383,14 @@ test('LLM titles update the sidebar and navbar without reload and survive refres
     const entry=page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`);
     await expect(entry).toHaveAttribute('title','Новый диалог');
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await expect(input).toBeFocused();
     await input.fill('Меню на неделю');await input.press('Enter');
     await expect(entry).toHaveAttribute('title','Обсуждение: Меню на неделю');
     await expect(page.getByRole('heading',{name:'Обсуждение: Меню на неделю',exact:true})).toBeVisible();
     await page.reload();
     await expect(entry).toHaveAttribute('title','Обсуждение: Меню на неделю');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await expect(input).toBeFocused();
     await input.fill('Другой вопрос');await input.press('Enter');
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(2);
@@ -1422,7 +1490,7 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     await checkFits(330,38);
     await input.fill(Array(20).fill('Длинный черновик').join('\n'));await checkFits(330,38);
     await input.fill('Мобильный черновик');
-    await expect(input).toHaveValue('Мобильный черновик');
+    await expect(input).toHaveText('Мобильный черновик');
     await page.screenshot({path:'/tmp/kodrik-chat-mobile-keyboard.png'});
     await page.evaluate(()=>{delete visualViewport.height;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));});
     await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
@@ -1453,7 +1521,7 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     await page.setViewportSize({width:844,height:390});await checkFits(390);
     await page.setViewportSize({width:390,height:844});await checkFits(844);
     await page.screenshot({path:'/tmp/kodrik-chat-mobile-app.png'});
-    await page.reload();await expect(input).toBeFocused();await expect(input).toHaveValue('Мобильный черновик');
+    await page.reload();await expect(input).toBeFocused();await expect(input).toHaveText('Мобильный черновик');
     const manifest=await page.locator('link[rel="manifest"]').getAttribute('href');
     assert.equal(manifest,new URL('chat/manifest.webmanifest',base).pathname);
     await input.fill('wait');await input.press('Enter');
@@ -1474,30 +1542,30 @@ test('chat UX preserves drafts and attachments across conversations and permits 
     const page=await signedPage(browser);
     await page.goto(new URL(`chat/?conversation=${first.id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('Сохранённый черновик');
     await input.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['draft'],'draft.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
     await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${first.id}"]`).click();
-    await expect(input).toHaveValue('Сохранённый черновик');
+    await expect(input).toHaveText('Сохранённый черновик');
     await expect(page.getByText('draft.txt',{exact:true})).toBeVisible();
     await page.reload();
-    await expect(input).toHaveValue('Сохранённый черновик');
+    await expect(input).toHaveText('Сохранённый черновик');
     await expect(page.getByText('Повторно выберите вложения: draft.txt',{exact:false})).toBeVisible();
     await input.fill('wait');await input.press('Enter');
     await page.getByText('Жду остановки',{exact:true}).waitFor();
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('Следующий вопрос');
-    await expect(input).toHaveValue('Следующий вопрос');
+    await expect(input).toHaveText('Следующий вопрос');
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
     await request(`sessions/${first.id}/stop`,{});
     await expect(page.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
-    await page.reload();await expect(input).toHaveValue('Следующий вопрос');
+    await page.reload();await expect(input).toHaveText('Следующий вопрос');
     await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('нет такого названия');
     await expect(page.getByText('Диалоги не найдены.',{exact:true})).toBeVisible();
-    await expect(input).toHaveValue('Следующий вопрос');
+    await expect(input).toHaveText('Следующий вопрос');
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('draft conversation');
     await expect(page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${first.id}"]`)).toBeVisible();
     await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
@@ -1515,7 +1583,7 @@ test('web chat steers the current answer after a tool with text, files and photo
     const page=await signedPage(browser);await page.setViewportSize({width:390,height:844});
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:2}});
     await input.fill('slowtool');await input.press('Enter');
     await expect(page.getByRole('button',{name:'Выполняются шаги: 1',exact:true})).toBeVisible();
@@ -1527,7 +1595,7 @@ test('web chat steers the current answer after a tool with text, files and photo
     await page.getByRole('button',{name:'Отправить',exact:true}).click();
     await expect(page.locator('.message').getByText('queued browser text',{exact:true})).toHaveCount(1);
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toBeVisible();
-    await expect(input).toHaveValue('');await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('');await expect(input).toBeEditable();
     await input.evaluate((el,bytes)=>{const data=new DataTransfer();data.items.add(new File(['queued browser file'],'queued-browser.txt',{type:'text/plain'}));data.items.add(new File([new Uint8Array(bytes)],'queued-photo.png',{type:'image/png'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));},[...photo]);
     await input.press('Enter');
     await expect(page.locator('.message').getByText('queued-browser.txt',{exact:true})).toHaveCount(1);
@@ -1560,7 +1628,7 @@ test('web chat steers a changed draft after uncertain admission and Stop cancels
     await expect(page.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
     await input.press('Enter');
     await expect(page.locator('.message').getByText('queued after uncertain response',{exact:true})).toHaveCount(1);
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     await page.getByRole('button',{name:'Остановить',exact:true}).click();
     await expect(page.locator('.message').getByText('queued after uncertain response',{exact:true})).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
@@ -1595,7 +1663,7 @@ test('composer switches one action and keeps its plan and hints attached on mobi
     const initialHeight=await input.evaluate(el=>el.getBoundingClientRect().height);
     for(let rows=2;rows<=4;rows++) {
       await input.fill(Array(rows).fill('Строка').join('\n'));
-      await expect.poll(()=>input.evaluate(el=>el.rows)).toBe(rows);
+      await expect.poll(()=>input.evaluate(el=>el.getBoundingClientRect().height)).toBe(rows*24+8);
     }
     const maxHeight=await input.evaluate(el=>el.getBoundingClientRect().height);
     assert.ok(maxHeight>initialHeight);
@@ -1606,7 +1674,7 @@ test('composer switches one action and keeps its plan and hints attached on mobi
     assert.equal((await send.innerText()).trim(),'');
     const layout=await prompt.evaluate(el=>{
       const rect=selector=>el.querySelector(selector).getBoundingClientRect().toJSON();
-      return {upload:rect('[aria-label="Прикрепить файлы и фото"]'),input:rect('textarea'),send:rect('[aria-label="Отправить"]')};
+      return {upload:rect('[aria-label="Прикрепить файлы и фото"]'),input:rect('[role="textbox"]'),send:rect('[aria-label="Отправить"]')};
     });
     assert.ok(layout.upload.right<=layout.input.x && layout.input.right<=layout.send.x,JSON.stringify(layout));
     assert.ok(Math.abs(layout.upload.y-layout.send.y)<2,JSON.stringify(layout));
@@ -1723,10 +1791,10 @@ test('conversation list retry restores a direct link and refreshes an exhausted 
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     await expect(page.getByRole('button',{name:'Повторить загрузку',exact:true})).toBeVisible();
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     failLists=false;
     await page.getByRole('button',{name:'Повторить загрузку',exact:true}).click();
-    await expect(input).toHaveValue('Черновик существующего диалога');
+    await expect(input).toHaveText('Черновик существующего диалога');
     await input.fill('Продолжение сохранённого черновика');
     assert.equal(await page.evaluate(id=>JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)).text,id),'Продолжение сохранённого черновика');
     await page.getByRole('button',{name:'Переименовать диалог',exact:true}).click();
@@ -1886,7 +1954,7 @@ test('child task panel shows live outcomes and handles cancellation without losi
     await expect(panel.getByRole('status')).toContainText('остановлено 1');
     await expect(stop).toHaveCount(0);
     await expect(active.getByRole('alert')).toHaveCount(0);
-    await expect(composer).toHaveValue('Черновик остаётся на месте');
+    await expect(composer).toHaveText('Черновик остаётся на месте');
     const done=panel.getByTestId('subagent-companion:subagent:done');
     await done.getByRole('button',{name:'Подробности задачи «Проверить тесты»',exact:true}).press('Enter');
     await expect(done.getByText('Найдены две проверки',{exact:true})).toBeVisible();
@@ -1965,7 +2033,7 @@ test('child task controls work with live delegation and snapshots',{timeout:6000
     await panel.getByRole('button',{name:'Остановить задачу «Проверить авторизацию»',exact:true}).click();
     await expect(panel.getByText('Остановлено',{exact:true})).toBeVisible();
     await expect(page.locator('.message').getByText('Дочерняя задача остановлена',{exact:true})).toBeVisible();
-    await expect(input).toHaveValue('Уточнение остаётся в черновике');
+    await expect(input).toHaveText('Уточнение остаётся в черновике');
   } finally {await browser.close();}
 });
 
@@ -2027,7 +2095,7 @@ for(const returnBeforeReply of [false,true]) test(`chat UX clears submitted atta
     });
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('attachment first');
     await input.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['one upload'],'once.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
     await page.getByRole('button',{name:'Отправить',exact:true}).click();await accepted;
@@ -2062,8 +2130,8 @@ test('chat UX sends a different saved draft after reconciling a completed pendin
     },{id,requestId});
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveValue('Different next question');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('Different next question');
+    await expect(input).toBeEditable();
     await input.press('Enter');
     await expect(page.locator('.message').getByText('Different next question',{exact:true})).toHaveCount(1);
     assert.equal(sent.length,1);assert.notEqual(sent[0].request_id,requestId);
@@ -2082,12 +2150,12 @@ test('chat UX does not resend an accepted attachment with a different draft afte
     });
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('accepted attachment');
     await input.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['only once'],'accepted.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
     await input.press('Enter');
-    await expect(input).toHaveValue('accepted attachment');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('accepted attachment');
+    await expect(input).toBeEditable();
     await input.fill('different draft without the old file');await input.press('Enter');
     await expect(page.locator('.message').getByText('different draft without the old file',{exact:true})).toHaveCount(1);
     assert.equal(types.length,2);assert.equal(types[1],'application/json');
@@ -2107,7 +2175,7 @@ test('chat UX retains bytes for an unaccepted attachment after switching convers
     });
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('retry retained bytes');
     await input.evaluate(el=>{const data=new DataTransfer();data.items.add(new File(['retained bytes'],'retained.txt',{type:'text/plain'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));});
     await input.press('Enter');await started;
@@ -2115,8 +2183,8 @@ test('chat UX retains bytes for an unaccepted attachment after switching convers
     await expect(page.getByRole('heading',{name:'Есть мысль?',exact:true})).toBeVisible();
     release();
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`).click();
-    await expect(input).toHaveValue('retry retained bytes');
-    await expect(input).toHaveJSProperty('readOnly',false);await input.press('Enter');
+    await expect(input).toHaveText('retry retained bytes');
+    await expect(input).toBeEditable();await input.press('Enter');
     await expect(page.locator('.message').getByRole('link',{name:'retained.txt',exact:true})).toHaveCount(1);
     assert.equal(sends,2);
   }finally{release?.();await browser.close();}
@@ -2135,19 +2203,19 @@ test('chat UX keeps a newer same-text draft when an older send reply arrives lat
     });
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('continue');await input.press('Enter');await accepted;
     await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();
     await expect(page.getByRole('heading',{name:'Есть мысль?',exact:true})).toBeVisible();
     await page.getByRole('navigation',{name:'История диалогов'}).locator(`[data-conversation-id="${id}"]`).click();
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('different question');await input.press('Enter');
     await expect(page.locator('.message').getByText('different question',{exact:true})).toHaveCount(1);
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     await input.fill('continue');
     const finished=page.waitForResponse(r=>r.url().endsWith('/api/chat/send')&&r.request().postDataJSON().text==='continue');
     release();await finished;
-    await expect(input).toHaveValue('continue');
+    await expect(input).toHaveText('continue');
     assert.equal(await page.evaluate(id=>JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)).text,id),'continue');
   }finally{release?.();await browser.close();}
 });
@@ -2265,12 +2333,12 @@ test('composer waits for authoritative snapshot after admission', { timeout: 300
     await page.getByRole('button', { name: 'Отправить' }).click();
     await historyRequested;
     await page.getByRole('button', { name: 'Отправить' }).waitFor();
-    await expect(input).toHaveJSProperty('readOnly', true);
+    await expect(input).not.toBeEditable();
     await expect(page.getByRole('button', { name: 'Отправить' })).toBeDisabled();
     await input.evaluate(el=>el.blur());
     await page.keyboard.press('x');
     await expect(input).not.toBeFocused();
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     release();
     await page.unrouteAll({ behavior: 'wait' });
     await input.fill('second');
@@ -2298,11 +2366,11 @@ test('composer keeps focus after Enter and button submission without stealing it
     await page.getByRole('button', { name: 'Отправить' }).click();
     await page.getByText('Жду остановки', { exact: true }).waitFor();
     await expect(input).toBeFocused();
-    await expect(input).toHaveJSProperty('readOnly', false);
+    await expect(input).toBeEditable();
     await input.press('Tab');
     await page.getByRole('button', { name: 'Остановить', exact: false }).click();
     await page.getByRole('button', { name: 'Отправить' }).waitFor();
-    await expect(input).toHaveJSProperty('readOnly', false);
+    await expect(input).toBeEditable();
     await expect(input).not.toBeFocused();
     await page.getByRole('button',{name:'Новый диалог',exact:true}).first().click();
     await expect(input).toBeFocused();
@@ -2329,14 +2397,17 @@ test('composer keeps focus after Enter and button submission without stealing it
   } finally { await browser.close(); }
 });
 
-test('lost send response checks stable request status before another submission', { timeout: 60000 }, async () => {
+test('lost send response reconciles a legacy multiline draft after Markdown normalization', { timeout: 60000 }, async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     const page=await browser.newPage({locale:'ru-RU'});
     const [name,...value]=cookie.split('=');
     await page.context().addCookies([{name,value:value.join('='),url:base}]);
-    await page.goto(new URL('chat/',base).href);
-    await newConversation(page);
+    const {id}=await(await request('sessions',{})).json();
+    await page.goto(new URL(`chat/?conversation=${id}`,base).href);
+    const text='lost response\nlegacy draft';
+    await page.evaluate(({id,text})=>sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text,files:[]})),{id,text});
+    await page.reload();
     await page.getByRole('heading',{name:'Есть мысль?'}).waitFor();
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     const bodies=[];let statusChecks=0;
@@ -2346,14 +2417,15 @@ test('lost send response checks stable request status before another submission'
       await route.fetch();
       await route.abort('failed');
     });
-    await composer.fill('lost response');await composer.press('Enter');
-    await expect(composer).toHaveValue('lost response');
+    await expect(composer).toHaveText(text,{useInnerText:true});
+    await composer.press('Enter');
+    await expect(composer).toHaveText(text,{useInnerText:true});
     await expect(page.getByRole('alert')).toHaveClass(/text-error/);
     await expect(page.getByRole('button',{name:'Обновить историю',exact:true})).toBeVisible();
     assert.ok(bodies[0].request_id,'UUID must exist before the first HTTP send');
-    await expect(composer).toHaveJSProperty('readOnly',false);await composer.press('Enter');
+    await expect(composer).toBeEditable();await composer.press('Enter');
     await expect.poll(()=>statusChecks).toBeGreaterThan(0);
-    await expect(composer).toHaveValue('');
+    await expect(composer).toHaveText('');
     assert.equal(bodies.length,1,'accepted request must not be submitted again under another UUID');
   } finally {await browser.close();}
 });
@@ -2572,11 +2644,11 @@ test('English fallback, locale persistence, localized API errors and timestamps 
     await chooseLanguage(page,'ru');
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
     await expect(page.getByRole('alert')).toContainText('Страница обновлена. Загрузите её заново.');
-    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveValue('A draft survives a language switch');
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveText('A draft survives a language switch');
     assert.equal(await page.evaluate(()=>localStorage.getItem('kodrik.language')),'ru');
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
-    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveValue('A draft survives a language switch');
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveText('A draft survives a language switch');
     const other=await page.context().newPage();
     await other.goto(new URL('auth/login',base).href);
     await expect(other.locator('html')).toHaveAttribute('lang','ru');
@@ -2592,7 +2664,7 @@ test('English fallback, locale persistence, localized API errors and timestamps 
     await expect(other.locator('html')).toHaveAttribute('lang','en');
     await page.unroute('**/api/chat/send');
     await page.reload();
-    await expect(page.getByRole('textbox',{name:'Message',exact:true})).toHaveValue('A draft survives a language switch');
+    await expect(page.getByRole('textbox',{name:'Message',exact:true})).toHaveText('A draft survives a language switch');
   } finally {await browser.close();}
 });
 
@@ -2634,15 +2706,15 @@ test('English mobile chat keeps keyboard sending, saved drafts and language sele
     },{id});
     await page.goto(new URL(`chat/?conversation=${id}`,base).href);
     const editor=page.getByRole('textbox',{name:'Message',exact:true});
-    await expect(editor).toHaveValue('Saved unsent draft');
+    await expect(editor).toHaveText('Saved unsent draft');
     await editor.fill('English mobile question');
     await editor.press('Shift+Enter');
     await editor.press('End');
     await editor.press('a');
-    await expect(editor).toHaveValue('English mobile question\na');
+    await expect(editor).toHaveText('English mobile question\na',{useInnerText:true});
     await editor.press('Enter');
     await expect(page.locator('.message[data-role="user"]')).toContainText('English mobile question');
-    await expect(editor).toHaveValue('');
+    await expect(editor).toHaveText('');
     await page.getByRole('button',{name:'Show conversations',exact:true}).click();
     await page.getByRole('button',{name:'Language',exact:true}).focus();
     await page.keyboard.press('Enter');await page.keyboard.press('End');await page.keyboard.press('Enter');
@@ -2652,7 +2724,7 @@ test('English mobile chat keeps keyboard sending, saved drafts and language sele
     await page.keyboard.press('Escape');
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeVisible();
     await page.reload();
-    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveValue('');
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveText('');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   } finally {await browser.close();}
 });
@@ -2717,7 +2789,7 @@ test('paste and drop attach files; lost multipart response reconciles after relo
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
     await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toBeEditable();
     const photo=await page.screenshot({clip:{x:0,y:0,width:2,height:3}});
     await input.evaluate((el,bytes)=>{
       const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'paste.png',{type:'image/png'}));
@@ -2737,14 +2809,14 @@ test('paste and drop attach files; lost multipart response reconciles after relo
     await input.fill('attachments with uncertain response');
     await input.press('Enter');
     await expect.poll(()=>submissions).toBe(1);
-    await expect(input).toHaveValue('attachments with uncertain response');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('attachments with uncertain response');
+    await expect(input).toBeEditable();
     await page.reload();
-    await expect(input).toHaveValue('attachments with uncertain response');
-    await expect(input).toHaveJSProperty('readOnly',false);
+    await expect(input).toHaveText('attachments with uncertain response');
+    await expect(input).toBeEditable();
     await input.press('Enter');
     await expect.poll(()=>statusChecks).toBeGreaterThan(0);
-    await expect(input).toHaveValue('');
+    await expect(input).toHaveText('');
     assert.equal(submissions,1);
     await expect(page.locator('.message img')).toHaveJSProperty('naturalWidth',2);
     await expect(page.locator('.message').getByRole('link',{name:'drop.txt',exact:true})).toHaveCount(1);
@@ -2757,10 +2829,11 @@ test('Markdown renders formatting without executing HTML, Vue components or unsa
     const page=await signedPage(browser);await page.goto(new URL('chat/',base).href);
     await newConversation(page);
     const input=page.getByRole('textbox',{name:'Сообщение'});
-    await input.fill('**Safe bold**\n\n[Safe link](https://example.com/)\n\n<script>window.chatInjection = true</script>\n\n<img src=x onerror="window.chatInjection=true">\n\n[unsafe](javascript:alert(1))\n\n::u-button\nInjected component\n::');
+    await pasteText(input,'**Safe bold**\n\n[Safe link](https://example.com/)\n\n<script>window.chatInjection = true</script>\n\n<img src=x onerror="window.chatInjection=true">\n\n[unsafe](javascript:alert(1))\n\n::u-button\nInjected component\n::');
+    await expect(input.locator('strong')).toHaveText('Safe bold');
     await page.getByRole('button',{name:'Отправить',exact:true}).click();
-    await page.getByText('Привет!',{exact:true}).waitFor();
-    await page.locator('.message strong').getByText('Safe bold',{exact:true}).waitFor();
+    await expect(page.getByText('Привет!',{exact:true})).toBeVisible();
+    await expect(page.locator('.message strong').getByText('Safe bold',{exact:true})).toBeVisible();
     assert.equal(await page.evaluate(()=>window.chatInjection),undefined);
     assert.equal(await page.locator('.message script, .message [onerror], .message a[href^="javascript:"]').count(),0);
     assert.equal(await page.locator('.message').getByRole('button',{name:'Injected component',exact:true}).count(),0);
