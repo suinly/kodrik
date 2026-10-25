@@ -97,7 +97,7 @@ not mistaken for an empty, successfully migrated database.
 | `pages/releases/<slug>/<uuid>/document.json` | Native MDC definition, named source queries and frozen published snapshot; browser responses omit query definitions |
 | `pages/manifests/<slug>.json` | Current release and public/private access mode; not served |
 | `pages/locks/<slug>.lock` | Publication transaction file lock |
-| `web/auth.json`, `web/auth.lock` | Owner password hash, hashed session tokens, pending Telegram approvals, discovered public bot names and auth lock; mode 0600 |
+| `web/auth.json`, `web/auth.lock` | Owner password hash, hashed session tokens, per-user display names, pending Telegram approvals, discovered public bot names and auth lock; mode 0600 |
 | `companion.json` | Learned lessons, interests and their evidence |
 | `proactive.json` | Last daily attempt date and last delivered initiative message |
 | `wakeups.json` | Agent instructions, bound source chat/session, UTC deadline, execution/delivery state, saved message and last error; up to 8 MiB, no automatic eviction |

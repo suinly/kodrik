@@ -191,6 +191,7 @@ impl AuthStore {
         }
         let removed = grant.is_some();
         journal.revoke_user_sessions(user);
+        journal.profiles.remove(&format!("telegram:{user}"));
         self.save(&journal)?;
         Ok(removed)
     }
@@ -361,7 +362,7 @@ mod tests {
             store.list_invites().unwrap()["users"][0]["label"],
             "Alice \"<script>\""
         );
-        store.set_password("new password").unwrap();
+        store.set_password("new secure passphrase").unwrap();
         assert!(store.allowed_user(42).unwrap());
     }
 

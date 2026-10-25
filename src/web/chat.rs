@@ -436,6 +436,8 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route("/app/webhooks", get(index))
         .route("/app/webhooks/", get(index))
         .route("/app/webhooks/{id}", get(index))
+        .route("/app/profile", get(index))
+        .route("/app/profile/", get(index))
         .with_state(state)
 }
 
@@ -1011,9 +1013,9 @@ mod tests {
             base_url: base.parse().unwrap(),
         };
         let auth = AuthStore::new(data.path());
-        auth.set_password("test-password").unwrap();
+        auth.set_password("test-owner-passphrase").unwrap();
         let token = auth
-            .login("test-password", chrono::Utc::now().timestamp())
+            .login("test-owner-passphrase", chrono::Utc::now().timestamp())
             .unwrap()
             .unwrap();
         let cookie = super::super::auth::session_cookie(&settings, &token, false)

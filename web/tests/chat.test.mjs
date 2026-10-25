@@ -335,8 +335,8 @@ test('section rail switches context menus and main content without losing chat d
     const mobileSections=menu.getByRole('navigation',{name:'Разделы',exact:true});
     await expect(mobileSections).toBeVisible();
     const buttons=mobileSections.getByRole('button');
-    await expect(buttons).toHaveText(['Чат','Страницы','Вебхуки']);
-    for(let index=0;index<3;index++) {
+    await expect(buttons).toHaveText(['Чат','Страницы','Вебхуки','Профиль']);
+    for(let index=0;index<4;index++) {
       await expect(buttons.nth(index).locator('[data-slot="leadingIcon"]')).toBeVisible();
       if(index) assert.ok((await buttons.nth(index).boundingBox()).y>=(await buttons.nth(index-1).boundingBox()).y+(await buttons.nth(index-1).boundingBox()).height);
     }
@@ -3141,4 +3141,90 @@ test('Telegram cancellation ignores an already in-flight approved poll', {timeou
     finishCancel();
     await expect(page.getByLabel('Пароль',{exact:true})).toBeVisible();
   } finally {finishPoll?.();finishCancel?.();await browser.close();}
+});
+
+test('profile saves the current user name across reload and keeps guest password controls hidden', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'ru-RU'});
+    await page.goto(new URL('app/profile',base).href);
+    await expect(page.getByRole('heading',{name:'Личные данные',exact:true})).toBeVisible();
+    await page.getByLabel('Имя',{exact:true}).fill('Алиса');
+    await page.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
+    await expect(page.getByRole('status')).toContainText('Профиль сохранён.');
+    await page.reload();
+    await expect(page.getByLabel('Имя',{exact:true})).toHaveValue('Алиса');
+    await expect(page.getByLabel('Текущий пароль',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Чат',exact:true}).click();
+    await page.getByRole('button',{name:'Профиль',exact:true}).click();
+    await expect(page).toHaveURL(new URL('app/profile',base).href);
+
+    const guest=await browser.newPage({locale:'ru-RU',viewport:{width:390,height:844}});
+    await guest.goto(new URL('app/chat',base).href);
+    await guest.getByRole('button',{name:'Войти через Telegram',exact:true}).click();
+    const open=guest.getByRole('link',{name:'Открыть Telegram',exact:true});
+    await expect(open).toBeVisible();
+    assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true)).ok,true);
+    await expect(guest).toHaveURL(new URL('app/chat',base).href);
+    await guest.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await guest.getByRole('button',{name:'Профиль',exact:true}).click();
+    await expect(guest.getByRole('heading',{name:'Личные данные',exact:true})).toBeVisible();
+    await expect(guest.getByText('Приглашённый пользователь',{exact:true})).toBeVisible();
+    await expect(guest.getByLabel('Новый пароль',{exact:true})).toHaveCount(0);
+    await guest.getByLabel('Имя',{exact:true}).fill('Борис');
+    await guest.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
+    await expect(guest.getByRole('status')).toContainText('Профиль сохранён.');
+    await page.reload();
+    await expect(page.getByLabel('Имя',{exact:true})).toHaveValue('Алиса');
+    await guest.getByRole('button',{name:'Показать профиль',exact:true}).click();
+    await chooseLanguage(guest,'en');
+    await expect(guest.locator('html')).toHaveAttribute('lang','en');
+    await expect(guest.getByRole('menu')).toHaveCount(0);
+    await expect(guest.getByRole('button',{name:'Language',exact:true})).toBeFocused();
+    await guest.keyboard.press('Escape');
+    await expect(guest.getByRole('dialog')).toHaveCount(0);
+    await expect(guest.getByRole('heading',{name:'Personal details',exact:true})).toBeVisible();
+    await expect(guest.getByLabel('Name',{exact:true})).toHaveValue('Борис');
+    assert.ok(await guest.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  } finally {await browser.close();}
+});
+
+test('profile password form validates input and signs out all sessions after a change', {timeout:60000},async()=>{
+  // Isolate the shared login budget from the other browser sign-in scenarios.
+  const listen=new URL(base).host;
+  const exited=once(server,'exit');process.kill(-server.pid,'SIGTERM');await exited;
+  await start(listen);
+  const browser=await chromium.launch({headless:true});
+  const changed='browser replacement passphrase';
+  try {
+    const page=await signedPage(browser,{locale:'ru-RU',viewport:{width:390,height:844}});
+    await page.goto(new URL('app/profile',base).href);
+    await page.getByLabel('Текущий пароль',{exact:true}).fill('preview-password');
+    await page.getByLabel('Новый пароль',{exact:true}).fill('short');
+    await page.getByLabel('Подтвердите новый пароль',{exact:true}).fill('short');
+    await page.getByRole('button',{name:'Изменить пароль',exact:true}).click();
+    await expect(page.getByRole('alert')).toContainText('не менее 15 символов');
+    await page.getByLabel('Новый пароль',{exact:true}).fill(changed);
+    await page.getByLabel('Подтвердите новый пароль',{exact:true}).fill('a different passphrase');
+    await page.getByRole('button',{name:'Изменить пароль',exact:true}).click();
+    await expect(page.getByRole('alert')).toContainText('не совпадают');
+    await page.getByLabel('Текущий пароль',{exact:true}).fill('wrong');
+    await page.getByLabel('Подтвердите новый пароль',{exact:true}).fill(changed);
+    await page.getByRole('button',{name:'Изменить пароль',exact:true}).click();
+    await expect(page.getByRole('alert')).toContainText('Текущий пароль неверен.');
+    await page.getByLabel('Текущий пароль',{exact:true}).fill('preview-password');
+    await page.getByRole('button',{name:'Изменить пароль',exact:true}).click();
+    await expect(page).toHaveURL(/\/auth\/login\?/);
+    await expect(page.getByText('Пароль изменён. Войдите снова.',{exact:true})).toBeVisible();
+    assert.equal((await fetch(new URL('api/profile',base),{headers:{Cookie:cookie}})).status,401);
+    await page.getByLabel('Пароль',{exact:true}).fill(changed);
+    await page.getByRole('button',{name:'Войти',exact:true}).click();
+    await expect(page).toHaveURL(new URL('app/profile',base).href);
+    await expect(page.getByRole('heading',{name:'Личные данные',exact:true})).toBeVisible();
+    // Keep the shared fixture usable if another browser case is appended later.
+    const restored=await page.evaluate(async changed=>fetch('/kodrik/api/profile/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:changed,new_password:'preview-password',confirm_password:'preview-password'})}).then(r=>r.status),changed);
+    assert.equal(restored,204);
+    const response=await fetch(new URL('auth/login',base),{method:'POST',redirect:'manual',headers:{Origin:new URL(base).origin},body:new URLSearchParams({password:'preview-password'})});
+    assert.equal(response.status,303);cookie=response.headers.get('set-cookie').split(';')[0];
+  } finally {await browser.close();}
 });

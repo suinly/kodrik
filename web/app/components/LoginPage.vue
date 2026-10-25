@@ -14,6 +14,7 @@ if (invite !== undefined) {
   window.history.replaceState(historyState, '', window.location.pathname + window.location.search)
 }
 const submitting = ref(false)
+const passwordChanged = new URLSearchParams(window.location.search).get('password_changed')==='1'
 const telegram = ref(false)
 const providers = computed(() => [{ label: t("Войти через Telegram"), icon: 'i-lucide-send', type: 'button' as const, onClick: () => { telegram.value = true } }])
 const fields = computed<AuthFormField[]>(() => [{
@@ -50,6 +51,7 @@ function submit(event: SubmitEvent) {
         <template #validation>
           <input type="hidden" name="return_to" :value="returnTo">
           <UAlert v-if="error" role="alert" color="error" variant="soft" :description="t(error)" />
+          <UAlert v-else-if="passwordChanged" role="status" color="success" variant="soft" :description="t('Пароль изменён. Войдите снова.')" />
         </template>
       </UAuthForm>
     </UPageCard>

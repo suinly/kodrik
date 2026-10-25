@@ -22,6 +22,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+#[path = "profile.rs"]
+mod profile;
 #[path = "telegram_login.rs"]
 mod telegram_login;
 
@@ -132,6 +134,11 @@ pub(crate) fn router_with_resources(
         .route("/pages/{slug}/", get(page_index))
         .route("/pages/{slug}/{*path}", get(page))
         .route("/api/pages", get(page_catalog))
+        .route("/api/profile", get(profile::read).patch(profile::update))
+        .route(
+            "/api/profile/password",
+            post(profile::password).layer(DefaultBodyLimit::max(32 * 1024)),
+        )
         .route("/api/pages/{slug}", delete(page_delete))
         .route(
             "/api/documents/{slug}/sources/{source}",
@@ -891,10 +898,10 @@ mod tests {
         };
         let auth = AuthStore::new(dir.path());
         let now = chrono::Utc::now().timestamp();
-        auth.set_password("password").unwrap();
+        auth.set_password("valid-owner-passphrase").unwrap();
         auth.configure_owner(Some(42)).unwrap();
         auth.grant_test_user(7).unwrap();
-        let owner = auth.login("password", now).unwrap().unwrap();
+        let owner = auth.login("valid-owner-passphrase", now).unwrap().unwrap();
         let guest = auth
             .test_session(Identity::Telegram(7), now)
             .unwrap()
@@ -990,14 +997,14 @@ mod tests {
         };
         let auth = AuthStore::new(dir.path());
         let now = chrono::Utc::now().timestamp();
-        auth.set_password("password").unwrap();
+        auth.set_password("valid-owner-passphrase").unwrap();
         auth.configure_owner(Some(42)).unwrap();
         auth.grant_test_user(7).unwrap();
         let telegram_owner = auth
             .test_session(Identity::Telegram(42), now)
             .unwrap()
             .unwrap();
-        let owner = auth.login("password", now).unwrap().unwrap();
+        let owner = auth.login("valid-owner-passphrase", now).unwrap().unwrap();
         let guest = auth
             .test_session(Identity::Telegram(7), now)
             .unwrap()
@@ -1387,7 +1394,7 @@ mod tests {
         };
         let auth = AuthStore::new(dir.path());
         let now = chrono::Utc::now().timestamp();
-        auth.set_password("password").unwrap();
+        auth.set_password("valid-owner-passphrase").unwrap();
         auth.grant_test_user(42).unwrap();
         let user_token = auth
             .test_session(Identity::Telegram(42), now)
@@ -1410,7 +1417,10 @@ mod tests {
         };
         assert_eq!(
             app.clone()
-                .oneshot(post("password=password".into(), "https://evil.example"))
+                .oneshot(post(
+                    "password=valid-owner-passphrase".into(),
+                    "https://evil.example"
+                ))
                 .await
                 .unwrap()
                 .status(),
@@ -1419,9 +1429,9 @@ mod tests {
         for body in [
             String::new(),
             format!("code={}", "a".repeat(64)),
-            format!("code={}&password=password", "a".repeat(64)),
-            "password=password&code=".into(),
-            "password=password&unexpected=true".into(),
+            format!("code={}&password=valid-owner-passphrase", "a".repeat(64)),
+            "password=valid-owner-passphrase&code=".into(),
+            "password=valid-owner-passphrase&unexpected=true".into(),
         ] {
             let response = app
                 .clone()
@@ -1458,7 +1468,7 @@ mod tests {
         let response = app
             .clone()
             .oneshot(post(
-                "password=password&return_to=%2Fkodrik%2Fapp%2Fchat".into(),
+                "password=valid-owner-passphrase&return_to=%2Fkodrik%2Fapp%2Fchat".into(),
                 "http://127.0.0.1",
             ))
             .await
@@ -1564,9 +1574,9 @@ mod tests {
             tool.execute(json!({"title":"Items","body":"Form","sources":[],"actions":[{"id":"add","dataset":"items","operation":"insert","fields":["name"],"record_id":null}],"slug":slug,"visibility":visibility})).await.unwrap();
         }
         let auth = AuthStore::new(dir.path());
-        auth.set_password("password").unwrap();
+        auth.set_password("valid-owner-passphrase").unwrap();
         let token = auth
-            .login("password", chrono::Utc::now().timestamp())
+            .login("valid-owner-passphrase", chrono::Utc::now().timestamp())
             .unwrap()
             .unwrap();
         let cookie = format!("kodrik_web_session={token}");
@@ -1761,9 +1771,9 @@ mod tests {
         }
         datasets.execute(serde_json::from_value(json!({"action":"upsert","dataset":"meals","request_id":uuid::Uuid::new_v4().to_string(),"records":[{"id":"a","expected_revision":1,"values":[{"field":"kcal","value":450}]}]})).unwrap()).unwrap();
         let auth = AuthStore::new(dir.path());
-        auth.set_password("password").unwrap();
+        auth.set_password("valid-owner-passphrase").unwrap();
         let token = auth
-            .login("password", chrono::Utc::now().timestamp())
+            .login("valid-owner-passphrase", chrono::Utc::now().timestamp())
             .unwrap()
             .unwrap();
         let cookie = session_cookie(&settings, &token, false)
@@ -1871,9 +1881,9 @@ mod tests {
             base_url: "http://127.0.0.1/kodrik/".parse().unwrap(),
         };
         let auth = AuthStore::new(dir.path());
-        auth.set_password("test-password").unwrap();
+        auth.set_password("test-owner-passphrase").unwrap();
         let token = auth
-            .login("test-password", chrono::Utc::now().timestamp())
+            .login("test-owner-passphrase", chrono::Utc::now().timestamp())
             .unwrap()
             .unwrap();
         let cookie = session_cookie(&settings, &token, false);
@@ -2045,7 +2055,7 @@ mod tests {
             pages.publish(slug, Some(visibility)).unwrap();
         }
         let auth = AuthStore::new(dir.path());
-        auth.set_password("test-password").unwrap();
+        auth.set_password("test-owner-passphrase").unwrap();
         let server = tokio::spawn(serve(listener, router(settings, dir.path())));
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -2123,7 +2133,7 @@ mod tests {
                 .post(&login)
                 .header("Origin", "https://evil.example")
                 .header("Content-Type", "application/x-www-form-urlencoded")
-                .body("password=test-password")
+                .body("password=test-owner-passphrase")
                 .send()
                 .await
                 .unwrap()
@@ -2134,7 +2144,7 @@ mod tests {
             .post(&login)
             .header("Origin", form_origin)
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .body("password=test-password&return_to=%2Fkodrik%2Fpages%2Fprivate%2F")
+            .body("password=test-owner-passphrase&return_to=%2Fkodrik%2Fpages%2Fprivate%2F")
             .send()
             .await
             .unwrap();
@@ -2243,7 +2253,7 @@ mod tests {
             401
         );
         let token = auth
-            .login("test-password", chrono::Utc::now().timestamp())
+            .login("test-owner-passphrase", chrono::Utc::now().timestamp())
             .unwrap()
             .unwrap();
         let cookie = format!("kodrik_web_session={token}");

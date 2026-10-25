@@ -11,10 +11,10 @@ const conversationKey = ref(0)
 const initializing = ref(true)
 const error = ref('')
 const menu = ref(false)
-type Section = 'chat'|'pages'|'webhooks'
+type Section = 'chat'|'pages'|'webhooks'|'profile'
 function readLocation():{section:Section;id:string|null} {
   const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
-  return {section:section==='pages' || section==='webhooks'?section:'chat',id:id?decodeURIComponent(id):null}
+  return {section:section==='pages' || section==='webhooks' || section==='profile'?section:'chat',id:id?decodeURIComponent(id):null}
 }
 const section = ref<Section>(readLocation().section)
 const restoring = ref(false)
@@ -30,10 +30,11 @@ const sections = [
   {id:'chat',label:'Чат',icon:'i-lucide-messages-square'},
   {id:'pages',label:'Страницы',icon:'i-lucide-panels-top-left'},
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
+  {id:'profile',label:'Профиль',icon:'i-lucide-user-round'},
 ] as const
 const visibleSections = computed(()=>sections.filter(item=>item.id!=='webhooks' || webhooks.allowed))
-const sectionTitle = computed(()=>section.value==='chat'?t(showEvents.value?'События':'Диалоги'):section.value==='pages'?t('Страницы'):t('Вебхуки'))
-const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):t('Показать вебхуки'))
+const sectionTitle = computed(()=>section.value==='chat'?t(showEvents.value?'События':'Диалоги'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
+const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
 const pageCatalogRevision = ref(0)
@@ -41,7 +42,7 @@ const pageToDelete = ref<PublishedPage | null>(null)
 const deletingPage = ref(false)
 const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
-const mainTitle = computed(()=>section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : section.value==='webhooks' ? webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки') : selected.value ? conversationTitle(selected.value) : t('Кодрик'))
+const mainTitle = computed(()=>section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : section.value==='webhooks' ? webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки') : selected.value ? conversationTitle(selected.value) : t('Кодрик'))
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
@@ -121,7 +122,7 @@ const logoutUrl = new URL('auth/logout', base).pathname
 
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
-  const id=section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:webhooks.selected
+  const id=section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks'?webhooks.selected:null
   const url=new URL(window.location.href)
   url.pathname=new URL(`app/${section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
   url.search=''
@@ -154,7 +155,7 @@ async function restoreLocation() {
         if(!page) throw new Error(t('Страница удалена или не найдена.'))
         selectedPage.value=page;pageRevision.value++
       }
-    } else {
+    } else if(target.section==='webhooks') {
       webhooks.clear()
       await webhooks.load()
       if(revision!==navigationRevision) return
@@ -291,7 +292,8 @@ function openSection(next:Section) {
   section.value=next
   writeLocation()
   focusAfterMenu=false
-  if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
+  if(next==='profile') menu.value=false
+  else if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
 }
 
 function chooseWebhook(hook?:typeof webhooks.hooks[number]) {
@@ -460,7 +462,11 @@ onMounted(() => {
       <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
-      <div v-else-if="webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
+      <div v-else-if="section==='profile'" class="space-y-2 text-sm">
+        <h2 class="font-semibold text-highlighted">{{ t('Профиль') }}</h2>
+        <p class="leading-relaxed text-muted">{{ t('Настройки имени и безопасности аккаунта.') }}</p>
+      </div>
+      <div v-else-if="section==='webhooks' && webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
         <p v-if="webhooks.loading" role="status" class="text-sm text-muted">{{ t('Загружаю вебхуки…') }}</p>
         <p v-else-if="!visibleWebhooks.length" class="text-sm text-muted">{{ webhooks.hooks.length ? t('Вебхуки не найдены.') : t('Пока нет вебхуков.') }}</p>
         <nav :aria-label="t('Список вебхуков')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
@@ -526,6 +532,9 @@ onMounted(() => {
         </section>
         <div v-show="section==='webhooks' && !restoring" class="min-h-0 flex-1 overflow-y-auto">
           <LazyWebhooksManager v-if="webhooks.allowed && !locationError" :manager="webhooks" @open="openWebhookConversation" />
+        </div>
+        <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <LazyProfilePage />
         </div>
         <ChatConversation v-if="selected || !initializing" v-show="section==='chat' && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
       </template>

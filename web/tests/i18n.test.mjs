@@ -89,6 +89,7 @@ test('API errors send the selected language and localize known payloads while pr
       [404,'','Conversation was deleted or could not be found.',ConversationNotFoundError],
       [409,'Resume the queue in its original interface','Resume the pending queue in its original Telegram or CLI interface.',Error],
       [429,'Inbox queue is full','The message queue is full. Wait for earlier messages to finish.',Error],
+      [429,'Too many password attempts','Too many password change attempts. Wait a minute.',Error],
       [413,'','File or message is too large.',Error],
       [400,'Страница обновлена. Загрузите её заново.','The page has changed. Reload it.',Error],
       [400,'Unknown technical detail','Unknown technical detail',Error],

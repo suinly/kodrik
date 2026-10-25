@@ -6,6 +6,9 @@ pub async fn evaluate_views(
 }
 
 pub fn set_password() -> anyhow::Result<()> {
+    println!(
+        "Use at least 15 characters. Common passwords and repeating short patterns are not accepted."
+    );
     let password = rpassword::prompt_password("New web password: ")?;
     let confirmation = rpassword::prompt_password("Confirm password: ")?;
     anyhow::ensure!(password == confirmation, "Passwords do not match");

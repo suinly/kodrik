@@ -465,7 +465,7 @@ mod tests {
             LoginPoll::Expired
         );
         let revoked = store.begin_telegram_login(None, "/", 400).unwrap().unwrap();
-        store.set_password("new password").unwrap();
+        store.set_password("new secure passphrase").unwrap();
         assert_eq!(
             store.poll_telegram_login(&revoked.cookie, 401).unwrap(),
             LoginPoll::Expired

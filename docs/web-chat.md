@@ -52,7 +52,7 @@ Open `http://127.0.0.1:8080/app/chat`. For remote access use HTTPS through a rev
 proxy, following [Web pages](web-pages.md#reverse-proxy). With a configured
 prefix such as `/kodrik/`, the chat is at `/kodrik/app/chat`.
 
-Dashboard sections use `/app/chat`, `/app/pages` and `/app/webhooks`. A selected
+Dashboard sections use `/app/chat`, `/app/pages`, `/app/webhooks` and `/app/profile`. A selected
 object appends its session ID, page slug or webhook ID to the section path.
 Old `/chat/` links with selection query parameters redirect to these paths.
 
@@ -74,8 +74,40 @@ its oldest session. Telegram identities share 64 slots, with four additional
 slots reserved for owner-password access. Existing identities can
 replace their own sessions when the pool is full; other identities' sessions
 are preserved. Login attempts share a five-per-minute budget per client IP
-across password and Telegram login start. Configure trusted proxy addresses
+across password login, Telegram login start and profile password changes. Configure trusted proxy addresses
 and header overwriting as described in [Web pages](web-pages.md#reverse-proxy).
+
+## Profile and password
+
+Open **Profile** in the section navigation (`/app/profile`). Each admitted user
+can save their own display name, containing 1–100 characters. Role and linked
+Telegram ID are read-only. The owner shares one profile between password and
+owner-Telegram sessions; invited users have separate profiles.
+
+Only the owner can set or change the owner password. Enter the current password
+when one exists, then enter the new password twice. An owner signed in through
+Telegram can set the first password without using the CLI. Invited users keep
+Telegram sign-in and cannot manage the owner password.
+
+New passwords require at least 15 characters.
+Whitespace-only values, repetitions of 1–4 characters and a small local
+list of common passwords are rejected. Use a unique, randomly generated password
+or a long passphrase; this check is not a complete leaked-password database.
+Uppercase letters, digits and symbols are allowed but are not mandatory.
+Existing passwords continue to work until changed. The same requirements apply
+to `kodrik web set-password`.
+
+Changing the password revokes **all** browser sessions, including invited users,
+and pending Telegram sign-in approvals. The current browser returns to sign-in
+with a confirmation message. Already admitted agent tasks are not cancelled.
+Rejected changes preserve the password and existing sessions.
+
+Profile API: `GET /api/profile` reads the current profile, `PATCH /api/profile`
+updates `{ "name": "Alice" }`, and owner-only `POST /api/profile/password` accepts
+`current_password`, `new_password` and `confirm_password` strings. All endpoints
+require a valid session, and writes require the configured Origin. Password
+changes share the five-attempts-per-minute client-IP budget with login; excess
+attempts return 429 with `Retry-After: 60`.
 
 ## Owner-managed invitations
 

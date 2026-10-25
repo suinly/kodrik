@@ -26,6 +26,11 @@ kodrik gateway
 
 The password command does not require provider configuration. It reads the
 password twice without echo; do not pass a password as a shell argument.
+New passwords require at least 15 characters.
+Whitespace-only values, repeating short patterns and a small list of
+common passwords are rejected. Existing passwords remain usable until changed.
+The owner can also manage the password from [Profile](web-chat.md#profile-and-password)
+in the web app; changing an existing password there requires the current password.
 Changing it revokes all web sessions, including in a running server. Sessions
 last seven days and survive restarts. Each identity keeps up to four browser
 sessions; a new login replaces that identity's oldest session when necessary.
@@ -67,7 +72,7 @@ Configure the exact proxy socket addresses in Kodrik, for example:
 trusted_proxies = ["127.0.0.1"]
 ```
 
-Login attempts (password, code, and Telegram login start combined) are limited
+Login attempts (password login, Telegram login start and profile password changes combined) are limited
 to five per minute per client IP. By default, `trusted_proxies = []` and only
 the actual socket peer is used; forwarded headers from other peers are ignored.
 A trusted peer must send exactly one `X-Forwarded-For` value containing one IP

@@ -33,6 +33,7 @@ export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit)
     }
     if (response.status === 429) {
       const detail=await response.json().catch(()=>null);
+      if(detail?.error==='Too many password attempts') throw new Error(t('Слишком много попыток смены пароля. Подождите минуту.'));
       throw new Error(detail?.error==='Inbox queue is full' ? t("Очередь сообщений заполнена. Дождитесь выполнения предыдущих сообщений.") : t("Слишком много активных диалогов. Попробуйте позже."));
     }
     if (response.status === 413) throw new Error(t("Слишком большой файл или сообщение. Фото — до 10 MiB, файл — до 20 MB, суммарно — до 50 MB."));

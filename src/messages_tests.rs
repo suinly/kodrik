@@ -59,9 +59,9 @@ api_base = "{base}"
             };
             use tower::ServiceExt;
             let auth = crate::web::auth::AuthStore::new(data.path());
-            auth.set_password("test-password").unwrap();
+            auth.set_password("test-owner-passphrase").unwrap();
             let token = auth
-                .login("test-password", chrono::Utc::now().timestamp())
+                .login("test-owner-passphrase", chrono::Utc::now().timestamp())
                 .unwrap()
                 .unwrap();
             let chat = crate::web::chat::Chat::new(&app.agent_runner, data.path())

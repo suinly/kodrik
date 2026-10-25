@@ -23,6 +23,9 @@ pub(crate) use invites::InvalidInvite;
 #[path = "auth_telegram.rs"]
 mod telegram;
 pub(crate) use telegram::{LoginPoll, browser_login_cookie, browser_login_token};
+#[path = "auth_profile.rs"]
+mod profile;
+pub(crate) use profile::ProfileError;
 
 const COOKIE: &str = "kodrik_web_session";
 const SESSION_SECONDS: i64 = 7 * 86400;
@@ -89,6 +92,8 @@ struct Journal {
     invites: BTreeMap<String, invites::StoredInvite>,
     #[serde(default)]
     members: BTreeMap<u64, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    profiles: BTreeMap<String, String>,
 }
 
 impl Journal {
@@ -155,6 +160,64 @@ fn valid_token(token: &str) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
+fn hash_password(password: &str) -> anyhow::Result<String> {
+    let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())?;
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes(), &salt)?
+        .to_string())
+}
+
+pub(crate) fn validate_password(password: &str) -> Result<(), &'static str> {
+    if password.chars().count() < 15 {
+        return Err("Пароль должен содержать не менее 15 символов.");
+    }
+    if password.len() > 1024 {
+        return Err("Этот пароль слишком длинный.");
+    }
+    // shortcut: local common-password list; use a maintained blocklist if password enrollment expands.
+    let normalized = password.trim().to_lowercase();
+    let characters: Vec<_> = normalized.chars().collect();
+    if characters.is_empty()
+        || (1..=4).any(|period| {
+            characters
+                .iter()
+                .enumerate()
+                .all(|(index, c)| *c == characters[index % period])
+        })
+        || [
+            "password",
+            "password1",
+            "password123",
+            "qwerty",
+            "qwerty123",
+            "123456",
+            "123456789",
+            "1234567890",
+            "letmein",
+            "admin",
+            "admin123",
+            "welcome",
+            "changeme",
+            "пароль",
+            "correct horse battery staple",
+            "123456789012345",
+            "1234567890123456",
+            "12345678901234567890",
+            "qwertyuiopasdfgh",
+            "qwertyuiopasdfghjkl",
+            "qwertyuiopasdfghjklzxcvbnm",
+            "passwordpassword",
+            "password123456789",
+        ]
+        .contains(&normalized.as_str())
+    {
+        return Err(
+            "Выберите менее предсказуемый пароль: без распространённых значений и повторяющихся коротких шаблонов.",
+        );
+    }
+    Ok(())
+}
+
 impl AuthStore {
     pub(crate) fn new(data: &Path) -> Self {
         Self {
@@ -196,6 +259,7 @@ impl AuthStore {
         ensure!(
             journal.password_hash.is_some() == journal.generation.is_some()
                 && journal.valid_membership()
+                && journal.valid_profiles()
                 && journal.sessions.len() <= MAX_SESSIONS
                 && journal.telegram_bots.len() <= 64
                 && journal.telegram_requests.len() <= 64
@@ -223,20 +287,11 @@ impl AuthStore {
     }
 
     pub(crate) fn set_password(&self, password: &str) -> anyhow::Result<()> {
-        ensure!(
-            !password.is_empty() && password.len() <= 1024,
-            "Password must contain 1–1024 bytes"
-        );
-        let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes())?;
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)?
-            .to_string();
+        validate_password(password).map_err(anyhow::Error::msg)?;
+        let hash = hash_password(password)?;
         let _lock = self.lock()?;
         let mut journal = self.read()?;
-        journal.password_hash = Some(hash);
-        journal.generation = Some(Uuid::new_v4());
-        journal.sessions.clear();
-        journal.telegram_requests.clear();
+        journal.replace_password(hash);
         self.save(&journal)
     }
 
@@ -400,6 +455,77 @@ mod tests {
     use crate::config::WebConfig;
 
     #[test]
+    fn password_policy_rejects_weak_passwords_without_revoking_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::new(dir.path());
+        store.set_password("a proper old passphrase").unwrap();
+        let token = store
+            .login("a proper old passphrase", 100)
+            .unwrap()
+            .unwrap();
+        for password in [
+            "",
+            "short password",
+            "               ",
+            "aaaaaaaaaaaaaaa",
+            "abcabcabcabcabc",
+            "123456789012345",
+            "passwordpassword",
+            "qwertyuiopasdfgh",
+            "        password        ",
+        ] {
+            assert!(
+                store.set_password(password).is_err(),
+                "accepted weak password: {password:?}"
+            );
+            assert!(store.authenticated(&token, 101).unwrap());
+        }
+        assert!(store.set_password(&"x".repeat(1025)).is_err());
+        assert!(store.authenticated(&token, 101).unwrap());
+        // Count Unicode characters, not UTF-8 bytes; do not trim a valid secret.
+        let password = "ёжик гуляет ночью ";
+        store.set_password(password).unwrap();
+        assert!(store.login(password, 102).unwrap().is_some());
+        assert!(store.login(password.trim(), 102).unwrap().is_none());
+        assert!(store.set_password("ёжик гуляет").is_err());
+        assert!(store.set_password("abcd efgh ijkl").is_err());
+        store.set_password("abcd efgh ijklm").unwrap();
+        assert!(store.login("abcd efgh ijklm", 103).unwrap().is_some());
+    }
+
+    #[test]
+    fn password_policy_keeps_existing_short_passwords_usable_until_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AuthStore::new(dir.path());
+        store.set_password("existing owner passphrase").unwrap();
+        // An existing journal may hold a password set before the new policy.
+        {
+            let _lock = store.lock().unwrap();
+            let mut journal = store.read().unwrap();
+            journal.password_hash = Some(hash_password("old").unwrap());
+            store.save(&journal).unwrap();
+        }
+        let now = chrono::Utc::now().timestamp();
+        let token = store.login("old", now).unwrap().unwrap();
+        store
+            .change_password(
+                &token,
+                "old",
+                "replacement owner passphrase",
+                "replacement owner passphrase",
+            )
+            .unwrap();
+        assert!(store.identity(&token, now).unwrap().is_none());
+        assert!(store.login("old", now).unwrap().is_none());
+        assert!(
+            store
+                .login("replacement owner passphrase", now)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn legacy_owner_sessions_cannot_overflow_the_journal_on_user_login() {
         let mut journal = Journal::default();
         for id in 0..64 {
@@ -441,7 +567,7 @@ mod tests {
         for user in 1..=65 {
             store.grant_test_user(user).unwrap();
         }
-        store.set_password("owner-password").unwrap();
+        store.set_password("owner-test-passphrase").unwrap();
         let mut users = Vec::new();
         for id in 1..=64 {
             users.push(
@@ -451,7 +577,7 @@ mod tests {
                     .unwrap(),
             );
         }
-        let owner = store.login("owner-password", 101).unwrap().unwrap();
+        let owner = store.login("owner-test-passphrase", 101).unwrap().unwrap();
         for now in 102..106 {
             assert!(store.test_session(Identity::Owner, now).unwrap().is_some());
         }
@@ -605,10 +731,10 @@ mod tests {
             .test_session(Identity::Telegram(42), 702)
             .unwrap()
             .unwrap();
-        store.set_password("password").unwrap();
+        store.set_password("valid-owner-passphrase").unwrap();
         assert_eq!(store.identity(&token, 703).unwrap(), None);
         assert_eq!(store.identity(&user_token, 703).unwrap(), None);
-        let password_token = store.login("password", 703).unwrap().unwrap();
+        let password_token = store.login("valid-owner-passphrase", 703).unwrap().unwrap();
         assert_eq!(
             store.identity(&password_token, 704).unwrap(),
             Some(Identity::Owner)
@@ -619,7 +745,7 @@ mod tests {
     fn legacy_password_sessions_remain_owner_sessions() {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::new(dir.path());
-        store.set_password("password").unwrap();
+        store.set_password("valid-owner-passphrase").unwrap();
         let token = "a".repeat(64);
         let path = dir.path().join("web/auth.json");
         let mut journal: serde_json::Value =
@@ -664,7 +790,7 @@ mod tests {
     fn obsolete_login_codes_are_discarded_without_losing_existing_auth_data() {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::new(dir.path());
-        store.set_password("owner-password").unwrap();
+        store.set_password("owner-test-passphrase").unwrap();
         store.configure_owner(Some(7)).unwrap();
         store.grant_test_user(42).unwrap();
         let owner = store.test_session(Identity::Owner, 100).unwrap().unwrap();
@@ -702,7 +828,12 @@ mod tests {
         journal.as_object_mut().unwrap().remove("codes");
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved, journal);
-        assert!(reopened.login("owner-password", 102).unwrap().is_some());
+        assert!(
+            reopened
+                .login("owner-test-passphrase", 102)
+                .unwrap()
+                .is_some()
+        );
         let mut invalid = saved;
         invalid["unexpected"] = serde_json::json!(true);
         fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
@@ -714,18 +845,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = AuthStore::new(dir.path());
         assert_eq!(store.login("wrong", 100).unwrap(), None);
-        store.set_password("a-test-password").unwrap();
+        store.set_password("a-test-owner-passphrase").unwrap();
         assert_eq!(store.login("wrong", 100).unwrap(), None);
-        let token = store.login("a-test-password", 100).unwrap().unwrap();
+        let token = store
+            .login("a-test-owner-passphrase", 100)
+            .unwrap()
+            .unwrap();
         let reopened = AuthStore::new(dir.path());
         assert!(reopened.authenticated(&token, 101).unwrap());
         assert!(!reopened.authenticated(&token, 100 + 7 * 86400).unwrap());
         let journal = std::fs::read_to_string(dir.path().join("web/auth.json")).unwrap();
         assert!(!journal.contains(&token));
-        assert!(!journal.contains("a-test-password"));
-        store.set_password("another-test-password").unwrap();
+        assert!(!journal.contains("a-test-owner-passphrase"));
+        store.set_password("another-test-owner-passphrase").unwrap();
         assert!(!reopened.authenticated(&token, 101).unwrap());
-        let token = store.login("another-test-password", 101).unwrap().unwrap();
+        let token = store
+            .login("another-test-owner-passphrase", 101)
+            .unwrap()
+            .unwrap();
         store.logout(&token).unwrap();
         assert!(!reopened.authenticated(&token, 102).unwrap());
         use std::os::unix::fs::PermissionsExt;
