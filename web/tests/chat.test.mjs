@@ -900,6 +900,47 @@ test('conversation search scrolls to matches and navigates in both directions', 
   } finally {await browser.close();}
 });
 
+test('fenced code uses one block surface while inline code keeps its styling', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    const code='  const value = "<tag> & текст";\n    console.log(value);';
+    const text='Inline `value`.\n\n```js\n'+code+'\n```\n\n```\nplain code\n```\n\n> ```text\n> nested code\n> ```';
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:`${id}:0`,role:'assistant',parts:[{type:'text',text}]},
+    ]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const blocks=page.locator('.message pre > code');
+    const inline=page.locator('.message p > code');
+    await expect(blocks).toHaveCount(3);
+    assert.equal(await blocks.first().textContent(),code+'\n');
+    await expect(inline).toHaveText('value');
+    for(const colorScheme of ['light','dark']) {
+      await page.emulateMedia({colorScheme});
+      await expect(page.locator('html')).toHaveClass(colorScheme==='dark'?/dark/:/light/);
+      for(const block of await blocks.all()) {
+        const styles=await block.evaluate(el=>{
+          const code=getComputedStyle(el),pre=getComputedStyle(el.parentElement);
+          return {border:code.borderTopWidth,padding:code.padding,background:code.backgroundColor,fontSize:code.fontSize,preFontSize:pre.fontSize,preBorder:pre.borderTopWidth};
+        });
+        assert.equal(styles.border,'0px');
+        assert.equal(styles.padding,'0px');
+        assert.equal(styles.background,'rgba(0, 0, 0, 0)');
+        assert.equal(styles.fontSize,styles.preFontSize);
+        assert.notEqual(styles.preBorder,'0px');
+      }
+      assert.notEqual(await inline.evaluate(el=>getComputedStyle(el).borderTopWidth),'0px');
+      await page.screenshot({path:`/tmp/kodrik-code-blocks-${colorScheme}.png`,fullPage:true,animations:'disabled'});
+    }
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kodrik-code-blocks-mobile.png',fullPage:true,animations:'disabled'});
+  } finally {await browser.close();}
+});
+
 test('conversation search highlights literal text in Markdown and clears it when closed', {timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

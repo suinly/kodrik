@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { parseMarkdown } from '@nuxtjs/mdc/runtime'
-import rehypeSanitize from 'rehype-sanitize'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import MarkdownLink from './MarkdownLink.vue'
 
 const props = defineProps<{ text: string }>()
@@ -15,7 +15,14 @@ watch(() => props.text, async (text, _, onCleanup) => {
       remark: { plugins: { 'remark-mdc': false } },
       rehype: {
         options: { allowDangerousHtml: false },
-        plugins: { 'rehype-sanitize': { instance: rehypeSanitize } },
+        plugins: { 'rehype-sanitize': {
+          instance: rehypeSanitize,
+          options: { ...defaultSchema, attributes: {
+            ...defaultSchema.attributes,
+            // Keep fenced code native; inline code still uses ProseCode.
+            code: [...(defaultSchema.attributes?.code || []), '__ignoreMap'],
+          } },
+        } },
       },
     })
     if (!stale) body.value = parsed.body
