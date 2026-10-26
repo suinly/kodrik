@@ -4,8 +4,9 @@ The registry has no patched release for `braces@3.0.3`
 ([GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)) or
 `node-forge@1.4.0`
 ([GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv)) as of
-2026-10-21. Updating Nuxt to 4.6.2 retains both vulnerable dependencies, so this
-project keeps its compatible Nuxt version and applies the fixes below locally.
+2026-10-26. Nuxt is updated to 4.6.2 and `serialize-javascript` to 7.1.4 to
+resolve their published advisories. Nuxt still brings in the packages above,
+so this project applies the fixes below locally.
 
 `npm install`/`npm ci` applies the backports through `postinstall`. The `dev`,
 `build`, `typecheck`, and `test` npm commands verify them again before running,
@@ -51,8 +52,9 @@ they do not claim to demonstrate private-key-free forgery. Valid signatures with
 and without NULL parameters and Node/OpenSSL SHA-256/384/512 signatures still pass.
 
 The original package identities and versions remain intact. Consequently
-`npm audit` still reports 11 high findings propagated from these two advisories;
-it cannot detect local source patches. No advisory is suppressed and no fake
-package version is used. Replace these backports with maintained patched releases
+`npm audit` still reports 7 high findings propagated from the `node-forge` advisory;
+it cannot detect local source patches. The dependency versions reported to scanners
+remain unchanged; no fake package version is used. Dependabot triage must cite the
+verified backport and RSA regression tests. Replace the backports with patched releases
 when available, then rerun the regression suite, typecheck, production build, and
 audit.

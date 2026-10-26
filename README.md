@@ -54,7 +54,7 @@ or start a background service. Continue with **Configure and run** below.
 ### Build from source
 
 Source builds require a current stable Rust toolchain with Rust 2024 edition
-support, npm, and Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+.
+support, npm, and Node.js 22.22.3+ on 22.x, 24.15+ on 24.x, or 26+.
 
 From the repository root, build the frontend before Rust; web assets are embedded
 in the executable, so no Node.js server is needed at runtime:

@@ -86,7 +86,7 @@ configuration already exists. The checkout remains its working directory.
 Existing repository `data/` logs are moved into `~/.kodrik/logs/`; an empty
 `data/` directory is removed. The previous plist is backed up to
 `~/.kodrik/gateway.plist.backup`. Rust and a supported Node.js version
-(22.19+ on 22.x, 24.11+ on 24.x, or 26+) must be installed;
+(22.22.3+ on 22.x, 24.15+ on 24.x, or 26+) must be installed;
 no Python is required. The installer builds the web frontend before Rust.
 
 For a foreground gateway:

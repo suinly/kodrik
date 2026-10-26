@@ -11,7 +11,7 @@ steps below apply to source installations.
 ## Requirements
 
 - A current stable Rust toolchain with Rust 2024 edition support and Cargo.
-- Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+, and npm to build the web frontend.
+- Node.js 22.22.3+ on 22.x, 24.15+ on 24.x, or 26+, and npm to build the web frontend.
 - A source checkout of Kodrik.
 - Credentials for a model supporting the OpenAI Responses API. Image inputs
   require additional [vision support](vision.md).

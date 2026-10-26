@@ -2,7 +2,7 @@
 
 ## Build and test
 
-Use a current stable Rust toolchain and Node.js 22.19+ on 22.x, 24.11+ on 24.x,
+Use a current stable Rust toolchain and Node.js 22.22.3+ on 22.x, 24.15+ on 24.x,
 or 26+. From the repository root:
 
 ```sh

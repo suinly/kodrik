@@ -19,7 +19,7 @@ handles authentication, persistence, agent execution and SSE subscriptions. No N
 
 ## Build and start
 
-Install Node.js 22.19+ (22.x), 24.11+ (24.x), or 26+, and a current stable Rust toolchain, then build from the
+Install Node.js 22.22.3+ (22.x), 24.15+ (24.x), or 26+, and a current stable Rust toolchain, then build from the
 repository root in this order:
 
 ```sh
