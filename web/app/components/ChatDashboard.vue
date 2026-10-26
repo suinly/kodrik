@@ -244,6 +244,47 @@ function sidebarCloseFocus(event:Event) {
   void nextTick(()=>conversationView.value?.focusInput())
 }
 
+let menuSwipe:Touch|undefined
+function startMenuSwipe(event:TouchEvent) {
+  menuSwipe=undefined
+  if(menu.value || webhooks.saving || event.touches.length!==1 || !window.matchMedia('(max-width: 1023px)').matches) return
+  const touch=event.touches[0]
+  if(touch && touch.clientX<=24) menuSwipe=touch
+}
+
+function moveMenuSwipe(event:TouchEvent) {
+  if(!menuSwipe) return
+  const touch=event.touches[0]
+  if(menu.value || webhooks.saving || event.touches.length!==1 || !touch || touch.identifier!==menuSwipe.identifier) {
+    menuSwipe=undefined
+    return
+  }
+  const dx=touch.clientX-menuSwipe.clientX,dy=Math.abs(touch.clientY-menuSwipe.clientY)
+  if(dx < -12 || dy>12 && dy>Math.abs(dx)) {
+    menuSwipe=undefined
+    return
+  }
+  if(dx>12 && dx>dy*1.5) {
+    if(event.cancelable) event.preventDefault()
+    if(dx>=64) {
+      menuSwipe=undefined
+      menu.value=true
+    }
+  }
+}
+
+function endMenuSwipe() { menuSwipe=undefined }
+
+function bindPageMenuSwipe(event:Event) {
+  const document=(event.target as HTMLIFrameElement).contentDocument
+  if(!document) return
+  // Iframe touches do not bubble to the dashboard; listeners live with its document.
+  document.addEventListener('touchstart',startMenuSwipe,{passive:true})
+  document.addEventListener('touchmove',moveMenuSwipe,{passive:false})
+  document.addEventListener('touchend',endMenuSwipe)
+  document.addEventListener('touchcancel',endMenuSwipe)
+}
+
 function openPage(page: PublishedPage) {
   section.value = 'pages'
   selectedPage.value = page
@@ -393,7 +434,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <UDashboardGroup unit="rem" class="chat-viewport bg-default">
+  <UDashboardGroup unit="rem" class="chat-viewport bg-default"
+    @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
     <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <nav :aria-label="t('Разделы')" class="flex w-full flex-col items-center gap-2">
         <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :aria-label="t(item.label)" :title="t(item.label)"
@@ -403,7 +445,7 @@ onMounted(() => {
     </aside>
     <UDashboardSidebar v-model:open="menu" :default-size="18"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport bg-default'}">
+      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport w-[calc(100%-48px)] max-w-80 sm:max-w-80 bg-default',overlay:'bg-black/40'}">
       <template #header>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
         <div class="ml-auto flex shrink-0 items-center gap-0.5">
@@ -526,7 +568,7 @@ onMounted(() => {
         <section v-if="section==='pages'" :aria-label="t('Просмотр страницы')" class="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <template v-if="selectedPage">
             <DocumentPage v-if="selectedPage.document" :key="`${selectedPage.slug}:${pageRevision}`" :url="pageDocumentUrl" :chat-url="chatUrl" :login-url="login()" embedded />
-            <iframe v-else :key="`${selectedPage.slug}:${pageRevision}`" :src="selectedPage.url" :title="selectedPage.title" class="min-h-0 w-full flex-1 border-0 bg-default" />
+            <iframe v-else :key="`${selectedPage.slug}:${pageRevision}`" :src="selectedPage.url" :title="selectedPage.title" class="min-h-0 w-full flex-1 border-0 bg-default" @load="bindPageMenuSwipe" />
           </template>
           <p v-else-if="!restoring" class="p-6 text-sm text-muted">{{ t('Выберите страницу в боковом меню.') }}</p>
         </section>

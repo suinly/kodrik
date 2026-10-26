@@ -733,9 +733,98 @@ test('mobile app keeps its shell still during swipes while content and normal pa
     const transcript=page.getByTestId('chat-transcript');
     await expect(page.getByRole('heading',{name:'Дневник питания',exact:true})).toBeAttached();
     await transcript.evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'));});
-    await swipe(200,500,-250);
+    await swipe(4,500,-250);
     await expect.poll(()=>transcript.evaluate(el=>el.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
     assert.equal(await page.evaluate(()=>scrollY),0);
+  } finally {await browser.close();}
+});
+
+test('mobile sidebar opens with a left-edge swipe over a dimmed screen', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const input=await page.context().newCDPSession(page);
+    const swipe=async(points,end='touchEnd')=>{
+      await input.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...points[0],id:1}]});
+      for(const point of points.slice(1)) await input.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{...point,id:1}]});
+      await input.send('Input.dispatchTouchEvent',{type:end,touchPoints:[]});
+    };
+    await page.goto(new URL('app/chat',base).href);
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true,includeHidden:true});
+    await expect(composer).toBeEditable();
+    await composer.fill('Черновик после открытия меню');
+    const dialog=page.getByRole('dialog');
+    for(const points of [
+      [{x:4,y:300},{x:5,y:280},{x:6,y:200}],
+      [{x:150,y:300},{x:180,y:300},{x:260,y:300}],
+      [{x:4,y:300},{x:20,y:300},{x:40,y:300}],
+    ]) {
+      await swipe(points);
+      await expect(dialog).toHaveCount(0);
+    }
+    await swipe([{x:4,y:300},{x:20,y:300}],'touchCancel');
+    await input.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:4,y:300,id:1},{x:10,y:350,id:2}]});
+    await input.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:100,y:300,id:1},{x:110,y:350,id:2}]});
+    await input.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await expect(dialog).toHaveCount(0);
+    for(const width of [320,390,768]) {
+      await page.setViewportSize({width,height:844});
+      const before=await composer.boundingBox();
+      await swipe([{x:4,y:300},{x:20,y:300},{x:50,y:302},{x:100,y:304}]);
+      await expect(dialog).toBeVisible();
+      await expect(async()=>{
+        const panel=await dialog.boundingBox();
+        assert.equal(Math.round(panel.x),0);
+        assert.ok(panel.width<=width-48,`visible backdrop at ${width}px: ${panel.width}`);
+        assert.equal(Math.round(panel.height),844);
+      }).toPass();
+      const after=await composer.boundingBox();
+      assert.equal(after.x,before.x);
+      assert.equal(after.width,before.width);
+      const backdrop=await page.evaluate(()=>{
+        const element=document.elementFromPoint(innerWidth-10,300);
+        const canvas=document.createElement('canvas'),context=canvas.getContext('2d');
+        context.fillStyle=getComputedStyle(element).backgroundColor;
+        context.fillRect(0,0,1,1);
+        return {slot:element.dataset.slot,color:Array.from(context.getImageData(0,0,1,1).data)};
+      });
+      assert.equal(backdrop.slot,'overlay');
+      assert.deepEqual(backdrop.color.slice(0,3),[0,0,0]);
+      assert.ok(backdrop.color[3]>0 && backdrop.color[3]<255);
+      await page.screenshot({path:`/tmp/kodrik-kod-5-menu-${width}.png`,animations:'disabled'});
+      await page.touchscreen.tap(width-10,300);
+      await expect(dialog).toHaveCount(0);
+      await expect(composer).toHaveText('Черновик после открытия меню');
+    }
+    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await expect(dialog).toBeVisible();
+    assert.ok((await dialog.boundingBox()).width<768);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:844});
+    await swipe([{x:4,y:300},{x:30,y:300},{x:100,y:300}]);
+    await expect(dialog).toHaveCount(0);
+
+    const release=crypto.randomUUID();
+    const directory=join(storage,'pages','releases','legacy-swipe',release);
+    await mkdir(directory,{recursive:true});
+    await mkdir(join(storage,'pages','manifests'),{recursive:true});
+    await writeFile(join(directory,'index.html'),'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><button style="width:100px;height:44px">Touch control</button><div style="height:2000px">Legacy swipe page</div>');
+    await writeFile(join(storage,'pages','manifests','legacy-swipe.json'),JSON.stringify({release,visibility:'private',document:false}));
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(new URL('app/pages/legacy-swipe',base).href);
+    const frame=page.frameLocator('iframe[title="legacy-swipe"]');
+    await expect(frame.getByRole('button',{name:'Touch control',exact:true})).toBeVisible();
+    await swipe([{x:4,y:300},{x:20,y:300},{x:50,y:302},{x:100,y:304}]);
+    await expect(dialog).toBeVisible();
+    await page.touchscreen.tap(380,300);
+    await expect(dialog).toHaveCount(0);
+    await input.send('Input.synthesizeScrollGesture',{x:4,y:500,yDistance:-200,gestureSourceType:'touch',preventFling:true});
+    await expect.poll(()=>frame.locator('html').evaluate(el=>el.ownerDocument.scrollingElement.scrollTop)).toBeGreaterThan(0);
+    await expect(dialog).toHaveCount(0);
+    await frame.getByRole('button',{name:'Touch control',exact:true}).tap();
+    await expect(frame.getByRole('button',{name:'Touch control',exact:true})).toBeFocused();
   } finally {await browser.close();}
 });
 
@@ -1704,12 +1793,10 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
     const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();
     await expect.poll(()=>dialog.evaluate(el=>Math.round(el.getBoundingClientRect().x))).toBe(0);
-    const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+    const panel=await dialog.boundingBox();
     for(const name of ['Язык','Переключить тему','Выйти']) {
       const bounds=await dialog.getByRole('button',{name,exact:true}).boundingBox();
-      assert.ok(bounds.x>=logo.x+logo.width,`${name}: to the right of the logo`);
-      assert.ok(Math.abs(bounds.y+bounds.height/2-logo.y-logo.height/2)<1,`${name}: same header row`);
-      assert.ok(bounds.x+bounds.width<=320,`${name}: fits the narrow screen`);
+      assert.ok(bounds.x>=panel.x && bounds.x+bounds.width<=panel.x+panel.width,`${name}: fits the sidebar`);
       await checkIcon(name);
     }
     await expect(dialog.getByRole('button',{name:'Выйти',exact:true})).toBeVisible();

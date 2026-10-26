@@ -163,6 +163,11 @@ Billing, credit balances, tariffs and payment integration are not used.
 
 ## Conversations
 
+On mobile, open the sidebar with the menu button or swipe right from the left
+edge. It overlays the current screen, leaving a dimmed strip visible; tap that
+strip or press Escape to close it. Vertical scrolling and conversation drafts
+are preserved.
+
 The sidebar has **Conversations** and **Pages** tabs. Pages lists the owner's
 existing publications with title/address search and public/private labels.
 Selecting a page opens it in the main chat panel, keeping the current conversation
