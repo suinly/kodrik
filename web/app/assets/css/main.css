@@ -1,8 +1,43 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+/* Medeo: DNFDEVS/medeo-font@de4c4f06cbc949ce2699b07545fc77fb5f8904cf; SIL OFL 1.1 in public/chat/fonts/medeo/OFL.txt. */
+@font-face {
+  font-family: "Medeo Sans";
+  src: url("../fonts/medeo/MedeoSansVariable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Medeo Sans";
+  src: url("../fonts/medeo/MedeoSansVariable-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Medeo Mono";
+  src: url("../fonts/medeo/MedeoMonoVariable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Medeo Mono";
+  src: url("../fonts/medeo/MedeoMonoVariable-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 /* Catppuccin Latte / Mocha. Component geometry stays with Nuxt UI. */
 @theme {
+  --font-sans: "Medeo Sans", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: "Medeo Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   --color-blue-400: #89b4fa;
   --color-blue-500: #1e66f5;
   --color-blue-600: #1e66f5;
