@@ -232,6 +232,10 @@ Editing or deleting history does not undo tool actions or remove published pages
 Responses stream as they arrive. Chat messages have no avatars. Consecutive tool
 steps share a collapsed `UChatTool` activity group; expand it and a native
 `UChatTool` step to inspect arguments, output or errors.
+Messages longer than 1,000 characters or 12 lines start with a short preview.
+Expand a message to read its full Markdown or webhook payload, then collapse it
+again for a compact transcript. Search reveals the selected matching message;
+live replies remain expanded while streaming. Editing uses the full original text.
 Chat errors use compact red text with recovery actions beside them.
 Earlier document snapshots with the same published URL are collapsed as previous
 versions. Each preview identifies its data as a creation-time snapshot, with the

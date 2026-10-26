@@ -862,6 +862,56 @@ test('message timestamps use the browser timezone and survive reload', {timeout:
   } finally {await browser.close();}
 });
 
+test('long messages fold by default without losing search, editing, code or live text', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const text='Начало сообщения. '+ 'Подробное объяснение с сохранённым форматированием. '.repeat(30)+'\n\n**Полный текст** [Конец сообщения](https://example.com/end)';
+    const code=JSON.stringify({items:Array.from({length:15},(_,index)=>index),last:'code-tail'});
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:'fold-user',role:'user',parts:[{type:'text',text},{type:'file',filename:'report.txt',url:'/kodrik/report.txt',mediaType:'text/plain'}]},
+      {id:'fold-assistant',role:'assistant',parts:[{type:'text',text}]},
+      {id:'fold-code',role:'user',parts:[{type:'text',text:code,format:'code'}]},
+      {id:'fold-short',role:'assistant',parts:[{type:'text',text:'Короткий ответ'}]},
+    ]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const user=page.locator('[data-message-id="fold-user"]'),assistant=page.locator('[data-message-id="fold-assistant"]'),payload=page.locator('[data-message-id="fold-code"]');
+    for(const message of [user,assistant,payload]) await expect(message.getByRole('button',{name:'Развернуть сообщение',exact:true})).toHaveAttribute('aria-expanded','false');
+    await expect(user.getByRole('link',{name:'report.txt',exact:true})).toBeVisible();
+    await expect(page.getByRole('link',{name:'Конец сообщения',exact:true})).toHaveCount(0);
+    await expect(page.locator('[data-message-id="fold-short"]')).toHaveText('Короткий ответ');
+    await user.getByRole('button',{name:'Развернуть сообщение',exact:true}).press('Enter');
+    await expect(user.getByRole('link',{name:'Конец сообщения',exact:true})).toBeVisible();
+    await expect(user.locator('strong')).toHaveText('Полный текст');
+    await user.getByRole('button',{name:'Свернуть сообщение',exact:true}).click();
+    await expect(user.getByRole('button',{name:'Развернуть сообщение',exact:true})).toBeInViewport();
+    await payload.getByRole('button',{name:'Развернуть сообщение',exact:true}).click();
+    await expect(payload.locator('pre')).toContainText('  "items": [\n');
+    await expect(payload.locator('pre')).toContainText('"last": "code-tail"');
+    await user.getByRole('button',{name:'Редактировать сообщение',exact:true}).click();
+    await expect(user.getByRole('textbox',{name:'Редактирование сообщения',exact:true})).toHaveValue(text);
+    await user.getByRole('button',{name:'Отмена',exact:true}).click();
+    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    await page.getByRole('textbox',{name:'Поиск в диалоге',exact:true}).fill('Конец сообщения');
+    await expect(user.getByRole('link',{name:'Конец сообщения',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Следующее совпадение',exact:true}).click();
+    await expect(assistant.getByRole('link',{name:'Конец сообщения',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
+    await expect(assistant.getByRole('button',{name:'Развернуть сообщение',exact:true})).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await assistant.locator('[data-search-text]').evaluate(el=>el.getBoundingClientRect().height<320));
+    await page.screenshot({path:'/tmp/kodrik-collapsed-messages-mobile.png',fullPage:true});
+    snapshot.busy=true;snapshot.phase='NeedModel';snapshot.live.current={status:'Active',text};
+    await page.reload();
+    const live=page.locator('[data-message-id="partial"]');
+    await expect(live.getByRole('link',{name:'Конец сообщения',exact:true})).toBeVisible();
+    await expect(live.getByRole('button',{name:'Развернуть сообщение',exact:true})).toHaveCount(0);
+  } finally {await browser.close();}
+});
+
 test('conversation search scrolls to matches and navigates in both directions', {timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -915,6 +965,7 @@ test('fenced code uses one block surface while inline code keeps its styling', {
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const blocks=page.locator('.message pre > code');
     const inline=page.locator('.message p > code');
+    await page.getByRole('button',{name:'Развернуть сообщение',exact:true}).click();
     await expect(blocks).toHaveCount(3);
     assert.equal(await blocks.first().textContent(),code+'\n');
     await expect(inline).toHaveText('value');
@@ -1101,6 +1152,7 @@ test('Markdown and document links use the current tab only for local URLs', {tim
     await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route('**/run',r=>r.fulfill({json:snapshot}));
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    await page.getByRole('button',{name:'Развернуть сообщение',exact:true}).click();
     for(const [name,,target] of [...links,['Local document',local.pathname,'_self'],['External document',external,'_blank'],['Local button',local.pathname,'_self'],['External button',external,'_blank'],['Local UI link',local.pathname,'_self']]) {
       const link=page.getByRole('link',{name,exact:true});
       await expect(link).toHaveAttribute('target',target);
@@ -3020,6 +3072,7 @@ test('Markdown renders formatting without executing HTML, Vue components or unsa
     await expect(input.locator('strong')).toHaveText('Safe bold');
     await page.getByRole('button',{name:'Отправить',exact:true}).click();
     await expect(page.getByText('Привет!',{exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'Развернуть сообщение',exact:true}).click();
     await expect(page.locator('.message strong').getByText('Safe bold',{exact:true})).toBeVisible();
     assert.equal(await page.evaluate(()=>window.chatInjection),undefined);
     assert.equal(await page.locator('.message script, .message [onerror], .message a[href^="javascript:"]').count(),0);
