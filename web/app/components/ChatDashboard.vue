@@ -403,7 +403,7 @@ onMounted(() => {
     </aside>
     <UDashboardSidebar v-model:open="menu" :default-size="18"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport bg-default'}">
+      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport bg-default'}">
       <template #header>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
         <div class="ml-auto flex shrink-0 items-center gap-0.5">

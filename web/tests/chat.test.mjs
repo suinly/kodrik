@@ -1588,6 +1588,53 @@ test('active conversation shows activity before its title', {timeout:30000}, asy
   } finally {await browser.close();}
 });
 
+test('mobile sidebar account controls fit narrow screens and enlarged text',{timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    for(const locale of ['ru-RU','en-US']) {
+      const page=await signedPage(browser,{locale,viewport:{width:320,height:640},isMobile:true,hasTouch:true});
+      const labels=locale==='ru-RU'
+        ? {open:'Показать диалоги',language:'Язык',theme:'Переключить тему',logout:'Выйти',dark:'Тёмная'}
+        : {open:'Show conversations',language:'Language',theme:'Switch theme',logout:'Sign out',dark:'Dark'};
+      await page.goto(new URL('app/chat',base).href);
+      await page.getByRole('button',{name:labels.open,exact:true}).click();
+      const dialog=page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      await expect.poll(()=>dialog.evaluate(el=>Math.round(el.getBoundingClientRect().x))).toBe(0);
+      for(const width of [320,360,390]) for(const fontSize of [16,20,24]) {
+        await page.setViewportSize({width,height:640});
+        await page.evaluate(size=>document.documentElement.style.fontSize=`${size}px`,fontSize);
+        if(width===320 && fontSize===20) await page.screenshot({path:`/tmp/kodrik-kod-6-${locale}.png`,animations:'disabled'});
+        for(const name of [labels.language,labels.theme,labels.logout]) {
+          const geometry=await dialog.getByRole('button',{name,exact:true}).evaluate(el=>{
+            const rect=el.getBoundingClientRect(),panel=el.closest('[role="dialog"]').getBoundingClientRect();
+            const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
+            return {left:rect.left,right:rect.right,width:rect.width,height:rect.height,panelLeft:panel.left,panelRight:Math.min(panel.right,innerWidth),
+              touchable:[[rect.left+1,y],[rect.right-1,y],[x,rect.top+1],[x,rect.bottom-1]].every(([x,y])=>el.contains(document.elementFromPoint(x,y)))};
+          });
+          assert.ok(geometry.left>=geometry.panelLeft && geometry.right<=geometry.panelRight,`${name} at ${width}px / ${fontSize}px: ${JSON.stringify(geometry)}`);
+          assert.ok(geometry.width>=44 && geometry.height>=44,`${name}: preserves a 44px touch target`);
+          assert.ok(geometry.touchable,`${name}: full touch target is reachable`);
+        }
+      }
+      await page.setViewportSize({width:320,height:640});
+      await dialog.getByRole('button',{name:labels.language,exact:true}).click();
+      await expect(page.getByRole('menuitemcheckbox',{name:'English',exact:true})).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await dialog.getByRole('button',{name:labels.theme,exact:true}).click();
+      await expect(page.getByRole('menuitemcheckbox',{name:labels.dark,exact:true})).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await page.route('**/auth/logout',route=>route.fulfill({contentType:'text/plain',body:'KOD-6 logout clicked'}));
+      const logout=page.waitForRequest(request=>new URL(request.url()).pathname.endsWith('/auth/logout'));
+      await dialog.getByRole('button',{name:labels.logout,exact:true}).click();
+      assert.equal((await logout).method(),'POST');
+      await page.close();
+    }
+  } finally {await browser.close();}
+});
+
 test('mobile chat fits narrow screens and the visual keyboard viewport without losing the draft',{timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'tools'});
