@@ -153,4 +153,6 @@ body:has(.chat-viewport) {
 }
 .prose { overflow-wrap: anywhere; }
 .prose pre { overflow-x: auto; }
+.prose .syntax-code span { color: var(--shiki-light); }
+.dark .prose .syntax-code span { color: var(--shiki-dark); }
 ::highlight(conversation-search) { background-color: #f9e2af; color: #4c4f69; }

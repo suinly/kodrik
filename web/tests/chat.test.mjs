@@ -1126,7 +1126,10 @@ test('fenced code uses one block surface while inline code keeps its styling', {
     await page.getByRole('button',{name:'Развернуть сообщение',exact:true}).click();
     await expect(blocks).toHaveCount(3);
     assert.equal(await blocks.first().textContent(),code+'\n');
+    const keyword=blocks.first().locator('span').filter({hasText:/^\s*const$/}).last();
+    await expect(keyword).toHaveText('const');
     await expect(inline).toHaveText('value');
+    const keywordColors=[];
     for(const colorScheme of ['light','dark']) {
       await page.emulateMedia({colorScheme});
       await expect(page.locator('html')).toHaveClass(colorScheme==='dark'?/dark/:/light/);
@@ -1142,11 +1145,60 @@ test('fenced code uses one block surface while inline code keeps its styling', {
         assert.notEqual(styles.preBorder,'0px');
       }
       assert.notEqual(await inline.evaluate(el=>getComputedStyle(el).borderTopWidth),'0px');
+      const color=await keyword.evaluate(el=>getComputedStyle(el).color);
+      assert.equal(color,colorScheme==='dark'?'rgb(203, 166, 247)':'rgb(136, 57, 239)');
+      assert.notEqual(color,await blocks.first().evaluate(el=>getComputedStyle(el).color),'keywords must have a syntax color');
+      keywordColors.push(color);
       await page.screenshot({path:`/tmp/kodrik-code-blocks-${colorScheme}.png`,fullPage:true,animations:'disabled'});
     }
+    assert.notEqual(keywordColors[0],keywordColors[1],'syntax colors must follow the app theme');
     await page.setViewportSize({width:390,height:844});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-code-blocks-mobile.png',fullPage:true,animations:'disabled'});
+  } finally {await browser.close();}
+});
+
+test('Markdown highlights streamed Rust and Python while unknown languages stay readable', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),errors=[],highlightRequests=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    page.on('request',request=>{if(request.url().includes('/_mdc/highlight')) highlightRequests.push(request.url());});
+    const rust='fn main() {\n    let value = "<tag> & текст";';
+    const python='def greet(name):\n    return "<tag> & текст"  \n\n    ';
+    const unknown='    plain\n\n    ';
+    const notation='const x = 1; // [!code highlight]';
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:true,cancel_requested:false,phase:'NeedModel',blocked_reason:null,
+      live:{current:{attempt:1,status:'Active',text:'```rust\n'+rust},interrupted:null},queued:[],messages:[
+        {id:'python',role:'assistant',parts:[{type:'text',text:'```python\n'+python+'\n```'}]},
+        {id:'unknown',role:'assistant',parts:[{type:'text',text:'```unknown-language\n'+unknown+'\n```'}]},
+        {id:'notation',role:'assistant',parts:[{type:'text',text:'```js\n'+notation+'\n```'}]},
+      ]};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const partial=page.locator('[data-message-id="partial"] pre > code');
+    await expect(partial).toHaveText(rust+'\n');
+    await expect(partial.locator('span').filter({hasText:/^fn$/}).last()).toBeVisible();
+    const pythonBlock=page.locator('[data-message-id="python"] pre > code');
+    await expect(pythonBlock).toHaveText(python+'\n');
+    await expect(pythonBlock.locator('span').filter({hasText:/^def$/}).last()).toBeVisible();
+    assert.equal(await pythonBlock.textContent(),python+'\n');
+    await expect(page.locator('[data-message-id="unknown"] pre > code')).toBeVisible();
+    assert.equal(await page.locator('[data-message-id="unknown"] pre > code').textContent(),unknown+'\n');
+    await expect(page.locator('[data-message-id="notation"] pre > code')).toHaveText(notation+'\n');
+    snapshot.revision++;
+    snapshot.live.current.text+='\n}\n```';
+    await expect(partial).toHaveText(rust+'\n}\n');
+    snapshot.revision++;snapshot.busy=false;snapshot.phase='Completed';
+    snapshot.messages.push({id:'rust-final',role:'assistant',parts:[{type:'text',text:snapshot.live.current.text}]});
+    snapshot.live.current=null;
+    await expect(page.locator('[data-message-id="partial"]')).toHaveCount(0);
+    await expect(page.locator('[data-message-id="rust-final"] pre > code')).toHaveText(rust+'\n}\n');
+    assert.equal(await page.locator('.message tag').count(),0,'code markup must remain escaped');
+    assert.deepEqual(errors,[]);
+    assert.deepEqual(highlightRequests,[],'static chat must highlight without a server endpoint');
   } finally {await browser.close();}
 });
 
@@ -1977,7 +2029,7 @@ test('web chat steers the current answer after a tool with text, files and photo
   }finally{await browser.close();}
 });
 
-test('web chat steers a changed draft after uncertain admission and Stop cancels pending steering',{timeout:60000},async()=>{
+test('web chat steers a changed draft after uncertain admission and Stop preserves consumed input',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json(),requestId=crypto.randomUUID();
   await request('send',{id,request_id:requestId,text:'wait'});
   const browser=await chromium.launch({headless:true});
@@ -1985,22 +2037,24 @@ test('web chat steers a changed draft after uncertain admission and Stop cancels
     const page=await signedPage(browser);
     await page.addInitScript(({id,requestId})=>{
       sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:requestId,text:'wait',files:[]}));
-      sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'queued after uncertain response',files:[]}));
+      sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'backoff',files:[]}));
     },{id,requestId});
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(page.getByRole('button',{name:'Отправить',exact:true})).toBeEnabled();
     await input.press('Enter');
-    await expect(page.locator('.message').getByText('queued after uncertain response',{exact:true})).toHaveCount(1);
+    await expect(page.locator('.message').getByText('backoff',{exact:true})).toHaveCount(1);
     await expect(input).toHaveText('');
+    await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).messages.filter(m=>m.role==='user').map(m=>m.parts[0].text)).toEqual(['wait','backoff']);
     await page.getByRole('button',{name:'Остановить',exact:true}).click();
-    await expect(page.locator('.message').getByText('queued after uncertain response',{exact:true})).toHaveCount(0);
+    await expect(page.locator('.message').getByText('backoff',{exact:true})).toHaveCount(1);
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
     await expect(page.getByRole('button',{name:'Продолжить очередь',exact:true})).toHaveCount(0);
+    await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
     await input.fill('new message after stop');await input.press('Enter');
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     const snapshot=await(await request(`sessions/${id}/run`)).json();
-    assert.deepEqual(snapshot.messages.filter(m=>m.role==='user').map(m=>m.parts[0].text),['wait','new message after stop']);
+    assert.deepEqual(snapshot.messages.filter(m=>m.role==='user').map(m=>m.parts[0].text),['wait','backoff','new message after stop']);
   }finally{await browser.close();}
 });
 
