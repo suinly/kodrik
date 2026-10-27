@@ -49,8 +49,8 @@ const creating = ref(false)
 const search = ref('')
 const showEvents = ref(false)
 const conversationTypes = computed(()=>[
-  {label:t('Диалоги'),type:'checkbox' as const,checked:!showEvents.value,onSelect:()=>{showEvents.value=false}},
-  {label:t('События'),type:'checkbox' as const,checked:showEvents.value,onSelect:()=>{showEvents.value=true}},
+  {label:t('Диалоги'),icon:'i-lucide-message-square',value:'dialogs'},
+  {label:t('События'),icon:'i-lucide-webhook',value:'events'},
 ])
 const listing = ref(false)
 const listError = ref('')
@@ -463,9 +463,10 @@ onMounted(() => {
       </nav>
       <SidebarSearch v-if="section==='chat'" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
           <template #title>
-            <UDropdownMenu :items="conversationTypes">
-              <UButton :label="sectionTitle" trailing-icon="i-lucide-chevron-down" color="neutral" variant="ghost" size="sm" class="-ml-2 max-w-full font-semibold text-highlighted" />
-            </UDropdownMenu>
+            <UTabs :model-value="showEvents?'events':'dialogs'" :items="conversationTypes" :content="false" color="neutral" size="sm"
+              :ui="{list:'w-auto',trigger:'size-8 p-0 gap-0',label:'sr-only'}" class="w-fit" @update:model-value="showEvents=$event==='events'">
+              <template #leading="{item}"><UIcon :name="item.icon" :title="item.label" class="size-4" /></template>
+            </UTabs>
           </template>
           <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="listing" :disabled="creating" @click="refresh" />
           <UButton :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />

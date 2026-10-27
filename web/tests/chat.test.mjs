@@ -2864,7 +2864,7 @@ test('queued webhook payloads render as code while owner followups keep Markdown
   } finally {await browser.close();}
 });
 
-test('Dialogs and Events menus separate histories and preserve webhook conversations on desktop and mobile', {timeout:60000},async()=>{
+test('Dialogs and Events icon tabs separate histories and preserve webhook conversations on desktop and mobile', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   let hook;
   try {
@@ -2882,9 +2882,12 @@ test('Dialogs and Events menus separate histories and preserve webhook conversat
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
     await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
     await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
-    await page.getByRole('button',{name:'Диалоги',exact:true}).focus();
-    await page.keyboard.press('Enter');await page.keyboard.press('End');await page.keyboard.press('Enter');
-    await expect(page.getByRole('button',{name:'События',exact:true})).toBeVisible();
+    const dialogs=page.getByRole('tab',{name:'Диалоги',exact:true});
+    const events=page.getByRole('tab',{name:'События',exact:true});
+    await expect(dialogs).toHaveAttribute('aria-selected','true');
+    await dialogs.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(events).toHaveAttribute('aria-selected','true');
     await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toHaveCount(0);
     await navigation.locator(`[data-conversation-id="${id}"]`).click();
     await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
@@ -2896,8 +2899,7 @@ test('Dialogs and Events menus separate histories and preserve webhook conversat
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await pasteText(input,'**Уточнение**');await input.press('Enter');
     await expect(page.locator('.message[data-role="user"]').last().locator('strong')).toHaveText('Уточнение');
-    await page.getByRole('button',{name:'События',exact:true}).click();
-    await page.getByRole('menuitemcheckbox',{name:'Диалоги',exact:true}).click();
+    await dialogs.click();
     await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
     await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
     await expect(event.locator('pre code')).toHaveText(JSON.stringify(JSON.parse(raw),null,2));
@@ -2910,12 +2912,12 @@ test('Dialogs and Events menus separate histories and preserve webhook conversat
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-webhook-conversation-mobile.png',fullPage:true});
     await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
-    await page.getByRole('button',{name:'События',exact:true}).click();
-    await page.getByRole('menuitemcheckbox',{name:'Диалоги',exact:true}).click();
+    await dialogs.click();
     await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
-    await page.getByRole('button',{name:'Диалоги',exact:true}).click();
-    await page.getByRole('menuitemcheckbox',{name:'События',exact:true}).click();
+    await events.click();
+    await expect(events).toHaveAttribute('aria-selected','true');
     await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-history-tabs-mobile.png',fullPage:true});
   } finally {
     if(hook) await fetch(hook.url,{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}});
     await browser.close();
