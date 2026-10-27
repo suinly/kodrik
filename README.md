@@ -4,6 +4,12 @@
 </picture>
 <hr>
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/suinly/kodrik)](https://m8ven.ai/mcp/suinly/kodrik?s=readme)
+[![Release](https://img.shields.io/github/v/release/suinly/kodrik)](https://github.com/suinly/kodrik/releases/latest)
+[![Release macOS](https://github.com/suinly/kodrik/actions/workflows/release.yml/badge.svg)](https://github.com/suinly/kodrik/actions/workflows/release.yml)
+[![Stars](https://img.shields.io/github/stars/suinly/kodrik?style=flat)](https://github.com/suinly/kodrik/stargazers)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Kodrik is a personal AI companion built in Rust. It supports broad conversations,
 remembers preferences, learns reusable procedures and explores interests.
 Programming is one of its abilities. Use it in a terminal, through Telegram or in
@@ -223,3 +229,8 @@ Start at the [documentation index](docs/index.md), or go directly to:
 | Back up state or understand crash recovery | [Storage](docs/storage.md) · [Durable recovery](docs/durable-recovery.md)            |
 | Update or troubleshoot                     | [Operations](docs/operations.md) · [Troubleshooting](docs/troubleshooting.md)        |
 | Contribute to the code or documentation    | [Development](docs/development.md) · [Documentation conventions](docs/publishing.md) |
+
+## License
+
+Kodrik is licensed under the [MIT License](LICENSE).
+Third-party components retain their respective licenses.

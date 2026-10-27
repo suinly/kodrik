@@ -54,7 +54,7 @@ jobs:
           codesign --verify --strict "$binary"
           mkdir dist
           archive="kodrik-$version-aarch64-apple-darwin.tar.gz"
-          tar -czf "dist/$archive" -C "$(dirname "$binary")" kodrik
+          tar -czf "dist/$archive" -C "$(dirname "$binary")" kodrik -C "$GITHUB_WORKSPACE" LICENSE
           ruby scripts/homebrew-formula.rb "$TAG" "dist/$archive" > dist/kodrik.rb
           (cd dist && shasum -a 256 "$archive" > SHA256SUMS)
       - name: Test package installation

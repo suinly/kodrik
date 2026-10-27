@@ -13,6 +13,7 @@ puts <<~FORMULA
     url "https://github.com/suinly/kodrik/releases/download/#{tag}/kodrik-#{version}-aarch64-apple-darwin.tar.gz"
     version "#{version}"
     sha256 "#{checksum}"
+    license "MIT"
 
     head do
       url "https://github.com/suinly/kodrik.git", branch: "main"
