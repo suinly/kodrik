@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "kodrik"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "argon2",
