@@ -311,7 +311,20 @@ impl GatewayRunner {
             let interface = Arc::clone(interface);
             let id = interface.id();
 
-            interface_tasks.spawn(async move { interface.run(tx).await });
+            interface_tasks.spawn(async move {
+                loop {
+                    match interface.run(tx.clone()).await {
+                        Ok(()) => return Ok::<_, anyhow::Error>(()),
+                        Err(error) => {
+                            warn!(
+                                "Interface {} failed; retrying in 5 seconds: {error:#}",
+                                interface.id()
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+            });
             info!("interface {id} started");
         }
 
@@ -1390,6 +1403,84 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ScopeLlm;
+
+    struct UnavailableInterface {
+        available: Arc<std::sync::atomic::AtomicBool>,
+        attempts: mpsc::UnboundedSender<tokio::time::Instant>,
+        replies: mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl Interface for UnavailableInterface {
+        fn id(&self) -> InterfaceId {
+            InterfaceId("telegram:test".into())
+        }
+
+        async fn run(&self, tx: mpsc::Sender<Event>) -> anyhow::Result<()> {
+            self.attempts.send(tokio::time::Instant::now())?;
+            anyhow::ensure!(
+                self.available.load(Ordering::Relaxed),
+                "Telegram unreachable"
+            );
+            tx.send(Event::Message(IncomingMessage::new(
+                self.id(),
+                "42",
+                "hello",
+            )))
+            .await?;
+            std::future::pending().await
+        }
+
+        async fn send(&self, _: &str, message: &str) -> anyhow::Result<MessageId> {
+            self.replies.send(message.into())?;
+            Ok(MessageId("reply".into()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unavailable_interface_retries_without_stopping_gateway() {
+        use crate::agent::{Agent, ContextBuilder, session::JsonSessionStore, tools::ToolRegistry};
+
+        for recover in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let runner = Arc::new(AgentRunner::new(
+                Arc::new(Agent::new(
+                    Arc::new(ScopeLlm),
+                    ToolRegistry::default(),
+                    ContextBuilder::new("recovered"),
+                )),
+                Arc::new(JsonSessionStore::new(directory.path())),
+            ));
+            let available = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (attempts, mut started) = mpsc::unbounded_channel();
+            let (replies, mut received) = mpsc::unbounded_channel();
+            let gateway = GatewayRunner::new(runner.clone()).add_interface(UnavailableInterface {
+                available: available.clone(),
+                attempts,
+                replies,
+            });
+            let mut task = tokio::spawn(async move { gateway.run().await });
+            let first = started.recv().await.unwrap();
+            available.store(recover, Ordering::Relaxed);
+            let retried = tokio::select! {
+                result = &mut task => panic!("Interface failure stopped gateway: {result:?}"),
+                attempt = started.recv() => attempt.expect("interface was not retried"),
+            };
+            assert!(retried.duration_since(first) >= Duration::from_secs(5));
+            if recover {
+                tokio::select! {
+                    result = &mut task => panic!("Recovery stopped gateway: {result:?}"),
+                    reply = received.recv() => assert_eq!(reply.as_deref(), Some("recovered")),
+                }
+            }
+            runner.suspend();
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("shutdown must cancel interface work and retry delay")
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     struct GroupInterface(mpsc::UnboundedSender<String>);
 
