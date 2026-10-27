@@ -302,7 +302,6 @@ async fn inbox_steering_is_durable_and_cancel_does_not_run_followups() {
                 );
                 assert!(store.inbox_blocked("chat").await.unwrap().is_some());
             } else {
-                replies.send(true).unwrap();
                 let context = seen.recv().await.unwrap();
                 let mut consumed = 0;
                 while let Ok(event) = events.try_recv() {

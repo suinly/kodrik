@@ -389,7 +389,18 @@ async fn next_terminal_event() -> std::io::Result<Event> {
 
 fn show_progress(app: &mut App, event: AgentEvent) -> bool {
     match event {
-        AgentEvent::InputConsumed => return false,
+        AgentEvent::InputConsumed => {
+            if let Some(index) = app.streaming_message.take() {
+                app.messages.remove(index);
+                for pending in app.pending_tools.values_mut() {
+                    if *pending > index {
+                        *pending -= 1;
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
         AgentEvent::SessionChanged {
             previous_user_messages,
         } => {
@@ -827,6 +838,46 @@ mod tests {
             ["Old reply", "correction", "Corrected reply"]
         );
         assert!(matches!(app.messages[1].role, AppMessageRole::User));
+    }
+
+    #[test]
+    fn steering_discards_partial_stream_but_keeps_user_input_and_tools() {
+        let mut app = App::default();
+        app.push_user_message("initial".into());
+        show_progress(&mut app, AgentEvent::TextDelta("obsolete".into()));
+        app.push_user_message("correction".into());
+        show_progress(
+            &mut app,
+            AgentEvent::ToolStarted {
+                call_id: "tool".into(),
+                name: "exec_command".into(),
+                arguments: serde_json::json!({"cmd":"pwd"}),
+            },
+        );
+        assert!(show_progress(&mut app, AgentEvent::InputConsumed));
+        assert!(app.streaming_message.is_none());
+        show_progress(
+            &mut app,
+            AgentEvent::ToolFinished {
+                call_id: "tool".into(),
+                failed: false,
+                output: serde_json::json!({"exit_code":0}),
+            },
+        );
+        show_progress(&mut app, AgentEvent::TextDelta("new".into()));
+        app.finish_stream("corrected answer".into());
+        assert_eq!(
+            app.messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "initial",
+                "correction",
+                "exec_command: pwd — exit 0",
+                "corrected answer"
+            ]
+        );
     }
 
     #[test]

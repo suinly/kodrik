@@ -249,6 +249,14 @@ impl SqliteSessionStore {
         })
         .await
     }
+    pub(super) async fn clear_live(&self, id: &str) -> anyhow::Result<()> {
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            db.execute("UPDATE runs SET live=NULL WHERE id=?1", [&id])?;
+            Ok(())
+        })
+        .await
+    }
     pub(crate) async fn run_view(&self, id: &str) -> anyhow::Result<RunView> {
         let id = id.to_owned();
         self.with_connection(move |db| {
@@ -348,6 +356,13 @@ where
     };
     while let Ok(event) = events.try_recv() {
         collect_event(event, &mut text, &mut pending, progress);
+    }
+    if result
+        .as_ref()
+        .is_err_and(|error| error.is::<super::core::GenerationSuperseded>())
+    {
+        store.clear_live(&run.id).await?;
+        return result;
     }
     store
         .save_live(

@@ -1999,7 +1999,7 @@ mod tests {
             let release = Arc::new(tokio::sync::Notify::new());
             let (requests, mut decisions) = mpsc::unbounded_channel();
             let runner = Arc::new(AgentRunner::new(
-                Arc::new(Agent::new(Arc::new(SteeringLlm { started: started.clone(), release: release.clone() }), ToolRegistry::default(), ContextBuilder::new("test"))),
+                Arc::new(Agent::new(Arc::new(SteeringLlm { started: started.clone(), release: release.clone(), stream: false }), ToolRegistry::default(), ContextBuilder::new("test"))),
                 Arc::new(JsonSessionStore::new(directory.path())),
             ).with_group_decider(SystemOne::new(Arc::new(GroupDecision { reply: "initial_only", requests }))));
             let (updates, mut replies) = mpsc::unbounded_channel();
@@ -2134,6 +2134,7 @@ mod tests {
                             Arc::new(SteeringLlm {
                                 started: started.clone(),
                                 release: Arc::default(),
+                                stream: false,
                             }),
                             ToolRegistry::default(),
                             ContextBuilder::new("test"),
@@ -2776,6 +2777,7 @@ mod tests {
                 Arc::new(SteeringLlm {
                     started: Arc::default(),
                     release: Arc::default(),
+                    stream: false,
                 }),
                 ToolRegistry::default(),
                 ContextBuilder::new("test"),
@@ -3518,6 +3520,7 @@ mod tests {
     struct SteeringLlm {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+        stream: bool,
     }
 
     #[async_trait::async_trait]
@@ -3526,7 +3529,7 @@ mod tests {
             &self,
             context: &crate::agent::LlmContext<'_>,
             _: &[&dyn crate::agent::tools::Tool],
-            _: Option<&mpsc::Sender<AgentEvent>>,
+            progress: Option<&mpsc::Sender<AgentEvent>>,
         ) -> anyhow::Result<(Vec<crate::agent::message::Message>, Option<u64>)> {
             use crate::agent::message::Message;
             let inputs: Vec<_> = context
@@ -3538,6 +3541,13 @@ mod tests {
                 })
                 .collect();
             if inputs == ["initial"] {
+                if self.stream {
+                    progress
+                        .unwrap()
+                        .send(AgentEvent::TextDelta("obsolete draft".into()))
+                        .await
+                        .unwrap();
+                }
                 self.started.notify_one();
                 self.release.notified().await;
             }
@@ -3562,6 +3572,7 @@ mod tests {
                     Arc::new(SteeringLlm {
                         started: started.clone(),
                         release: release.clone(),
+                        stream: true,
                     }),
                     ToolRegistry::default(),
                     ContextBuilder::new("test"),
@@ -3584,6 +3595,7 @@ mod tests {
             .unwrap();
             let task = tokio::spawn(async move { gateway.run_conversation(rx).await });
             started.notified().await;
+            assert_eq!(replies.recv().await.unwrap(), "obsolete draft");
             let file = crate::agent::FileAttachment::save(
                 &directory.path().join("attachments"),
                 "report.pdf",
@@ -3598,8 +3610,8 @@ mod tests {
             }
             // Wait until the gateway has received every input, while generation is blocked.
             drop(tx.reserve_many(3).await.unwrap());
-            release.notify_one();
             drop(tx);
+            assert_eq!(replies.recv().await.unwrap(), "<deleted>");
             assert_eq!(
                 replies.recv().await.unwrap(),
                 "initial + first correction + second correction"
@@ -3700,6 +3712,7 @@ mod tests {
                         Arc::new(SteeringLlm {
                             started: Default::default(),
                             release,
+                            stream: false,
                         }),
                         ToolRegistry::default(),
                         ContextBuilder::new("test"),

@@ -1354,6 +1354,12 @@ mod tests {
                 assert!(!matches!(event, AgentEvent::InputConsumed));
             }
             input_tx.send(user("during generation")).unwrap();
+            let corrected = contexts.recv().await.unwrap();
+            assert_eq!(corrected.len(), 2);
+            assert!(matches!(&corrected[1], Message::User(input) if input.content == "during generation"));
+            while let Ok(event) = events.try_recv() {
+                assert!(matches!(event, AgentEvent::InputConsumed));
+            }
             replies.send(Ok(vec![Message::ToolCall(ToolCall {
                 call_id: "call".into(), name: "blocking".into(), arguments: serde_json::json!({}),
             })])).unwrap();
@@ -1374,9 +1380,9 @@ mod tests {
             }
             assert_eq!(consumed, 1);
             assert_eq!(context.len(), 5);
-            assert!(matches!(&context[1], Message::ToolCall(call) if call.call_id == "call"));
-            assert!(matches!(&context[2], Message::ToolResult(result) if result.content.output["done"] == true));
-            assert!(matches!(&context[3], Message::User(input) if input.content == "during generation"));
+            assert!(matches!(&context[1], Message::User(input) if input.content == "during generation"));
+            assert!(matches!(&context[2], Message::ToolCall(call) if call.call_id == "call"));
+            assert!(matches!(&context[3], Message::ToolResult(result) if result.content.output["done"] == true));
             assert!(matches!(&context[4], Message::User(input) if input.content == "during tool" && input.images[0].data_url == image.data_url));
             replies.send(Ok(answer("done"))).unwrap();
             assert_eq!(task.await.unwrap().unwrap().content, "done");

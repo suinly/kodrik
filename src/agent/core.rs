@@ -48,6 +48,17 @@ pub enum AgentEvent {
     },
 }
 
+#[derive(Debug)]
+pub(super) struct GenerationSuperseded;
+
+impl std::fmt::Display for GenerationSuperseded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Generation superseded by new input")
+    }
+}
+
+impl std::error::Error for GenerationSuperseded {}
+
 impl Agent {
     pub(crate) fn child_agent(&self) -> Self {
         let mut agent = self.clone();
@@ -484,20 +495,81 @@ impl Agent {
                     anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
                 }
                 requests += 1;
+                let (tx, rx) = mpsc::channel(100);
+                let model_progress = if checkpoint.is_some() {
+                    progress.map(|_| &tx)
+                } else {
+                    progress
+                };
+                // Keep the shared run future small enough for gateway callers' stacks.
+                let generation = Box::pin(async {
+                    tokio::select! {
+                        biased;
+                        _ = async {
+                            if let Some(incoming) = incoming.as_ref() {
+                                loop {
+                                    // Leave input queued so stop/suspend can still save it during cleanup.
+                                    if !incoming.is_empty() {
+                                        return;
+                                    }
+                                    if incoming.is_closed() {
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                }
+                            }
+                            std::future::pending::<()>().await
+                        } => Err(GenerationSuperseded.into()),
+                        steering = async {
+                            if let Some(cp) = checkpoint.as_ref() {
+                                loop {
+                                    if !cp.store.steering(&cp.record).await?.is_empty() {
+                                        return Ok::<_, anyhow::Error>(());
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                }
+                            }
+                            std::future::pending().await
+                        } => {
+                            steering?;
+                            Err(GenerationSuperseded.into())
+                        },
+                        result = async {
+                            if checkpoint.is_some() {
+                                self.llm.generate_attempt(&context, &tools, model_progress).await
+                            } else {
+                                self.llm.generate(&context, &tools, model_progress).await
+                            }
+                        } => result,
+                    }
+                });
                 let generated = if let Some(cp) = checkpoint.as_ref() {
-                    let (tx, rx) = mpsc::channel(100);
                     super::run_view::collect_generation(
-                        &cp.store,
-                        &cp.record,
-                        progress,
-                        rx,
-                        self.llm
-                            .generate_attempt(&context, &tools, progress.map(|_| &tx)),
+                        &cp.store, &cp.record, progress, rx, generation,
                     )
                     .await
                 } else {
-                    self.llm.generate(&context, &tools, progress).await
+                    generation.await
                 };
+                if generated
+                    .as_ref()
+                    .is_err_and(|error| error.is::<GenerationSuperseded>())
+                {
+                    continue;
+                }
+                // Input can win the race after the provider finishes, before its output is committed.
+                if generated.is_ok()
+                    && (if let Some(cp) = checkpoint.as_ref() {
+                        !cp.store.steering(&cp.record).await?.is_empty()
+                    } else {
+                        false
+                    } || incoming.as_ref().is_some_and(|rx| !rx.is_empty()))
+                {
+                    if let Some(cp) = checkpoint.as_ref() {
+                        cp.store.clear_live(&cp.record.id).await?;
+                    }
+                    continue;
+                }
                 let (messages, input_tokens) = match generated {
                     Ok(output) => {
                         overflow_retry_used = false;
@@ -782,27 +854,6 @@ impl Agent {
             }
 
             if !has_tool_calls {
-                let durable_steering = if let Some(cp) = checkpoint.as_ref() {
-                    !cp.store.steering(&cp.record).await?.is_empty()
-                } else {
-                    false
-                };
-                if durable_steering
-                    || incoming
-                        .as_ref()
-                        .is_some_and(|incoming| !incoming.is_empty())
-                {
-                    if let Some(cp) = checkpoint.as_deref_mut() {
-                        cp.save(session, RunPhase::NeedModel, None).await?;
-                    }
-                    // A completed model response becomes intermediate when the user steers.
-                    if let Some(message) = answer
-                        && let Some(tx) = progress
-                    {
-                        let _ = tx.try_send(AgentEvent::Message(message));
-                    }
-                    continue;
-                }
                 let answer = answer.ok_or_else(|| anyhow::anyhow!("LLM returned no answer"))?;
                 return Ok(answer);
             }
@@ -819,6 +870,250 @@ mod tests {
         session::SessionId,
         tools::{Tool, UpdatePlanTool},
     };
+
+    struct SteeringModel {
+        contexts: mpsc::UnboundedSender<Vec<Message>>,
+        cancelled: mpsc::UnboundedSender<()>,
+        stream: bool,
+    }
+
+    struct PendingGeneration(mpsc::UnboundedSender<()>);
+
+    impl Drop for PendingGeneration {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SteeringModel {
+        async fn generate(
+            &self,
+            context: &LlmContext<'_>,
+            _: &[&dyn Tool],
+            progress: Option<&mpsc::Sender<AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            self.contexts.send(context.messages.to_vec()).unwrap();
+            if !matches!(context.messages.last(), Some(Message::User(u)) if u.content == "last correction")
+            {
+                let _pending = PendingGeneration(self.cancelled.clone());
+                if self.stream {
+                    progress
+                        .unwrap()
+                        .send(AgentEvent::TextDelta("obsolete draft".into()))
+                        .await
+                        .unwrap();
+                }
+                std::future::pending::<()>().await;
+            }
+            Ok((
+                vec![Message::Assistant(AssistantMessage {
+                    content: "final".into(),
+                })],
+                Some(7),
+            ))
+        }
+    }
+
+    async fn assert_steering_restarts(durable: bool, stream: bool) {
+        use crate::agent::{
+            inbox::{BusyMode, SubmissionRequest},
+            session::SqliteSessionStore,
+        };
+        use crate::gateway::{IncomingMessage, InterfaceId};
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let dir = tempfile::tempdir().unwrap();
+            let store = SqliteSessionStore::open_async(dir.path().into())
+                .await
+                .unwrap();
+            let session = Session::new(SessionId::new("test:steer"));
+            let id = session.id().clone();
+            let mut checkpoint = durable.then(|| Checkpoint::new(&store, &id, &session));
+            if let Some(cp) = &mut checkpoint {
+                cp.record.isolated = Some(false);
+            }
+            let (contexts, mut seen) = mpsc::unbounded_channel();
+            let (cancelled, mut cancellations) = mpsc::unbounded_channel();
+            let agent = Agent::new(
+                Arc::new(SteeringModel {
+                    contexts,
+                    cancelled,
+                    stream,
+                }),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            );
+            let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+            let (progress, mut events) = mpsc::channel(100);
+            let task = tokio::spawn(async move {
+                let mut session = session;
+                let result = agent
+                    .run_durable(
+                        &mut session,
+                        UserMessage {
+                            content: "initial".into(),
+                            files: vec![],
+                            images: vec![],
+                        },
+                        Some(&progress),
+                        Some(&mut input_rx),
+                        checkpoint.as_mut(),
+                    )
+                    .await;
+                (result, session, checkpoint)
+            });
+            seen.recv().await.unwrap();
+            if durable && stream {
+                loop {
+                    let view = store.conversation_view(id.as_str()).await.unwrap();
+                    if view
+                        .run
+                        .as_ref()
+                        .and_then(|v| v.live.current.as_ref())
+                        .is_some_and(|p| p.text == "obsolete draft")
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            let file = crate::agent::FileAttachment::save(
+                &dir.path().join("files"),
+                "note.txt",
+                None,
+                b"correction attachment",
+            )
+            .unwrap();
+            for text in ["first correction", "last correction"] {
+                if durable {
+                    let mut message =
+                        IncomingMessage::new(InterfaceId("test".into()), "steer", text);
+                    message.files.push(file.clone());
+                    store
+                        .submit(SubmissionRequest::new(&id, message, BusyMode::Steer))
+                        .await
+                        .unwrap();
+                } else {
+                    input_tx
+                        .send(UserMessage {
+                            content: text.into(),
+                            files: vec![file.clone()],
+                            images: vec![],
+                        })
+                        .unwrap();
+                }
+                let context = tokio::time::timeout(std::time::Duration::from_secs(1), seen.recv())
+                    .await
+                    .expect("new input must restart the pending model request")
+                    .unwrap();
+                assert!(!context.iter().any(|m| matches!(m, Message::Assistant(_))));
+                let inputs: Vec<_> = context
+                    .iter()
+                    .filter_map(|m| {
+                        if let Message::User(u) = m {
+                            Some(u.content.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    inputs,
+                    if text == "first correction" {
+                        vec!["initial", "first correction"]
+                    } else {
+                        vec!["initial", "first correction", "last correction"]
+                    }
+                );
+                cancellations
+                    .recv()
+                    .await
+                    .expect("superseded model future must be dropped");
+            }
+            let (result, session, checkpoint) = task.await.unwrap();
+            assert_eq!(result.unwrap().content, "final");
+            assert_eq!(session.messages().len(), 4);
+            for message in &session.messages()[1..3] {
+                let Message::User(user) = message else {
+                    panic!("correction lost")
+                };
+                assert_eq!(user.files[0].path, file.path);
+            }
+            assert_eq!(session.input_tokens, Some(7));
+            let mut consumed = 0;
+            while let Ok(event) = events.try_recv() {
+                if matches!(event, AgentEvent::InputConsumed) {
+                    consumed += 1;
+                }
+            }
+            assert_eq!(consumed, 2);
+            if let Some(cp) = checkpoint {
+                let view = store.run_view(&cp.record.id).await.unwrap();
+                assert!(
+                    view.live.interrupted.is_none(),
+                    "superseded draft must be deleted"
+                );
+                assert!(view.live.current.as_ref().is_none_or(|p| p.text.is_empty()));
+                assert_eq!(view.session.messages().len(), 4);
+                assert_eq!(cp.record.model_attempts, 3);
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn steering_restarts_in_memory_before_tokens_and_during_stream() {
+        for stream in [false, true] {
+            assert_steering_restarts(false, stream).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_restarts_durable_before_tokens_and_during_stream() {
+        for stream in [false, true] {
+            assert_steering_restarts(true, stream).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_restarts_preserves_input_when_stopped_during_live_cleanup() {
+        use crate::{
+            agent::{AgentRunner, session::SqliteSessionStore},
+            gateway::{IncomingMessage, InterfaceId},
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(SqliteSessionStore::open_async(directory.path().into()).await.unwrap());
+            let (contexts, mut seen) = mpsc::unbounded_channel();
+            let (cancelled, mut cancellations) = mpsc::unbounded_channel();
+            let runner = Arc::new(AgentRunner::new(Arc::new(Agent::new(Arc::new(SteeringModel { contexts, cancelled, stream: false }), ToolRegistry::default(), ContextBuilder::new("test"))), store.clone()));
+            let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let worker = runner.clone();
+            let task = tokio::spawn(async move {
+                worker.run_with_cancel(SessionId::new("test:stop"), IncomingMessage::new(InterfaceId("test".into()), "stop", "initial"), None, Some(stopped), Some(&mut input_rx)).await
+            });
+            seen.recv().await.unwrap();
+            let locked = Arc::new(tokio::sync::Notify::new());
+            let acquired = locked.clone();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let database = tokio::spawn(async move {
+                store.with_connection(move |_| { acquired.notify_one(); let _ = released.recv(); Ok(()) }).await
+            });
+            locked.notified().await;
+            input_tx.send(UserMessage { content: "accepted correction".into(), files: vec![], images: vec![] }).unwrap();
+            cancellations.recv().await.unwrap();
+            stop.send(()).unwrap();
+            release.send(()).unwrap();
+            database.await.unwrap().unwrap();
+            assert_eq!(task.await.unwrap().unwrap_err().to_string(), "Stopped by user");
+            let session = runner.load_session(SessionId::new("test:stop")).await.unwrap();
+            assert_eq!(session.messages().len(), 2, "accepted input must survive cancellation during cleanup");
+            assert!(matches!(&session.messages()[1], Message::User(u) if u.content == "accepted correction"));
+        }).await.unwrap();
+    }
 
     struct OverflowModel {
         calls: std::sync::atomic::AtomicUsize,
