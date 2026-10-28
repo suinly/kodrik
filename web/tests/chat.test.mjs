@@ -286,6 +286,11 @@ test('section rail switches context menus and main content without losing chat d
     const sections=page.getByRole('navigation',{name:'Разделы',exact:true});
     await expect(sections).toBeVisible();
     assert.ok((await sections.boundingBox()).width<=64);
+    const logo=await page.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+    for(const name of ['Поиск диалогов','Обновить','Новый диалог']) {
+      const button=await page.locator('.sidebar-header-actions').first().getByRole('button',{name,exact:true}).boundingBox();
+      assert.ok(button.x>=logo.x+logo.width && Math.abs(button.y+button.height/2-logo.y-logo.height/2)<1,`${name}: sits to the right of the logo on the same row`);
+    }
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await composer.fill('Черновик между разделами');
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-desktop.png',animations:'disabled'});
@@ -335,12 +340,13 @@ test('section rail switches context menus and main content without losing chat d
     const mobileSections=menu.getByRole('navigation',{name:'Разделы',exact:true});
     await expect(mobileSections).toBeVisible();
     const buttons=mobileSections.getByRole('button');
-    await expect(buttons).toHaveText(['Чат','Страницы','Вебхуки','Профиль']);
-    for(let index=0;index<4;index++) {
+    await expect(buttons).toHaveCount(3);
+    for(let index=0;index<3;index++) {
       await expect(buttons.nth(index).locator('[data-slot="leadingIcon"]')).toBeVisible();
       if(index) assert.ok((await buttons.nth(index).boundingBox()).y>=(await buttons.nth(index-1).boundingBox()).y+(await buttons.nth(index-1).boundingBox()).height);
     }
-    assert.ok((await mobileSections.boundingBox()).y+(await mobileSections.boundingBox()).height<=(await menu.getByRole('heading',{name:'Страницы',exact:true}).boundingBox()).y);
+    assert.ok((await mobileSections.boundingBox()).width<=56);
+    await expect(menu.getByRole('button',{name:'Профиль',exact:true})).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-section-menu-mobile.png',animations:'disabled'});
     await mobileSections.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await expect(mobileSections.getByRole('button',{name:'Вебхуки',exact:true})).toHaveAttribute('aria-current','page');
@@ -357,6 +363,10 @@ test('section rail switches context menus and main content without losing chat d
     await mobileSections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(menu.getByRole('navigation',{name:'История диалогов'})).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-mobile.png',animations:'disabled'});
+    await page.setViewportSize({width:1280,height:900});
+    await expect(menu).toHaveCount(0);
+    for(const name of ['Поиск диалогов','Обновить','Новый диалог']) await expect(page.locator('.sidebar-header-actions').first().getByRole('button',{name,exact:true})).toHaveCount(1);
+    await page.setViewportSize({width:390,height:844});
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
     await expect(composer).toHaveText('Черновик между разделами');
@@ -779,6 +789,10 @@ test('mobile sidebar opens with a left-edge swipe over a dimmed screen', {timeou
         assert.ok(panel.width<=width-48,`visible backdrop at ${width}px: ${panel.width}`);
         assert.equal(Math.round(panel.height),844);
       }).toPass();
+      const rail=await dialog.getByRole('navigation',{name:'Разделы',exact:true}).boundingBox();
+      const history=await dialog.getByRole('navigation',{name:'История диалогов',exact:true}).boundingBox();
+      assert.ok(rail.width<=56 && history.x>=rail.x+rail.width,'Swipe opens the navigation rail and history side by side');
+      await expect(dialog.getByRole('button',{name:'Профиль',exact:true})).toBeVisible();
       const after=await composer.boundingBox();
       assert.equal(after.x,before.x);
       assert.equal(after.width,before.width);
@@ -1794,14 +1808,14 @@ test('active conversation shows activity before its title', {timeout:30000}, asy
   } finally {await browser.close();}
 });
 
-test('mobile sidebar account controls fit narrow screens and enlarged text',{timeout:30000},async()=>{
+test('mobile sidebar profile menu fits narrow screens and enlarged text',{timeout:30000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
     for(const locale of ['ru-RU','en-US']) {
       const page=await signedPage(browser,{locale,viewport:{width:320,height:640},isMobile:true,hasTouch:true});
       const labels=locale==='ru-RU'
-        ? {open:'Показать диалоги',language:'Язык',theme:'Переключить тему',logout:'Выйти',dark:'Тёмная'}
-        : {open:'Show conversations',language:'Language',theme:'Switch theme',logout:'Sign out',dark:'Dark'};
+        ? {open:'Показать диалоги',profile:'Профиль',language:'Язык',theme:'Тема',logout:'Выйти',dark:'Тёмная',settings:'Настройки профиля'}
+        : {open:'Show conversations',profile:'Profile',language:'Language',theme:'Theme',logout:'Sign out',dark:'Dark',settings:'Profile settings'};
       await page.goto(new URL('app/chat',base).href);
       await page.getByRole('button',{name:labels.open,exact:true}).click();
       const dialog=page.getByRole('dialog');
@@ -1811,7 +1825,7 @@ test('mobile sidebar account controls fit narrow screens and enlarged text',{tim
         await page.setViewportSize({width,height:640});
         await page.evaluate(size=>document.documentElement.style.fontSize=`${size}px`,fontSize);
         if(width===320 && fontSize===20) await page.screenshot({path:`/tmp/kodrik-kod-6-${locale}.png`,animations:'disabled'});
-        for(const name of [labels.language,labels.theme,labels.logout]) {
+        for(const name of [labels.profile]) {
           const geometry=await dialog.getByRole('button',{name,exact:true}).evaluate(el=>{
             const rect=el.getBoundingClientRect(),panel=el.closest('[role="dialog"]').getBoundingClientRect();
             const x=rect.x+rect.width/2,y=rect.y+rect.height/2;
@@ -1820,21 +1834,43 @@ test('mobile sidebar account controls fit narrow screens and enlarged text',{tim
           });
           assert.ok(geometry.left>=geometry.panelLeft && geometry.right<=geometry.panelRight,`${name} at ${width}px / ${fontSize}px: ${JSON.stringify(geometry)}`);
           assert.ok(geometry.width>=44 && geometry.height>=44,`${name}: preserves a 44px touch target`);
-          assert.ok(geometry.touchable,`${name}: full touch target is reachable`);
+          assert.ok(geometry.touchable,`${name} at ${width}px / ${fontSize}px: ${JSON.stringify(geometry)}`);
         }
+        await dialog.getByRole('button',{name:labels.profile,exact:true}).press('ArrowDown');
+        await expect(page.getByRole('menuitem',{name:labels.settings,exact:true})).toBeVisible();
+        await expect(async()=>{
+          const menu=await page.getByRole('menu').boundingBox();
+          assert.ok(menu.x>=0 && menu.x+menu.width<=width,`${width}px / ${fontSize}px: ${JSON.stringify(menu)}`);
+        }).toPass({timeout:5000});
+        await page.getByRole('menuitem',{name:labels.language,exact:true}).click();
+        await expect(page.getByRole('menuitemcheckbox',{name:'English',exact:true})).toBeVisible();
+        await expect(async()=>{
+          const submenu=await page.getByRole('menu').last().boundingBox();
+          assert.ok(submenu.x>=0 && submenu.x+submenu.width<=width,`${width}px / ${fontSize}px: language submenu ${JSON.stringify(submenu)}`);
+        }).toPass({timeout:5000});
+        if(width===320 && fontSize===20) await page.screenshot({path:`/tmp/kodrik-profile-menu-${locale}.png`,animations:'disabled'});
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('menu')).toHaveCount(0);
       }
       await page.setViewportSize({width:320,height:640});
-      await dialog.getByRole('button',{name:labels.language,exact:true}).click();
+      await page.evaluate(()=>document.documentElement.style.fontSize='16px');
+      await dialog.getByRole('button',{name:labels.profile,exact:true}).tap();
+      await expect(page.getByRole('menuitem',{name:labels.settings,exact:true})).toBeVisible();
+      await page.keyboard.press('Escape');
+      await openAccountItem(page,labels.language);
       await expect(page.getByRole('menuitemcheckbox',{name:'English',exact:true})).toBeVisible();
       await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
       await expect(page.getByRole('menu')).toHaveCount(0);
-      await dialog.getByRole('button',{name:labels.theme,exact:true}).click();
+      await openAccountItem(page,labels.theme);
       await expect(page.getByRole('menuitemcheckbox',{name:labels.dark,exact:true})).toBeVisible();
+      await page.keyboard.press('Escape');
       await page.keyboard.press('Escape');
       await expect(page.getByRole('menu')).toHaveCount(0);
       await page.route('**/auth/logout',route=>route.fulfill({contentType:'text/plain',body:'KOD-6 logout clicked'}));
       const logout=page.waitForRequest(request=>new URL(request.url()).pathname.endsWith('/auth/logout'));
-      await dialog.getByRole('button',{name:labels.logout,exact:true}).click();
+      await openAccountItem(page,labels.logout);
       assert.equal((await logout).method(),'POST');
       await page.close();
     }
@@ -1911,12 +1947,11 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     const dialog=page.getByRole('dialog');await expect(dialog).toBeVisible();
     await expect.poll(()=>dialog.evaluate(el=>Math.round(el.getBoundingClientRect().x))).toBe(0);
     const panel=await dialog.boundingBox();
-    for(const name of ['Язык','Переключить тему','Выйти']) {
+    for(const name of ['Профиль']) {
       const bounds=await dialog.getByRole('button',{name,exact:true}).boundingBox();
       assert.ok(bounds.x>=panel.x && bounds.x+bounds.width<=panel.x+panel.width,`${name}: fits the sidebar`);
       await checkIcon(name);
     }
-    await expect(dialog.getByRole('button',{name:'Выйти',exact:true})).toBeVisible();
     const dialogSearch=dialog.getByRole('textbox',{name:'Поиск диалогов',exact:true});
     const dialogSearchToggle=dialog.getByRole('button',{name:'Поиск диалогов',exact:true});
     await expect(dialogSearch).toHaveCount(0);
@@ -2914,7 +2949,7 @@ test('queued webhook payloads render as code while owner followups keep Markdown
   } finally {await browser.close();}
 });
 
-test('Dialogs and Events icon tabs separate histories and preserve webhook conversations on desktop and mobile', {timeout:60000},async()=>{
+test('webhook events live beside webhook settings and preserve processing history on desktop and mobile', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   let hook;
   try {
@@ -2928,18 +2963,25 @@ test('Dialogs and Events icon tabs separate histories and preserve webhook conve
     const {conversation_id:id}=await delivered.json();
     await expect.poll(async()=>(await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
     await page.goto(new URL('app/chat',base).href);
-    const navigation=page.getByRole('navigation',{name:'История диалогов'});
+    const dialogs=page.getByRole('navigation',{name:'История диалогов'});
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
-    await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
-    await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
-    const dialogs=page.getByRole('tab',{name:'Диалоги',exact:true});
+    await expect(dialogs.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
+    await expect(dialogs.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
+    await expect(page.getByRole('tab',{name:'События',exact:true})).toHaveCount(0);
+    await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    const hooks=page.getByRole('tab',{name:'Вебхуки',exact:true});
     const events=page.getByRole('tab',{name:'События',exact:true});
-    await expect(dialogs).toHaveAttribute('aria-selected','true');
-    await dialogs.focus();
+    await expect(hooks).toHaveAttribute('aria-selected','true');
+    await hooks.focus();
     await page.keyboard.press('ArrowRight');
     await expect(events).toHaveAttribute('aria-selected','true');
+    await expect(page.getByRole('heading',{name:'Выберите событие',exact:true})).toBeVisible();
+    const navigation=page.getByRole('navigation',{name:'История событий'});
     await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toHaveCount(0);
+    await expect(navigation.getByText('События KOD-2',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toHaveCount(0);
     await navigation.locator(`[data-conversation-id="${id}"]`).click();
+    await expect(page.getByRole('button',{name:'Вебхуки',exact:true})).toHaveAttribute('aria-current','page');
     await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
     const event=page.locator('.message[data-role="user"]').first();
     await expect(event.locator('pre code')).toHaveText(JSON.stringify(JSON.parse(raw),null,2));
@@ -2949,22 +2991,33 @@ test('Dialogs and Events icon tabs separate histories and preserve webhook conve
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await pasteText(input,'**Уточнение**');await input.press('Enter');
     await expect(page.locator('.message[data-role="user"]').last().locator('strong')).toHaveText('Уточнение');
-    await dialogs.click();
-    await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
-    await expect(navigation.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
+    await hooks.click();
+    await expect(page.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:'События KOD-2',exact:true})).toBeVisible();
+    await events.click();
     await expect(event.locator('pre code')).toHaveText(JSON.stringify(JSON.parse(raw),null,2));
+    await page.getByRole('button',{name:'Чат',exact:true}).click();
+    await expect(dialogs.locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
+    await expect(dialogs.locator(`[data-conversation-id="${normal.id}"]`)).toBeVisible();
+    await page.goto(new URL('app/webhooks?view=events',base).href);
+    await expect(events).toHaveAttribute('aria-selected','true');
+    await expect(navigation.locator(`[data-conversation-id="${id}"]`)).toBeVisible();
+    await page.reload();
+    await expect(events).toHaveAttribute('aria-selected','true');
+    await navigation.locator(`[data-conversation-id="${id}"]`).click();
     assert.equal((await fetch(hook.url,{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}})).status,204);
     hook=undefined;
     await page.reload();
     await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Вебхуки',exact:true})).toHaveAttribute('aria-current','page');
+    await expect(events).toHaveAttribute('aria-selected','true');
     await page.setViewportSize({width:390,height:844});
     await expect(page.getByText('Вебхук: События KOD-2',{exact:true})).toBeVisible();
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-webhook-conversation-mobile.png',fullPage:true});
-    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
-    await dialogs.click();
+    await page.getByRole('button',{name:'Показать вебхуки',exact:true}).click();
+    await page.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toHaveCount(0);
-    await events.click();
+    await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await expect(events).toHaveAttribute('aria-selected','true');
     await expect(page.getByRole('dialog').locator(`[data-conversation-id="${id}"]`)).toBeVisible();
     await page.screenshot({path:'/tmp/kodrik-history-tabs-mobile.png',fullPage:true});
@@ -2994,6 +3047,7 @@ test('owner manages webhooks, rotates one-time tokens and opens arbitrary event 
     await expect(page).toHaveURL(new URL(`app/chat/${encodeURIComponent(accepted.conversation_id)}`,base).href);
     await expect(page.locator('.message[data-role="user"]').first()).toContainText('checkout error');
     await page.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await page.getByRole('tab',{name:'Вебхуки',exact:true}).click();
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
     await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки оплаты');
     await page.getByLabel('Инструкция агенту',{exact:true}).fill('Проверь новую инструкцию.');
@@ -3023,6 +3077,16 @@ test('webhook form works in the mobile sidebar and English interface', {timeout:
     await page.getByRole('button',{name:'Create webhook',exact:true}).click();
     await page.getByLabel('Webhook name',{exact:true}).fill('Mobile errors');
     await page.getByLabel('Agent instruction',{exact:true}).fill('Investigate the event.');
+    const toggle=page.getByRole('switch',{name:'Webhook enabled',exact:true});
+    const track=await toggle.boundingBox();
+    assert.ok(track.width>track.height*1.5,`Switch keeps a pill-shaped track: ${JSON.stringify(track)}`);
+    const checkedThumb=await toggle.locator('[data-slot="thumb"]').boundingBox();
+    await page.touchscreen.tap(track.x+track.width/2,track.y+track.height/2+20);
+    await expect(toggle).not.toBeChecked();
+    await expect.poll(async()=> (await toggle.locator('[data-slot="thumb"]').boundingBox()).x).toBeLessThan(checkedThumb.x);
+    await toggle.tap();
+    await expect(toggle).toBeChecked();
+    await page.screenshot({path:'/tmp/kodrik-webhook-switch-mobile.png',animations:'disabled'});
     await page.getByRole('button',{name:'Save webhook',exact:true}).click();
     await expect(page.getByLabel('Bearer token',{exact:true})).toHaveValue(/[0-9a-f]{64}/);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
@@ -3040,9 +3104,22 @@ async function newConversation(page) {
   await button.click();
 }
 
+async function openAccountItem(page,name) {
+  const profile=page.getByRole('button',{name:/^(Profile|Профиль)$/});
+  if(await profile.getAttribute('aria-expanded')!=='true') await profile.press('ArrowDown');
+  await page.getByRole('menuitem',{name,exact:true}).click();
+}
+
+async function openLanguage(page) {
+  const language=page.getByRole('button',{name:/^(Language|Язык)$/});
+  if(await language.isVisible()) await language.click();
+  else await openAccountItem(page,/^(Language|Язык)$/);
+}
+
 async function chooseLanguage(page,value) {
-  await page.getByRole('button',{name:/^(Language|Язык)$/}).click();
-  await page.getByRole('menuitemcheckbox',{name:value==='system'?/^(System|Системный)$/:value==='en'?'English':'Русский',exact:true}).click();
+  await openLanguage(page);
+  await page.getByRole('menu',{name:/^(Language|Язык)$/}).getByRole('menuitemcheckbox',{name:value==='system'?/^(System|Системный)$/:value==='en'?'English':'Русский',exact:true}).click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
 }
 
 test('language and theme icon menus preserve manual choices and follow system settings',{timeout:60000},async()=>{
@@ -3052,10 +3129,18 @@ test('language and theme icon menus preserve manual choices and follow system se
     await page.goto(new URL('app/chat',base).href);
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
     await expect(page.locator('select')).toHaveCount(0);
-    await page.getByRole('button',{name:'Язык',exact:true}).click();
+    const profile=page.getByRole('button',{name:'Профиль',exact:true});
+    await profile.hover();
+    await expect(profile).toHaveAttribute('aria-expanded','false');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await profile.click();
+    await expect(page.getByRole('menuitem',{name:'Настройки профиля',exact:true})).toBeVisible();
+    assert.ok((await profile.boundingBox()).y>await page.evaluate(()=>innerHeight)-60,'Profile stays at the bottom of the rail');
+    await openLanguage(page);
     await expect(page.getByRole('menuitemcheckbox',{name:'Системный',exact:true})).toBeChecked();
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('button',{name:'Язык',exact:true})).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button',{name:'Профиль',exact:true})).toBeFocused();
     await chooseLanguage(page,'en');
     await page.evaluate(()=>{Object.defineProperty(navigator,'language',{configurable:true,value:'ru-BY'});window.dispatchEvent(new Event('languagechange'))});
     await expect(page.locator('html')).toHaveAttribute('lang','en');
@@ -3068,17 +3153,17 @@ test('language and theme icon menus preserve manual choices and follow system se
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
     await chooseLanguage(page,'en');
 
-    await page.getByRole('button',{name:'Switch theme',exact:true}).click();
-    await expect(page.getByRole('menuitemcheckbox',{name:'System',exact:true})).toBeChecked();
+    await openAccountItem(page,'Theme');
+    await expect(page.getByRole('menu',{name:'Theme',exact:true}).getByRole('menuitemcheckbox',{name:'System',exact:true})).toBeChecked();
     await page.getByRole('menuitemcheckbox',{name:'Dark',exact:true}).click();
     await expect(page.locator('html')).toHaveClass(/dark/);
     await page.emulateMedia({colorScheme:'light'});
     await expect(page.locator('html')).toHaveClass(/dark/);
     await page.reload();
     await expect(page.locator('html')).toHaveClass(/dark/);
-    await page.getByRole('button',{name:'Switch theme',exact:true}).click();
+    await openAccountItem(page,'Theme');
     await expect(page.getByRole('menuitemcheckbox',{name:'Dark',exact:true})).toBeChecked();
-    await page.getByRole('menuitemcheckbox',{name:'System',exact:true}).click();
+    await page.getByRole('menu',{name:'Theme',exact:true}).getByRole('menuitemcheckbox',{name:'System',exact:true}).click();
     await expect(page.locator('html')).not.toHaveClass(/dark/);
     await page.emulateMedia({colorScheme:'dark'});
     await expect(page.locator('html')).toHaveClass(/dark/);
@@ -3086,22 +3171,20 @@ test('language and theme icon menus preserve manual choices and follow system se
     await expect(page.locator('html')).toHaveClass(/dark/);
     await page.emulateMedia({colorScheme:'light'});
     await expect(page.locator('html')).not.toHaveClass(/dark/);
-    await page.getByRole('button',{name:'Switch theme',exact:true}).click();
+    await openAccountItem(page,'Theme');
     await page.getByRole('menuitemcheckbox',{name:'Light',exact:true}).click();
     await page.emulateMedia({colorScheme:'dark'});
     await expect(page.locator('html')).not.toHaveClass(/dark/);
 
-    const logout=page.getByRole('button',{name:'Sign out',exact:true});
-    await expect(logout).toHaveText('');
-    assert.ok((await logout.boundingBox()).width<=36);
-    await page.getByRole('button',{name:'Language',exact:true}).click();
-    await expect(page.getByRole('menu')).toBeVisible();
-    await expect(page.getByRole('menu')).toBeInViewport();
+    assert.equal((await page.getByRole('button',{name:'Profile',exact:true}).boundingBox()).width,44);
+    await openLanguage(page);
+    await expect(page.getByRole('menu').last()).toBeVisible();
+    await expect(page.getByRole('menu').last()).toBeInViewport();
     await page.screenshot({path:'/tmp/kodrik-language-menu.png',fullPage:true,animations:'disabled'});
     await page.keyboard.press('Escape');
-    await page.getByRole('button',{name:'Switch theme',exact:true}).click();
-    await expect(page.getByRole('menu')).toBeVisible();
-    await expect(page.getByRole('menu')).toBeInViewport();
+    await openAccountItem(page,'Theme');
+    await expect(page.getByRole('menu').last()).toBeVisible();
+    await expect(page.getByRole('menu').last()).toBeInViewport();
     await page.screenshot({path:'/tmp/kodrik-theme-menu.png',fullPage:true,animations:'disabled'});
   } finally {await browser.close();}
 });
@@ -3210,11 +3293,13 @@ test('English mobile chat keeps keyboard sending, saved drafts and language sele
     await expect(page.locator('.message[data-role="user"]')).toContainText('English mobile question');
     await expect(editor).toHaveText('');
     await page.getByRole('button',{name:'Show conversations',exact:true}).click();
-    await page.getByRole('button',{name:'Language',exact:true}).focus();
-    await page.keyboard.press('Enter');await page.keyboard.press('End');await page.keyboard.press('Enter');
+    await page.getByRole('button',{name:'Profile',exact:true}).focus();
+    await page.keyboard.press('Enter');
+    await page.getByRole('menuitem',{name:'Language',exact:true}).focus();
+    await page.keyboard.press('ArrowRight');await page.keyboard.press('End');await page.keyboard.press('Enter');
     await expect(page.locator('html')).toHaveAttribute('lang','ru');
     await expect(page.getByRole('menu')).toHaveCount(0);
-    await expect(page.getByRole('button',{name:'Язык',exact:true})).toBeFocused();
+    await expect(page.getByRole('button',{name:'Профиль',exact:true})).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeVisible();
     await page.reload();
@@ -3265,10 +3350,12 @@ test('files and photos send without text, survive reload and download; mobile th
     await page.setViewportSize({width:390,height:844});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.getByRole('button',{name:'Показать диалоги'}).click();
-    await page.getByRole('button',{name:'Переключить тему'}).click();
+    await openAccountItem(page,'Тема');
     await page.getByRole('menuitemcheckbox',{name:'Тёмная',exact:true}).click();
     const primary=await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--ui-primary').trim());
     assert.ok(['#89b4fa','#1e66f5'].includes(primary));
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.screenshot({path:'/tmp/kodrik-nuxt-mobile.png',fullPage:true});
@@ -3415,7 +3502,7 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
     const url=page.url();const second=await context.newPage();await second.goto(url);
     await second.getByText('Жду остановки',{exact:true}).waitFor();
     let watches=0;page.on('request',r=>{if(r.url().endsWith('/events')||r.url().endsWith('/run'))watches++;});
-    await second.getByRole('button',{name:'Выйти',exact:true}).click();
+    await openAccountItem(second,'Выйти');
     await page.getByText('Сессия истекла. Войдите снова.',{exact:false}).waitFor();
     const count=watches;await new Promise(resolve=>setTimeout(resolve,1500));assert.equal(watches,count);
     assert.ok(await page.getByRole('link',{name:'Войти',exact:true}).count());
@@ -3574,7 +3661,7 @@ test('profile saves the current user name across reload and keeps guest password
     await expect(page.getByLabel('Имя',{exact:true})).toHaveValue('Алиса');
     await expect(page.getByLabel('Текущий пароль',{exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Чат',exact:true}).click();
-    await page.getByRole('button',{name:'Профиль',exact:true}).click();
+    await openAccountItem(page,'Настройки профиля');
     await expect(page).toHaveURL(new URL('app/profile',base).href);
 
     const guest=await browser.newPage({locale:'ru-RU',viewport:{width:390,height:844}});
@@ -3585,7 +3672,7 @@ test('profile saves the current user name across reload and keeps guest password
     assert.equal((await decideTelegram(loginId(await open.getAttribute('href')),true)).ok,true);
     await expect(guest).toHaveURL(new URL('app/chat',base).href);
     await guest.getByRole('button',{name:'Показать диалоги',exact:true}).click();
-    await guest.getByRole('button',{name:'Профиль',exact:true}).click();
+    await openAccountItem(guest,'Настройки профиля');
     await expect(guest.getByRole('heading',{name:'Личные данные',exact:true})).toBeVisible();
     await expect(guest.getByText('Приглашённый пользователь',{exact:true})).toBeVisible();
     await expect(guest.getByLabel('Новый пароль',{exact:true})).toHaveCount(0);
@@ -3598,7 +3685,7 @@ test('profile saves the current user name across reload and keeps guest password
     await chooseLanguage(guest,'en');
     await expect(guest.locator('html')).toHaveAttribute('lang','en');
     await expect(guest.getByRole('menu')).toHaveCount(0);
-    await expect(guest.getByRole('button',{name:'Language',exact:true})).toBeFocused();
+    await expect(guest.getByRole('button',{name:'Profile',exact:true})).toBeFocused();
     await guest.keyboard.press('Escape');
     await expect(guest.getByRole('dialog')).toHaveCount(0);
     await expect(guest.getByRole('heading',{name:'Personal details',exact:true})).toBeVisible();

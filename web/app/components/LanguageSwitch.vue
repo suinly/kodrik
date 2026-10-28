@@ -10,6 +10,6 @@ const items = computed(() => (['system', 'en', 'ru'] as const).map(value => ({
 
 <template>
   <UDropdownMenu :items="items">
-    <UButton icon="i-lucide-languages" :aria-label="t('Язык')" :title="t('Язык')" color="neutral" variant="ghost" size="lg" />
+    <UButton icon="i-lucide-languages" :aria-label="t('Язык')" :title="t('Язык')" color="neutral" variant="ghost" size="lg" class="size-11 justify-center p-0" />
   </UDropdownMenu>
 </template>

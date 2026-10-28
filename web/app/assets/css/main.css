@@ -133,7 +133,19 @@ body:has(.chat-viewport) {
   .sidebar-secondary[data-state='open'] { opacity: 1; }
 }
 @media (pointer: coarse) {
-  .chat-viewport button { min-height: 2.75rem; min-width: 2.75rem; }
+  .chat-viewport button:not([role='switch']) { min-height: 2.75rem; min-width: 2.75rem; }
+  .chat-viewport button[role='switch'] { position: relative; }
+  /* Grow the touch target without stretching the switch track. */
+  .chat-viewport button[role='switch']::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    min-width: 2.75rem;
+    height: 2.75rem;
+    transform: translate(-50%, -50%);
+  }
   .chat-viewport button:has(> [data-slot='leadingIcon']:only-child) { justify-content: center; }
   .chat-viewport .sidebar-item { min-height: 3.5rem; }
   .chat-viewport .sidebar-item-with-actions { padding-inline-end: 3.25rem; }

@@ -1,5 +1,7 @@
 <script setup lang="ts">
 defineProps<{title: string; label: string; placeholder: string; loading?: boolean}>()
+const header = useTemplateRef('header')
+const actions = computed(() => header.value?.closest('.chat-sidebar')?.querySelector('.sidebar-header-actions'))
 const query = defineModel<string>({required: true})
 const open = ref(!!query.value)
 const input = useTemplateRef('input')
@@ -21,10 +23,12 @@ function close() {
 </script>
 
 <template>
-  <div class="sidebar-section-header">
+  <div ref="header" class="sidebar-section-header">
     <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted"><slot name="title">{{ title }}</slot></h2>
-    <UButton ref="button" :aria-label="label" :title="label" :aria-expanded="open" :aria-controls="id" icon="i-lucide-search" color="neutral" :variant="open ? 'soft' : 'ghost'" size="sm" class="sidebar-action" @click="toggle" />
-    <slot />
+    <Teleport :to="actions ?? 'body'" :disabled="!actions">
+      <UButton ref="button" :aria-label="label" :title="label" :aria-expanded="open" :aria-controls="id" icon="i-lucide-search" color="neutral" :variant="open ? 'soft' : 'ghost'" size="sm" class="sidebar-action" @click="toggle" />
+      <slot />
+    </Teleport>
   </div>
   <UInput v-show="open" :id="id" ref="input" v-model="query" :aria-label="label" :placeholder="placeholder" :loading="loading" icon="i-lucide-search" size="lg" class="w-full" :ui="{base:'text-base'}" @keydown.esc.stop.prevent="close" />
 </template>

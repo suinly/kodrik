@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import {createReusableTemplate, useMediaQuery} from '@vueuse/core'
 import {locale, t} from '../utils/i18n'
 import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle} from '../utils/chat-presentation'
@@ -11,6 +12,9 @@ const conversationKey = ref(0)
 const initializing = ref(true)
 const error = ref('')
 const menu = ref(false)
+const [DefineRail, ReuseRail] = createReusableTemplate()
+const desktop = useMediaQuery('(min-width: 1024px)')
+watch(desktop, value => { if(value) menu.value=false })
 type Section = 'chat'|'pages'|'webhooks'|'profile'
 function readLocation():{section:Section;id:string|null} {
   const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
@@ -20,7 +24,10 @@ const section = ref<Section>(readLocation().section)
 const restoring = ref(false)
 const locationError = ref(false)
 let navigationRevision=0
-const webhooks = useWebhooks(computed(()=>section.value==='webhooks'))
+const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks')
+const showEvents = computed(()=>section.value==='webhooks' && webhookTab.value==='events')
+const viewingConversation = computed(()=>section.value==='chat' || showEvents.value && !!selected.value?.webhook)
+const webhooks = useWebhooks(computed(()=>section.value==='webhooks' && !showEvents.value))
 const webhookSearch = ref('')
 const visibleWebhooks = computed(() => {
   const query = webhookSearch.value.trim().toLowerCase()
@@ -30,10 +37,9 @@ const sections = [
   {id:'chat',label:'Чат',icon:'i-lucide-messages-square'},
   {id:'pages',label:'Страницы',icon:'i-lucide-panels-top-left'},
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
-  {id:'profile',label:'Профиль',icon:'i-lucide-user-round'},
 ] as const
 const visibleSections = computed(()=>sections.filter(item=>item.id!=='webhooks' || webhooks.allowed))
-const sectionTitle = computed(()=>section.value==='chat'?t(showEvents.value?'События':'Диалоги'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
+const sectionTitle = computed(()=>section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
 const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
@@ -42,15 +48,14 @@ const pageToDelete = ref<PublishedPage | null>(null)
 const deletingPage = ref(false)
 const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
-const mainTitle = computed(()=>section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : section.value==='webhooks' ? webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки') : selected.value ? conversationTitle(selected.value) : t('Кодрик'))
+const mainTitle = computed(()=>viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
 const search = ref('')
-const showEvents = ref(false)
-const conversationTypes = computed(()=>[
-  {label:t('Диалоги'),icon:'i-lucide-message-square',value:'dialogs'},
-  {label:t('События'),icon:'i-lucide-webhook',value:'events'},
+const webhookViews = computed(()=>[
+  {label:t('Вебхуки'),icon:'i-lucide-webhook',value:'hooks'},
+  {label:t('События'),icon:'i-lucide-history',value:'events'},
 ])
 const listing = ref(false)
 const listError = ref('')
@@ -118,14 +123,14 @@ watch([search,showEvents],()=>{
 onBeforeUnmount(()=>{disposed=true;clearTimeout(searchTimer);listRevision++;navigationRevision++})
 const dateFormat = computed(() => new Intl.DateTimeFormat(locale.value,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))
 const chatUrl = new URL('app/chat', base).pathname
-const logoutUrl = new URL('auth/logout', base).pathname
 
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
-  const id=section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks'?webhooks.selected:null
+  const event=showEvents.value && selected.value?.webhook ? selected.value : null
+  const id=event?.id ?? (section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks' && !showEvents.value?webhooks.selected:null)
   const url=new URL(window.location.href)
-  url.pathname=new URL(`app/${section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
-  url.search=''
+  url.pathname=new URL(`app/${event?'chat':section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
+  url.search=showEvents.value && !event?'?view=events':''
   url.hash=''
   if(url.href===window.location.href) return
   window.history.replaceState(window.history.state,'',url)
@@ -144,7 +149,7 @@ async function restoreLocation() {
       if(revision!==navigationRevision) return
       if(selected.value?.id!==conversation?.id) conversationKey.value++
       selected.value=conversation
-      showEvents.value=!!conversation?.webhook
+      if(conversation?.webhook) {section.value='webhooks';webhookTab.value='events'}
     } else if(target.section==='pages') {
       selectedPage.value=null
       if(target.id) {
@@ -156,6 +161,7 @@ async function restoreLocation() {
         selectedPage.value=page;pageRevision.value++
       }
     } else if(target.section==='webhooks') {
+      webhookTab.value=!target.id && new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks'
       webhooks.clear()
       await webhooks.load()
       if(revision!==navigationRevision) return
@@ -178,8 +184,9 @@ async function restoreLocation() {
   }
 }
 watch(()=>webhooks.selected,()=>{
-  if(section.value==='webhooks' && !restoring.value) writeLocation()
+  if(section.value==='webhooks' && !showEvents.value && !restoring.value) writeLocation()
 },{flush:'post'})
+watch(webhookTab,()=>{if(section.value==='webhooks' && !restoring.value) writeLocation()})
 
 function draftFor(id:string):ConversationDraft {
   if(!drafts[id]) {
@@ -219,7 +226,8 @@ async function openWebhookConversation(id:string) {
 
 function select(conversation: Conversation, preserveView = false) {
   if(!preserveView && selected.value?.id !== conversation.id) conversationKey.value++
-  section.value = 'chat'
+  section.value = conversation.webhook ? 'webhooks' : 'chat'
+  if(conversation.webhook) webhookTab.value='events'
   focusAfterMenu=menu.value
   const root=conversation.root_id ?? conversation.id
   try {
@@ -228,7 +236,6 @@ function select(conversation: Conversation, preserveView = false) {
     sessionStorage.setItem(key,JSON.stringify([...new Set([...ids,conversation.id])]))
   } catch {}
   selected.value = conversation
-  showEvents.value = !!conversation.webhook
   writeLocation()
   conversationSearch.value=conversation.snippet ? search.value.trim() : ''
   conversationSearchOpen.value=!!conversationSearch.value
@@ -295,7 +302,8 @@ function openPage(page: PublishedPage) {
 }
 
 function closePage() {
-  section.value = 'chat'
+  section.value = selected.value?.webhook ? 'webhooks' : 'chat'
+  if(selected.value?.webhook) webhookTab.value='events'
   writeLocation()
   void nextTick(() => conversationView.value?.focusInput())
 }
@@ -330,6 +338,7 @@ async function deletePage() {
 }
 
 function openSection(next:Section) {
+  if(next==='chat' && selected.value?.webhook) {selected.value=null;conversationKey.value++}
   section.value=next
   writeLocation()
   focusAfterMenu=false
@@ -338,6 +347,7 @@ function openSection(next:Section) {
 }
 
 function chooseWebhook(hook?:typeof webhooks.hooks[number]) {
+  webhookTab.value='hooks'
   webhooks.choose(hook)
   writeLocation()
   focusAfterMenu=false
@@ -434,49 +444,45 @@ onMounted(() => {
 </script>
 
 <template>
-  <UDashboardGroup unit="rem" class="chat-viewport bg-default"
-    @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
-    <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
+  <DefineRail>
       <nav :aria-label="t('Разделы')" class="flex w-full flex-col items-center gap-2">
         <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :aria-label="t(item.label)" :title="t(item.label)"
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
           :disabled="webhooks.saving" size="lg" class="size-11 justify-center p-0" @click="openSection(item.id)" />
       </nav>
+      <div class="mt-auto"><SidebarProfile :active="section==='profile'" :disabled="webhooks.saving" @settings="openSection('profile')" /></div>
+  </DefineRail>
+  <UDashboardGroup unit="rem" class="chat-viewport bg-default"
+    @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
+    <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
+      <ReuseRail />
     </aside>
-    <UDashboardSidebar v-model:open="menu" :default-size="18"
+    <UDashboardSidebar v-model:open="menu" :default-size="18" class="chat-sidebar"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-viewport w-[calc(100%-48px)] max-w-80 sm:max-w-80 bg-default',overlay:'bg-black/40'}">
+      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-sidebar chat-viewport w-[calc(100%-48px)] max-w-96 sm:max-w-96 ps-14! bg-default',overlay:'bg-black/40'}">
       <template #header>
+        <aside class="absolute inset-y-0 left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
-        <div class="ml-auto flex shrink-0 items-center gap-0.5">
-          <LanguageSwitch />
-          <ThemeSwitch />
-          <form :action="logoutUrl" method="post">
-            <UButton type="submit" color="neutral" variant="ghost" icon="i-lucide-log-out" :aria-label="t('Выйти')" :title="t('Выйти')" size="lg" />
-          </form>
-        </div>
+        <div class="sidebar-header-actions ml-auto flex shrink-0 items-center gap-1" />
       </template>
-      <nav :aria-label="t('Разделы')" class="flex shrink-0 flex-col gap-1 border-b border-default pb-3 lg:hidden">
-        <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :label="t(item.label)"
-          :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
-          :disabled="webhooks.saving" size="xl" class="justify-start" @click="openSection(item.id)" />
-      </nav>
-      <SidebarSearch v-if="section==='chat'" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
-          <template #title>
-            <UTabs :model-value="showEvents?'events':'dialogs'" :items="conversationTypes" :content="false" color="neutral" size="sm"
-              :ui="{list:'w-auto',trigger:'size-8 p-0 gap-0',label:'sr-only'}" class="w-fit" @update:model-value="showEvents=$event==='events'">
-              <template #leading="{item}"><UIcon :name="item.icon" :title="item.label" class="size-4" /></template>
-            </UTabs>
+      <SidebarSearch v-if="section==='chat' || showEvents" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
+          <template v-if="showEvents" #title>
+            <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
+              :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
           </template>
           <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="listing" :disabled="creating" @click="refresh" />
-          <UButton :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
+          <UButton v-if="!showEvents" :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
       </SidebarSearch>
       <SidebarSearch v-else-if="section==='webhooks' && webhooks.allowed" v-model="webhookSearch" :title="sectionTitle" :label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')">
+          <template #title>
+            <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
+              :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
+          </template>
           <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
           <UButton :aria-label="t('Создать вебхук')" :title="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :disabled="webhooks.saving || webhooks.loading" @click="chooseWebhook()" />
       </SidebarSearch>
-      <template v-if="section==='chat'">
-      <nav :aria-label="t('История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
+      <template v-if="section==='chat' || showEvents">
+      <nav :aria-label="t(showEvents?'История событий':'История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
         <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="sidebar-row relative flex shrink-0 items-center">
         <UButton
           :aria-label="conversationTitle(session)" :title="conversationTitle(session)" :data-conversation-id="session.id" color="neutral"
@@ -490,6 +496,7 @@ onMounted(() => {
           <span class="min-w-0 flex-1 text-left">
             <UChatShimmer v-if="session.title_pending" :text="shortConversationTitle(session.title)" data-testid="title-shimmer" :aria-label="t('Создаю название диалога')" class="block truncate motion-reduce:animate-none" />
             <span v-else class="block truncate">{{ shortConversationTitle(conversationTitle(session)) }}</span>
+            <span v-if="session.webhook" class="block truncate text-xs font-normal text-muted">{{ session.webhook.name }}</span>
             <span v-if="session.snippet" class="block truncate text-xs font-normal text-muted">{{ session.snippet }}</span>
             <time v-else-if="session.updated_at" :datetime="session.updated_at" class="block text-xs font-normal text-muted">{{ dateFormat.format(new Date(session.updated_at)) }}</time>
           </span>
@@ -533,7 +540,7 @@ onMounted(() => {
               <UButton icon="i-lucide-arrow-left" :aria-label="t('Вернуться в диалог')" :title="t('Вернуться в диалог')" color="neutral" variant="ghost" @click="closePage" />
               <h1 class="min-w-0 truncate font-semibold text-highlighted">{{ selectedPage.title }}</h1>
             </div>
-            <div v-else-if="section==='chat'" class="conversation-heading flex min-w-0 items-center gap-1.5">
+            <div v-else-if="viewingConversation" class="conversation-heading flex min-w-0 items-center gap-1.5">
               <div class="min-w-0 flex-1 sm:flex sm:items-center sm:gap-1.5">
               <h1 class="min-w-0 truncate font-semibold text-highlighted">
                 <UChatShimmer v-if="selected?.title_pending" :text="selected.title" data-testid="navbar-title-shimmer" :aria-label="t('Создаю название диалога')" class="truncate motion-reduce:animate-none" />
@@ -553,7 +560,7 @@ onMounted(() => {
               <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить страницу')" :title="t('Обновить страницу')" color="neutral" variant="ghost" @click="pageRevision++" />
               <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
             </template>
-            <UButton v-else-if="section==='chat' && selected" icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
+            <UButton v-else-if="viewingConversation && selected" icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
           </template>
         </UDashboardNavbar>
       </template>
@@ -573,13 +580,18 @@ onMounted(() => {
           </template>
           <p v-else-if="!restoring" class="p-6 text-sm text-muted">{{ t('Выберите страницу в боковом меню.') }}</p>
         </section>
-        <div v-show="section==='webhooks' && !restoring" class="min-h-0 flex-1 overflow-y-auto">
+        <div v-show="section==='webhooks' && !showEvents && !restoring" class="min-h-0 flex-1 overflow-y-auto">
           <LazyWebhooksManager v-if="webhooks.allowed && !locationError" :manager="webhooks" @open="openWebhookConversation" />
+        </div>
+        <div v-if="showEvents && !selected?.webhook && !restoring" class="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+          <UIcon name="i-lucide-history" class="size-8 text-dimmed" />
+          <h2 class="font-semibold text-highlighted">{{ t('Выберите событие') }}</h2>
+          <p class="max-w-sm text-sm text-muted">{{ t('Откройте событие из списка слева, чтобы посмотреть запрос и ответ агента.') }}</p>
         </div>
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="section==='chat' && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>

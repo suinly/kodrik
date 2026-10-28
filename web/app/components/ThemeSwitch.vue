@@ -16,6 +16,6 @@ const icon = computed(() => options.find(([value]) => value === colorMode.prefer
 
 <template>
   <UDropdownMenu :items="items">
-    <UButton :icon="icon" :aria-label="t('Переключить тему')" :title="t('Переключить тему')" color="neutral" variant="ghost" size="lg" />
+    <UButton :icon="icon" :aria-label="t('Переключить тему')" :title="t('Переключить тему')" color="neutral" variant="ghost" size="lg" class="size-11 justify-center p-0" />
   </UDropdownMenu>
 </template>
