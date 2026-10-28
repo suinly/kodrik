@@ -3,7 +3,7 @@ import {t} from '../utils/i18n'
 import {linkTarget} from '../utils/link-target'
 import {attachmentUrl, type ChatMessage} from '../utils/api'
 import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
-const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean;initiallyCollapsed?:boolean }>()
+const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
 const blocks=computed(()=>groupMessageParts(props.message.parts))
 const editing=ref(false)
@@ -31,7 +31,7 @@ function beginEdit() {
       <div class="min-w-0 space-y-3">
         <template v-for="(block,index) in blocks" :key="index">
           <template v-if="block.kind==='content'">
-            <ChatMessageText v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" :code="block.part.format==='code'" :initially-collapsed="initiallyCollapsed" :reveal="searchSelected || message.id==='partial'" />
+            <ChatMessageText v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" :code="block.part.format==='code'" />
             <div v-else-if="block.part.type==='file'" class="flex flex-col items-start gap-2">
               <img v-if="block.part.url && block.part.mediaType.startsWith('image/')" :src="attachmentUrl(block.part.url)" :alt="block.part.filename" loading="lazy" class="max-h-72 max-w-full rounded-lg object-contain">
               <UButton :to="attachmentUrl(block.part.url)" :target="linkTarget(attachmentUrl(block.part.url))" :disabled="!block.part.url" external download color="neutral" variant="outline"

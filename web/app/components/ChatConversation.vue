@@ -36,7 +36,6 @@ const connection = ref('')
 const hint = ref(pending?.files?.length ? t("Повторно выберите вложения, если предыдущая отправка не была принята.") : '')
 const authExpired = ref(false)
 const snapshot = ref<Snapshot | null>(null)
-const initialMessageIds = shallowRef(new Set<string>())
 const prompt = useTemplateRef('prompt')
 const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
 const transcript = useTemplateRef('transcript')
@@ -169,7 +168,6 @@ function receive(view: Snapshot) {
     (view.title_pending !== undefined && view.title_pending !== (snapshot.value?.title_pending ?? props.conversation.title_pending ?? false)) ||
     (view.title_default !== undefined && view.title_default !== (snapshot.value?.title_default ?? props.conversation.title_default ?? false))
   revision = view.revision
-  if(!snapshot.value && !homeView) initialMessageIds.value=new Set([...view.messages,...view.queued].map(message=>message.id))
   snapshot.value = view
   for(const child of view.subagents ?? []) if(child.status!=='running') {
     delete childProblems.value[child.id]
@@ -484,7 +482,7 @@ const compactionLabels = {
           </div>
           <ChatItem v-for="message in snapshot?.messages ?? []" :key="message.id" :message="message" :superseded="superseded" :actions="!editorLocked"
             :editable="message.role==='user' && !locked && !busy && !snapshot?.queued.length && !editingMessage" :saving="editingMessage===message.id"
-            :search-selected="matches[matchIndex]===message.id" :initially-collapsed="initialMessageIds.has(message.id)"
+            :search-selected="matches[matchIndex]===message.id"
             @edit="text=>editMessage(message,text)" @version="id=>emit('navigate',id)"
             @prompt="text=>{if(!editorLocked){draft=draft.trim()?`${draft}\n\n${text}`:text;focusInput()}}" />
           <div v-if="snapshot?.live.current?.text" data-testid="partial">
@@ -496,7 +494,6 @@ const compactionLabels = {
             <template #content><ChatMarkdown :text="snapshot.live.interrupted.text" /></template>
           </UCollapsible>
           <ChatItem v-for="message in queuedMessages" :key="message.id" :message="message"
-            :initially-collapsed="initialMessageIds.has(message.id)"
             :status="snapshot?.blocked_reason ? t('Передача приостановлена') : t('Ожидает передачи агенту')" />
           <UChatShimmer v-if="busy && !hint && !stopping" as="p" :text="t('Кодрик работает…')" role="status" aria-live="polite" class="text-sm" />
         </div>

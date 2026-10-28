@@ -294,8 +294,6 @@ export const en = {
   'Предыдущая версия документа': 'Previous document version',
   'Ниже в переписке есть более новая версия этого документа.': 'A newer version of this document appears later in the conversation.',
   'Редактирование сообщения': 'Edit message text',
-  'Развернуть сообщение': 'Expand message',
-  'Свернуть сообщение': 'Collapse message',
   'Новый ответ появится в отдельной версии. Исходная переписка сохранится.': 'The new reply will appear in a separate version. The original conversation will be kept.',
   'Сохранить и отправить': 'Save and send',
   'Предыдущая версия сообщения': 'Previous message version',
