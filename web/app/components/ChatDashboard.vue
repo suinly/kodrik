@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {createReusableTemplate, useMediaQuery} from '@vueuse/core'
+import {createReusableTemplate, useIntervalFn, useMediaQuery} from '@vueuse/core'
 import {locale, t} from '../utils/i18n'
 import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle} from '../utils/chat-presentation'
@@ -214,6 +214,17 @@ async function refresh() {
     }
   } catch (reason) { error.value = messageOf(reason) }
 }
+
+function refreshSidebar() {
+  if(document.hidden || !desktop.value && !menu.value || restoring.value) return
+  if(section.value==='chat' || showEvents.value) {
+    if(!listing.value && !creating.value && !saving.value) void refresh()
+  } else if(section.value==='webhooks' && webhooks.allowed && !webhooks.saving) {
+    void webhooks.load()
+  }
+}
+useIntervalFn(refreshSidebar,5000)
+watch(menu,open=>{if(open) refreshSidebar()})
 
 async function openWebhookConversation(id:string) {
   const revision=navigationRevision
@@ -457,9 +468,9 @@ onMounted(() => {
     <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <ReuseRail />
     </aside>
-    <UDashboardSidebar v-model:open="menu" :default-size="18" class="chat-sidebar"
+    <UDashboardSidebar v-model:open="menu" :default-size="18" toggle-side="right" class="chat-sidebar"
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
-      :toggle="{size:'xl'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) flex-wrap py-2 sm:px-4',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-sidebar chat-viewport w-[calc(100%-48px)] max-w-96 sm:max-w-96 ps-14! bg-default',overlay:'bg-black/40'}">
+      :toggle="{size:'sm',class:'sidebar-action'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) gap-0.5 py-2 sm:px-4',toggle:'ms-0',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-sidebar chat-viewport w-[calc(100%-48px)] max-w-96 sm:max-w-96 ps-14! bg-default',overlay:'bg-black/40'}">
       <template #header>
         <aside class="absolute inset-y-0 left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
@@ -470,16 +481,14 @@ onMounted(() => {
             <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
               :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
           </template>
-          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="listing" :disabled="creating" @click="refresh" />
-          <UButton v-if="!showEvents" :aria-label="t('Новый диалог')" :title="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="creating" @click="create()" />
+          <UButton v-if="!showEvents" :label="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :loading="creating" @click="create()" />
       </SidebarSearch>
       <SidebarSearch v-else-if="section==='webhooks' && webhooks.allowed" v-model="webhookSearch" :title="sectionTitle" :label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')">
           <template #title>
             <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
               :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
           </template>
-          <UButton :aria-label="t('Обновить')" :title="t('Обновить')" icon="i-lucide-refresh-cw" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="webhooks.loading" :disabled="webhooks.saving" @click="webhooks.load" />
-          <UButton :aria-label="t('Создать вебхук')" :title="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="ghost" size="sm" class="sidebar-action" :disabled="webhooks.saving || webhooks.loading" @click="chooseWebhook()" />
+          <UButton :label="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :disabled="webhooks.saving" @click="chooseWebhook()" />
       </SidebarSearch>
       <template v-if="section==='chat' || showEvents">
       <nav :aria-label="t(showEvents?'История событий':'История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">

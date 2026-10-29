@@ -171,8 +171,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await writeFile(join(storage,'pages','manifests','legacy-preview.json'),JSON.stringify({release,visibility:'private',document:false}));
     await page.setViewportSize({width:1280,height:720});
     await pages.click();
-    await page.getByRole('button',{name:'Обновить',exact:true}).click();
-    await navigation.getByRole('button',{name:/^legacy-preview/}).click();
+    await navigation.getByRole('button',{name:/^legacy-preview/}).click({timeout:10000});
     await expect(page.frameLocator('iframe[title="legacy-preview"]').getByRole('heading',{name:'Legacy published report'})).toBeVisible();
     await page.getByRole('button',{name:'Вернуться в диалог',exact:true}).click();
     await expect(composer).toHaveText('Несохранённый черновик');
@@ -196,8 +195,7 @@ test('pages catalog searches published titles and addresses without losing the c
     await writeFile(join(nativeDirectory,'document.json'),JSON.stringify({document:{title:'Relative links',body,sources:[],views:[],actions:[]},snapshot:{}}));
     await writeFile(join(storage,'pages','manifests','relative-links.json'),JSON.stringify({release:nativeRelease,visibility:'private',document:true}));
     await pages.click();
-    await page.getByRole('button',{name:'Обновить',exact:true}).click();
-    await navigation.getByRole('button',{name:/^Relative links/}).click();
+    await navigation.getByRole('button',{name:/^Relative links/}).click({timeout:10000});
     for(const label of ['Relative report','Relative button']) await expect(viewer.getByRole('link',{name:label,exact:true})).toHaveAttribute('href',new URL('pages/nutrition/',base).href);
     await expect(viewer.getByRole('link',{name:'Anchor',exact:true})).toHaveAttribute('href','#section');
     await viewer.getByRole('button',{name:'Open links',exact:true}).click();
@@ -275,6 +273,56 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
   } finally {await browser.close();}
 });
 
+test('sidebar lists update automatically while preserving searches and drafts', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('app/chat',base).href);
+    const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await composer.fill('Черновик при автообновлении');
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
+    const search=page.getByRole('textbox',{name:'Поиск диалогов',exact:true});
+    const title=`Автообновление ${crypto.randomUUID()}`;
+    await Promise.all([
+      page.waitForResponse(response=>response.url().includes('/api/chat/sessions?') && new URL(response.url()).searchParams.get('q')===title),
+      search.fill(title),
+    ]);
+    await expect(page.getByText('Диалоги не найдены.',{exact:true})).toBeVisible();
+    const {id}=await(await request('sessions',{})).json();
+    const renamed=await fetch(new URL(`api/chat/sessions/${id}`,base),{
+      method:'PATCH',headers:{Cookie:cookie,Origin:new URL(base).origin,'Content-Type':'application/json'},body:JSON.stringify({title}),
+    });
+    assert.ok(renamed.ok);
+    await expect(page.locator(`[data-conversation-id="${id}"]`)).toBeVisible({timeout:10000});
+    await expect(search).toHaveValue(title);
+    await expect(search).toBeFocused();
+    await expect(composer).toHaveText('Черновик при автообновлении');
+    const sections=page.getByRole('navigation',{name:'Разделы',exact:true});
+    await sections.getByRole('button',{name:'Страницы',exact:true}).click();
+    const catalog=page.getByRole('navigation',{name:'Каталог страниц'});
+    await expect(catalog).toBeVisible();
+    const slug=`auto-${crypto.randomUUID()}`,release=crypto.randomUUID();
+    const directory=join(storage,'pages','releases',slug,release);
+    await mkdir(directory,{recursive:true});
+    await writeFile(join(directory,'index.html'),'<!doctype html><h1>Automatic page</h1>');
+    await mkdir(join(storage,'pages','manifests'),{recursive:true});
+    await writeFile(join(storage,'pages','manifests',`${slug}.json`),JSON.stringify({release,visibility:'private',document:false}));
+    await expect(catalog.getByRole('button',{name:new RegExp(`^${slug}`)})).toBeVisible({timeout:10000});
+    await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
+    await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
+    await page.getByLabel('Название вебхука',{exact:true}).fill('Несохранённый вебхук');
+    const hook=await fetch(new URL('api/webhooks',base),{
+      method:'POST',headers:{Cookie:cookie,Origin:new URL(base).origin,'Content-Type':'application/json'},
+      body:JSON.stringify({name:title,instruction:'Обработай событие.',enabled:true}),
+    });
+    assert.ok(hook.ok);
+    await expect(page.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:title,exact:true})).toBeVisible({timeout:10000});
+    await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Несохранённый вебхук');
+    await sections.getByRole('button',{name:'Чат',exact:true}).click();
+    await expect(composer).toHaveText('Черновик при автообновлении');
+  } finally {await browser.close();}
+});
+
 test('section rail switches context menus and main content without losing chat drafts', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'ui'});
@@ -287,10 +335,14 @@ test('section rail switches context menus and main content without losing chat d
     await expect(sections).toBeVisible();
     assert.ok((await sections.boundingBox()).width<=64);
     const logo=await page.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
-    for(const name of ['Поиск диалогов','Обновить','Новый диалог']) {
+    await expect(page.getByRole('button',{name:'Обновить',exact:true})).toHaveCount(0);
+    for(const name of ['Поиск диалогов']) {
       const button=await page.locator('.sidebar-header-actions').first().getByRole('button',{name,exact:true}).boundingBox();
       assert.ok(button.x>=logo.x+logo.width && Math.abs(button.y+button.height/2-logo.y-logo.height/2)<1,`${name}: sits to the right of the logo on the same row`);
     }
+    const create=await page.getByRole('button',{name:'Новый диалог',exact:true}).boundingBox();
+    const history=await page.getByRole('navigation',{name:'История диалогов'}).boundingBox();
+    assert.ok(create.y>=logo.y+logo.height && Math.abs(create.x-history.x)<1 && Math.abs(create.width-history.width)<1,'Create fills the content width below the header');
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await composer.fill('Черновик между разделами');
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-desktop.png',animations:'disabled'});
@@ -362,10 +414,24 @@ test('section rail switches context menus and main content without losing chat d
     await page.getByRole('button',{name:'Показать вебхуки',exact:true}).click();
     await mobileSections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(menu.getByRole('navigation',{name:'История диалогов'})).toBeVisible();
+    const mobileLogo=await menu.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+    const mobileHistory=await menu.getByRole('navigation',{name:'История диалогов'}).boundingBox();
+    const mobileCreate=await menu.getByRole('button',{name:'Новый диалог',exact:true}).boundingBox();
+    const mobileSearch=await menu.getByRole('button',{name:'Поиск диалогов',exact:true}).boundingBox();
+    const close=menu.locator('[data-slot="toggle"]');
+    const mobileClose=await close.boundingBox();
+    assert.ok(Math.abs(mobileLogo.x-mobileHistory.x)<1,'Logo aligns with the sidebar content');
+    assert.ok(mobileSearch.x>=mobileLogo.x+mobileLogo.width && mobileClose.x>=mobileSearch.x+mobileSearch.width,'Search sits between logo and close');
+    assert.ok(Math.abs(mobileClose.x+mobileClose.width-mobileHistory.x-mobileHistory.width)<1,'Close aligns with the right content edge');
+    assert.ok(mobileCreate.y>=mobileLogo.y+mobileLogo.height && Math.abs(mobileCreate.x-mobileHistory.x)<1 && Math.abs(mobileCreate.width-mobileHistory.width)<1,'Mobile create fills the content width below the header');
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-mobile.png',animations:'disabled'});
+    await close.click();
+    await expect(menu).toHaveCount(0);
+    await expect(composer).toHaveText('Черновик между разделами');
     await page.setViewportSize({width:1280,height:900});
     await expect(menu).toHaveCount(0);
-    for(const name of ['Поиск диалогов','Обновить','Новый диалог']) await expect(page.locator('.sidebar-header-actions').first().getByRole('button',{name,exact:true})).toHaveCount(1);
+    await expect(page.locator('.sidebar-header-actions').first().getByRole('button',{name:'Поиск диалогов',exact:true})).toHaveCount(1);
+    await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toBeVisible();
     await page.setViewportSize({width:390,height:844});
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
@@ -792,6 +858,11 @@ test('mobile sidebar opens with a left-edge swipe over a dimmed screen', {timeou
       const rail=await dialog.getByRole('navigation',{name:'Разделы',exact:true}).boundingBox();
       const history=await dialog.getByRole('navigation',{name:'История диалогов',exact:true}).boundingBox();
       assert.ok(rail.width<=56 && history.x>=rail.x+rail.width,'Swipe opens the navigation rail and history side by side');
+      const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+      const search=await dialog.getByRole('button',{name:'Поиск диалогов',exact:true}).boundingBox();
+      const close=await dialog.locator('[data-slot="toggle"]').boundingBox();
+      assert.ok(Math.abs(logo.x-history.x)<1 && search.x>=logo.x+logo.width && close.x>=search.x+search.width,`Header controls fit in one row at ${width}px`);
+      assert.ok(Math.abs(close.x+close.width-history.x-history.width)<1,`Close stays at the right content edge at ${width}px`);
       await expect(dialog.getByRole('button',{name:'Профиль',exact:true})).toBeVisible();
       const after=await composer.boundingBox();
       assert.equal(after.x,before.x);

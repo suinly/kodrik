@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import {useIntervalFn} from '@vueuse/core'
 import {locale, t} from '../utils/i18n'
 import {base, login, type PublishedPage} from '../utils/api'
 
@@ -15,6 +16,7 @@ const visiblePages = computed(() => {
 })
 
 async function load() {
+  if(loading.value) return
   loading.value = true
   error.value = ''
   try {
@@ -28,14 +30,13 @@ async function load() {
 }
 onMounted(load)
 watch(() => props.revision, load)
+useIntervalFn(()=>{if(!document.hidden) void load()},5000)
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col gap-3">
-    <SidebarSearch v-model="search" :title="t('Страницы')" :label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')">
-      <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить')" :title="t('Обновить')" color="neutral" variant="ghost" size="sm" class="sidebar-action" :loading="loading" @click="load" />
-    </SidebarSearch>
-    <p v-if="loading" role="status" class="text-sm text-muted">{{ t('Загружаю страницы…') }}</p>
+    <SidebarSearch v-model="search" :title="t('Страницы')" :label="t('Поиск страниц')" :placeholder="t('Поиск страниц…')" :loading="loading" />
+    <p v-if="loading && !pages.length" role="status" class="text-sm text-muted">{{ t('Загружаю страницы…') }}</p>
     <template v-else-if="error">
       <p role="alert" class="text-sm text-error">{{ t(error) }}</p>
       <UButton :label="t('Повторить загрузку')" color="neutral" variant="link" @click="load" />
