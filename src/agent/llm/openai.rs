@@ -66,6 +66,7 @@ enum ResponseItem {
     FunctionCall {
         call_id: String,
         name: String,
+        namespace: Option<String>,
         arguments: String,
     },
     #[serde(other)]
@@ -118,13 +119,22 @@ impl ResponseOutput {
                 ResponseItem::FunctionCall {
                     call_id,
                     name,
+                    namespace,
                     arguments,
                 } => Some(
                     serde_json::from_str(&arguments)
                         .map(|arguments| {
                             Message::ToolCall(ToolCall {
                                 call_id,
-                                name,
+                                name: match namespace {
+                                    Some(namespace)
+                                        if namespace.starts_with("mcp__")
+                                            && !name.starts_with(&format!("{namespace}__")) =>
+                                    {
+                                        format!("{namespace}__{name}")
+                                    }
+                                    _ => name,
+                                },
                                 arguments,
                             })
                         })
@@ -1158,6 +1168,45 @@ mod tests {
             message.content,
             "Версия проекта изменена на 0.1.1 в Cargo.toml и Cargo.lock."
         );
+    }
+
+    #[test]
+    fn preserves_mcp_tool_namespace_from_provider() {
+        for (namespace, name, expected) in [
+            (
+                Some("mcp__rustrak"),
+                "mcp__helper",
+                "mcp__rustrak__mcp__helper",
+            ),
+            (
+                Some("mcp__rustrak"),
+                "search_issues",
+                "mcp__rustrak__search_issues",
+            ),
+            (
+                Some("mcp__rustrak"),
+                "mcp__rustrak__search_issues",
+                "mcp__rustrak__search_issues",
+            ),
+            (Some("functions"), "mcp_search", "mcp_search"),
+            (
+                None,
+                "mcp__rustrak__search_issues",
+                "mcp__rustrak__search_issues",
+            ),
+        ] {
+            let response: ResponseOutput = serde_json::from_value(json!({"output":[{
+                "type":"function_call","call_id":"call","namespace":namespace,
+                "name":name,"arguments":"{\"project\":7}"
+            }]}))
+            .unwrap();
+            let messages = response.into_messages().unwrap();
+            let Message::ToolCall(call) = &messages[0] else {
+                panic!("expected tool call")
+            };
+            assert_eq!(call.name, expected);
+            assert_eq!(call.arguments, json!({"project":7}));
+        }
     }
 
     #[test]

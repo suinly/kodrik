@@ -113,6 +113,13 @@ pub(crate) async fn connect(
             }));
         }
     }
+    if !tools.is_empty() {
+        let catalog = tools
+            .iter()
+            .map(|tool| (tool.name(), tool.description()))
+            .collect();
+        tools.push(Arc::new(super::mcp_search::McpSearchTool::new(catalog)));
+    }
     Ok(tools)
 }
 
@@ -136,6 +143,10 @@ impl Tool for McpTool {
 
     fn strict_schema(&self) -> bool {
         false
+    }
+
+    fn deferred(&self) -> bool {
+        true
     }
 
     async fn execute(&self, properties: Value) -> anyhow::Result<ToolOutput> {

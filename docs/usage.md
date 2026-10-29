@@ -236,6 +236,7 @@ The agent chooses tools from your request; these names are not slash commands.
 | `companion` | Inspect learning, forget lessons and manage interests |
 | `wakeups` | Schedule, list, reschedule or cancel the agent's own one-shot follow-up work in the source Telegram, web, CLI/TUI or webhook conversation |
 | `session_search` | Search or browse previous user/assistant messages |
+| `mcp_search` | Find configured external MCP tools by name/description and load matching schemas for the next model request |
 | `encyclopedia_search` | Research topics on English or Russian Wikipedia |
 | `web_search` | Search the configured SearXNG instance for public sources; requires research configuration |
 | `web_read` | Read a public page as Markdown using local Obscura; requires research configuration |

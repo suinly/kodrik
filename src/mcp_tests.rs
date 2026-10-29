@@ -74,11 +74,14 @@ async fn mcp_http_owner_can_call_tools_but_isolated_and_proactive_agents_cannot(
         let tx = tx.clone();
         async move {
             tx.send(body.clone()).unwrap();
-            let called = body["input"].as_array().unwrap().iter().any(|item| item["type"] == "function_call_output");
-            let output = if called {
+            let results: Vec<_> = body["input"].as_array().unwrap().iter().filter(|item| item["type"] == "function_call_output").collect();
+            let failed = results.first().is_some_and(|item| serde_json::from_str::<Value>(item["output"].as_str().unwrap()).unwrap()["error"].is_string());
+            let output = if results.len() >= 2 || failed {
                 json!({"type":"message","content":[{"type":"output_text","text":"done"}]})
-            } else {
+            } else if results.len() == 1 {
                 json!({"type":"function_call","name":"mcp__rustrak__list_issues","call_id":"mcp-test","arguments":"{\"project\":7}"})
+            } else {
+                json!({"type":"function_call","name":"mcp_search","call_id":"mcp-search","arguments":"{\"query\":\"rustrak list issues\",\"limit\":1}"})
             };
             let response = json!({"output":[output]});
             if body["stream"] == true {
@@ -116,14 +119,19 @@ X-Tenant = "test-tenant"
         let data = tempfile::tempdir().unwrap();
         let app = build_app_at(&config, data.path(), isolated).await.unwrap();
         app.agent_runner.run_once("list issues").await.unwrap();
-        for call in 0..2 {
+        let request_count = if isolated { 2 } else { 3 };
+        for call in 0..request_count {
             let request = rx.recv().await.unwrap();
             assert!(!request.to_string().contains("PRIVATE_MCP_TOKEN"));
             let tools = request["tools"].as_array().unwrap();
             let mcp_tool = tools
                 .iter()
                 .find(|tool| tool["name"] == "mcp__rustrak__list_issues");
-            assert_eq!(mcp_tool.is_some(), !isolated);
+            assert_eq!(mcp_tool.is_some(), !isolated && call > 0);
+            assert_eq!(
+                tools.iter().any(|tool| tool["name"] == "mcp_search"),
+                !isolated
+            );
             assert_eq!(
                 tools.iter().find(|tool| tool["name"] == "memory").unwrap()["strict"],
                 true
@@ -138,15 +146,16 @@ X-Tenant = "test-tenant"
                 assert!(
                     tools
                         .iter()
-                        .any(|tool| tool["name"] == "mcp__rustrak__resolve_issue")
+                        .all(|tool| tool["name"] != "mcp__rustrak__resolve_issue")
                 );
             }
-            if call == 1 {
+            if call == request_count - 1 {
                 let output = request["input"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .find(|item| item["type"] == "function_call_output")
+                    .filter(|item| item["type"] == "function_call_output")
+                    .last()
                     .unwrap();
                 let output: Value =
                     serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
@@ -179,7 +188,8 @@ X-Tenant = "test-tenant"
                     .as_array()
                     .unwrap()
                     .iter()
-                    .all(|tool| !tool["name"].as_str().unwrap().starts_with("mcp__"))
+                    .all(|tool| tool["name"] != "mcp_search"
+                        && !tool["name"].as_str().unwrap().starts_with("mcp__"))
             );
         }
     }

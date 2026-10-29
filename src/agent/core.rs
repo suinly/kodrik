@@ -361,7 +361,6 @@ impl Agent {
             self.context.initialize_session(session)?;
             session.push(Message::User(input));
         }
-        let tools = self.tools.list();
         let mut requests = 0;
         let mut overflow_retry_used = checkpoint
             .as_ref()
@@ -400,6 +399,7 @@ impl Agent {
             if input_consumed && let Some(tx) = progress {
                 let _ = tx.send(AgentEvent::InputConsumed).await;
             }
+            let tools = self.tools.for_model(session.messages())?;
             let messages = if let Some(cp) = checkpoint
                 .as_ref()
                 .filter(|cp| !cp.record.pending_calls.is_empty())

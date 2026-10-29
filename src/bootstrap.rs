@@ -9,6 +9,10 @@ mod messages_tests;
 mod mcp_tests;
 
 #[cfg(test)]
+#[path = "mcp_discovery_tests.rs"]
+mod mcp_discovery_tests;
+
+#[cfg(test)]
 #[path = "tools_tests.rs"]
 mod tools_tests;
 

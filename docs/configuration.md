@@ -112,15 +112,30 @@ URLs must use HTTP(S), without embedded credentials or a fragment.
 
 Tools appear as `mcp__rustrak__<tool>`. The complete name must be at most 64 ASCII
 letters, digits, underscores or hyphens; invalid or duplicate names fail startup.
-The server's input schemas are passed through with non-strict function calling.
+The complete catalog stays in the application. The model initially receives
+`mcp_search`, not all MCP schemas. It searches server/tool names and descriptions;
+matching schemas become available on the next model request. Search defaults to
+8 matches and accepts a limit of 1–16. Use an exact qualified name to find one
+function. Queries use words from the original names/descriptions; English
+keywords usually work best for English MCP catalogs.
+
+Up to 32 recently discovered MCP tools remain advertised alongside built-ins,
+within a total budget of 128 functions. Searching again reloads an older tool.
+Selections are reconstructed from successful search results in saved history,
+including after compaction and restart, and are not shared between conversations.
+The complete catalog remains searchable. This uses ordinary function calls and
+requires no native `tool_search` support from the provider.
+
+The selected server input schemas are passed through with non-strict function calling.
 Text, structured results and `isError` are preserved in tool results and history.
-Headers are not included in tool definitions or arguments.
+Headers are not included in tool definitions, search results or arguments.
 
 Only the owner's foreground agent receives these tools (CLI/TUI and the owner's
 personal chats). Isolated users, guest spaces and proactive research do not
 connect to the configured servers. Calls use the server token's permissions,
 including write operations. Calls are never marked safe for crash replay, and
 HTTP failures or expired MCP sessions do not automatically repeat the request.
+Local metadata searches are read-only and safe to repeat during recovery.
 A timeout may leave the remote operation's outcome unknown. If the server expires
 an MCP session, restart Kodrik to reconnect.
 
