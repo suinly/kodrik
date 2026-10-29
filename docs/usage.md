@@ -223,18 +223,18 @@ The agent chooses tools from your request; these names are not slash commands.
 | `list_agents` | Inspect this session's children, statuses and results |
 | `wait_agent` | Wait up to 60 seconds for a child result |
 | `stop_agent` | Cancel a child and its queued inputs while retaining its history |
-| `telegram_reply` | Reply to the active Telegram request with media, a poll, location or formatted post |
-| `telegram_results` | Read saved poll results in the current Telegram chat; unavailable in guest mode |
+| `telegram_reply` | Send media, polls, locations or posts to the active Telegram chat, or to the owner's private Telegram chat from other interfaces |
+| `telegram_results` | Read saved poll results in the active Telegram chat or the configured owner's private chat; unavailable in guest mode |
 | `exec_command` | Run commands in Bashkit for isolated chats; native shell for CLI/TUI and the owner's private chat |
 | `apply_patch` | Edit files |
-| `publish_page` | Publish or update a public/private web page; available to CLI/TUI and the owner's private chat when web is enabled |
+| `publish_page` | Publish or update a public/private web page; available to the owner across interfaces when web is enabled |
 | `ui_components` | Discover available Nuxt UI tags and inspect a component's package API and MDC adapter rules |
 | `show_ui` | Render native MDC components in chat; optionally publish a page with private dataset forms |
 | `view_image` | Inspect a local image |
 | `memory` | Save, inspect, replace or remove explicit memory |
 | `datasets` | Keep typed diary/tracker records, query bounded pages and calculate summaries within the current space |
 | `companion` | Inspect learning, forget lessons and manage interests |
-| `wakeups` | Schedule, list, reschedule or cancel the agent's own one-shot follow-up work in the current Telegram chat |
+| `wakeups` | Schedule, list, reschedule or cancel the agent's own one-shot follow-up work in the source Telegram, web, CLI/TUI or webhook conversation |
 | `session_search` | Search or browse previous user/assistant messages |
 | `encyclopedia_search` | Research topics on English or Russian Wikipedia |
 | `web_search` | Search the configured SearXNG instance for public sources; requires research configuration |
@@ -304,7 +304,9 @@ is `companion.timezone`.
 
 Wakeups execute with the originating chat's tools and skills in a separate internal
 session. They may finish silently or send a useful message to the originating
-chat. Tasks survive `/new` and restarts; execution requires a running gateway.
-Only pending tasks can be rescheduled or cancelled. CLI/TUI creation and recurring
-schedules are unsupported. Use the installed `remindctl` skill for user-facing
-Apple Reminders. See [execution and delivery](companion.md#agent-wakeups).
+chat. Web, CLI/TUI and webhook results are saved in the original conversation
+history. Tasks survive `/new` and restarts; execution requires a running Kodrik
+process for the same user. Keep the gateway running for unattended work. Only
+pending tasks can be rescheduled or cancelled. Recurring schedules are unsupported.
+Use the installed `remindctl` skill for user-facing Apple Reminders. See
+[execution and delivery](companion.md#agent-wakeups).

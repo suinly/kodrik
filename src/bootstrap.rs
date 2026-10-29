@@ -8,6 +8,10 @@ mod messages_tests;
 #[path = "mcp_tests.rs"]
 mod mcp_tests;
 
+#[cfg(test)]
+#[path = "tools_tests.rs"]
+mod tools_tests;
+
 use crate::{
     agent::{
         Agent, AgentRunner, ContextBuilder,
@@ -203,6 +207,7 @@ pub(crate) async fn build_app_with_access(
 
     let sandbox = isolated.then(|| Arc::new(crate::agent::sandbox::Sandbox::new(data.to_owned())));
     let sessions = SqliteSessionStore::open_async(data.join("sessions")).await?;
+    let mut telegram_target = None;
     let messages = if !isolated && access.is_none() {
         use crate::agent::tools::messages::{MessageChannel, MessagesTool};
         let mut channels = Vec::new();
@@ -210,16 +215,19 @@ pub(crate) async fn build_app_with_access(
             config.validate_owner()?;
             let crate::config::GatewayConfig::Telegram { token, .. } =
                 &config.gateway[&owner.interface];
+            let interface: Arc<dyn crate::Interface> = Arc::new(
+                crate::interfaces::TelegramInterface::new(
+                    &owner.interface,
+                    token,
+                    data.join("attachments"),
+                )
+                .with_space_root(data_dir()?)
+                .with_journal(journal.clone()),
+            );
+            telegram_target = Some((interface.clone(), owner.user_id.to_string()));
             channels.push(MessageChannel {
                 name: "telegram".into(),
-                interface: Arc::new(
-                    crate::interfaces::TelegramInterface::new(
-                        &owner.interface,
-                        token,
-                        data.join("attachments"),
-                    )
-                    .with_journal(journal.clone()),
-                ),
+                interface,
                 recipient: owner.user_id.to_string(),
             });
         }
@@ -259,8 +267,10 @@ pub(crate) async fn build_app_with_access(
     if let Some((search, read)) = &research_tools {
         tools = tools.register(search.clone()).register(read.clone());
     }
-    tools = tools.register(Arc::new(TelegramReplyTool::new(sandbox.clone())));
-    tools = tools.register(Arc::new(TelegramResultsTool));
+    tools = tools.register(Arc::new(
+        TelegramReplyTool::new(sandbox.clone()).with_target(telegram_target.clone()),
+    ));
+    tools = tools.register(Arc::new(TelegramResultsTool::new(telegram_target)));
     if let Some(messages) = &messages {
         tools = tools.register(Arc::new(messages.clone()));
     }
@@ -350,6 +360,27 @@ pub(crate) async fn build_app_with_access(
     if let Some(messages) = messages {
         tokio::spawn(messages.run(agent_runner.shutdown_receiver()));
     }
+    let root = data_dir()?;
+    let interfaces: Vec<Arc<dyn crate::Interface>> = config
+        .gateway
+        .iter()
+        .map(|(key, gateway)| {
+            let crate::config::GatewayConfig::Telegram { token, .. } = gateway;
+            Arc::new(
+                crate::interfaces::TelegramInterface::new(key, token, data.join("attachments"))
+                    .with_space_root(root.clone())
+                    .with_access(root.clone())
+                    .with_journal(journal.clone()),
+            ) as Arc<dyn crate::Interface>
+        })
+        .collect();
+    let wakeups = crate::gateway::wakeups::Wakeups::new(
+        crate::agent::reminders::ReminderStore::wakeups(data),
+        agent_runner.clone(),
+        config.companion.clone(),
+    )
+    .with_access(access);
+    tokio::spawn(wakeups.run(interfaces));
 
     Ok(AppContext {
         datasets,

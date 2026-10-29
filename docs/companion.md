@@ -105,11 +105,15 @@ proactive research runs.
 
 The `wakeups` tool schedules the agent's own one-shot follow-up instructions,
 including on its initiative. It supports create, list, reschedule and cancel,
-scoped to the source Telegram chat. Only pending execution may be cancelled or
-rescheduled. The application binds the source chat and session; the model cannot
+scoped to the source conversation in Telegram, web, CLI/TUI or webhook runs. Only
+pending execution may be cancelled or rescheduled. The application binds the
+source chat and session; the model cannot
 redirect tasks. Scheduling grants no additional action permissions.
 
-Gateway checks on startup and every five seconds. A busy conversation defers
+The application checks on startup and every five seconds, independently of Telegram.
+Web, CLI/TUI and webhook results are atomically appended to the original session
+with a delivery receipt, preventing duplicates on restart. Telegram results go
+to the source chat. Quiet hours apply to both. A busy conversation defers
 execution. Pending tasks survive restarts and `/new`. Each attempt runs the
 ordinary agent with all its currently available tools, personality, memory and
 skills in an internal `companion:wakeup:<id>` session, excluded from ordinary
@@ -137,12 +141,14 @@ Interrupted sends also become uncertain. Confirmed temporary send refusals retry
 only the saved message; permanent refusals become failed. Revoked chats and
 missing interfaces remain pending/ready with a diagnostic and are never redirected.
 
-Only one wakeup scheduler owns the data directory. Additional gateways skip it;
-restart one to take over after the owner exits. Storage failures stop the scheduler
-and are logged. Execution is serial, so a long attempt may delay other tasks by up
+Only one wakeup scheduler owns the data directory. Other processes wait and
+check every five seconds to take over after the owner exits. Storage failures stop
+the scheduler and are logged. Execution is serial, so a long attempt may delay other tasks by up
 to five minutes. Telegram delivery and local persistence are not a transaction;
-exactly-once delivery is not guaranteed. CLI/TUI creation and recurring schedules
-are unsupported. User-facing Apple Reminders use the installed `remindctl` skill.
+exactly-once delivery is not guaranteed. Recurring schedules are unsupported.
+Scheduling in a one-shot CLI command does not keep that process running; use the
+gateway for unattended execution. User-facing Apple Reminders use the installed
+`remindctl` skill.
 
 ## Legacy reminders
 

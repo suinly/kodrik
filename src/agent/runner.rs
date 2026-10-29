@@ -396,13 +396,12 @@ impl AgentRunner {
                 session.merge_telegram_group(message.telegram_group.as_ref());
 
                 let is_webhook = message.source.interface.0 == "webhook";
+                let mut wakeup_context = super::reminders::WakeupContext::for_message(
+                    &session_id,
+                    session.id(),
+                    &message,
+                );
                 let webhook_source = message.webhook;
-                let recipient = (message.guest_query_id.is_none()
-                    && message.source.interface.0.starts_with("telegram:"))
-                .then_some(super::reminders::Recipient {
-                    interface: message.source.interface.0,
-                    chat: message.source.conversation_id,
-                });
 
                 let input = UserMessage {
                     files: message.files,
@@ -477,10 +476,9 @@ impl AgentRunner {
                     session.record_webhook_message(*source);
                 }
                 let initial_messages = session.messages().len();
-                let wakeup_context = recipient.map(|recipient| super::reminders::WakeupContext {
-                    recipient,
-                    session: session.id().as_str().to_owned(),
-                });
+                if let Some(context) = wakeup_context.as_mut() {
+                    context.session = session.id().as_str().to_owned();
+                }
                 let mut checkpoint = self
                     .sessions
                     .runtime_store()
@@ -1163,7 +1161,12 @@ mod tests {
                 (runner.clone(), store.clone(), interface.clone());
             let task = tokio::spawn(async move {
                 waiting_runner
-                    .execute_wakeup(waiting_interface.as_ref(), &waiting_store, &wakeup, now)
+                    .execute_wakeup(
+                        Some(waiting_interface.as_ref()),
+                        &waiting_store,
+                        &wakeup,
+                        now,
+                    )
                     .await
                     .unwrap();
             });
@@ -1203,7 +1206,7 @@ mod tests {
             let Message::User(input) = &context.messages[0] else {
                 panic!("missing input")
             };
-            if input.content == "cli" {
+            if input.content == "guest" {
                 assert!(!available);
                 return Ok((answer("no wakeups"), None));
             }
@@ -1228,7 +1231,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wakeups_runner_binds_source_and_hides_tool_in_cli() {
+    async fn wakeups_runner_binds_every_source_and_excludes_guest_queries() {
         let directory = tempfile::tempdir().unwrap();
         let runner = Arc::new(AgentRunner::new(
             Arc::new(Agent::new(
@@ -1257,13 +1260,129 @@ mod tests {
         for task in tasks {
             task.await.unwrap();
         }
-        assert_eq!(runner.run_once("cli").await.unwrap(), "no wakeups");
+        assert_eq!(runner.run_once("cli").await.unwrap(), "scheduled");
+        for interface in ["web", "webhook", "cli"] {
+            let chat = if interface == "cli" {
+                "main".into()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            let conversation = if interface == "cli" {
+                format!("cli:{chat}")
+            } else {
+                chat.clone()
+            };
+            runner
+                .run(
+                    SessionId::new(conversation),
+                    IncomingMessage::new(InterfaceId(interface.into()), &chat, interface),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let mut guest = IncomingMessage::new(InterfaceId("telegram:test".into()), "99", "guest");
+        guest.guest_query_id = Some("guest-query".into());
+        runner
+            .run(SessionId::new("telegram:test:99:guest"), guest, None)
+            .await
+            .unwrap();
         let records: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.path().join("wakeups.json")).unwrap())
                 .unwrap();
-        assert_eq!(records.as_array().unwrap().len(), 2);
+        assert_eq!(records.as_array().unwrap().len(), 6);
         for record in records.as_array().unwrap() {
-            assert_eq!(record["text"], record["recipient"]["chat"]);
+            let interface = record["recipient"]["interface"].as_str().unwrap();
+            if interface.starts_with("telegram:") {
+                assert_eq!(record["text"], record["recipient"]["chat"]);
+            }
+            if record["text"] == "cli" && record["recipient"]["chat"] != "main" {
+                assert!(
+                    record["recipient"]["chat"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("once:")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wakeups_recovery_restores_the_persisted_source_interface() {
+        use super::super::{
+            inbox::{BusyMode, SubmissionRequest},
+            session::SqliteSessionStore,
+        };
+        for interface in ["cli", "web", "webhook"] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                SqliteSessionStore::open_async(directory.path().join("sessions"))
+                    .await
+                    .unwrap(),
+            );
+            let chat = uuid::Uuid::new_v4().to_string();
+            let conversation = SessionId::new(if interface == "cli" {
+                format!("cli:once:{chat}")
+            } else {
+                chat.clone()
+            });
+            let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+            session.initialize_system_prompt("test");
+            session.push(Message::User(UserMessage {
+                content: "recover".into(),
+                files: vec![],
+                images: vec![],
+            }));
+            store.save(&session).await.unwrap();
+            store.select(&conversation, session.id()).await.unwrap();
+            let input = IncomingMessage::new(InterfaceId(interface.into()), &chat, "recover");
+            let submission = store
+                .submit(SubmissionRequest::new(
+                    &conversation,
+                    input,
+                    BusyMode::FollowUp,
+                ))
+                .await
+                .unwrap();
+            let mut checkpoint = Checkpoint::new(&store, &conversation, &session);
+            checkpoint.record.isolated = Some(false);
+            checkpoint.record.submission_ids.push(submission.id);
+            checkpoint
+                .save(&session, RunPhase::NeedModel, None)
+                .await
+                .unwrap();
+            let runner = AgentRunner::new(
+                Arc::new(Agent::new(
+                    Arc::new(ReminderLlm),
+                    ToolRegistry::default().register(Arc::new(
+                        super::super::tools::WakeupTool::new(directory.path()),
+                    )),
+                    ContextBuilder::new("test"),
+                )),
+                store,
+            );
+            let report = runner
+                .recover(super::super::recovery::RecoveryTarget::Conversation(
+                    conversation,
+                ))
+                .await
+                .unwrap();
+            assert!(report.blocked.is_empty(), "{:?}", report.blocked);
+            assert_eq!(report.completed.len(), 1);
+            let records: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(directory.path().join("wakeups.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(records[0]["recipient"]["interface"], interface);
+            assert_eq!(records[0]["source_session"], session.id().as_str());
+            assert_eq!(
+                records[0]["recipient"]["chat"],
+                if interface == "cli" {
+                    format!("once:{chat}")
+                } else {
+                    chat
+                }
+            );
         }
     }
 

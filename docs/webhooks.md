@@ -160,7 +160,11 @@ another channel does not suppress the final answer in the source conversation.
 The tool is unavailable to invited users, groups and guest queries. This version
 supports text; additional external channels can use the existing `Interface`
 transport without changing the tool arguments. The separate `telegram_reply`
-tool continues to reply only within its current Telegram chat.
+tool can send media, polls and formatted posts to the configured owner's private
+Telegram chat from webhook, web and CLI/TUI runs. In Telegram it replies to the
+current chat. Results identify the destination; cross-channel sends preserve the
+final answer in the source interface. `telegram_results` uses the same destination
+for saved poll results.
 
 A successfully persisted request returns `202 Accepted`:
 

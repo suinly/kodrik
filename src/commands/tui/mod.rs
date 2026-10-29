@@ -81,6 +81,9 @@ async fn run_session(
     let mut tui = Tui::enter()?;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut history_tick = tokio::time::interval(Duration::from_secs(1));
+    history_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut history_revision = None;
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
     let mut requests = JoinSet::new();
     let mut copies = JoinSet::new();
@@ -339,6 +342,17 @@ async fn run_session(
                 }
                 redraw = true;
             }
+            _ = history_tick.tick(), if !recovering && idle_inputs.is_some() && app.sessions.is_none()
+                && matches!(app.status, Status::Ready | Status::Done(_)) => {
+                if let Some(store) = runner.sqlite_store() {
+                    let revision = store.view_revision().await?;
+                    if history_revision != Some(revision) {
+                        let session = runner.load_session(session_id.clone()).await?;
+                        redraw |= refresh_history(&mut app, &session);
+                        history_revision = Some(revision);
+                    }
+                }
+            }
             _ = tick.tick() => {
                 redraw |= app.view.tick(&mut app.scroll);
                 if app.copy_notice.as_ref().is_some_and(|(_, until)| std::time::Instant::now() >= *until) {
@@ -525,6 +539,52 @@ fn restore_history(app: &mut App, session: &Session) {
             }
         }
     }
+}
+
+fn refresh_history(app: &mut App, session: &Session) -> bool {
+    let mut saved = App {
+        language: app.language,
+        ..Default::default()
+    };
+    restore_history(&mut saved, session);
+    if app.messages.len() == saved.messages.len()
+        && app
+            .messages
+            .iter()
+            .zip(&saved.messages)
+            .all(|(a, b)| a.role == b.role && a.content == b.content)
+    {
+        return false;
+    }
+    app.messages = saved.messages;
+    app.pending_tools = saved.pending_tools;
+    app.streaming_message = None;
+    app.view.clear_selection();
+    true
+}
+
+#[test]
+fn idle_history_refresh_shows_wakeup_without_losing_the_draft() {
+    let mut session = Session::new(SessionId::new("history"));
+    session.push(Message::Assistant(crate::agent::AssistantMessage {
+        content: "Earlier answer".into(),
+    }));
+    let mut app = App::default();
+    restore_history(&mut app, &session);
+    app.input = "unfinished draft".into();
+    app.input_cursor = 3;
+    app.scroll = 7;
+    assert!(!refresh_history(&mut app, &session));
+    session.push(Message::Assistant(crate::agent::AssistantMessage {
+        content: "Scheduled result".into(),
+    }));
+    assert!(refresh_history(&mut app, &session));
+    assert_eq!(app.messages.len(), 2);
+    assert_eq!(app.messages[1].content, "Scheduled result");
+    assert_eq!(app.input, "unfinished draft");
+    assert_eq!(app.input_cursor, 3);
+    assert_eq!(app.scroll, 7);
+    assert!(!refresh_history(&mut app, &session));
 }
 
 async fn next_terminal_event() -> std::io::Result<Event> {

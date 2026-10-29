@@ -11,6 +11,13 @@ use crate::{
 
 tokio::task_local! {
     pub(crate) static REPLY_CONTEXT: ReplyContext;
+    static OWNER_REPLY_STATE: Arc<Mutex<ReplyState>>;
+}
+
+pub(crate) fn with_owner_reply_state<F: std::future::Future>(
+    work: F,
+) -> impl std::future::Future<Output = F::Output> {
+    OWNER_REPLY_STATE.scope(Arc::new(Mutex::new(ReplyState::default())), work)
 }
 
 #[derive(Clone)]
@@ -19,6 +26,26 @@ pub(crate) struct ReplyContext {
     pub(super) chat: String,
     pub(super) guest_query: Option<String>,
     state: Arc<Mutex<ReplyState>>,
+}
+
+pub(super) fn resolve_context(
+    target: &Option<(Arc<dyn Interface>, String)>,
+) -> Option<(ReplyContext, bool)> {
+    if let Ok(context) = REPLY_CONTEXT.try_with(Clone::clone) {
+        if context.interface.id().0.starts_with("telegram:") {
+            return Some((context, true));
+        }
+        if context.guest_query.is_some() {
+            return None;
+        }
+    }
+    target.as_ref().map(|(interface, chat)| {
+        let mut context = ReplyContext::new(interface.clone(), chat.clone(), None);
+        if let Ok(state) = OWNER_REPLY_STATE.try_with(Clone::clone) {
+            context.state = state;
+        }
+        (context, false)
+    })
 }
 
 #[derive(Default)]
@@ -85,11 +112,20 @@ struct ReplyArgs {
 
 pub struct TelegramReplyTool {
     sandbox: Option<Arc<crate::agent::sandbox::Sandbox>>,
+    target: Option<(Arc<dyn Interface>, String)>,
 }
 
 impl TelegramReplyTool {
     pub(crate) fn new(sandbox: Option<Arc<crate::agent::sandbox::Sandbox>>) -> Self {
-        Self { sandbox }
+        Self {
+            sandbox,
+            target: None,
+        }
+    }
+
+    pub(crate) fn with_target(mut self, target: Option<(Arc<dyn Interface>, String)>) -> Self {
+        self.target = target;
+        self
     }
 }
 
@@ -99,7 +135,7 @@ impl Tool for TelegramReplyTool {
         "telegram_reply".into()
     }
     fn description(&self) -> String {
-        "Send a photo, photo album, video, document, audio, poll, location, or formatted post as your reply in the CURRENT Telegram chat. The application binds the recipient; you cannot choose another chat. Use photo_album to send 2–10 photos together: media is an ordered array of sources, and caption is shared on the first photo only. Media sources: file (local or this conversation's virtual filesystem), url (HTTP/HTTPS), telegram (existing file_id). Photo uploads are limited to 10 MB each; captions to 1024 characters. This tool sends existing media; it does not generate it. Use document for other file formats. Poll anonymous defaults true; set false only when individual votes should be visible. Read saved poll results using telegram_results. Post body uses the existing rich Markdown format. For nullable optional fields, pass null when unused. Video thumbnail_url is for guest URL video results only. Guest queries accept one reply: photo/video/document/audio via public URL or existing file_id, location or post; no file uploads, photo albums or polls. URL documents in guest mode support PDF/ZIP only. A successful tool result IS the reply: do not repeat it in your final text. An uncertain delivery is not safe to retry.".into()
+        "Send a photo, photo album, video, document, audio, poll, location, or formatted post in the CURRENT Telegram chat, or in the configured owner's private Telegram chat when called outside Telegram. Results include destination and reply_in_current_chat. The application binds the recipient; you cannot choose another chat. Use photo_album to send 2–10 photos together: media is an ordered array of sources, and caption is shared on the first photo only. Media sources: file (local or this conversation's virtual filesystem), url (HTTP/HTTPS), telegram (existing file_id). Photo uploads are limited to 10 MB each; captions to 1024 characters. This tool sends existing media; it does not generate it. Use document for other file formats. Poll anonymous defaults true; set false only when individual votes should be visible. Read saved poll results using telegram_results. Post body uses the existing rich Markdown format. For nullable optional fields, pass null when unused. Video thumbnail_url is for guest URL video results only. Guest queries accept one reply: photo/video/document/audio via public URL or existing file_id, location or post; no file uploads, photo albums or polls. URL documents in guest mode support PDF/ZIP only. When reply_in_current_chat=true, a successful tool result IS the reply: do not repeat it in your final text. Otherwise, still answer in the source interface and confirm the Telegram destination. An uncertain delivery is not safe to retry.".into()
     }
     fn parameters(&self) -> serde_json::Value {
         let mut schema = schemars::schema_for!(ReplyArgs).to_value();
@@ -113,15 +149,14 @@ impl Tool for TelegramReplyTool {
         schema
     }
     fn available(&self) -> bool {
-        REPLY_CONTEXT
-            .try_with(|context| context.interface.id().0.starts_with("telegram:"))
-            .unwrap_or(false)
+        resolve_context(&self.target).is_some()
     }
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput> {
-        let context = REPLY_CONTEXT.try_with(Clone::clone).map_err(|_| {
-            anyhow::anyhow!("Telegram replies require an active Telegram conversation")
+        let (context, current) = resolve_context(&self.target).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Telegram replies require a current Telegram chat or a configured owner destination"
+            )
         })?;
-        anyhow::ensure!(self.available(), "Telegram replies are unavailable here");
         context.state.lock().await.failed = true;
         let mut args: ReplyArgs = serde_json::from_value(properties)?;
         args.message.validate()?;
@@ -208,6 +243,7 @@ impl Tool for TelegramReplyTool {
                     &context.interface.id().0,
                     &context.chat,
                     &args.message,
+                    !current,
                 )
                 .await?;
             store
@@ -229,7 +265,10 @@ impl Tool for TelegramReplyTool {
                 state.delivered = Some(id.clone());
                 state.uncertain = false;
                 state.failed = false;
-                Ok(serde_json::json!({"status":"sent","message_id":id.0}).into())
+                Ok(serde_json::json!({"status":"sent","message_id":id.0,
+                    "destination":{"interface":context.interface.id().0,"chat":context.chat},
+                    "reply_in_current_chat":current})
+                .into())
             }
             Err(error) => {
                 if error.downcast_ref::<SendRejection>().is_some() {
@@ -314,6 +353,9 @@ mod tests {
         fn id(&self) -> InterfaceId {
             InterfaceId("telegram:test".into())
         }
+        fn allows_recipient(&self, chat: &str) -> bool {
+            chat.parse::<i64>().is_ok_and(|id| id != 0)
+        }
         async fn run(&self, _: mpsc::Sender<Event>) -> anyhow::Result<()> {
             Ok(())
         }
@@ -359,6 +401,132 @@ mod tests {
 
     fn post() -> serde_json::Value {
         json!({"message":{"type":"post","title":"Report","body":"hello"}})
+    }
+
+    #[tokio::test]
+    async fn owner_destination_is_available_outside_telegram_but_current_chat_wins() {
+        let interface = Arc::new(Recorder::default());
+        let tool = TelegramReplyTool::new(None).with_target(Some((interface.clone(), "42".into())));
+        assert!(tool.available());
+        let result = with_owner_reply_state(tool.execute(post()))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            result["destination"],
+            json!({"interface":"telegram:test","chat":"42"})
+        );
+        assert_eq!(result["reply_in_current_chat"], false);
+        let current = ReplyContext::new(interface.clone(), "7".into(), None);
+        REPLY_CONTEXT
+            .scope(current.clone(), async {
+                let result = tool.execute(post()).await.unwrap().output;
+                assert_eq!(result["destination"]["chat"], "7");
+                assert_eq!(result["reply_in_current_chat"], true);
+                assert!(current.delivered().await.is_some());
+            })
+            .await;
+        assert_eq!(
+            interface.seen.lock().await.as_slice(),
+            &[("42".into(), "hello".into()), ("7".into(), "hello".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_destination_does_not_retry_an_uncertain_send_in_the_same_run() {
+        let interface = Arc::new(Recorder {
+            failure: Some(false),
+            ..Default::default()
+        });
+        let tool = TelegramReplyTool::new(None).with_target(Some((interface.clone(), "42".into())));
+        with_owner_reply_state(async {
+            assert!(tool.execute(post()).await.is_err());
+            assert!(
+                tool.execute(post())
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown")
+            );
+        })
+        .await;
+        assert_eq!(interface.seen.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn owner_send_from_cli_uses_a_durable_notification_and_keeps_the_local_answer() {
+        use crate::agent::{
+            Agent, AgentEvent, AgentRunner, ContextBuilder, LlmContext,
+            message::{Message, ToolCall},
+            session::SqliteSessionStore,
+            tools::ToolRegistry,
+        };
+        struct Model;
+        #[async_trait::async_trait]
+        impl crate::agent::llm::LlmProvider for Model {
+            async fn generate(
+                &self,
+                context: &LlmContext<'_>,
+                _: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                let message = if let Some(Message::ToolResult(result)) = context.messages.last() {
+                    assert_eq!(result.content.output["status"], "sent");
+                    assert_eq!(result.content.output["reply_in_current_chat"], false);
+                    Message::Assistant(crate::agent::AssistantMessage {
+                        content: "Sent to your Telegram chat".into(),
+                    })
+                } else {
+                    Message::ToolCall(ToolCall {
+                        call_id: "send".into(),
+                        name: "telegram_reply".into(),
+                        arguments: post(),
+                    })
+                };
+                Ok((vec![message], None))
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            SqliteSessionStore::open_async(root.path().join("sessions"))
+                .await
+                .unwrap(),
+        );
+        let interface = Arc::new(Recorder::default());
+        let tool = TelegramReplyTool::new(None).with_target(Some((interface.clone(), "42".into())));
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(Model),
+                ToolRegistry::default().register(Arc::new(tool)),
+                ContextBuilder::new("test"),
+            )),
+            store.clone(),
+        );
+        assert_eq!(
+            runner.run_once("Send to Telegram").await.unwrap(),
+            "Sent to your Telegram chat"
+        );
+        assert_eq!(
+            interface.seen.lock().await.as_slice(),
+            &[("42".into(), "hello".into())]
+        );
+        let receipt: String = store
+            .with_connection(|db| {
+                Ok(db.query_row("SELECT id FROM deliveries", [], |row| row.get(0))?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store.notification_destination(&receipt).await.unwrap(),
+            ("telegram:test".into(), "42".into())
+        );
+        assert!(
+            store
+                .pending_delivery_conversations()
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

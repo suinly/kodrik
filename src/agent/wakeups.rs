@@ -43,7 +43,7 @@ fn wakeup_prompt(
 impl AgentRunner {
     pub(crate) async fn execute_wakeup(
         &self,
-        interface: &dyn Interface,
+        interface: Option<&dyn Interface>,
         store: &ReminderStore,
         task: &Reminder,
         now: DateTime<Utc>,
@@ -62,28 +62,27 @@ impl AgentRunner {
 
     async fn execute_wakeup_inner(
         &self,
-        interface: &dyn Interface,
+        interface: Option<&dyn Interface>,
         store: &ReminderStore,
         task: &Reminder,
         now: DateTime<Utc>,
     ) -> anyhow::Result<()> {
-        let conversation = SessionId::new(format!(
-            "{}:{}",
-            task.recipient.interface, task.recipient.chat
-        ));
+        let conversation = task.recipient.conversation();
         let _guard = self.lock_conversation(&conversation).await?;
         crate::agent::run_state::CURRENT_EXECUTION
             .scope(_guard.ownership.clone(), async {
-                if interface.id().0 != task.recipient.interface
-                    || !interface.allows_recipient(&task.recipient.chat)
+                if !task.recipient.is_local()
+                    && interface.is_none_or(|interface| {
+                        interface.id().0 != task.recipient.interface
+                            || !interface.allows_recipient(&task.recipient.chat)
+                    })
                 {
                     return Ok(());
                 }
                 let current = self.sessions.active_id(&conversation).await?;
                 if self.sessions.runtime_store().is_some() {
-                    return self
-                        .execute_durable_wakeup(store, task, now, &current)
-                        .await;
+                    // Keep the durable agent future off the scheduler's stack.
+                    return Box::pin(self.execute_durable_wakeup(store, task, now, &current)).await;
                 }
 
                 let store_clone = store.clone();
@@ -287,17 +286,20 @@ impl AgentRunner {
 
     pub(crate) async fn deliver_wakeup(
         &self,
-        interface: &dyn Interface,
+        interface: Option<&dyn Interface>,
         store: &ReminderStore,
         task: &Reminder,
         config: &CompanionConfig,
         now: DateTime<Utc>,
     ) -> anyhow::Result<()> {
+        if task.recipient.is_local() {
+            return self.deliver_local_wakeup(store, task, config, now).await;
+        }
+        let Some(interface) = interface else {
+            return Ok(());
+        };
         let waited = std::time::Instant::now();
-        let conversation = SessionId::new(format!(
-            "{}:{}",
-            task.recipient.interface, task.recipient.chat
-        ));
+        let conversation = task.recipient.conversation();
         let _guard = self.lock_conversation(&conversation).await?;
         crate::agent::run_state::CURRENT_EXECUTION
             .scope(_guard.ownership.clone(), async {
@@ -354,6 +356,46 @@ impl AgentRunner {
                 Ok(())
             })
             .await
+    }
+
+    async fn deliver_local_wakeup(
+        &self,
+        journal: &ReminderStore,
+        task: &Reminder,
+        config: &CompanionConfig,
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        if task.status != Status::Ready || config.quiet_at(now)? {
+            return Ok(());
+        }
+        let store = self
+            .sessions
+            .runtime_store()
+            .context("Local wakeups require durable sessions")?;
+        let source = task
+            .source_session
+            .as_deref()
+            .context("Missing wakeup source")?;
+        let receipt = store
+            .queue_notification(
+                &format!("wakeup:{}", task.id),
+                "result",
+                task.recipient.conversation().as_str(),
+                "local",
+                source,
+                task.message.clone().context("Missing wakeup result")?,
+            )
+            .await?;
+        // The receipt and history commit together; replay after a crash cannot append twice.
+        if store.deliver_local_notification(&receipt).await?.is_some() {
+            let journal = journal.clone();
+            let id = task.id.clone();
+            crate::agent::run_state::spawn_owned_blocking(move || {
+                journal.finish(&id, Status::Completed, None, None)
+            })
+            .await??;
+        }
+        Ok(())
     }
 }
 
@@ -454,7 +496,7 @@ mod durable_tests {
             sql.clone(),
         );
         runner
-            .execute_wakeup(&Chat, &store, &claimed, now)
+            .execute_wakeup(Some(&Chat), &store, &claimed, now)
             .await
             .unwrap();
         assert_eq!(store.due(now).unwrap()[0].message.as_deref(), Some("ready"));
@@ -467,7 +509,7 @@ mod durable_tests {
         std::fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
         store.recover().unwrap();
         runner
-            .execute_wakeup(&Chat, &store, &records[0], now)
+            .execute_wakeup(Some(&Chat), &store, &records[0], now)
             .await
             .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);

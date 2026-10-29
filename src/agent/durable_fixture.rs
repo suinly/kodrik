@@ -313,11 +313,11 @@ async fn durable_process_worker() {
         let task = journal.due(chrono::Utc::now()).unwrap().remove(0);
         runner
             .execute_wakeup(
-                &Chat {
+                Some(&Chat {
                     url,
                     dir,
                     block: false,
-                },
+                }),
                 &journal,
                 &task,
                 chrono::Utc::now(),
@@ -960,11 +960,11 @@ async fn durable_process_wakeup_terminal_before_ready_reuses_saved_answer() {
     );
     runner
         .execute_wakeup(
-            &Chat {
+            Some(&Chat {
                 url: service.url.clone(),
                 dir: dir.path().into(),
                 block: false,
-            },
+            }),
             &journal,
             &task,
             chrono::Utc::now(),

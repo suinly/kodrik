@@ -69,7 +69,7 @@ async fn messages_sent_notification_does_not_replace_final_delivery() {
         .await
         .unwrap();
     store
-        .deliver_web_notification(&receipt)
+        .deliver_local_notification(&receipt)
         .await
         .unwrap()
         .unwrap();

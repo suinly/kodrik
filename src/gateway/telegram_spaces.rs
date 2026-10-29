@@ -210,12 +210,6 @@ impl GatewayRunner {
                     crate::agent::reminders::ReminderStore::new(&space),
                     app.agent_runner.clone(),
                 )));
-            self.wakeups
-                .push(Arc::new(super::super::wakeups::Wakeups::new(
-                    crate::agent::reminders::ReminderStore::wakeups(&space),
-                    app.agent_runner.clone(),
-                    spaces.config.companion.clone(),
-                )));
         }
         self.chat_runners
             .as_mut()
@@ -648,7 +642,6 @@ mod tests {
             .unwrap();
         assert_eq!(restored.chat_runners.as_ref().unwrap().len(), 3);
         assert_eq!(restored.reminders.len(), 3);
-        assert_eq!(restored.wakeups.len(), 3);
         assert!(Arc::ptr_eq(
             restored
                 .runner_for(&SessionId::new("telegram:main:42"))

@@ -271,7 +271,7 @@ async fn messages_web_notification_is_visible_after_completed_run() {
         .unwrap();
     f.chat
         .sessions
-        .deliver_web_notification(&receipt)
+        .deliver_local_notification(&receipt)
         .await
         .unwrap()
         .unwrap();

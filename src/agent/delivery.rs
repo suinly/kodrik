@@ -190,7 +190,7 @@ impl SqliteSessionStore {
         .await
     }
 
-    pub(crate) async fn deliver_web_notification(
+    pub(crate) async fn deliver_local_notification(
         &self,
         id: &str,
     ) -> anyhow::Result<Option<MessageId>> {
@@ -202,8 +202,8 @@ impl SqliteSessionStore {
             .await
             .map_err(storage_failure)?;
         ensure!(
-            receipt.notification && receipt.interface == "web",
-            "Not a web notification"
+            receipt.notification && matches!(receipt.interface.as_str(), "web" | "local"),
+            "Not a local notification"
         );
         if receipt.status == Status::Sent {
             return Ok(receipt.message_id.map(MessageId));
@@ -230,7 +230,7 @@ impl SqliteSessionStore {
             let _ownership = ownership;
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut receipt = read(&tx, &id)?.context("Delivery missing")?;
-            ensure!(receipt.notification && receipt.interface == "web", "Not a web notification");
+            ensure!(receipt.notification && matches!(receipt.interface.as_str(), "web" | "local"), "Not a local notification");
             if receipt.status == Status::Sent {
                 return Ok(receipt.message_id.map(MessageId));
             }
@@ -306,6 +306,7 @@ impl SqliteSessionStore {
         interface: &str,
         chat: &str,
         message: &OutgoingMessage,
+        notification: bool,
     ) -> anyhow::Result<String> {
         self.queue_delivery(
             run,
@@ -314,7 +315,7 @@ impl SqliteSessionStore {
             interface,
             chat,
             Payload::Rich(message.clone()),
-            false,
+            notification,
         )
         .await
     }

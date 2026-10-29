@@ -19,6 +19,24 @@ pub(crate) struct Recipient {
     pub chat: String,
 }
 
+impl Recipient {
+    pub(crate) fn is_local(&self) -> bool {
+        matches!(self.interface.as_str(), "web" | "webhook" | "cli")
+    }
+
+    pub(crate) fn conversation(&self) -> crate::agent::session::SessionId {
+        crate::agent::session::SessionId::new(
+            if matches!(self.interface.as_str(), "web" | "webhook")
+                && uuid::Uuid::parse_str(&self.chat).is_ok()
+            {
+                self.chat.clone()
+            } else {
+                format!("{}:{}", self.interface, self.chat)
+            },
+        )
+    }
+}
+
 tokio::task_local! {
     pub(crate) static WAKEUP_CONTEXT: Option<WakeupContext>;
 }
@@ -27,6 +45,34 @@ tokio::task_local! {
 pub(crate) struct WakeupContext {
     pub recipient: Recipient,
     pub session: String,
+}
+
+impl WakeupContext {
+    pub(crate) fn for_message(
+        conversation: &crate::agent::session::SessionId,
+        session: &crate::agent::session::SessionId,
+        message: &crate::gateway::IncomingMessage,
+    ) -> Option<Self> {
+        let interface = &message.source.interface.0;
+        if message.guest_query_id.is_some()
+            || !(matches!(interface.as_str(), "cli" | "web" | "webhook")
+                || interface.starts_with("telegram:"))
+        {
+            return None;
+        }
+        let chat = if interface == "cli" {
+            conversation.as_str().strip_prefix("cli:")?
+        } else {
+            &message.source.conversation_id
+        };
+        Some(Self {
+            recipient: Recipient {
+                interface: interface.clone(),
+                chat: chat.into(),
+            },
+            session: session.as_str().into(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,7 +195,7 @@ impl ReminderStore {
                 for record in &records {
                     uuid::Uuid::parse_str(&record.id).context("Invalid reminder id")?;
                     ensure!(ids.insert(&record.id), "Duplicate reminder id");
-                    validate_recipient(&record.recipient)?;
+                    validate_recipient(&record.recipient, self.journal == "wakeups")?;
                     self.validate_instruction(&record.text)?;
                     if self.journal == "wakeups" {
                         ensure!(record.status != Status::Sent, "Invalid wakeup state: sent");
@@ -264,7 +310,7 @@ impl ReminderStore {
         now: DateTime<Utc>,
         creation_key: Option<String>,
     ) -> anyhow::Result<Value> {
-        validate_recipient(recipient)?;
+        validate_recipient(recipient, self.journal == "wakeups")?;
         let singular = if self.journal == "wakeups" {
             "wakeup"
         } else {
@@ -418,7 +464,11 @@ impl ReminderStore {
                 .find(|r| r.id == id)
                 .context("Reminder disappeared")?;
             ensure!(
-                matches!(record.status, Status::Sending | Status::Running),
+                matches!(record.status, Status::Sending | Status::Running)
+                    || (self.journal == "wakeups"
+                        && record.recipient.is_local()
+                        && record.status == Status::Ready
+                        && status == Status::Completed),
                 "Task is neither running nor sending"
             );
             record.status = status;
@@ -472,7 +522,10 @@ fn validate_session(session: &str) -> anyhow::Result<()> {
     );
     Ok(())
 }
-fn validate_recipient(recipient: &Recipient) -> anyhow::Result<()> {
+fn validate_recipient(recipient: &Recipient, allow_local: bool) -> anyhow::Result<()> {
+    if allow_local && recipient.is_local() {
+        return validate_session(&recipient.chat);
+    }
     ensure!(
         recipient
             .interface

@@ -1,4 +1,4 @@
-use super::{Tool, ToolOutput, telegram_reply::REPLY_CONTEXT};
+use super::{Tool, ToolOutput, telegram_reply::resolve_context};
 use serde::Deserialize;
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -15,7 +15,16 @@ struct Args {
     offset: Option<usize>,
 }
 
-pub struct TelegramResultsTool;
+#[derive(Default)]
+pub struct TelegramResultsTool {
+    target: Option<(std::sync::Arc<dyn crate::Interface>, String)>,
+}
+
+impl TelegramResultsTool {
+    pub(crate) fn new(target: Option<(std::sync::Arc<dyn crate::Interface>, String)>) -> Self {
+        Self { target }
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for TelegramResultsTool {
@@ -23,7 +32,7 @@ impl Tool for TelegramResultsTool {
         "telegram_results".into()
     }
     fn description(&self) -> String {
-        "Read saved poll results in the CURRENT Telegram chat. kind: poll. Pass id:null to list the 20 most recently updated messages and their IDs, then pass an ID for full details. Poll details include last received counts as of counts_updated_at; updated_at is the latest saved activity and may be newer. Public votes are paged in groups of 50: pass offset:null initially, then next_offset until null. total_known_votes counts observed active votes, not an authoritative total. For lists, use offset:null. Individual votes in non-anonymous polls are observed changes; individual votes may be incomplete if updates were missed. Anonymous polls never expose voters. Results persist across restarts; this reads local snapshots, not a live Telegram fetch. Available only in ordinary Telegram conversations, not guest queries. This tool does not send messages or close polls.".into()
+        "Read saved poll results in the CURRENT Telegram chat, or in the configured owner's private Telegram chat when called outside Telegram. The result includes destination. kind: poll. Pass id:null to list the 20 most recently updated messages and their IDs, then pass an ID for full details. Poll details include last received counts as of counts_updated_at; updated_at is the latest saved activity and may be newer. Public votes are paged in groups of 50: pass offset:null initially, then next_offset until null. total_known_votes counts observed active votes, not an authoritative total. For lists, use offset:null. Individual votes in non-anonymous polls are observed changes; individual votes may be incomplete if updates were missed. Anonymous polls never expose voters. Results persist across restarts; this reads local snapshots, not a live Telegram fetch. Unavailable in guest queries; outside Telegram requires a configured owner destination. This tool does not send messages or close polls.".into()
     }
     fn parameters(&self) -> serde_json::Value {
         let mut schema = schemars::schema_for!(Args);
@@ -34,23 +43,19 @@ impl Tool for TelegramResultsTool {
         schema.to_value()
     }
     fn available(&self) -> bool {
-        REPLY_CONTEXT
-            .try_with(|context| {
-                context.interface.id().0.starts_with("telegram:") && context.guest_query.is_none()
-            })
-            .unwrap_or(false)
+        resolve_context(&self.target).is_some_and(|(context, _)| context.guest_query.is_none())
     }
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput> {
         anyhow::ensure!(
             self.available(),
             "Telegram results require an ordinary Telegram conversation"
         );
-        let context = REPLY_CONTEXT.try_with(Clone::clone)?;
+        let (context, _) = resolve_context(&self.target).unwrap();
         let args: Args = serde_json::from_value(properties)?;
         let kind = match args.kind {
             Kind::Poll => "poll",
         };
-        context
+        let mut result = context
             .interface
             .read_results(
                 &context.chat,
@@ -58,8 +63,10 @@ impl Tool for TelegramResultsTool {
                 args.id.as_deref(),
                 args.offset.unwrap_or(0),
             )
-            .await
-            .map(Into::into)
+            .await?;
+        result["destination"] =
+            serde_json::json!({"interface":context.interface.id().0,"chat":context.chat});
+        Ok(result.into())
     }
 }
 
@@ -87,7 +94,7 @@ mod tests {
         );
         REPLY_CONTEXT
             .scope(ReplyContext::new(interface, "42".into(), None), async {
-                let tool = TelegramResultsTool;
+                let tool = TelegramResultsTool::default();
                 let first = tool
                     .execute(json!({"kind":"poll","id":"p1","offset":null}))
                     .await
@@ -130,7 +137,7 @@ mod tests {
         let conversation = "42";
         let polls = PollStore::new(root.path(), "test");
         polls.register(&conversation,8,json!({"id":"p1","question":"Choose?","options":[{"text":"A","voter_count":1}],"total_voter_count":1,"is_anonymous":true,"is_closed":false})).unwrap();
-        let tool = TelegramResultsTool;
+        let tool = TelegramResultsTool::default();
         assert!(!tool.available());
         assert!(
             tool.execute(json!({"kind":"poll","id":null}))
@@ -186,5 +193,36 @@ mod tests {
             schema["properties"]["id"]["type"],
             json!(["string", "null"])
         );
+    }
+
+    #[tokio::test]
+    async fn owner_poll_results_are_available_without_a_telegram_turn_and_keep_guest_limits() {
+        let root = tempfile::tempdir().unwrap();
+        let interface: Arc<dyn Interface> = Arc::new(
+            TelegramInterface::new("test", "token", "").with_space_root(root.path().into()),
+        );
+        PollStore::new(root.path(), "test").register(42, 8, json!({"id":"p1","question":"Choose?","options":[{"text":"A","voter_count":1}],"total_voter_count":1,"is_anonymous":true,"is_closed":false})).unwrap();
+        let tool = TelegramResultsTool::new(Some((interface.clone(), "42".into())));
+        assert!(tool.available());
+        let result = tool
+            .execute(json!({"kind":"poll","id":null}))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(result["polls"].as_array().unwrap().len(), 1);
+        assert_eq!(result["destination"]["chat"], "42");
+        REPLY_CONTEXT
+            .scope(
+                ReplyContext::new(interface, "7".into(), Some("guest".into())),
+                async {
+                    assert!(!tool.available());
+                    assert!(
+                        tool.execute(json!({"kind":"poll","id":null}))
+                            .await
+                            .is_err()
+                    );
+                },
+            )
+            .await;
     }
 }

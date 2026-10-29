@@ -265,17 +265,53 @@ impl AgentRunner {
                 continue;
             }
             let response = {
-                let wakeup = cp
-                    .record
-                    .conversation_id
-                    .rsplit_once(':')
-                    .filter(|(interface, _)| interface.starts_with("telegram:"))
-                    .map(|(interface, chat)| super::reminders::WakeupContext {
-                        recipient: super::reminders::Recipient {
-                            interface: interface.into(),
-                            chat: chat.into(),
+                let source = if let Some(id) = cp.record.submission_ids.first() {
+                    Some(
+                        store
+                            .submission_by_id(id)
+                            .await?
+                            .context("Recovery source submission missing")?
+                            .request
+                            .message,
+                    )
+                } else {
+                    None
+                };
+                let conversation = cp.record.conversation_id.as_str();
+                let legacy_address = if let Some(chat) = conversation.strip_prefix("cli:") {
+                    Some(("cli", chat))
+                } else if let Some(chat) = conversation.strip_prefix("web:") {
+                    Some(("web", chat))
+                } else if uuid::Uuid::parse_str(conversation).is_ok() {
+                    Some((
+                        if session.webhook_instruction.is_some() {
+                            "webhook"
+                        } else {
+                            "web"
                         },
-                        session: cp.record.session_id.clone(),
+                        conversation,
+                    ))
+                } else {
+                    conversation.rsplit_once(':').filter(|(interface, chat)| {
+                        interface.starts_with("telegram:") && chat.parse::<i64>().is_ok()
+                    })
+                };
+                let legacy_source = legacy_address.map(|(interface, chat)| {
+                    crate::gateway::IncomingMessage::new(
+                        crate::gateway::InterfaceId(interface.into()),
+                        chat,
+                        "",
+                    )
+                });
+                let wakeup = source
+                    .as_ref()
+                    .or(legacy_source.as_ref())
+                    .and_then(|message| {
+                        super::reminders::WakeupContext::for_message(
+                            &SessionId::new(&cp.record.conversation_id),
+                            session.id(),
+                            message,
+                        )
                     });
                 let work = super::run_state::CURRENT_EXECUTION.scope(
                     cp.ownership.clone(),

@@ -34,7 +34,7 @@ impl Tool for WakeupTool {
     }
 
     fn description(&self) -> String {
-        "Schedule your own one-shot agent wakeups in this Telegram chat: create, list, reschedule, cancel. You may create them on your own initiative for a concrete useful follow-up. create requires a self-contained instruction (1–6000 characters, include necessary context) and a future due_at (RFC 3339 with explicit offset); interpret local time in the clock timezone. reschedule requires id and due_at; cancel requires id; list takes no fields. Use null for unused fields. Source chat and session are bound by the application. Only pending tasks can be cancelled/rescheduled. A wakeup runs with your ordinary tools in a separate internal session, for at most 16 model calls/five minutes. It may finish silently or send a useful message; quiet hours defer message delivery. You may schedule another one-shot wakeup during execution. Scheduling grants no additional action permissions. User-facing Apple Reminders belong to the remindctl skill when available. Tasks survive restarts but require the gateway to run. Unsafe interrupted execution or uncertain delivery does not automatically retry; consult list before creating a replacement. Confirm scheduling only after successful persistence. No recurring schedules.".into()
+        "Schedule your own one-shot agent wakeups in this conversation (Telegram, web, CLI/TUI or webhook): create, list, reschedule, cancel. You may create them on your own initiative for a concrete useful follow-up. create requires a self-contained instruction (1–6000 characters, include necessary context) and a future due_at (RFC 3339 with explicit offset); interpret local time in the clock timezone. reschedule requires id and due_at; cancel requires id; list takes no fields. Use null for unused fields. Source chat and session are bound by the application. Only pending tasks can be cancelled/rescheduled. A wakeup runs with your ordinary tools in a separate internal session, for at most 16 model calls/five minutes. It may finish silently or send a useful message to the source Telegram chat, or save it in the original web/CLI conversation; quiet hours defer message delivery. You may schedule another one-shot wakeup during execution. Scheduling grants no additional action permissions. User-facing Apple Reminders belong to the remindctl skill when available. Tasks survive restarts but execute only while Kodrik is running for this user; keep the gateway running for unattended work. Unsafe interrupted execution or uncertain delivery does not automatically retry; consult list before creating a replacement. Confirm scheduling only after successful persistence. No recurring schedules.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -59,7 +59,7 @@ impl Tool for WakeupTool {
             .flatten()
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Wakeups require a Telegram conversation or an internal wakeup turn"
+                    "Wakeups require an ordinary conversation or an internal wakeup turn"
                 )
             })?;
         let args: WakeupRequest = serde_json::from_value(properties)?;

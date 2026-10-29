@@ -3,7 +3,6 @@ use crate::{
     agent::{
         AgentRunner,
         reminders::{ReminderStore, Status},
-        session::SessionId,
     },
     config::CompanionConfig,
 };
@@ -14,6 +13,7 @@ pub(crate) struct Wakeups {
     store: ReminderStore,
     runner: Arc<AgentRunner>,
     config: CompanionConfig,
+    access: Option<(crate::web::auth::AuthStore, u64)>,
 }
 
 impl Wakeups {
@@ -26,19 +26,57 @@ impl Wakeups {
             store,
             runner,
             config,
+            access: None,
         }
     }
 
-    pub(crate) async fn run(&self, interfaces: Vec<Arc<dyn Interface>>) {
-        if let Err(error) = self.run_owned(interfaces).await {
-            log::error!(
-                "Wakeup scheduler stopped; restart gateway after fixing storage: {error:#}"
-            );
+    pub(crate) fn with_access(
+        mut self,
+        access: Option<(crate::web::auth::AuthStore, u64)>,
+    ) -> Self {
+        self.access = access;
+        self
+    }
+
+    pub(crate) fn run(
+        self,
+        interfaces: Vec<Arc<dyn Interface>>,
+    ) -> impl std::future::Future<Output = ()> {
+        let mut shutdown = self.runner.shutdown_receiver();
+        let runner = Arc::downgrade(&self.runner);
+        let Self {
+            store,
+            config,
+            access,
+            ..
+        } = self;
+        async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.wait_for(|stopped| *stopped) => return,
+                    result = Box::pin(Self::run_owned(store.clone(), runner.clone(), config.clone(), access.clone(), interfaces.clone())) => {
+                        if let Err(error) = result {
+                            log::error!("Wakeup scheduler stopped; restart Kodrik after fixing storage: {error:#}");
+                            return;
+                        }
+                    }
+                }
+                tokio::select! {
+                    _ = shutdown.wait_for(|stopped| *stopped) => return,
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
         }
     }
 
-    async fn run_owned(&self, interfaces: Vec<Arc<dyn Interface>>) -> anyhow::Result<()> {
-        let store = self.store.clone();
+    async fn run_owned(
+        store: ReminderStore,
+        runner: std::sync::Weak<AgentRunner>,
+        config: CompanionConfig,
+        access: Option<(crate::web::auth::AuthStore, u64)>,
+        interfaces: Vec<Arc<dyn Interface>>,
+    ) -> anyhow::Result<()> {
         let store = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let Some(owner) = store.scheduler_lock()? else {
                 return Ok(None);
@@ -49,14 +87,26 @@ impl Wakeups {
         })
         .await??;
         let Some(store) = store else {
-            log::warn!("Wakeup scheduler already running for this data directory");
+            log::debug!("Wakeup scheduler already running for this data directory");
             return Ok(());
         };
-        let scheduler = Self::new(store, self.runner.clone(), self.config.clone());
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
+            let journal = store.clone();
+            let now = Utc::now();
+            if tokio::task::spawn_blocking(move || journal.due(now))
+                .await??
+                .is_empty()
+            {
+                continue;
+            }
+            let Some(runner) = runner.upgrade() else {
+                return Ok(());
+            };
+            let scheduler =
+                Self::new(store.clone(), runner, config.clone()).with_access(access.clone());
             scheduler.check(&interfaces, Utc::now()).await?;
         }
     }
@@ -71,10 +121,21 @@ impl Wakeups {
         let due = tokio::task::spawn_blocking(move || store.due(now)).await??;
         // ponytail: serial attempts, up to five minutes each; use per-chat workers if volume warrants it.
         for task in due {
+            if let Some((auth, user)) = &self.access
+                && !auth.allowed_user(*user)?
+            {
+                return Ok(());
+            }
             let attempt_now = now + chrono::Duration::from_std(elapsed.elapsed())?;
-            let Some(interface) = interfaces.iter().find(|i| {
-                i.id().0 == task.recipient.interface && i.allows_recipient(&task.recipient.chat)
-            }) else {
+            let interface = interfaces.iter().find(|i| {
+                i.id().0 == task.recipient.interface
+                    && i.allows_recipient(&task.recipient.chat)
+                    && self
+                        .access
+                        .as_ref()
+                        .is_none_or(|(_, user)| task.recipient.chat == user.to_string())
+            });
+            if interface.is_none() && !task.recipient.is_local() {
                 let store = self.store.clone();
                 tokio::task::spawn_blocking(move || {
                     store.note_unavailable(
@@ -84,23 +145,65 @@ impl Wakeups {
                 })
                 .await??;
                 continue;
-            };
-            let conversation = SessionId::new(format!(
-                "{}:{}",
-                task.recipient.interface, task.recipient.chat
-            ));
+            }
+            let conversation = task.recipient.conversation();
             if self.runner.conversation_busy(&conversation).await {
                 continue;
             }
             if matches!(task.status, Status::Pending | Status::Running) {
-                self.runner
-                    .execute_wakeup(interface.as_ref(), &self.store, &task, attempt_now)
-                    .await?;
+                if let Err(error) = self
+                    .runner
+                    .execute_wakeup(
+                        interface.map(|i| i.as_ref()),
+                        &self.store,
+                        &task,
+                        attempt_now,
+                    )
+                    .await
+                {
+                    if matches!(
+                        error.downcast_ref::<std::fs::TryLockError>(),
+                        Some(std::fs::TryLockError::WouldBlock)
+                    ) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+            if let Some((auth, user)) = &self.access
+                && !auth.allowed_user(*user)?
+            {
+                return Ok(());
             }
             let now = now + chrono::Duration::from_std(elapsed.elapsed())?;
-            self.runner
-                .deliver_wakeup(interface.as_ref(), &self.store, &task, &self.config, now)
-                .await?;
+            let store = self.store.clone();
+            let id = task.id.clone();
+            let current = tokio::task::spawn_blocking(move || store.due(now))
+                .await??
+                .into_iter()
+                .find(|task| task.id == id);
+            let Some(task) = current else {
+                continue;
+            };
+            if let Err(error) = self
+                .runner
+                .deliver_wakeup(
+                    interface.map(|i| i.as_ref()),
+                    &self.store,
+                    &task,
+                    &self.config,
+                    now,
+                )
+                .await
+            {
+                if matches!(
+                    error.downcast_ref::<std::fs::TryLockError>(),
+                    Some(std::fs::TryLockError::WouldBlock)
+                ) {
+                    continue;
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -201,7 +304,7 @@ mod tests {
         let runner = make_runner();
         let task = store.due(Utc::now()).unwrap().pop().unwrap();
         runner
-            .execute_wakeup(&Chat::new(false), &store, &task, Utc::now())
+            .execute_wakeup(Some(&Chat::new(false)), &store, &task, Utc::now())
             .await
             .unwrap();
         let all: serde_json::Value =
@@ -359,10 +462,195 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn wakeups_deliver_local_results_once_without_telegram_or_enabled_web() {
+        use crate::agent::session::{SessionStore, SqliteSessionStore};
+        for interface in ["web", "webhook", "cli"] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut scheduler, model) = setup(root.path(), "{\"message\":\"Build passed\"}");
+            let sessions = Arc::new(
+                SqliteSessionStore::open_async(root.path().join("sessions"))
+                    .await
+                    .unwrap(),
+            );
+            scheduler.runner = Arc::new(AgentRunner::new(
+                Arc::new(Agent::new(
+                    model.clone(),
+                    ToolRegistry::default()
+                        .register(Arc::new(ExecCommandTool))
+                        .register(Arc::new(WakeupTool::new(root.path()))),
+                    ContextBuilder::new("test"),
+                )),
+                sessions.clone(),
+            ));
+            let chat = if interface == "cli" {
+                "main".into()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            let conversation = SessionId::new(if interface == "cli" {
+                format!("cli:{chat}")
+            } else {
+                chat.clone()
+            });
+            let source = scheduler.runner.new_session(&conversation).await.unwrap();
+            let now = Utc::now();
+            use chrono::Timelike;
+            scheduler.config.quiet_start = (now.hour() + 1) % 24;
+            scheduler.config.quiet_end = (now.hour() + 2) % 24;
+            let recipient = Recipient {
+                interface: interface.into(),
+                chat,
+            };
+            let created = scheduler.store.execute_wakeup(&recipient, source.id().as_str(), serde_json::from_value(json!({"action":"create","text":"Check build","due_at":(now-chrono::Duration::minutes(1)).to_rfc3339()})).unwrap(), now-chrono::Duration::minutes(2)).unwrap();
+            let id = created["wakeup"]["id"].as_str().unwrap();
+            let guard = sessions
+                .execution_lock("conversation", conversation.as_str())
+                .await
+                .unwrap();
+            scheduler.check(&[], now).await.unwrap();
+            assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+            drop(guard);
+            scheduler.check(&[], now).await.unwrap();
+            let saved = sessions.load(source.id()).await.unwrap().unwrap();
+            assert!(
+                matches!(saved.messages().last(), Some(Message::Assistant(answer)) if answer.content == "Build passed"),
+                "{}",
+                serde_json::to_string(&saved).unwrap()
+            );
+            let calls = model.calls.load(Ordering::SeqCst);
+            // Crash after the atomic history write but before journal completion.
+            let path = root.path().join("wakeups.json");
+            let mut records: Vec<crate::agent::reminders::Reminder> =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            records.iter_mut().find(|r| r.id == id).unwrap().status = Status::Ready;
+            std::fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
+            scheduler.store.recover().unwrap();
+            scheduler.check(&[], now).await.unwrap();
+            assert_eq!(model.calls.load(Ordering::SeqCst), calls);
+            let saved = sessions.load(source.id()).await.unwrap().unwrap();
+            assert_eq!(
+                saved
+                    .messages()
+                    .iter()
+                    .filter(|m| matches!(m, Message::Assistant(a) if a.content == "Build passed"))
+                    .count(),
+                1
+            );
+        }
+    }
+
     fn create(store: &ReminderStore, source: &str) -> String {
         store.execute_wakeup(&Recipient { interface:"telegram:test".into(), chat:"42".into() }, source,
             serde_json::from_value::<ReminderRequest>(json!({"action":"create", "text":"Check build", "due_at":(Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()})).unwrap(),
             Utc::now() - chrono::Duration::minutes(2)).unwrap()["wakeup"]["id"].as_str().unwrap().into()
+    }
+
+    #[tokio::test]
+    async fn wakeups_recheck_revocation_after_execution_before_delivery() {
+        struct RevokingModel {
+            model: Arc<TaskModel>,
+            auth: crate::web::auth::AuthStore,
+        }
+        #[async_trait::async_trait]
+        impl LlmProvider for RevokingModel {
+            async fn generate(
+                &self,
+                context: &LlmContext<'_>,
+                tools: &[&dyn Tool],
+                progress: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                let result = self.model.generate(context, tools, progress).await?;
+                if result.0.iter().any(|m| matches!(m, Message::Assistant(_))) {
+                    self.auth.revoke_user(42)?;
+                }
+                Ok(result)
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let auth = crate::web::auth::AuthStore::new(root.path());
+        auth.grant_test_user(42).unwrap();
+        let (mut scheduler, model) = setup(root.path(), "{\"message\":\"Build passed\"}");
+        scheduler.runner = Arc::new(AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(RevokingModel {
+                    model,
+                    auth: auth.clone(),
+                }),
+                ToolRegistry::default()
+                    .register(Arc::new(ExecCommandTool))
+                    .register(Arc::new(WakeupTool::new(root.path()))),
+                ContextBuilder::new("test"),
+            )),
+            Arc::new(JsonSessionStore::new(root.path().join("sessions"))),
+        ));
+        scheduler.access = Some((auth, 42));
+        let source = scheduler
+            .runner
+            .new_session(&SessionId::new("telegram:test:42"))
+            .await
+            .unwrap();
+        create(&scheduler.store, source.id().as_str());
+        let chat = Arc::new(Chat::new(false));
+        let now = Utc::now();
+        use chrono::Timelike;
+        scheduler.config.quiet_start = (now.hour() + 1) % 24;
+        scheduler.config.quiet_end = (now.hour() + 2) % 24;
+        scheduler.check(&[chat.clone()], now).await.unwrap();
+        assert!(
+            !scheduler
+                .access
+                .as_ref()
+                .unwrap()
+                .0
+                .allowed_user(42)
+                .unwrap()
+        );
+        assert!(chat.sent.lock().unwrap().is_empty());
+        assert_eq!(records(&scheduler.store)["wakeups"][0]["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn wakeups_recheck_delivery_locks_and_defer_a_busy_telegram_session() {
+        use crate::agent::session::SqliteSessionStore;
+        use chrono::Timelike;
+        let root = tempfile::tempdir().unwrap();
+        let (mut scheduler, model) = setup(root.path(), "{\"message\":null}");
+        let sessions = Arc::new(
+            SqliteSessionStore::open_async(root.path().join("sessions"))
+                .await
+                .unwrap(),
+        );
+        scheduler.runner = Arc::new(AgentRunner::new(
+            Arc::new(Agent::new(
+                model,
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            sessions.clone(),
+        ));
+        let conversation = SessionId::new("telegram:test:42");
+        let source = scheduler.runner.new_session(&conversation).await.unwrap();
+        let id = create(&scheduler.store, source.id().as_str());
+        let now = Utc::now();
+        scheduler.config.quiet_start = (now.hour() + 1) % 24;
+        scheduler.config.quiet_end = (now.hour() + 2) % 24;
+        scheduler.store.claim(&id, now).unwrap().unwrap();
+        scheduler
+            .store
+            .complete_execution(&id, Some("Ready result".into()))
+            .unwrap();
+        let chat = Arc::new(Chat::new(false));
+        let guard = sessions
+            .execution_lock("session", source.id().as_str())
+            .await
+            .unwrap();
+        scheduler.check(&[chat.clone()], now).await.unwrap();
+        assert!(chat.sent.lock().unwrap().is_empty());
+        drop(guard);
+        scheduler.check(&[chat.clone()], now).await.unwrap();
+        assert_eq!(*chat.sent.lock().unwrap(), ["Ready result"]);
+        assert!(scheduler.store.due(now).unwrap().is_empty());
     }
     // Read through list instead of exposing store internals for tests.
     fn records(store: &ReminderStore) -> serde_json::Value {

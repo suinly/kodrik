@@ -404,7 +404,10 @@ requests remain available when SSE capacity is exhausted.
 The server allows four executing web conversations per user, one run per session.
 Concurrent work in another interface returns 409. Each interface retains its
 own active-session selection, and replies go only to the interface that accepted
-the request; a web prompt does not send an answer to Telegram. In Telegram,
+the request. Explicit calls to `messages` and Telegram tools may send to the
+configured owner's Telegram chat; Telegram tool results identify the destination
+and do not replace the final web answer. Wakeups created here save their result
+in the original conversation history, including when the browser is closed. In Telegram,
 `/sessions [page]` lists personal dialogs and `/session <id>` selects one with
 a short confirmation, without replaying the transcript. A paused queue must be
 resumed through its original interface before another interface can add work.

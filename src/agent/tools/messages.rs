@@ -83,12 +83,12 @@ impl MessagesTool {
 
     async fn deliver(&self, id: &str) -> anyhow::Result<Option<MessageId>> {
         let (destination, recipient) = self.store.notification_destination(id).await?;
-        let result = if destination == "web" {
-            if self.web_url.is_none() {
+        let result = if matches!(destination.as_str(), "web" | "local") {
+            if destination == "web" && self.web_url.is_none() {
                 self.store.reject_notification(id).await?;
                 anyhow::bail!("Web channel is unavailable");
             }
-            self.store.deliver_web_notification(id).await
+            self.store.deliver_local_notification(id).await
         } else {
             let channel = self.channels.iter().find(|channel| {
                 channel.interface.id().0 == destination && channel.recipient == recipient

@@ -34,7 +34,6 @@ pub struct GatewayRunner {
     interfaces: Vec<Arc<dyn Interface>>,
     proactive: Option<Arc<super::proactive::Proactive>>,
     reminders: Vec<Arc<super::reminders::Reminders>>,
-    wakeups: Vec<Arc<super::wakeups::Wakeups>>,
     restart: Option<Arc<super::restart::RestartCoordinator>>,
 }
 
@@ -142,7 +141,6 @@ impl GatewayRunner {
             interfaces: Vec::new(),
             proactive: None,
             reminders: Vec::new(),
-            wakeups: Vec::new(),
             restart: None,
         }
     }
@@ -181,11 +179,6 @@ impl GatewayRunner {
     pub async fn run(&self) -> anyhow::Result<()> {
         let mut gateway = self.clone();
         let mut background = tokio::task::JoinSet::new();
-        for wakeups in &self.wakeups {
-            let wakeups = wakeups.clone();
-            let interfaces = self.interfaces.clone();
-            background.spawn(async move { wakeups.run(interfaces).await });
-        }
         for reminders in &self.reminders {
             let reminders = reminders.clone();
             let interfaces = self.interfaces.clone();
@@ -378,9 +371,6 @@ impl GatewayRunner {
                         let reminders = gateway.reminders.last().unwrap().clone();
                         let interfaces = gateway.interfaces.clone();
                         background.spawn(async move { reminders.run(interfaces).await });
-                        let wakeups = gateway.wakeups.last().unwrap().clone();
-                        let interfaces = gateway.interfaces.clone();
-                        background.spawn(async move { wakeups.run(interfaces).await });
                     }
                     if gateway.handle_session_command(&message).await? {
                         message.acknowledge();

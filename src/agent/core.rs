@@ -306,14 +306,14 @@ impl Agent {
         let result = {
             let work = crate::audit::scope(
                 context,
-                self.run_loop(
+                super::tools::telegram_reply::with_owner_reply_state(self.run_loop(
                     session,
                     input,
                     progress,
                     incoming,
                     call_budget,
                     checkpoint.as_deref_mut(),
-                ),
+                )),
             );
             if let Some(deadline) = deadline {
                 match (deadline - chrono::Utc::now()).to_std() {
@@ -730,23 +730,13 @@ impl Agent {
                         let identity = checkpoint
                             .as_ref()
                             .map(|cp| (cp.record.id.clone(), call.call_id.clone()));
-                        let delivery = checkpoint
-                            .as_ref()
-                            .filter(|cp| {
-                                cp.record.conversation_id.rsplit_once(':').is_some_and(
-                                    |(interface, chat)| {
-                                        interface.starts_with("telegram:")
-                                            && chat.parse::<i64>().is_ok()
-                                    },
-                                )
-                            })
-                            .map(|cp| {
-                                (
-                                    cp.store.clone(),
-                                    cp.record.id.clone(),
-                                    cp.record.conversation_id.clone(),
-                                )
-                            });
+                        let delivery = checkpoint.as_ref().map(|cp| {
+                            (
+                                cp.store.clone(),
+                                cp.record.id.clone(),
+                                cp.record.conversation_id.clone(),
+                            )
+                        });
                         let result = super::delivery::CURRENT_DELIVERY
                             .scope(
                                 delivery,
