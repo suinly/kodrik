@@ -1895,6 +1895,13 @@ test('mobile sidebar profile menu fits narrow screens and enlarged text',{timeou
       for(const width of [320,360,390]) for(const fontSize of [16,20,24]) {
         await page.setViewportSize({width,height:640});
         await page.evaluate(size=>document.documentElement.style.fontSize=`${size}px`,fontSize);
+        const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
+        const search=await dialog.locator('.sidebar-header-actions button').boundingBox();
+        const close=await dialog.locator('[data-slot="toggle"]').boundingBox();
+        const history=await dialog.getByRole('navigation',{name:locale==='ru-RU'?'История диалогов':'Conversation history',exact:true}).boundingBox();
+        assert.ok(search.x>=logo.x+logo.width && close.x>=search.x+search.width,`Header buttons do not overlap at ${width}px / ${fontSize}px`);
+        assert.ok(Math.abs(close.x+close.width-history.x-history.width)<1,`Close stays inside the content edge at ${width}px / ${fontSize}px: ${JSON.stringify({logo,search,close,history})}`);
+        for(const control of [search,close]) assert.ok(control.width>=44 && control.height>=44,'Header controls retain 44px touch targets');
         if(width===320 && fontSize===20) await page.screenshot({path:`/tmp/kodrik-kod-6-${locale}.png`,animations:'disabled'});
         for(const name of [labels.profile]) {
           const geometry=await dialog.getByRole('button',{name,exact:true}).evaluate(el=>{
@@ -1961,6 +1968,18 @@ test('mobile safe areas and browser theme follow the screen and manual appearanc
       await expect(page.locator('meta[name="theme-color"]')).toHaveCount(1);
       await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content',hex);
       await expect(page.locator('body')).toHaveCSS('background-color',rgb);
+      const edges=page.locator('.chat-screen-edge');
+      await expect(edges).toHaveCount(2);
+      for(const edge of await edges.all()) {
+        await expect(edge).toHaveCSS('position','fixed');
+        await expect(edge).toHaveCSS('background-color',rgb);
+        const bounds=await edge.boundingBox();
+        assert.ok(bounds.height>10 && bounds.height<844/2,'Edge bars are thick enough for WebKit sampling without covering the viewport');
+        assert.ok(Math.abs(bounds.width-390)<1 && Math.abs(bounds.x)<1,'Edge bars span the full viewport');
+      }
+      const top=await edges.first().boundingBox(),bottom=await edges.last().boundingBox();
+      assert.equal(top.y,0);
+      assert.equal(bottom.y+bottom.height,844);
       await expect.poll(()=>page.evaluate(()=>{
         const painted=y=>{
           let element=document.elementFromPoint(innerWidth/2,y);
@@ -1994,6 +2013,17 @@ test('mobile safe areas and browser theme follow the screen and manual appearanc
     await check('#23273a','rgb(35, 39, 58)');
     await page.reload();
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
+    await check('#23273a','rgb(35, 39, 58)');
+    await page.setViewportSize({width:1280,height:844});
+    await expect.poll(()=>page.getByRole('navigation',{name:'История диалогов',exact:true}).evaluate(element=>{
+      while(element) {
+        const color=getComputedStyle(element).backgroundColor;
+        if(color!=='rgba(0, 0, 0, 0)') return color;
+        element=element.parentElement;
+      }
+    })).toBe('rgb(30, 30, 46)');
+    await expect(page.locator('[id$="-panel-chat"]')).toHaveCSS('background-color','rgb(35, 39, 58)');
+    await page.setViewportSize({width:390,height:844});
     await check('#23273a','rgb(35, 39, 58)');
     await page.goto(base);
     await expect(page.locator('.home-page')).toBeVisible();

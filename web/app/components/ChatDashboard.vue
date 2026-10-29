@@ -469,7 +469,9 @@ onMounted(() => {
       </nav>
       <div class="mt-auto"><SidebarProfile :active="section==='profile'" :disabled="webhooks.saving" @settings="openSection('profile')" /></div>
   </DefineRail>
-  <UDashboardGroup unit="rem" class="chat-viewport bg-default" :style="{backgroundColor}"
+  <div aria-hidden="true" class="chat-screen-edge top-0 lg:hidden" :style="{backgroundColor}" />
+  <div aria-hidden="true" class="chat-screen-edge bottom-0 lg:hidden" :style="{backgroundColor}" />
+  <UDashboardGroup unit="rem" class="chat-viewport bg-default" :style="{backgroundColor:desktop?undefined:backgroundColor}"
     @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
     <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <ReuseRail />
@@ -478,8 +480,8 @@ onMounted(() => {
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
       :toggle="{size:'sm',class:'sidebar-action'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) gap-0.5 py-2 sm:px-4',toggle:'ms-0',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-sidebar chat-viewport w-[calc(100%-48px)] max-w-96 sm:max-w-96 ps-14! bg-default',overlay:'bg-black/40'}">
       <template #header>
-        <aside class="absolute top-[env(safe-area-inset-top)] bottom-[env(safe-area-inset-bottom)] left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
-        <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
+        <aside class="absolute top-[max(12px,env(safe-area-inset-top))] bottom-[max(12px,env(safe-area-inset-bottom))] left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
+        <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="sidebar-logo min-w-0 flex-1 justify-start px-0"><KodrikLogo class="w-[calc(1.5rem*26/7)] max-w-full" /></UButton>
         <div class="sidebar-header-actions ml-auto flex shrink-0 items-center gap-1" />
       </template>
       <SidebarSearch v-if="section==='chat' || showEvents" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">

@@ -126,6 +126,28 @@ body:has(.chat-viewport) {
 .sidebar-icon { @apply size-4 shrink-0 text-muted; }
 .sidebar-action { @apply size-8 justify-center p-0 text-muted; }
 .sidebar-delete:hover, .sidebar-delete:focus-visible { color: var(--ui-error); }
+@media (max-width: 1023px) {
+  .chat-viewport {
+    padding-top: max(12px, env(safe-area-inset-top));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  /* WebKit samples fixed edge bars only when they are thicker than 10px. */
+  .chat-screen-edge {
+    position: fixed;
+    inset-inline: 0;
+    z-index: 100;
+    height: 12px;
+    pointer-events: none;
+  }
+  .chat-sidebar > [data-slot='header'] .sidebar-logo { min-width: 44px; }
+  .chat-sidebar > [data-slot='header'] :is(.sidebar-action, [data-slot='toggle']) {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 @media (hover: hover) and (pointer: fine) {
   .sidebar-secondary { opacity: 0; }
   .sidebar-section-header:hover .sidebar-secondary,
