@@ -1,14 +1,21 @@
 mod app;
+mod clipboard;
+#[cfg(all(test, unix))]
+mod startup_tests;
 mod terminal;
 mod ui;
+mod view;
 
 use std::{
-    io::{IsTerminal, Write},
+    io::{self, IsTerminal, Write},
     path::Path,
+    sync::Arc,
     time::Duration,
 };
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
@@ -39,29 +46,36 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         )
     );
     let context = build_app(config).await?;
-    let session_id = SessionId::new("cli:main");
-    let recovery =
-        context
-            .agent_runner
-            .recover(crate::agent::recovery::RecoveryTarget::Conversation(
-                session_id.clone(),
-            ));
-    tokio::pin!(recovery);
-    tokio::select! {
-        report=&mut recovery=>{for (id,reason) in report?.blocked {eprintln!("{} {id}: {reason}", language.pick("Recovery blocked for", "Восстановление заблокировано для"));}},
-        _=super::shutdown_signal()=>{context.agent_runner.suspend();let _=recovery.await;return Ok(());}
-    }
+    let ProviderConfig::OpenAi { model, .. } = &config.provider["primary"];
+    run_session(
+        context.agent_runner,
+        model.clone(),
+        language,
+        &language_path,
+    )
+    .await
+}
 
-    let session = context
-        .agent_runner
-        .load_session(session_id.clone())
-        .await?;
+async fn run_session(
+    runner: Arc<crate::agent::AgentRunner>,
+    model: String,
+    language: Language,
+    language_path: &Path,
+) -> anyhow::Result<()> {
+    let session_id = SessionId::new("cli:main");
+    let recovery = runner.recover(crate::agent::recovery::RecoveryTarget::Conversation(
+        session_id.clone(),
+    ));
+    tokio::pin!(recovery);
+    let mut recovering = true;
+
+    let session = runner.load_session(session_id.clone()).await?;
     let mut app = App {
         language,
+        status: Status::Recovering,
         ..Default::default()
     };
-    let ProviderConfig::OpenAi { model, .. } = &config.provider["primary"];
-    app.model = model.clone();
+    app.model = model;
     restore_history(&mut app, &session);
 
     let mut tui = Tui::enter()?;
@@ -69,6 +83,7 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
     let mut requests = JoinSet::new();
+    let mut copies = JoinSet::new();
     let (input_tx, input_rx) = mpsc::unbounded_channel::<IncomingMessage>();
     let mut idle_inputs = Some(input_rx);
     let mut cancel_request: Option<oneshot::Sender<()>> = None;
@@ -81,14 +96,13 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         if let Some(inputs) = idle_inputs.as_mut()
             && let Ok(mut input) = inputs.try_recv()
         {
-            if context
-                .agent_runner
+            if runner
                 .submission_finished(&session_id, &input.request_id)
                 .await?
             {
                 continue;
             }
-            if let Some(next) = context.agent_runner.next_input(&session_id).await?
+            if let Some(next) = runner.next_input(&session_id).await?
                 && next.request_id != input.request_id
             {
                 input_tx.send(input)?;
@@ -96,7 +110,7 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
             }
 
             let inputs = idle_inputs.take().unwrap();
-            let runner = context.agent_runner.clone();
+            let runner = runner.clone();
             let session_id = session_id.clone();
             let progress = progress_tx.clone();
             let (cancel, cancelled) = oneshot::channel();
@@ -117,13 +131,58 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
             redraw = false;
         }
         tokio::select! {
-            _ = &mut shutdown => { app.should_quit = true; context.agent_runner.suspend(); },
+            report = &mut recovery, if recovering => {
+                recovering = false;
+                let mut report = report?;
+                let stopped = matches!(app.status, Status::Stopping);
+                if stopped {
+                    report.blocked.retain(|(_, reason)| !reason.starts_with("Stopped by user"));
+                }
+                let session = runner.load_session(session_id.clone()).await?;
+                app.messages.clear();
+                app.pending_tools.clear();
+                app.streaming_message = None;
+                restore_history(&mut app, &session);
+                app.status = if !report.blocked.is_empty() {
+                    Status::Error
+                } else if stopped || !report.cancelled.is_empty() {
+                    Status::Stopped
+                } else {
+                    Status::Ready
+                };
+                for (id, reason) in report.blocked {
+                    app.push_kodrik_message(format!("{} {id}: {reason}", app.language.pick("Recovery blocked for", "Восстановление заблокировано для")));
+                }
+                redraw = true;
+            },
+            _ = &mut shutdown => { app.should_quit = true; runner.suspend(); },
             event = next_terminal_event() => {
                 match event {
                     Ok(Event::Key(key)) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                        match selection_command(&mut app, key) {
+                            Some(SelectionCommand::Clear) => { redraw = true; continue; }
+                            Some(SelectionCommand::Copy(text)) => {
+                                copies.abort_all();
+                                while copies.try_join_next().is_some() {}
+                                let selection_id = app.view.selection_id();
+                                copies.spawn(async move { (selection_id, clipboard::copy(text).await) });
+                                continue;
+                            }
+                            None => {}
+                        }
+                        if key.code == KeyCode::Esc && recovering && app.command_suggestion().is_none() {
+                            // Recovery is paused here, so queued work cannot start during cancellation.
+                            while let Some(input) = runner.next_input(&session_id).await? {
+                                runner.cancel_queued_input(&session_id, &input.request_id).await?;
+                            }
+                            runner.cancel_conversation(&session_id).await?;
+                            app.status = Status::Stopping;
+                            redraw = true;
+                            continue;
+                        }
                         if key.code == KeyCode::Enter && app.sessions.is_some() {
                             if let Some((id, _)) = app.sessions.as_ref().and_then(|sessions| sessions.get(app.session_index)) {
-                                match context.agent_runner.select_session(&session_id, id).await {
+                                match runner.select_session(&session_id, id).await {
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
@@ -148,12 +207,12 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                             continue;
                         }
                         if let Some(input) = app.update(key) {
-                            if handle_language_command(&mut app, &input, &language_path) {
+                            if handle_language_command(&mut app, &input, language_path) {
                                 redraw = true;
                                 continue;
                             }
                             if input == "/sessions" {
-                                match context.agent_runner.list_sessions().await {
+                                match runner.list_sessions().await {
                                     Ok(sessions) => {
                                         app.sessions = Some(sessions.iter().map(|session| {
                                             let title = session.messages().iter().find_map(|message| match message {
@@ -173,7 +232,7 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                                 continue;
                             }
                             if input == "/new" {
-                                match context.agent_runner.new_session(&session_id).await {
+                                match runner.new_session(&session_id).await {
                                     Ok(_) => {
                                         reset_session(&mut app);
                                         app.push_kodrik_message(app.language.pick("New session created.", "Создан новый сеанс.").into());
@@ -188,7 +247,7 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                                 continue;
                             }
                             let message=IncomingMessage::new(InterfaceId("cli".into()),"main",input);
-                            match context.agent_runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
+                            match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
                                 Ok(_)=>{input_tx.send(message)?;},
                                 Err(error)=>{app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
                             }
@@ -196,16 +255,44 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                         redraw = true;
                     }
                     Ok(Event::Paste(text)) => {
+                        app.view.clear_selection();
                         if app.sessions.is_none() { app.insert_input(&text); }
                         redraw = true;
                     }
-                    Ok(Event::Resize(_, _)) => redraw = true,
+                    Ok(Event::Mouse(mouse)) => {
+                        if let Some(sessions) = &app.sessions {
+                            match mouse.kind {
+                                MouseEventKind::ScrollUp => { app.view.clear_selection(); app.session_index = app.session_index.saturating_sub(1); },
+                                MouseEventKind::ScrollDown => { app.view.clear_selection(); app.session_index = (app.session_index + 1).min(sessions.len().saturating_sub(1)); },
+                                _ => {}
+                            }
+                        }
+                        if let Some(text) = app.view.mouse(mouse, &mut app.scroll) {
+                            copies.abort_all();
+                            while copies.try_join_next().is_some() {}
+                            let selection_id = app.view.selection_id();
+                            copies.spawn(async move { (selection_id, clipboard::copy(text).await) });
+                        }
+                        redraw = true;
+                    }
+                    Ok(Event::Resize(_, _)) | Ok(Event::FocusLost) => {
+                        app.view.clear_selection();
+                        redraw = true;
+                    }
                     Err(error) => return Err(error.into()),
                     _ => {}
                 }
             }
             Some(event) = progress_rx.recv() => {
                 show_progress(&mut app, event);
+                redraw = true;
+            }
+            Some(result) = copies.join_next(), if !copies.is_empty() => {
+                match result {
+                    Ok((selection_id, result)) => complete_copy(&mut app, selection_id, result, |sequence| tui.copy_to_terminal(sequence)),
+                    Err(error) if error.is_cancelled() => {},
+                    Err(error) => app.set_copy_notice(format!("{}: {error}", app.language.pick("Copy failed", "Не удалось скопировать"))),
+                }
                 redraw = true;
             }
             Some(result) = requests.join_next(), if !requests.is_empty() => {
@@ -253,7 +340,12 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                 redraw = true;
             }
             _ = tick.tick() => {
-                if matches!(app.status, Status::Working | Status::Stopping) {
+                redraw |= app.view.tick(&mut app.scroll);
+                if app.copy_notice.as_ref().is_some_and(|(_, until)| std::time::Instant::now() >= *until) {
+                    app.copy_notice = None;
+                    redraw = true;
+                }
+                if matches!(app.status, Status::Recovering | Status::Working | Status::Stopping) {
                     app.animation_frame = app.animation_frame.wrapping_add(1);
                     redraw = true;
                 }
@@ -263,13 +355,70 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
             }
         }
     }
-    context.agent_runner.suspend();
+    runner.suspend();
+    if recovering {
+        let _ = recovery.await;
+    }
+    copies.abort_all();
     while !requests.is_empty() {
         tokio::select! {_=requests.join_next()=>{},_=progress_rx.recv()=>{}}
     }
     tui.exit()?;
-    context.agent_runner.finish_learning().await;
+    runner.finish_learning().await;
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SelectionCommand {
+    Clear,
+    Copy(String),
+}
+
+fn complete_copy(
+    app: &mut App,
+    selection_id: Option<u64>,
+    result: io::Result<clipboard::CopyOutcome>,
+    terminal_copy: impl FnOnce(&str) -> io::Result<()>,
+) {
+    let outcome = result.and_then(|outcome| match outcome {
+        clipboard::CopyOutcome::Confirmed => Ok(true),
+        clipboard::CopyOutcome::Terminal(sequence) => terminal_copy(&sequence).map(|()| false),
+    });
+    match outcome {
+        Ok(confirmed) => {
+            app.view.clear_copied_selection(selection_id);
+            app.set_copy_notice(if confirmed {
+                app.language
+                    .pick("Copied to clipboard", "Скопировано в буфер обмена")
+                    .into()
+            } else {
+                app.language
+                    .pick(
+                        "Copy requested from terminal",
+                        "Запрос копирования отправлен терминалу",
+                    )
+                    .into()
+            });
+        }
+        Err(error) => app.set_copy_notice(format!(
+            "{}: {error}",
+            app.language.pick("Copy failed", "Не удалось скопировать")
+        )),
+    }
+}
+
+fn selection_command(app: &mut App, key: KeyEvent) -> Option<SelectionCommand> {
+    if key.code == KeyCode::Esc && app.view.clear_selection() {
+        return Some(SelectionCommand::Clear);
+    }
+    if matches!(key.code, KeyCode::Char('c' | 'C' | 'с' | 'С'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && let Some(text) = app.view.selected_text()
+    {
+        return Some(SelectionCommand::Copy(text));
+    }
+    app.view.clear_selection();
+    None
 }
 
 fn load_language(path: &Path, fallback: Language) -> anyhow::Result<Language> {
@@ -404,6 +553,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         AgentEvent::SessionChanged {
             previous_user_messages,
         } => {
+            app.view = Default::default();
             let boundary = app
                 .messages
                 .iter()
@@ -634,6 +784,109 @@ fn command_output(output: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_native_copy_clears_its_selection() {
+        let mut app = selected_draft_app();
+        let id = app.view.selection_id();
+        complete_copy(&mut app, id, Ok(clipboard::CopyOutcome::Confirmed), |_| {
+            panic!("native success must not write to terminal")
+        });
+        assert!(app.view.selected_text().is_none());
+        assert_eq!(app.copy_notice.as_ref().unwrap().0, "Copied to clipboard");
+    }
+
+    #[test]
+    fn terminal_copy_clears_selection_only_after_the_write_succeeds() {
+        let mut app = selected_draft_app();
+        let id = app.view.selection_id();
+        complete_copy(
+            &mut app,
+            id,
+            Ok(clipboard::CopyOutcome::Terminal("sequence".into())),
+            |_| Err(io::Error::other("write failed")),
+        );
+        assert_eq!(app.view.selected_text().as_deref(), Some("draft"));
+        let mut output = Vec::new();
+        complete_copy(
+            &mut app,
+            id,
+            Ok(clipboard::CopyOutcome::Terminal("sequence".into())),
+            |sequence| output.write_all(sequence.as_bytes()),
+        );
+        assert_eq!(output, b"sequence");
+        assert!(app.view.selected_text().is_none());
+    }
+
+    #[test]
+    fn older_copy_completion_preserves_a_newer_selection() {
+        let old = selected_draft_app().view.selection_id();
+        let mut app = selected_draft_app();
+        complete_copy(&mut app, old, Ok(clipboard::CopyOutcome::Confirmed), |_| {
+            Ok(())
+        });
+        assert_eq!(app.view.selected_text().as_deref(), Some("draft"));
+        let id = app.view.selection_id();
+        complete_copy(
+            &mut app,
+            id,
+            Err(io::Error::other("clipboard unavailable")),
+            |_| Ok(()),
+        );
+        assert_eq!(app.view.selected_text().as_deref(), Some("draft"));
+    }
+
+    fn selected_draft_app() -> App {
+        use crossterm::event::{MouseButton, MouseEvent};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App {
+            status: Status::Working,
+            ..Default::default()
+        };
+        app.insert_input("draft");
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
+        for (kind, column) in [
+            (MouseEventKind::Down(MouseButton::Left), 3),
+            (MouseEventKind::Drag(MouseButton::Left), 7),
+            (MouseEventKind::Up(MouseButton::Left), 7),
+        ] {
+            app.view.mouse(
+                MouseEvent {
+                    kind,
+                    column,
+                    row: 17,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut app.scroll,
+            );
+        }
+        app
+    }
+
+    #[test]
+    fn selection_keys_copy_and_clear_before_regular_input_actions() {
+        let mut app = selected_draft_app();
+        assert_eq!(
+            selection_command(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Some(SelectionCommand::Copy("draft".into()))
+        );
+        assert_eq!(app.input, "draft");
+        assert!(!app.should_quit);
+        assert!(matches!(app.status, Status::Working));
+        assert_eq!(
+            selection_command(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(SelectionCommand::Clear)
+        );
+        assert!(matches!(app.status, Status::Working));
+        assert_eq!(
+            selection_command(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            None
+        );
+    }
 
     #[test]
     fn language_command_persists_without_losing_draft_history_or_running_state() {

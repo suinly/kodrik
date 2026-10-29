@@ -3,7 +3,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, List, ListItem, ListState, Paragraph, Widget},
 };
 
@@ -94,6 +94,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     let language = app.language;
     if let Some(sessions) = &app.sessions {
+        app.view
+            .prepare(&app.messages, area, 0, &mut app.scroll, true);
         let items = sessions
             .iter()
             .map(|(id, title)| ListItem::new(format!("{title}  · {}", id.as_str())))
@@ -122,6 +124,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 &mut ListState::default().with_selected(Some(app.session_index)),
             );
         }
+        app.view.restore_footer(frame.buffer_mut());
+        app.view.finish_frame(frame.buffer_mut(), None);
         return;
     }
     app.input_width = usize::from(area.width.saturating_sub(3).max(1));
@@ -131,8 +135,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let history_height = area
         .height
         .saturating_sub(VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3);
-    let history = Rect::new(area.x, area.y, area.width, history_height);
-    render_history(app, frame, history);
+    app.view
+        .prepare(&app.messages, area, history_height, &mut app.scroll, false);
+    app.view.render_history(frame.buffer_mut());
     let footer = Rect::new(
         area.x,
         area.y + history_height,
@@ -168,6 +173,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     let (animation_frame, state, done_at) = match &app.status {
         Status::Ready => ("○", language.pick("Ready", "Готов"), String::new()),
+        Status::Recovering => (
+            FRAMES[app.animation_frame % FRAMES.len()],
+            language.pick(
+                "Recovering session · Esc to stop",
+                "Восстанавливаю сеанс · Esc для остановки",
+            ),
+            String::new(),
+        ),
         Status::Stopping => (
             FRAMES[app.animation_frame % FRAMES.len()],
             language.pick("Stopping", "Остановка"),
@@ -252,18 +265,52 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         input_area,
     );
 
+    let footer = Rect::new(
+        layout[2].x.saturating_add(3),
+        layout[2].y,
+        layout[2].width.saturating_sub(3),
+        layout[2].height,
+    );
+    let notice_width = app.copy_notice.as_ref().map_or(0, |(notice, _)| {
+        Span::raw(notice.as_str())
+            .width()
+            .min(usize::from(footer.width)) as u16
+    });
+    let model_width = footer
+        .width
+        .saturating_sub(notice_width)
+        .saturating_sub(u16::from(notice_width > 0));
     frame.render_widget(
         Paragraph::new(match app.context_tokens {
             Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
             None => app.model.clone(),
         })
         .style(Style::default().fg(Color::Yellow)),
-        Rect::new(
-            layout[2].x.saturating_add(3),
-            layout[2].y,
-            layout[2].width.saturating_sub(3),
-            layout[2].height,
-        ),
+        Rect::new(footer.x, footer.y, model_width, footer.height),
+    );
+    if let Some((notice, _)) = &app.copy_notice {
+        frame.render_widget(
+            Paragraph::new(notice.as_str())
+                .right_aligned()
+                .style(Style::default().fg(Color::Gray)),
+            Rect::new(
+                footer.right().saturating_sub(notice_width),
+                footer.y,
+                notice_width,
+                footer.height,
+            ),
+        );
+    }
+
+    app.view.restore_footer(frame.buffer_mut());
+    app.view.finish_frame(
+        frame.buffer_mut(),
+        Some(super::view::InputRows {
+            text: &app.input,
+            rows: &input_rows,
+            area: input_area,
+            scroll: scroll_y as usize,
+        }),
     );
 
     if input_area.width > 0 && input_area.height > 0 {
@@ -274,88 +321,56 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
 }
 
-fn render_history(app: &App, frame: &mut Frame, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let mut bottom = area.bottom();
-    let mut skip = app.scroll;
-    for message in app.messages.iter().rev() {
-        let source = message.content.replace('\t', "    ");
-        let paragraph = Paragraph::new(if matches!(message.role, AppMessageRole::Tool(_)) {
-            let mut lines = source.lines();
-            let mut text = vec![Line::raw(lines.next().unwrap_or_default().to_owned())];
-            text.extend(lines.map(|line| {
-                if message.content.starts_with("apply_patch")
-                    && let Some((path, counts)) = line.rsplit_once("  +")
-                    && let Some((added, removed)) = counts.split_once(" -")
-                    && added.bytes().all(|byte| byte.is_ascii_digit())
-                    && !added.is_empty()
-                    && removed.bytes().all(|byte| byte.is_ascii_digit())
-                    && !removed.is_empty()
-                {
-                    Line::from(vec![
-                        Span::styled(format!("{path}  "), Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            format!("+{added}"),
-                            Style::default().fg(Color::Rgb(105, 160, 115)),
-                        ),
-                        Span::styled(
-                            format!(" -{removed}"),
-                            Style::default().fg(Color::Rgb(180, 110, 110)),
-                        ),
-                    ])
-                } else {
-                    Line::styled(line.to_owned(), Style::default().fg(Color::DarkGray))
-                }
-            }));
-            ratatui::text::Text::from(text)
-        } else if matches!(message.role, AppMessageRole::Plan) {
-            ratatui::text::Text::from(source)
-        } else {
-            tui_markdown::from_str(&source)
-        })
-        .wrap(ratatui::widgets::Wrap { trim: false });
-        let height = message_height(message, &paragraph, area.width);
-        let gap = usize::from(matches!(message.role, AppMessageRole::User));
-        let total = usize::from(height) + gap;
-        if skip >= total {
-            skip -= total;
-            continue;
-        }
-        let visible = (total - skip).min(usize::from(bottom - area.y));
-        if visible == 0 {
-            break;
-        }
-        let mut buffer = Buffer::empty(Rect::new(0, 0, area.width, height));
-        render_message(message, &paragraph, &mut buffer);
-        let start = total - skip - visible;
-        let width = usize::from(area.width);
-        for row in 0..visible {
-            if start + row >= gap {
-                for x in 0..width {
-                    *frame
-                        .buffer_mut()
-                        .cell_mut((area.x + x as u16, bottom - visible as u16 + row as u16))
-                        .unwrap() = buffer.content[(start + row - gap) * width + x].clone();
-                }
+pub fn message_text(message: &AppMessage) -> Text<'static> {
+    let source = message.content.replace('\t', "    ");
+    if matches!(message.role, AppMessageRole::Tool(_)) {
+        let mut lines = source.lines();
+        let mut text = vec![Line::raw(lines.next().unwrap_or_default().to_owned())];
+        text.extend(lines.map(|line| {
+            if message.content.starts_with("apply_patch")
+                && let Some((path, counts)) = line.rsplit_once("  +")
+                && let Some((added, removed)) = counts.split_once(" -")
+                && added.bytes().all(|byte| byte.is_ascii_digit())
+                && !added.is_empty()
+                && removed.bytes().all(|byte| byte.is_ascii_digit())
+                && !removed.is_empty()
+            {
+                Line::from(vec![
+                    Span::styled(format!("{path}  "), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("+{added}"),
+                        Style::default().fg(Color::Rgb(105, 160, 115)),
+                    ),
+                    Span::styled(
+                        format!(" -{removed}"),
+                        Style::default().fg(Color::Rgb(180, 110, 110)),
+                    ),
+                ])
+            } else {
+                Line::styled(line.to_owned(), Style::default().fg(Color::DarkGray))
             }
-        }
-        bottom -= visible as u16;
-        skip = 0;
-    }
-    if bottom > area.y && skip == 0 {
-        let mut logo = Buffer::empty(Rect::new(0, 0, area.width, 7));
-        render_logo(&mut logo);
-        let visible = (bottom - area.y).min(7);
-        let width = usize::from(area.width);
-        for row in 0..visible {
-            for x in 0..width {
-                *frame
-                    .buffer_mut()
-                    .cell_mut((area.x + x as u16, bottom - visible + row))
-                    .unwrap() = logo.content[usize::from(7 - visible + row) * width + x].clone();
-            }
+        }));
+        ratatui::text::Text::from(text)
+    } else if matches!(message.role, AppMessageRole::Plan) {
+        ratatui::text::Text::from(source)
+    } else {
+        let text = tui_markdown::from_str(&source);
+        Text {
+            lines: text
+                .lines
+                .into_iter()
+                .map(|line| Line {
+                    spans: line
+                        .spans
+                        .into_iter()
+                        .map(|span| Span::styled(span.content.into_owned(), span.style))
+                        .collect(),
+                    style: line.style,
+                    alignment: line.alignment,
+                })
+                .collect(),
+            style: text.style,
+            alignment: text.alignment,
         }
     }
 }
@@ -364,6 +379,63 @@ fn render_history(app: &App, frame: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn copy_notice_is_at_the_bottom_right_with_model_and_tokens_on_the_left() {
+        let mut app = App {
+            model: "test-model".into(),
+            context_tokens: Some(12_000),
+            ..Default::default()
+        };
+        app.set_copy_notice("Copied".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert!(row(23).starts_with("   test-model · 12K"));
+        let notice = (74..80)
+            .map(|x| buffer[(x, 23)].symbol())
+            .collect::<String>();
+        assert_eq!(notice, "Copied");
+        assert!(!row(22).contains("Copied"));
+        for width in [1, 3, 6, 12] {
+            let mut small = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            small.draw(|frame| render(&mut app, frame)).unwrap();
+        }
+    }
+
+    #[test]
+    fn history_scroll_stops_at_the_beginning() {
+        let mut app = App::default();
+        app.push_kodrik_message("short answer".into());
+        app.scroll = usize::MAX;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert_eq!(app.scroll, 0);
+        let buffer = terminal.backend().buffer();
+        let text = buffer
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("short answer"));
+    }
+
+    #[test]
+    fn reading_history_keeps_its_position_when_output_grows() {
+        let mut app = App::default();
+        for index in 0..40 {
+            app.push_kodrik_message(format!("line {index:02}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        app.scroll = 20;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let before = terminal.backend().buffer().content[..40 * 13].to_vec();
+        app.push_kodrik_message("new answer".into());
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert_eq!(&terminal.backend().buffer().content[..40 * 13], before);
+    }
 
     #[test]
     fn russian_controls_empty_states_and_session_picker_render() {

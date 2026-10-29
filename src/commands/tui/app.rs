@@ -21,6 +21,8 @@ pub struct App {
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
     pub scroll: usize,
+    pub view: super::view::View,
+    pub copy_notice: Option<(String, std::time::Instant)>,
     pub animation_frame: usize,
     pub status: Status,
 }
@@ -29,6 +31,7 @@ pub struct App {
 pub enum Status {
     #[default]
     Ready,
+    Recovering,
     Working,
     Stopping,
     Stopped,
@@ -37,6 +40,12 @@ pub enum Status {
 }
 
 impl App {
+    pub fn set_copy_notice(&mut self, text: String) {
+        self.copy_notice = Some((
+            text,
+            std::time::Instant::now() + std::time::Duration::from_secs(3),
+        ));
+    }
     pub fn command_suggestions(&self) -> Vec<(&'static str, &'static str)> {
         [
             (
@@ -266,7 +275,8 @@ impl App {
                 self.insert_input("\n");
             }
             KeyCode::Enter
-                if !matches!(self.status, Status::Stopping) && !self.input.trim().is_empty() =>
+                if !matches!(self.status, Status::Recovering | Status::Stopping)
+                    && !self.input.trim().is_empty() =>
             {
                 if matches!(self.status, Status::Working)
                     && matches!(self.input.trim(), "/new" | "/sessions")
@@ -338,6 +348,7 @@ pub struct AppMessage {
     pub content: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AppMessageRole {
     Kodrik,
     User,
@@ -345,6 +356,7 @@ pub enum AppMessageRole {
     Tool(ToolState),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToolState {
     Running,
     Success,

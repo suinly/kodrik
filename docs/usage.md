@@ -32,6 +32,11 @@ choice. See [Interface languages](languages.md) for detection and saved preferen
 
 ## Terminal UI
 
+An interrupted request resumes with history already visible and a “Recovering
+session” status. Scrolling, selection and draft editing remain available while
+recovery waits for the model. Enter leaves the draft unsent until recovery finishes;
+Esc stops recovery, and Ctrl+C with empty input exits while keeping it resumable.
+
 | Input | Action |
 | --- | --- |
 | Enter | Send the message |
@@ -43,13 +48,42 @@ choice. See [Interface languages](languages.md) for detection and saved preferen
 | Enter / Esc in the picker | Open / close |
 | Esc while working, with no command menu open | Cancel the current request |
 | Ctrl+C | Clear nonempty input; quit when input is empty |
+| Left-button drag anywhere in the interface | Select text; releasing the button copies it and clears the selection on success |
+| Esc with a selection | Clear the selection before stopping a request or closing a menu |
+| Ctrl+C with a selection | Copy the selection again |
+| Mouse wheel | Scroll the conversation; move the selection in the session picker |
 | ↑ / ↓ with empty input and no menu open | Scroll the conversation |
 | ↑ / ↓ with nonempty input | Move the input cursor between lines |
 | PageUp / PageDown | Scroll the conversation by ten lines |
 
-The mouse wheel is translated to arrow-key input, so it follows the same
-input/menu behavior. Tab or Enter completes a selected slash-command suggestion;
-Enter submits the completed command.
+The wheel scrolls history independently of the input cursor. Scrolling stops at
+the beginning and end. Reading earlier messages holds the current position while
+new output arrives; at the bottom, the view follows new output.
+
+Text is selectable throughout the interface, including tool rows, input, menus
+and status lines. Drag to a history edge or use the wheel while dragging to select
+offscreen text. Copying preserves explicit newlines without inserting newlines at
+soft wraps. Input selection copies text without editing it. A click alone does
+not change the clipboard.
+
+While a selection is active, displayed text is held steady; the agent continues
+working. A successful native copy or terminal copy request clears that selection
+and reveals accumulated output. Copy failures retain it for retry with Ctrl+C;
+completion of an older copy leaves a newer selection intact. Esc or a new keyboard
+action also clears selection, as do resize and focus loss. Keyboard paste remains
+available.
+
+Copying uses native clipboard tools locally (`pbcopy` on macOS, PowerShell on
+Windows/WSL, `wl-copy`, `xclip` or `xsel` on Linux). Remote SSH, tmux and Herdr
+sessions use OSC 52 to request a copy from the attached terminal; this requires
+terminal/multiplexer clipboard support and permission. The terminal fallback
+accepts up to 100,000 UTF-8 bytes. A “Copy requested from terminal” notice confirms
+the request was sent, not that the terminal accepted it. Native copy completion
+shows “Copied to clipboard”. Copy notices appear in the bottom-right corner; the model name and context token
+count remain on the left.
+
+Tab or Enter completes a selected slash-command suggestion; Enter submits the
+completed command.
 
 You can send corrections while the agent is working; they join the current run.
 `/new` and `/sessions` are unavailable during that run. After a sufficient pause,
