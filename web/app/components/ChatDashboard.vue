@@ -12,6 +12,12 @@ const conversationKey = ref(0)
 const initializing = ref(true)
 const error = ref('')
 const menu = ref(false)
+const colorMode=useColorMode()
+const backgroundColor=computed(()=>colorMode.value==='dark' ? menu.value?'#1e1e2e':'#23273a' : '#eff1f5')
+useHead(()=>({
+  meta:[{name:'theme-color',content:backgroundColor.value}],
+  bodyAttrs:{style:{'background-color':backgroundColor.value}},
+}))
 const [DefineRail, ReuseRail] = createReusableTemplate()
 const desktop = useMediaQuery('(min-width: 1024px)')
 watch(desktop, value => { if(value) menu.value=false })
@@ -463,7 +469,7 @@ onMounted(() => {
       </nav>
       <div class="mt-auto"><SidebarProfile :active="section==='profile'" :disabled="webhooks.saving" @settings="openSection('profile')" /></div>
   </DefineRail>
-  <UDashboardGroup unit="rem" class="chat-viewport bg-default"
+  <UDashboardGroup unit="rem" class="chat-viewport bg-default" :style="{backgroundColor}"
     @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
     <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <ReuseRail />

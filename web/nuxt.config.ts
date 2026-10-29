@@ -12,8 +12,7 @@ export default defineNuxtConfig({
       title: 'Kodrik', htmlAttrs: { lang: 'en' },
       viewport: 'width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content',
       meta: [
-        { name: 'theme-color', content: '#eff1f5', media: '(prefers-color-scheme: light)' },
-        { name: 'theme-color', content: '#1e1e2e', media: '(prefers-color-scheme: dark)' },
+        { name: 'theme-color', content: '#23273a' },
         { name: 'apple-mobile-web-app-capable', content: 'yes' },
         { name: 'apple-mobile-web-app-title', content: 'Kodrik' },
         { name: 'apple-mobile-web-app-status-bar-style', content: 'default' },

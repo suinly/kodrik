@@ -1948,6 +1948,67 @@ test('mobile sidebar profile menu fits narrow screens and enlarged text',{timeou
   } finally {await browser.close();}
 });
 
+test('mobile safe areas and browser theme follow the screen and manual appearance',{timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true,colorScheme:'dark'});
+    const protocol=await page.context().newCDPSession(page);
+    await protocol.send('Emulation.setSafeAreaInsetsOverride',{insets:{top:47,bottom:34}});
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
+    const check=async(hex,rgb)=>{
+      await expect(page.locator('meta[name="theme-color"]')).toHaveCount(1);
+      await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content',hex);
+      await expect(page.locator('body')).toHaveCSS('background-color',rgb);
+      await expect.poll(()=>page.evaluate(()=>{
+        const painted=y=>{
+          let element=document.elementFromPoint(innerWidth/2,y);
+          while(element) {
+            const color=getComputedStyle(element).backgroundColor;
+            if(color!=='rgba(0, 0, 0, 0)') return color;
+            element=element.parentElement;
+          }
+        };
+        return [painted(1),painted(innerHeight-1)];
+      })).toEqual([rgb,rgb]);
+    };
+    await check('#23273a','rgb(35, 39, 58)');
+    await page.screenshot({path:'/tmp/kodrik-ios-chrome-chat.png',animations:'disabled'});
+    const open=page.getByRole('button',{name:'Показать диалоги',exact:true});
+    const close=page.getByRole('dialog').getByRole('button',{name:'Закрыть боковую панель',exact:true});
+    await open.click();
+    await check('#1e1e2e','rgb(30, 30, 46)');
+    await page.screenshot({path:'/tmp/kodrik-ios-chrome-sidebar.png',animations:'disabled'});
+    await openAccountItem(page,'Тема');
+    await page.getByRole('menuitemcheckbox',{name:'Светлая',exact:true}).click();
+    await check('#eff1f5','rgb(239, 241, 245)');
+    await close.click();
+    await check('#eff1f5','rgb(239, 241, 245)');
+    await page.emulateMedia({colorScheme:'light'});
+    await open.click();
+    await openAccountItem(page,'Тема');
+    await page.getByRole('menuitemcheckbox',{name:'Тёмная',exact:true}).click();
+    await check('#1e1e2e','rgb(30, 30, 46)');
+    await close.click();
+    await check('#23273a','rgb(35, 39, 58)');
+    await page.reload();
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
+    await check('#23273a','rgb(35, 39, 58)');
+    await page.goto(base);
+    await expect(page.locator('.home-page')).toBeVisible();
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content','#23273a');
+    await expect(page.locator('body')).toHaveCSS('background-color','rgb(35, 39, 58)');
+    await page.goto(new URL('auth/login',base).href);
+    await expect(page.getByRole('heading',{name:'Вход в Кодрик',exact:true})).toBeVisible();
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content','#1e1e2e');
+    await expect(page.locator('body')).toHaveCSS('background-color','rgb(30, 30, 46)');
+    const manifest=await(await fetch(new URL('chat/manifest.webmanifest',base))).json();
+    assert.equal(manifest.theme_color,'#23273a');
+    assert.equal(manifest.background_color,'#23273a');
+  } finally {await browser.close();}
+});
+
 test('mobile profile stays above the home indicator beside the composer',{timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
