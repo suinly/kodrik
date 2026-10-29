@@ -532,7 +532,7 @@ onMounted(() => {
       </div>
     </UDashboardSidebar>
 
-    <UDashboardPanel id="chat" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">
+    <UDashboardPanel id="chat" class="bg-default dark:[--ui-bg:#23273a]" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">
       <template #header>
         <UDashboardNavbar :title="mainTitle">
           <template #left>

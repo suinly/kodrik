@@ -100,6 +100,8 @@
   --ui-border-accented: #585b70;
 }
 
+.dark:has(.home-page) { --ui-bg: #23273a; }
+
 html, body, #__nuxt { height: 100%; }
 html:has(.chat-viewport) { overflow: hidden; overscroll-behavior-y: none; }
 body:has(.chat-viewport) {
