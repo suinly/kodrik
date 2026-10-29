@@ -546,7 +546,7 @@ const compactionLabels = {
             :markdown="{markedOptions:{breaks:true}}"
             :editor-props="{handleKeyDown:(_view,event)=>editorKeydown(event),handlePaste:(_view,event)=>pasteMarkdown(event)}"
             :aria-label="t('Сообщение')" role="textbox" aria-multiline="true" :aria-readonly="editorLocked"
-            name="chat-message" autocomplete="off" enterkeyhint="send" class="chat-editor min-w-0 flex-1"
+            name="chat-message" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" class="chat-editor min-w-0 flex-1"
             :ui="{base:'min-h-8 max-h-26 overflow-auto px-0! py-1 text-base/6 text-default [scrollbar-width:none] *:my-0 [&_p]:leading-6 [&_li]:my-0'}" />
         </template>
         <template #header>

@@ -472,7 +472,7 @@ onMounted(() => {
       :menu="{content:{onCloseAutoFocus:sidebarCloseFocus}}"
       :toggle="{size:'sm',class:'sidebar-action'}" :ui="{root:'min-h-0',header:'h-auto min-h-(--ui-header-height) gap-0.5 py-2 sm:px-4',toggle:'ms-0',body:'gap-3 overflow-hidden py-4 sm:px-4',content:'chat-sidebar chat-viewport w-[calc(100%-48px)] max-w-96 sm:max-w-96 ps-14! bg-default',overlay:'bg-black/40'}">
       <template #header>
-        <aside class="absolute inset-y-0 left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
+        <aside class="absolute top-[env(safe-area-inset-top)] bottom-[env(safe-area-inset-bottom)] left-0 flex w-14 flex-col items-center border-r border-default bg-muted/40 py-3 lg:hidden"><ReuseRail /></aside>
         <UButton :to="chatUrl" external target="_self" aria-label="kodrik" variant="link" size="xl" class="shrink-0 px-0"><KodrikLogo class="h-6" /></UButton>
         <div class="sidebar-header-actions ml-auto flex shrink-0 items-center gap-1" />
       </template>

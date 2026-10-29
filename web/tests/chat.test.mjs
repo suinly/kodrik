@@ -1948,6 +1948,42 @@ test('mobile sidebar profile menu fits narrow screens and enlarged text',{timeou
   } finally {await browser.close();}
 });
 
+test('mobile profile stays above the home indicator beside the composer',{timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    const protocol=await page.context().newCDPSession(page);
+    await protocol.send('Emulation.setSafeAreaInsetsOverride',{insets:{top:47,bottom:34}});
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await expect(input).toBeEditable();
+    await input.fill('Черновик над безопасной зоной');
+    for(const height of [844,400]) {
+      await page.evaluate(height=>{
+        Object.defineProperty(visualViewport,'height',{configurable:true,value:height});
+        visualViewport.dispatchEvent(new Event('resize'));
+      },height);
+      await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+      const menu=page.getByRole('dialog');
+      await expect(menu).toBeVisible();
+      await expect(async()=>{
+        const profile=await menu.getByRole('button',{name:'Профиль',exact:true}).boundingBox();
+        const prompt=await page.locator('.chat-prompt').boundingBox();
+        assert.ok(profile.y+profile.height<=height-34,`Profile clears the home indicator: ${JSON.stringify(profile)}`);
+        assert.ok(Math.abs(profile.y+profile.height/2-prompt.y-prompt.height/2)<=8,'Profile aligns with the input row');
+      }).toPass({timeout:5000});
+      await menu.getByRole('button',{name:'Профиль',exact:true}).tap();
+      await expect(page.getByRole('menuitem',{name:'Настройки профиля',exact:true})).toBeVisible();
+      await page.keyboard.press('Escape');
+      if(height===844) await page.screenshot({path:'/tmp/kodrik-profile-ios-safe-area.png',animations:'disabled'});
+      await menu.getByRole('button',{name:'Закрыть боковую панель',exact:true}).click();
+      await expect(menu).toHaveCount(0);
+      await expect(input).toHaveText('Черновик над безопасной зоной');
+    }
+  } finally {await browser.close();}
+});
+
 test('mobile chat fits narrow screens and the visual keyboard viewport without losing the draft',{timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'tools'});
@@ -1960,6 +1996,9 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await expect(input).toBeFocused();
+    await expect(input).toHaveAttribute('autocorrect','on');
+    await expect(input).toHaveAttribute('autocapitalize','sentences');
+    await expect(input).toHaveAttribute('spellcheck','true');
     const editButton=page.getByRole('button',{name:'Редактировать сообщение',exact:true});
     await expect.poll(()=>editButton.evaluate(el=>getComputedStyle(el.closest('[data-slot="actions"]') ?? el).opacity)).toBe('1');
     const actionFits=await editButton.evaluate(el=>({
