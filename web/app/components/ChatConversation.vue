@@ -577,7 +577,7 @@ const compactionLabels = {
 .chat-editor :deep(li[data-type='taskItem']) { display: flex; align-items: baseline; gap: 0.5rem; padding: 0; }
 .chat-editor :deep(li[data-type='taskItem'] > div) { flex: 1; }
 .conversation-layout { display: flex; flex: 1; min-height: 0; flex-direction: column; }
-.conversation-layout-home { display: grid; grid-template-rows: minmax(0, 1fr) auto minmax(0, 0fr); transition: grid-template-rows 280ms ease; }
+.conversation-layout-home { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto minmax(0, 0fr); transition: grid-template-rows 280ms ease; }
 .conversation-layout-home > [data-testid='chat-composer'] { max-height: calc(var(--chat-viewport-height, 100dvh) * 0.75); }
 @media (min-width: 1024px) {
   .conversation-layout-centered { grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr); }

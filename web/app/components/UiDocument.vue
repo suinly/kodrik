@@ -7,9 +7,10 @@ const emit=defineEmits<{prompt:[text:string];refresh:[]}>()
 const parsed=shallowRef<{document:UiDocument;nodes:UiNode[]}>()
 const error=ref('')
 onErrorCaptured(problem=>{console.error('Failed to render UI document',problem);error.value=problem.message;return false})
-watch(()=>props.document,async(raw,_,cleanup)=>{
+// Fresh conversation snapshots can contain an unchanged document; keep its local inputs.
+watch(()=>JSON.stringify(props.document),async(_raw,_previous,cleanup)=>{
   let stale=false;cleanup(()=>{stale=true});parsed.value=undefined;error.value=''
-  try {const next=await parseUiDocument(raw);await prepareUiComponents(next.nodes);if(!stale) parsed.value=next}
+  try {const next=await parseUiDocument(props.document);await prepareUiComponents(next.nodes);if(!stale) parsed.value=next}
   catch(problem){if(!stale) error.value=problem instanceof Error?problem.message:t("Не удалось прочитать документ.")}
 },{immediate:true})
 </script>

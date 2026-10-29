@@ -275,6 +275,7 @@ test('Telegram owner opens the catalog and private pages after one chat login', 
 
 test('sidebar lists update automatically while preserving searches and drafts', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
+  let hook;
   try {
     const page=await signedPage(browser);
     await page.goto(new URL('app/chat',base).href);
@@ -311,16 +312,19 @@ test('sidebar lists update automatically while preserving searches and drafts', 
     await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
     await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
     await page.getByLabel('Название вебхука',{exact:true}).fill('Несохранённый вебхук');
-    const hook=await fetch(new URL('api/webhooks',base),{
+    const response=await fetch(new URL('api/webhooks',base),{
       method:'POST',headers:{Cookie:cookie,Origin:new URL(base).origin,'Content-Type':'application/json'},
       body:JSON.stringify({name:title,instruction:'Обработай событие.',enabled:true}),
     });
-    assert.ok(hook.ok);
+    assert.ok(response.ok);hook=await response.json();
     await expect(page.getByRole('navigation',{name:'Список вебхуков'}).getByRole('button',{name:title,exact:true})).toBeVisible({timeout:10000});
     await expect(page.getByLabel('Название вебхука',{exact:true})).toHaveValue('Несохранённый вебхук');
     await sections.getByRole('button',{name:'Чат',exact:true}).click();
     await expect(composer).toHaveText('Черновик при автообновлении');
-  } finally {await browser.close();}
+  } finally {
+    if(hook) await fetch(hook.url,{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}});
+    await browser.close();
+  }
 });
 
 test('section rail switches context menus and main content without losing chat drafts', {timeout:60000},async()=>{
@@ -340,7 +344,8 @@ test('section rail switches context menus and main content without losing chat d
       const button=await page.locator('.sidebar-header-actions').first().getByRole('button',{name,exact:true}).boundingBox();
       assert.ok(button.x>=logo.x+logo.width && Math.abs(button.y+button.height/2-logo.y-logo.height/2)<1,`${name}: sits to the right of the logo on the same row`);
     }
-    const create=await page.getByRole('button',{name:'Новый диалог',exact:true}).boundingBox();
+    const createAction=page.getByRole('button',{name:'Новый диалог',exact:true}).and(page.locator('button:not([data-conversation-id])'));
+    const create=await createAction.boundingBox();
     const history=await page.getByRole('navigation',{name:'История диалогов'}).boundingBox();
     assert.ok(create.y>=logo.y+logo.height && Math.abs(create.x-history.x)<1 && Math.abs(create.width-history.width)<1,'Create fills the content width below the header');
     const composer=page.getByRole('textbox',{name:'Сообщение',exact:true});
@@ -348,7 +353,7 @@ test('section rail switches context menus and main content without losing chat d
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-desktop.png',animations:'disabled'});
     await sections.getByRole('button',{name:'Страницы',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'История диалогов'})).toHaveCount(0);
-    await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toHaveCount(0);
+    await expect(createAction).toHaveCount(0);
     await page.getByRole('navigation',{name:'Каталог страниц'}).getByRole('button',{name:/^Дневник питания/}).click();
     await expect(page.getByRole('region',{name:'Просмотр страницы'}).getByRole('table')).toBeVisible();
     await sections.getByRole('button',{name:'Вебхуки',exact:true}).click();
@@ -416,7 +421,7 @@ test('section rail switches context menus and main content without losing chat d
     await expect(menu.getByRole('navigation',{name:'История диалогов'})).toBeVisible();
     const mobileLogo=await menu.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
     const mobileHistory=await menu.getByRole('navigation',{name:'История диалогов'}).boundingBox();
-    const mobileCreate=await menu.getByRole('button',{name:'Новый диалог',exact:true}).boundingBox();
+    const mobileCreate=await createAction.boundingBox();
     const mobileSearch=await menu.getByRole('button',{name:'Поиск диалогов',exact:true}).boundingBox();
     const close=menu.locator('[data-slot="toggle"]');
     const mobileClose=await close.boundingBox();
@@ -431,7 +436,7 @@ test('section rail switches context menus and main content without losing chat d
     await page.setViewportSize({width:1280,height:900});
     await expect(menu).toHaveCount(0);
     await expect(page.locator('.sidebar-header-actions').first().getByRole('button',{name:'Поиск диалогов',exact:true})).toHaveCount(1);
-    await expect(page.getByRole('button',{name:'Новый диалог',exact:true})).toBeVisible();
+    await expect(createAction).toBeVisible();
     await page.setViewportSize({width:390,height:844});
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
@@ -2485,6 +2490,10 @@ test('chat UX groups technical steps, folds old documents and expands the latest
       await expect(page.getByRole('link',{name,exact:true})).toHaveAttribute('target','_blank');
     }
     await page.getByPlaceholder('Черновик внутри документа').fill('Остаётся при разворачивании');
+    snapshot.revision++;
+    snapshot.messages[0].parts.push({type:'text',text:'Обновлены метаданные диалога'});
+    await expect(page.getByText('Обновлены метаданные диалога',{exact:true})).toBeVisible();
+    await expect(page.getByPlaceholder('Черновик внутри документа')).toHaveValue('Остаётся при разворачивании');
     await page.getByRole('button',{name:'Развернуть документ',exact:true}).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.getByRole('dialog').getByPlaceholder('Черновик внутри документа')).toHaveValue('Остаётся при разворачивании');
@@ -2499,6 +2508,9 @@ test('chat UX groups technical steps, folds old documents and expands the latest
     await page.screenshot({path:'/tmp/kodrik-chat-ux-expanded-mobile.png',fullPage:true,animations:'disabled'});
     await page.getByRole('button',{name:'Закрыть документ',exact:true}).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
+    snapshot.revision++;
+    snapshot.messages[0].parts[2].output.document.body+='\n\nСодержимое документа обновилось';
+    await expect(page.getByText('Содержимое документа обновилось',{exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Предыдущая версия документа',exact:true}).click();
     await expect(page.getByText('Не удалось отобразить документ',{exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Выполнено шагов: 3',exact:true}).click();
@@ -2510,6 +2522,56 @@ test('chat UX groups technical steps, folds old documents and expands the latest
     await expect(page.getByRole('button',{name:/^exec_command\b/})).toHaveCount(0);
     assert.deepEqual(errors,[]);
   }finally{await browser.close();}
+});
+
+test('long MCP tool names keep user messages inside the viewport (KOD-7)',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:320,height:844}});
+    const name='mcp__homeassistant__'+'x'.repeat(45);
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[
+      {id:'before-tool',role:'user',parts:[{type:'text',text:'Проверь состояние устройств'}]},
+      {id:'long-tool',role:'assistant',parts:[{type:'dynamic-tool',toolCallId:'long-name',toolName:name,state:'output-available',input:{},output:{result:'ok'}}]},
+      {id:'after-tool',role:'user',parts:[{type:'text',text:'Покажи результат'}]},
+    ]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.route('**/api/chat/sessions',r=>r.request().method()==='POST'?r.fulfill({json:{id,title:'',busy:false,updated_at:null}}):r.continue());
+    await page.goto(new URL('app/chat',base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await input.fill('Проверь состояние устройств');await input.press('Enter');
+    const header=page.getByRole('button',{name:'Выполнено шагов: 1',exact:true});
+    const tool=page.getByRole('button',{name,exact:true});
+    async function checkWidth() {
+      const transcript=page.getByTestId('chat-transcript');
+      const dimensions=await transcript.evaluate(el=>({width:el.clientWidth,scroll:el.scrollWidth}));
+      assert.ok(dimensions.scroll<=dimensions.width,`Transcript stays within its width: ${JSON.stringify(dimensions)}`);
+      for(const id of ['before-tool','after-tool']) {
+        const box=await page.locator(`[data-message-id="${id}"] [data-slot="content"]`).boundingBox();
+        assert.ok(box.x>=0 && box.x+box.width<=page.viewportSize().width,`User message stays visible: ${JSON.stringify(box)}`);
+      }
+    }
+    for(const width of [320,390,1280]) {
+      await page.setViewportSize({width,height:844});
+      await expect(header).toBeVisible();
+      await checkWidth();
+      await header.click();
+      await expect(tool).toBeVisible();
+      await checkWidth();
+      await tool.click();
+      await expect(page.locator('[data-message-id="long-tool"] pre').last()).toContainText('ok');
+      await checkWidth();
+      await page.screenshot({path:`/private/tmp/kodrik-KOD-7-${width}.png`,fullPage:true,animations:'disabled'});
+      await page.getByRole('button',{name:'Свернуть шаги',exact:true}).click();
+      await checkWidth();
+    }
+    await page.setViewportSize({width:320,height:844});
+    await page.reload();
+    await header.click();
+    await expect(tool).toBeVisible();
+    await checkWidth();
+  } finally {await browser.close();}
 });
 
 test('long tool lists keep compact summaries and collapse back to their header',{timeout:60000},async()=>{
