@@ -16,7 +16,7 @@ pub struct Agent {
     llm: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
     context: ContextBuilder,
-    limits: Option<(usize, usize)>,
+    limits: Option<(usize, Option<usize>)>,
     compactor: Option<super::compact::Compactor>,
     compact_background_margin: u64,
     journal: Option<crate::audit::Journal>,
@@ -75,7 +75,8 @@ impl Agent {
             "wakeups",
             "webhooks",
         ]);
-        agent.with_limits(16, 64_000)
+        agent.limits = Some((16, None));
+        agent
     }
 
     pub(crate) fn with_subagents(mut self, manager: Arc<super::subagents::Subagents>) -> Self {
@@ -117,7 +118,7 @@ impl Agent {
     }
 
     pub(crate) fn with_limits(mut self, requests: usize, input_chars: usize) -> Self {
-        self.limits = Some((requests, input_chars));
+        self.limits = Some((requests, Some(input_chars)));
         self
     }
 
@@ -490,9 +491,11 @@ impl Agent {
                         requests < max_requests,
                         "Background request budget exhausted"
                     );
-                    let size = context.instructions.chars().count()
-                        + serde_json::to_string(&context.messages)?.chars().count();
-                    anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
+                    if let Some(max_chars) = max_chars {
+                        let size = context.instructions.chars().count()
+                            + serde_json::to_string(&context.messages)?.chars().count();
+                        anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
+                    }
                 }
                 requests += 1;
                 let (tx, rx) = mpsc::channel(100);
@@ -1806,6 +1809,39 @@ mod tests {
     }
 
     struct LongTaskLlm;
+
+    #[tokio::test]
+    async fn child_agents_allow_large_contexts_but_keep_the_request_budget() {
+        let agent = Agent::new(
+            Arc::new(LongTaskLlm),
+            ToolRegistry::default().register(Arc::new(UpdatePlanTool)),
+            ContextBuilder::new("x".repeat(64_001)),
+        )
+        .child_agent();
+        let mut session = Session::new(SessionId::new("child-large-context"));
+        let error = agent
+            .run(
+                &mut session,
+                UserMessage {
+                    files: vec![],
+                    content: "work".into(),
+                    images: vec![],
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Background request budget exhausted");
+        assert_eq!(
+            session
+                .messages()
+                .iter()
+                .filter(|message| matches!(message, Message::ToolResult(_)))
+                .count(),
+            16
+        );
+    }
 
     #[tokio::test]
     async fn wakeups_limit_calls_without_changing_foreground_agent() {

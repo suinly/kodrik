@@ -68,7 +68,7 @@ async fn setup() -> (
             ToolRegistry::default(),
             ContextBuilder::new("worker"),
         )
-        .with_limits(16, 64_000),
+        .child_agent(),
     );
     let manager = Subagents::new(agent, store).await.unwrap();
     let mut session = Session::new(SessionId::new("parent"));
