@@ -261,6 +261,9 @@ impl SqliteSessionStore {
             tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
                 params![session.id().as_str(),serde_json::to_vec(&session)?,Utc::now().timestamp_nanos_opt().context("Session timestamp overflow")?])?;
             write(&tx, &receipt)?;
+            if receipt.interface == "web" {
+                crate::web::push_store::enqueue(&tx, &receipt.id, &session)?;
+            }
             tx.commit()?;
             Ok(receipt.message_id.map(MessageId))
         }).await.map_err(storage_failure)

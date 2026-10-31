@@ -81,6 +81,8 @@ onMounted(load)
         </div>
       </form>
       <USeparator />
+      <PushSettings />
+      <USeparator />
       <form v-if="profile.owner" class="space-y-5" @submit.prevent="changePassword">
         <div class="space-y-2">
           <h2 class="text-lg font-semibold text-highlighted">{{ t('Пароль') }}</h2>

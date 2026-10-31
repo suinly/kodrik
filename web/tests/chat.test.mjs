@@ -63,6 +63,30 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('profile offers device notifications and registers a worker under the configured prefix', {timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('app/profile',base).href);
+    await expect(page.getByRole('heading',{name:'Уведомления',exact:true})).toBeVisible();
+    await expect.poll(()=>page.evaluate(async()=>(await navigator.serviceWorker.getRegistration())?.active?.scriptURL)).toBe(new URL('push-sw.js',base).href);
+    const registration=await page.evaluate(async()=>{
+      const registration=await navigator.serviceWorker.getRegistration();
+      return {scope:registration?.scope,script:registration?.active?.scriptURL,permission:Notification.permission};
+    });
+    assert.equal(registration.scope,base);
+    assert.equal(registration.script,new URL('push-sw.js',base).href);
+    if(registration.permission==='denied') {
+      await expect(page.getByRole('button',{name:'Включить уведомления',exact:true})).toBeDisabled();
+      await expect(page.getByText('Уведомления заблокированы. Разрешите их в настройках сайта в браузере.',{exact:true})).toBeVisible();
+    } else await expect(page.getByRole('button',{name:'Включить уведомления',exact:true})).toBeEnabled();
+    assert.deepEqual(await page.evaluate(async()=>(await fetch('/kodrik/api/chat/push').then(r=>r.json())).endpoints),[]);
+    const worker=await page.request.get(new URL('push-sw.js',base).href);
+    assert.equal(worker.status(),200);
+    assert.equal(worker.headers()['cache-control'],'no-store');
+  } finally {await browser.close();}
+});
+
 test('Telegram approval login shows only that user shared history without a code form', {timeout:60000},async()=>{
   const owner=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -2412,14 +2436,16 @@ test('conversation history loads on scroll and the header pencil renames an unlo
     await page.setViewportSize({width:390,height:844});
     await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
     const mobile=page.getByRole('dialog').getByRole('navigation',{name:'История диалогов'});
-    let pageStarted;
-    const started=new Promise(resolve=>{pageStarted=resolve}),gate=new Promise(resolve=>{releasePage=resolve});
+    let pageStarted=false;
+    const gate=new Promise(resolve=>{releasePage=resolve});
     await page.route('**/api/chat/sessions?*',async route=>{
       if(new URL(route.request().url()).searchParams.get('offset')!=='60') {await route.fallback();return;}
-      const response=await route.fetch();pageStarted();await gate;await route.fulfill({response});
+      const response=await route.fetch();pageStarted=true;await gate;await route.fulfill({response});
     });
-    await mobile.evaluate(el=>{el.scrollTop=el.scrollHeight;});
-    await started;
+    await expect.poll(async()=>{
+      await mobile.evaluate(el=>{el.scrollTop=el.scrollHeight;el.dispatchEvent(new Event('scroll'));});
+      return pageStarted;
+    }).toBe(true);
     await page.getByRole('dialog').getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('dialog').getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Старый диалог из заголовка');
     await expect(mobile.locator('[data-conversation-id]')).toHaveCount(1);
@@ -3919,7 +3945,7 @@ test('profile saves the current user name across reload and keeps guest password
     await expect(page.getByRole('heading',{name:'Личные данные',exact:true})).toBeVisible();
     await page.getByLabel('Имя',{exact:true}).fill('Алиса');
     await page.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
-    await expect(page.getByRole('status')).toContainText('Профиль сохранён.');
+    await expect(page.getByRole('status').filter({hasText:'Профиль сохранён.'})).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Имя',{exact:true})).toHaveValue('Алиса');
     await expect(page.getByLabel('Текущий пароль',{exact:true})).toBeVisible();
@@ -3941,7 +3967,7 @@ test('profile saves the current user name across reload and keeps guest password
     await expect(guest.getByLabel('Новый пароль',{exact:true})).toHaveCount(0);
     await guest.getByLabel('Имя',{exact:true}).fill('Борис');
     await guest.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
-    await expect(guest.getByRole('status')).toContainText('Профиль сохранён.');
+    await expect(guest.getByRole('status').filter({hasText:'Профиль сохранён.'})).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Имя',{exact:true})).toHaveValue('Алиса');
     await guest.getByRole('button',{name:'Показать профиль',exact:true}).click();

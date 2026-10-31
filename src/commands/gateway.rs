@@ -28,7 +28,9 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
             );
             let chat = crate::web::chat::Chat::new(&app.agent_runner, &data)
                 .await?
-                .with_users(users.clone());
+                .with_users(users.clone())
+                .with_push(settings.clone(), crate::web::auth::AuthStore::new(&data))
+                .await?;
             chat.recover_users().await?;
             Some((
                 listener,

@@ -9,6 +9,9 @@ mod chat_tests;
 mod chat_upload;
 pub(crate) mod documents;
 pub(crate) mod pages;
+pub(crate) mod push_store;
+#[cfg(test)]
+mod push_tests;
 pub(crate) mod server;
 pub(crate) mod views;
 pub(crate) mod webhook_store;

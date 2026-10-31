@@ -64,6 +64,40 @@ pub(crate) fn stage_personal_sessions(
             if version >= 6 {
                 merge_table(&snapshot, &tx, "compaction_jobs", &["session_id"], 5)?;
             }
+            if version >= 7 {
+                for (table, keys, columns) in [
+                    ("web_push_subscriptions", &["endpoint"][..], 4),
+                    ("web_push_bindings", &["endpoint"][..], 2),
+                    ("web_push_presence", &["endpoint", "tab_id"][..], 4),
+                    ("web_push_queue", &["event_id", "endpoint"][..], 6),
+                ] {
+                    merge_table(&snapshot, &tx, table, keys, columns)?;
+                }
+                let key: Option<String> = snapshot
+                    .query_row(
+                        "SELECT value FROM schema_meta WHERE key='web_push_vapid'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(key) = key {
+                    let existing: Option<String> = tx
+                        .query_row(
+                            "SELECT value FROM schema_meta WHERE key='web_push_vapid'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    ensure!(
+                        existing.as_ref().is_none_or(|existing| existing == &key),
+                        "Conflicting web push signing keys; back up and reconcile both stores"
+                    );
+                    tx.execute(
+                        "INSERT OR IGNORE INTO schema_meta VALUES('web_push_vapid',?1)",
+                        [key],
+                    )?;
+                }
+            }
             if version >= 4 {
                 merge_table(&snapshot, &tx, "deliveries", &["id"], 4)?;
             }

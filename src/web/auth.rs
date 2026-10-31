@@ -150,7 +150,7 @@ impl Journal {
     }
 }
 
-fn token_hash(token: &str) -> String {
+pub(super) fn token_hash(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 fn valid_token(token: &str) -> bool {
@@ -339,6 +339,20 @@ impl AuthStore {
             return Ok(None);
         }
         Ok(self.read()?.identity(token, now))
+    }
+
+    pub(super) fn identity_from_hash(
+        &self,
+        hash: &str,
+        now: i64,
+    ) -> anyhow::Result<Option<Identity>> {
+        let journal = self.read()?;
+        Ok(journal
+            .sessions
+            .get(hash)
+            .map(StoredSession::grant)
+            .filter(|grant| grant.expires > now && journal.allowed_identity(&grant.identity))
+            .map(|grant| grant.identity))
     }
 
     #[cfg(test)]

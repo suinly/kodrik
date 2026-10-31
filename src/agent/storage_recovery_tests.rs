@@ -138,7 +138,7 @@ async fn v1_database_upgrades_without_losing_history() {
     drop(store);
     let db = rusqlite::Connection::open(root.path().join("state.sqlite3")).unwrap();
     // Reconstruct the v1 shape, retaining the original session payload.
-    let drops=db.prepare("SELECT name,type FROM sqlite_master WHERE type IN ('trigger','table','index') AND (name LIKE 'view_%' OR name LIKE 'compaction%')").unwrap()
+    let drops=db.prepare("SELECT name,type FROM sqlite_master WHERE type IN ('trigger','table','index') AND (name LIKE 'view_%' OR name LIKE 'compaction%' OR name LIKE 'web_push_%')").unwrap()
         .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
     for (name, kind) in drops {
         db.execute_batch(&format!("DROP {kind} IF EXISTS \"{name}\";"))
@@ -160,7 +160,7 @@ async fn v1_database_upgrades_without_losing_history() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(
         db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))

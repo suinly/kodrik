@@ -33,6 +33,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 
 #[path = "chat_management.rs"]
 mod management;
+#[path = "chat_push.rs"]
+mod push;
 #[path = "chat_subagents.rs"]
 mod subagents;
 #[path = "chat_titles.rs"]
@@ -57,6 +59,7 @@ pub(crate) struct Chat {
     attachment_directory: std::path::PathBuf,
     users: Option<Arc<crate::users::UserSpaces>>,
     user_chats: Arc<Mutex<HashMap<u64, Chat>>>,
+    push: Option<Arc<push::Push>>,
 }
 
 impl Chat {
@@ -78,6 +81,7 @@ impl Chat {
             attachment_directory: data.join("web/attachments"),
             users: None,
             user_chats: Default::default(),
+            push: None,
         };
         // Reserve recovered conversations before accepting HTTP submissions.
         for id in chat.runner.unfinished_conversations().await? {
@@ -125,7 +129,8 @@ impl Chat {
             return Ok(chat.clone());
         }
         let app = users.app(id).await?;
-        let chat = Chat::new(&app.agent_runner, &users.directory(id)).await?;
+        let mut chat = Chat::new(&app.agent_runner, &users.directory(id)).await?;
+        chat.push = self.push.clone();
         chats.insert(id, chat.clone());
         Ok(chat)
     }
@@ -384,6 +389,13 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         streams: Arc::new(Semaphore::new(64)),
     };
     let api = Router::new()
+        .route(
+            "/api/chat/push",
+            get(push::config)
+                .post(push::subscribe)
+                .delete(push::unsubscribe),
+        )
+        .route("/api/chat/push/presence", post(push::presence))
         .route("/api/chat/sessions", get(management::list).post(create))
         .route(
             "/api/chat/sessions/{id}",
@@ -422,6 +434,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
     Router::new()
         .merge(api)
         .merge(webhooks::routes(state.clone()))
+        .route("/push-sw.js", get(push::worker))
         .route("/chat", get(chat_redirect))
         .route("/chat/", get(chat_redirect))
         .route("/chat/{*path}", get(asset))
@@ -531,7 +544,7 @@ pub(super) fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error":message}))).into_response()
 }
 
-fn personal_session(session: &Session) -> bool {
+pub(super) fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
 

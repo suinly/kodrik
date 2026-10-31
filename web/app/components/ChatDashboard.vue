@@ -4,6 +4,7 @@ import {locale, t} from '../utils/i18n'
 import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle} from '../utils/chat-presentation'
 import {useWebhooks} from '../utils/webhooks'
+import {initializePush, pushEnabled, updatePushPresence, refreshPushPermission} from '../utils/push'
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
@@ -33,6 +34,10 @@ let navigationRevision=0
 const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks')
 const showEvents = computed(()=>section.value==='webhooks' && webhookTab.value==='events')
 const viewingConversation = computed(()=>section.value==='chat' || showEvents.value && !!selected.value?.webhook)
+const pushConversation = computed(()=>viewingConversation.value && !restoring.value && !locationError.value && !selected.value?.webhook ? selected.value?.id ?? null : null)
+const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value) }
+watch([pushConversation,pushEnabled],reportPushPresence)
+useIntervalFn(reportPushPresence,15000)
 const webhooks = useWebhooks(computed(()=>section.value==='webhooks' && !showEvents.value))
 const webhookSearch = ref('')
 const visibleWebhooks = computed(() => {
@@ -439,6 +444,21 @@ async function create(fromHome = false) {
 }
 
 onMounted(() => {
+  void initializePush().then(reportPushPresence)
+  document.addEventListener('visibilitychange',reportPushPresence)
+  window.addEventListener('focus',reportPushPresence)
+  window.addEventListener('blur',reportPushPresence)
+  window.addEventListener('storage',reportPushPresence)
+  const clearPresence = () => { void updatePushPresence(null) }
+  window.addEventListener('pagehide',clearPresence)
+  onBeforeUnmount(()=>{
+    clearPresence()
+    document.removeEventListener('visibilitychange',reportPushPresence)
+    window.removeEventListener('focus',reportPushPresence)
+    window.removeEventListener('blur',reportPushPresence)
+    window.removeEventListener('storage',reportPushPresence)
+    window.removeEventListener('pagehide',clearPresence)
+  })
   const target=section.value==='chat'?Promise.resolve():restoreLocation()
   void Promise.all([refresh(),target]).finally(() => { initializing.value = false })
   const viewport = window.visualViewport

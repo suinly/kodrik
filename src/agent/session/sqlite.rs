@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 6;
+pub(super) const VERSION: i64 = 7;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -186,6 +186,9 @@ impl SqliteSessionStore {
         }
         if version < 6 {
             crate::agent::compact::migrate(&tx)?;
+        }
+        if version < 7 {
+            crate::web::push_store::migrate(&tx)?;
         }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
@@ -671,6 +674,7 @@ impl SqliteSessionStore {
             }
             crate::agent::inbox::checkpoint_submissions(&tx,&run,&session)?;
             crate::agent::delivery::checkpoint_final(&tx,&run,&session)?;
+            crate::web::push_store::checkpoint(&tx,&run,&session)?;
             crate::agent::run_view::checkpoint_live(&tx,&run,history_advanced,interrupted_attempt)?;
             #[cfg(test)]
             crate::agent::durable_fixture::checkpoint("before", &run, tool.as_ref())?;

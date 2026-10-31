@@ -650,6 +650,10 @@ impl Fixture {
                 store.save(&session).await.unwrap();
             }
             owner = owner.with_users(users);
+            owner = owner
+                .with_push(settings.clone(), auth.clone())
+                .await
+                .unwrap();
         }
         let mut app =
             super::server::router_with_resources(settings, root, Some(owner), Some(datasets));

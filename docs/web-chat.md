@@ -109,6 +109,37 @@ require a valid session, and writes require the configured Origin. Password
 changes share the five-attempts-per-minute client-IP budget with login; excess
 attempts return 429 with `Retry-After: 60`.
 
+## Push notifications
+
+Open **Profile → Notifications** and enable notifications on each phone or
+computer. Permission is requested only after pressing Enable. On iPhone/iPad
+(iOS/iPadOS 16.4+), first use **Share → Add to Home Screen**, then open Kodrik from
+that icon. HTTPS is required outside localhost. A compatible browser/OS with
+notifications enabled is required; OS focus modes can delay or silence delivery.
+HTTP loopback deployments use the project's HTTPS repository URL as their VAPID
+contact; HTTPS deployments use their configured base URL.
+
+Completed answers and explicit new agent messages in personal conversations send
+a generic “New message in Kodrik”, without titles or message contents. Clicking
+opens the conversation. Group, guest, subagent and webhook execution histories
+do not send push; a webhook's explicit message to a personal chat does. Delivery
+is skipped on a device reporting that conversation in a focused, visible tab.
+Each tab refreshes this presence every 15 seconds; it expires after 45 seconds.
+
+Subscriptions belong to the signed-in browser session. Logout, session expiry,
+password changes and revoked access stop delivery. Sign in again to restore an
+existing device subscription. Disable removes its pending notifications. Up to
+eight subscriptions are retained per user. Supported endpoints are Chrome/FCM,
+Firefox/Mozilla, Apple Web Push and Microsoft WNS; custom push services are not
+accepted.
+
+The gateway persists its VAPID key, subscriptions and delivery queue in the
+existing session databases. Back up the complete data root; losing the signing
+key requires subscribing devices again. Temporary delivery failures retry for
+up to 24 hours, with backoff; 404/410 removes expired subscriptions. Push services
+and OS settings determine final delivery. An uncertain send may be retried; its
+stable notification tag replaces the same event's notification when supported.
+
 ## Owner-managed invitations
 
 Access is closed by default. The local service owner creates a separate single-use

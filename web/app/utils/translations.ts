@@ -1,5 +1,14 @@
 // Russian source phrases are stable keys; document content never goes through this catalog.
 export const en = {
+  'Уведомления': 'Notifications',
+  'Push о готовых ответах и новых сообщениях агента, даже когда чат закрыт. Текст переписки в уведомлениях не показывается.': 'Push notifications for completed replies and new agent messages, even when chat is closed. Conversation contents stay private.',
+  'На iPhone и iPad сначала добавьте Kodrik на домашний экран через меню «Поделиться».': 'On iPhone and iPad, first add Kodrik to your Home Screen using the Share menu.',
+  'Этот браузер не поддерживает push. Откройте Kodrik в совместимом браузере или установленном приложении.': 'This browser does not support push. Open Kodrik in a compatible browser or installed web app.',
+  'Уведомления заблокированы. Разрешите их в настройках сайта в браузере.': 'Notifications are blocked. Allow them in your browser’s site settings.',
+  'Уведомления включены на этом устройстве.': 'Notifications are enabled on this device.',
+  'Уведомления выключены на этом устройстве.': 'Notifications are disabled on this device.',
+  'Выключить уведомления': 'Disable notifications',
+  'Включить уведомления': 'Enable notifications',
   'Профиль': 'Profile',
   'Показать профиль': 'Show profile',
   'Личные данные': 'Personal details',
