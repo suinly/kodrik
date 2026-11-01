@@ -32,6 +32,9 @@ test('push requires a click to subscribe, restores existing subscriptions and cl
   })
   try {
     const p=await import('../app/utils/push.ts')
+    await p.updatePushPresence('one')
+    assert.equal(calls.at(-1)?.body?.session_id,'one','Presence must work before push setup')
+    assert.equal(requests,0)
     await p.initializePush()
     assert.equal(requests,0)
     assert.equal(permission,'default')
@@ -48,11 +51,13 @@ test('push requires a click to subscribe, restores existing subscriptions and cl
     subscribed={...originalSubscription,endpoint:'https://fcm.googleapis.com/new-device',toJSON:()=>({endpoint:'https://fcm.googleapis.com/new-device',keys:{p256dh:'public',auth:'auth'}})}
     focused=true
     await p.updatePushPresence('one')
-    assert.equal(calls.at(-1).body.endpoint,'https://fcm.googleapis.com/new-device')
+    assert.equal(calls.findLast(call=>call.method==='POST' && call.url.endsWith('/push')).body.subscription.endpoint,'https://fcm.googleapis.com/new-device')
+    assert.equal(calls.findLast(call=>call.url.endsWith('/presence')).body.endpoint,undefined)
     stored.set('kodrik.push.disabled','true')
     subscribed=null
     await p.updatePushPresence('one')
     assert.equal(p.pushEnabled.value,false)
+    assert.equal(calls.at(-1).body.session_id,'one','Disabling notifications must not disable presence')
     stored.set('kodrik.push.disabled','false')
     subscribed=originalSubscription
     await p.updatePushPresence('one')
@@ -66,6 +71,12 @@ test('push requires a click to subscribe, restores existing subscriptions and cl
     assert.equal(p.pushEnabled.value,false)
     assert.equal(subscribed,null)
     assert.ok(p.pushProblem.value)
+    delete globalThis.PushManager
+    delete globalThis.Notification
+    const unsupported=await import('../app/utils/push.ts?unsupported')
+    assert.equal(unsupported.pushSupported,false)
+    await unsupported.updatePushPresence('one')
+    assert.equal(calls.at(-1).body.session_id,'one','Presence must work without Push API support')
   } finally {
     for(const [key,value] of Object.entries(originals)) {if(value) Object.defineProperty(globalThis,key,value);else delete globalThis[key]}
   }

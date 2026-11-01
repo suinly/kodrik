@@ -68,7 +68,6 @@ pub(crate) fn stage_personal_sessions(
                 for (table, keys, columns) in [
                     ("web_push_subscriptions", &["endpoint"][..], 4),
                     ("web_push_bindings", &["endpoint"][..], 2),
-                    ("web_push_presence", &["endpoint", "tab_id"][..], 4),
                     ("web_push_queue", &["event_id", "endpoint"][..], 6),
                 ] {
                     merge_table(&snapshot, &tx, table, keys, columns)?;
@@ -97,6 +96,15 @@ pub(crate) fn stage_personal_sessions(
                         [key],
                     )?;
                 }
+            }
+            if version >= 8 {
+                merge_table(
+                    &snapshot,
+                    &tx,
+                    "web_push_presence",
+                    &["session_hash", "tab_id"],
+                    4,
+                )?;
             }
             if version >= 4 {
                 merge_table(&snapshot, &tx, "deliveries", &["id"], 4)?;

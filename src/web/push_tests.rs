@@ -219,7 +219,7 @@ async fn push_state_survives_personal_store_migration() {
             )?;
             db.execute("INSERT INTO web_push_bindings VALUES('device','hash')", [])?;
             db.execute(
-                "INSERT INTO web_push_presence VALUES('device','tab','personal',100)",
+                "INSERT INTO web_push_presence VALUES('hash','tab','personal',100)",
                 [],
             )?;
             db.execute(
@@ -260,6 +260,61 @@ async fn push_state_survives_personal_store_migration() {
                     .get::<_, String>(0))?,
                 "personal"
             );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn push_presence_v7_upgrade_preserves_durable_delivery_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open_async(dir.path().into())
+        .await
+        .unwrap();
+    store
+        .save(&Session::new(SessionId::new("personal")))
+        .await
+        .unwrap();
+    store.with_connection(|db| {
+        db.execute_batch("INSERT INTO schema_meta VALUES('web_push_vapid','stable-key');
+            INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru');
+            INSERT INTO web_push_queue VALUES('event','device','personal',2,110,100);
+            DROP TABLE web_push_presence;
+            CREATE TABLE web_push_presence(endpoint TEXT NOT NULL REFERENCES web_push_subscriptions(endpoint) ON DELETE CASCADE,
+                tab_id TEXT NOT NULL,session_id TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(endpoint,tab_id));
+            INSERT INTO web_push_presence VALUES('device','tab','personal',100);
+            PRAGMA user_version=7;")?;
+        Ok(())
+    }).await.unwrap();
+    drop(store);
+    let store = SqliteSessionStore::open_async(dir.path().into())
+        .await
+        .unwrap();
+    store
+        .with_connection(|db| {
+            assert_eq!(
+                db.query_row("SELECT attempts FROM web_push_queue", [], |r| r
+                    .get::<_, i64>(0))?,
+                2
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT value FROM schema_meta WHERE key='web_push_vapid'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )?,
+                "stable-key"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM web_push_presence", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            db.execute(
+                "INSERT INTO web_push_presence VALUES('unsubscribed-session','tab','personal',200)",
+                [],
+            )?;
             Ok(())
         })
         .await

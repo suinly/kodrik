@@ -87,6 +87,27 @@ test('profile offers device notifications and registers a worker under the confi
   } finally {await browser.close();}
 });
 
+test('active chat reports presence without a push subscription and clears it on navigation', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const opened=page.waitForResponse(response=>response.url().endsWith('/api/chat/push/presence') && response.request().postDataJSON()?.session_id===id);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const active=await opened;
+    assert.equal(active.status(),204);
+    const {tab_id}=active.request().postDataJSON();
+    assert.deepEqual(await page.evaluate(async()=>(await fetch('/kodrik/api/chat/push').then(r=>r.json())).endpoints),[]);
+    const closed=page.waitForResponse(response=>{
+      if(!response.url().endsWith('/api/chat/push/presence')) return false;
+      const body=response.request().postDataJSON();
+      return body?.tab_id===tab_id && body.session_id===null;
+    });
+    await page.getByRole('button',{name:'Страницы',exact:true}).click();
+    assert.equal((await closed).status(),204);
+  } finally {await browser.close();}
+});
+
 test('Telegram approval login shows only that user shared history without a code form', {timeout:60000},async()=>{
   const owner=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

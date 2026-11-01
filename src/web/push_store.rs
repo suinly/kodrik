@@ -39,6 +39,19 @@ pub(crate) fn enqueue(db: &Connection, id: &str, session: &Session) -> anyhow::R
     Ok(())
 }
 
+pub(crate) fn migrate_presence(db: &Connection) -> anyhow::Result<()> {
+    // Presence expires in 45 seconds; durable subscriptions and queued jobs stay intact.
+    db.execute_batch(
+        "DROP TABLE web_push_presence;
+         CREATE TABLE web_push_presence(
+            session_hash TEXT NOT NULL, tab_id TEXT NOT NULL,
+            session_id TEXT NOT NULL, updated_at INTEGER NOT NULL,
+            PRIMARY KEY(session_hash,tab_id));
+         PRAGMA user_version=8;",
+    )?;
+    Ok(())
+}
+
 pub(crate) fn checkpoint(
     db: &Connection,
     run: &RunRecord,

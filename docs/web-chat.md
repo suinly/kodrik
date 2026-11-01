@@ -123,8 +123,10 @@ Completed answers and explicit new agent messages in personal conversations send
 a generic “New message in Kodrik”, without titles or message contents. Clicking
 opens the conversation. Group, guest, subagent and webhook execution histories
 do not send push; a webhook's explicit message to a personal chat does. Delivery
-is skipped on a device reporting that conversation in a focused, visible tab.
-Each tab refreshes this presence every 15 seconds; it expires after 45 seconds.
+is skipped on all devices if that conversation is open in a focused, visible tab
+on any signed-in device, even when push is disabled there. Other conversations
+and users remain independent. Each tab refreshes this presence every 15 seconds;
+it expires after 45 seconds. Suppressed notifications are not delivered later.
 
 Subscriptions belong to the signed-in browser session. Logout, session expiry,
 password changes and revoked access stop delivery. Sign in again to restore an

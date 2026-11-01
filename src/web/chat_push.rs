@@ -173,7 +173,7 @@ impl Chat {
             .sessions
             .with_connection(|db| {
                 Ok(db
-                    .prepare("SELECT DISTINCT session_hash FROM web_push_subscriptions")?
+                    .prepare("SELECT session_hash FROM web_push_subscriptions UNION SELECT session_hash FROM web_push_presence")?
                     .query_map([], |r| r.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?)
             })
@@ -204,6 +204,10 @@ impl Chat {
         self.sessions
             .with_connection(move |db| {
                 for hash in invalid {
+                    db.execute(
+                        "DELETE FROM web_push_presence WHERE session_hash=?1",
+                        [&hash],
+                    )?;
                     db.execute(
                         "DELETE FROM web_push_subscriptions WHERE session_hash=?1",
                         [hash],
@@ -263,18 +267,42 @@ impl Chat {
             return self.remove_push(&row.endpoint, &row.hash).await;
         }
         let (event, endpoint, hash) = (row.event.clone(), row.endpoint.clone(), row.hash.clone());
-        let visible = self.sessions.with_connection(move |db| {
-            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM web_push_presence p
-                WHERE p.endpoint=q.endpoint AND p.session_id=coalesce((SELECT root_id FROM web_chat_branches WHERE session_id=q.session_id),q.session_id) AND p.updated_at>?4)
+        let viewers = self.sessions.with_connection(move |db| {
+            let root: Option<String> = db.query_row("SELECT coalesce((SELECT root_id FROM web_chat_branches WHERE session_id=q.session_id),q.session_id)
                 FROM web_push_queue q JOIN web_push_subscriptions s ON s.endpoint=q.endpoint
                 WHERE q.event_id=?1 AND q.endpoint=?2 AND s.session_hash=?3",
-                params![event,endpoint,hash,now.max(chrono::Utc::now().timestamp())-45],|r|r.get::<_,bool>(0)).optional()?)
+                params![event,endpoint,hash],|r|r.get(0)).optional()?;
+            let Some(root) = root else { return Ok(None); };
+            Ok(Some(db.prepare("SELECT DISTINCT session_hash FROM web_push_presence WHERE session_id=?1 AND updated_at>?2")?
+                .query_map(params![root,now.max(chrono::Utc::now().timestamp())-45],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?))
         }).await?;
-        let Some(visible) = visible else {
+        let Some(viewers) = viewers else {
             return Ok(());
         };
+        let auth = push.auth.clone();
+        let visible = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+            for hash in viewers {
+                if auth
+                    .identity_from_hash(&hash, now.max(chrono::Utc::now().timestamp()))?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+        .await??;
         let now = now.max(chrono::Utc::now().timestamp());
-        if visible || row.created_at <= now - 86400 {
+        if visible {
+            return self
+                .sessions
+                .with_connection(move |db| {
+                    db.execute("DELETE FROM web_push_queue WHERE event_id=?1", [row.event])?;
+                    Ok(())
+                })
+                .await;
+        }
+        if row.created_at <= now - 86400 {
             return self.finish_push(row).await;
         }
         let subscription: Subscription = serde_json::from_slice(&row.subscription)?;
@@ -488,7 +516,8 @@ pub(super) async fn unsubscribe(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Presence {
-    endpoint: String,
+    #[serde(default, rename = "endpoint")]
+    _legacy_endpoint: Option<serde::de::IgnoredAny>,
     tab_id: String,
     session_id: Option<String>,
 }
@@ -501,7 +530,7 @@ pub(super) async fn presence(
     let Ok(chat) = state.chat() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    if uuid::Uuid::parse_str(&input.tab_id).is_err() || input.endpoint.len() > 2048 {
+    if uuid::Uuid::parse_str(&input.tab_id).is_err() {
         return StatusCode::BAD_REQUEST.into_response();
     }
     if let Some(id) = &input.session_id {
@@ -516,13 +545,11 @@ pub(super) async fn presence(
     let hash = session_hash(&headers);
     match chat.sessions.with_connection(move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let own: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM web_push_subscriptions WHERE endpoint=?1 AND session_hash=?2)",params![input.endpoint,hash],|r|r.get(0))?;
-        if !own { return Ok(StatusCode::NOT_FOUND); }
-        tx.execute("DELETE FROM web_push_presence WHERE endpoint=?1 AND tab_id=?2",params![input.endpoint,input.tab_id])?;
+        tx.execute("DELETE FROM web_push_presence WHERE session_hash=?1 AND tab_id=?2",params![hash,input.tab_id])?;
         if let Some(id) = input.session_id {
-            let count: i64 = tx.query_row("SELECT count(*) FROM web_push_presence WHERE endpoint=?1 AND updated_at>?2",params![input.endpoint,chrono::Utc::now().timestamp()-45],|r|r.get(0))?;
+            let count: i64 = tx.query_row("SELECT count(*) FROM web_push_presence WHERE session_hash=?1 AND updated_at>?2",params![hash,chrono::Utc::now().timestamp()-45],|r|r.get(0))?;
             if count>=16 { return Ok(StatusCode::TOO_MANY_REQUESTS); }
-            tx.execute("INSERT INTO web_push_presence VALUES(?1,?2,?3,?4)",params![input.endpoint,input.tab_id,id,chrono::Utc::now().timestamp()])?;
+            tx.execute("INSERT INTO web_push_presence VALUES(?1,?2,?3,?4)",params![hash,input.tab_id,id,chrono::Utc::now().timestamp()])?;
         }
         tx.commit()?;
         Ok(StatusCode::NO_CONTENT)

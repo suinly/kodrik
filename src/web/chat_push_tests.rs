@@ -147,7 +147,7 @@ async fn subscriptions_validate_endpoints_keys_and_session_ownership() {
         )
         .await
         .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::NO_CONTENT
     );
     let response = call(&app, &token, "GET", "push", json!(null)).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -380,11 +380,12 @@ async fn visible_conversation_is_suppressed_but_presence_expires_and_logout_clea
     let now = chrono::Utc::now().timestamp();
     let endpoint = "http://127.0.0.1:1/push";
     seed(&chat, &token, endpoint, "visible", now).await;
+    let presence_hash = token_hash(&token);
     chat.sessions
         .with_connection(move |db| {
             db.execute(
                 "INSERT INTO web_push_presence VALUES(?1,'tab','personal',?2)",
-                params![endpoint, now],
+                params![presence_hash, now],
             )?;
             Ok(())
         })
@@ -431,18 +432,19 @@ async fn visible_conversation_is_suppressed_but_presence_expires_and_logout_clea
 }
 
 #[tokio::test]
-async fn foreground_presence_suppresses_only_its_own_device() {
+async fn foreground_presence_suppresses_push_on_all_devices() {
     let (_dir, chat, token) = fixture().await;
     let now = chrono::Utc::now().timestamp();
     let foreground = "http://127.0.0.1:1/push";
     let background = "http://127.0.0.1:2/push";
     seed(&chat, &token, foreground, "reply", now).await;
     seed(&chat, &token, background, "reply", now).await;
+    let presence_hash = token_hash(&token);
     chat.sessions
         .with_connection(move |db| {
             db.execute(
                 "INSERT INTO web_push_presence VALUES(?1,'tab','personal',?2)",
-                params![foreground, now],
+                params![presence_hash, now],
             )?;
             Ok(())
         })
@@ -459,7 +461,107 @@ async fn foreground_presence_suppresses_only_its_own_device() {
         })
         .await
         .unwrap();
-    assert_eq!(queued, [(background.to_owned(), 1)]);
+    assert!(
+        queued.is_empty(),
+        "Push remained queued for another device: {queued:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_viewing_device_without_push_suppresses_other_devices_until_logout() {
+    let (dir, chat, token) = fixture().await;
+    let push = chat.push.as_ref().unwrap();
+    let viewer = push
+        .auth
+        .test_session(Identity::Owner, chrono::Utc::now().timestamp())
+        .unwrap()
+        .unwrap();
+    let app =
+        crate::web::server::router_with_chat(push.settings.clone(), dir.path(), Some(chat.clone()));
+    let now = chrono::Utc::now().timestamp();
+    let endpoint = "http://127.0.0.1:1/push";
+    seed(&chat, &token, endpoint, "reply", now).await;
+    assert_eq!(
+        call(
+            &app,
+            &viewer,
+            "POST",
+            "push/presence",
+            json!({"tab_id":uuid::Uuid::new_v4().to_string(),"session_id":"personal"})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    chat.push_tick(now).await.unwrap();
+    assert_eq!(
+        chat.sessions
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT count(*) FROM web_push_queue",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        0
+    );
+    push.auth.logout(&viewer).unwrap();
+    seed(&chat, &token, endpoint, "after-logout", now).await;
+    chat.push_tick(now).await.unwrap();
+    assert_eq!(
+        chat.sessions
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT attempts FROM web_push_queue",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn viewing_another_conversation_does_not_suppress_push() {
+    let (dir, chat, token) = fixture().await;
+    let push = chat.push.as_ref().unwrap();
+    let viewer = push
+        .auth
+        .test_session(Identity::Owner, chrono::Utc::now().timestamp())
+        .unwrap()
+        .unwrap();
+    let app =
+        crate::web::server::router_with_chat(push.settings.clone(), dir.path(), Some(chat.clone()));
+    chat.sessions
+        .save(&Session::new(SessionId::new("other")))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    seed(&chat, &token, "http://127.0.0.1:1/push", "reply", now).await;
+    assert_eq!(
+        call(
+            &app,
+            &viewer,
+            "POST",
+            "push/presence",
+            json!({"tab_id":uuid::Uuid::new_v4().to_string(),"session_id":"other"})
+        )
+        .await
+        .status(),
+        StatusCode::NO_CONTENT
+    );
+    chat.push_tick(now).await.unwrap();
+    assert_eq!(
+        chat.sessions
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT attempts FROM web_push_queue",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -561,11 +663,12 @@ async fn delivery_rechecks_foreground_presence_after_a_batch_was_loaded() {
     let now = chrono::Utc::now().timestamp();
     let endpoint = "http://127.0.0.1:1/push";
     seed(&chat, &token, endpoint, "delayed", now).await;
+    let presence_hash = token_hash(&token);
     chat.sessions
         .with_connection(move |db| {
             db.execute(
                 "INSERT INTO web_push_presence VALUES(?1,'tab','personal',?2)",
-                params![endpoint, now],
+                params![presence_hash, now],
             )?;
             Ok(())
         })

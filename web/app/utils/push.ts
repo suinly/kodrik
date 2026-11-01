@@ -109,19 +109,18 @@ export async function disablePush() {
 }
 
 export function updatePushPresence(sessionId: string | null) {
-  if (!registration || !pushReady.value) return Promise.resolve()
   const visibleSession = document.visibilityState === 'visible' && document.hasFocus() ? sessionId : null
   // Keep navigation/focus updates ordered so a delayed heartbeat cannot restore old presence.
   presence = presence.catch(() => {}).then(async () => {
+    const body = JSON.stringify({tab_id: tabId, session_id: visibleSession})
+    await checkedFetch(endpoint('push/presence'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body, keepalive: true})
+    if (!registration || !pushReady.value) return
     const current = await registration!.pushManager.getSubscription()
     refreshPushPermission()
     const enabled = !!current && pushPermission.value === 'granted' && !isDisabled()
     if (enabled && (!pushEnabled.value || current.endpoint !== subscription?.endpoint)) await saveSubscription(current)
     subscription = current
     pushEnabled.value = enabled
-    if (!enabled || !current) return
-    const body = JSON.stringify({endpoint: current.endpoint, tab_id: tabId, session_id: visibleSession})
-    await checkedFetch(endpoint('push/presence'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body, keepalive: true})
   }).catch(() => {})
   return presence
 }
