@@ -19,6 +19,8 @@ export type MessagePart =
   | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };
 export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
+export type CommandAuditMode = 'trusted'|'review'|'ask';
+export type CommandApproval = {id:string;run_id:string;call_id:string;cmd:string;workdir:string|null;reason:string;reason_code?:string};
 
 export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit) {
   const headers=new Headers(init?.headers);
@@ -29,6 +31,7 @@ export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit)
     if (response.status === 404) throw new ConversationNotFoundError(t("Диалог удалён или не найден."));
     if (response.status === 409) {
       const detail=await response.json().catch(()=>null);
+      if(detail?.error==='Command approval is no longer pending') throw new Error(t('Подтверждение команды больше не ожидается. Обновите историю.'));
       throw new Error(detail?.error==='Resume the queue in its original interface' ? t("Продолжите ожидающую очередь в исходном интерфейсе Telegram или CLI.") : t("Этот диалог ещё выполняется. Дождитесь завершения или остановите его."));
     }
     if (response.status === 429) {
@@ -70,6 +73,8 @@ export type Snapshot = {
   title_pending?: boolean;
   messages: ChatMessage[]; busy: boolean; cancel_requested: boolean;
   subagents?: Subagent[];
+  command_approvals?: CommandApproval[];
+  command_audit_mode?: CommandAuditMode;
   phase: string | { Failed?: { reason: string }; Parked?: { reason: string } } | null;
   blocked_reason: string | null;
   live: { current: Partial | null; interrupted: Partial | null };

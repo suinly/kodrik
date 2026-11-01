@@ -280,6 +280,9 @@ async fn push_presence_v7_upgrade_preserves_durable_delivery_state() {
         db.execute_batch("INSERT INTO schema_meta VALUES('web_push_vapid','stable-key');
             INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru');
             INSERT INTO web_push_queue VALUES('event','device','personal',2,110,100);
+            DROP TABLE command_audits;
+            DROP TABLE command_audit_modes;
+            DROP TABLE command_audit_profile;
             DROP TABLE web_push_presence;
             CREATE TABLE web_push_presence(endpoint TEXT NOT NULL REFERENCES web_push_subscriptions(endpoint) ON DELETE CASCADE,
                 tab_id TEXT NOT NULL,session_id TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(endpoint,tab_id));

@@ -538,14 +538,7 @@ pub(super) async fn edit(
                         !ids.iter().any(|id| active.contains(id)) && idle(&tx, &ids)?,
                         crate::agent::inbox::AdmissionRejected("Conversation is busy")
                     );
-                    tx.execute(
-                        "INSERT INTO sessions VALUES(?1,?2,?3)",
-                        params![
-                            saved_id,
-                            serde_json::to_vec(&branch)?,
-                            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                        ],
-                    )?;
+                    crate::agent::session::save_in_transaction(&tx, &branch)?;
                     tx.execute(
                         "INSERT INTO web_chat_branches VALUES(?1,?2,?3,?4)",
                         params![saved_id, root, parent, index as i64],

@@ -577,6 +577,12 @@ impl AgentRunner {
         response: &anyhow::Result<AssistantMessage>,
     ) -> anyhow::Result<()> {
         if let Some(cp) = checkpoint {
+            if response
+                .as_ref()
+                .is_err_and(|error| error.is::<super::command_audit::ApprovalRequired>())
+            {
+                return Ok(());
+            }
             anyhow::ensure!(
                 !cp.storage_uncertain,
                 "Durable commit unconfirmed; recovery required"

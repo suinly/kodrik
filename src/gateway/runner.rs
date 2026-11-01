@@ -11,6 +11,8 @@ use tokio::sync::{mpsc, oneshot};
 #[path = "telegram_spaces.rs"]
 mod telegram_spaces;
 
+#[path = "command_approvals.rs"]
+mod command_approvals;
 #[path = "session_commands.rs"]
 mod session_commands;
 #[path = "session_picker.rs"]
@@ -326,12 +328,31 @@ impl GatewayRunner {
         let mut conversations = HashMap::new();
         let mut delivery_tick = tokio::time::interval(Duration::from_secs(5));
         delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut approval_tick = tokio::time::interval(Duration::from_secs(1));
+        approval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut shown_approvals = std::collections::HashSet::new();
+        let mut approval_tasks = tokio::task::JoinSet::new();
         loop {
             if *shutdown.borrow() {
                 suspending = true;
                 break;
             }
             tokio::select! {
+                _ = approval_tick.tick(), if approval_tasks.is_empty() => {
+                    let gateway = gateway.clone();
+                    let mut shown = std::mem::take(&mut shown_approvals);
+                    approval_tasks.spawn(async move {
+                        let result = gateway.show_command_approvals(&mut shown).await;
+                        (shown, result)
+                    });
+                },
+                Some(result) = approval_tasks.join_next(), if !approval_tasks.is_empty() => {
+                    let (shown, result) = result?;
+                    shown_approvals = shown;
+                    if let Err(error) = result {
+                        warn!("Could not show command approvals: {error:#}");
+                    }
+                },
                 _=delivery_tick.tick()=>{
                     let jobs=if let Some(runners)=&gateway.chat_runners {runners.iter().map(|(id,runner)|(id.clone(),runner.clone())).collect::<Vec<_>>()} else {gateway.agent_runner.unfinished_conversations().await?.into_iter().map(|id|(id,gateway.agent_runner.clone())).collect()};
                     for (id,runner) in jobs {
@@ -413,6 +434,7 @@ impl GatewayRunner {
 
         let stopping_started = tokio::time::Instant::now();
         info!("Gateway stopping: suspending work and closing interfaces");
+        approval_tasks.abort_all();
         if suspending {
             gateway.agent_runner.suspend();
             if let Some(runners) = &gateway.chat_runners {

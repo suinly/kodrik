@@ -1,3 +1,4 @@
+pub(crate) mod command_audit;
 mod compact;
 pub(crate) mod companion;
 mod context;

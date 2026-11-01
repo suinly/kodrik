@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {base, checkedFetch, login, messageOf} from '../utils/api'
+import {base, checkedFetch, login, messageOf, type CommandAuditMode} from '../utils/api'
 import {t} from '../utils/i18n'
 
 type Profile = {name:string;owner:boolean;telegram_id:number|null;password_set:boolean}
@@ -8,6 +8,7 @@ const name = ref('')
 const loading = ref(false), saving = ref(false), changing = ref(false)
 const error = ref(''), saved = ref(false), passwordError = ref('')
 const passwords = reactive({current_password:'',new_password:'',confirm_password:''})
+const auditMode=ref<CommandAuditMode|null>(null),auditSaving=ref(false),auditError=ref(''),auditSaved=ref(false)
 
 async function request<T>(path='',method='GET',body?:unknown):Promise<T> {
   const response = await checkedFetch(new URL(`api/profile${path}`,base),{
@@ -33,6 +34,22 @@ async function save() {
   finally {saving.value=false}
 }
 
+async function loadAuditMode() {
+  auditError.value=''
+  try {auditMode.value=(await request<{mode:CommandAuditMode}>('/command-audit')).mode}
+  catch(reason) {auditError.value=messageOf(reason)}
+}
+
+async function saveAuditMode(mode:CommandAuditMode) {
+  if(auditSaving.value) return
+  auditSaving.value=true;auditError.value='';auditSaved.value=false
+  try {
+    await request('/command-audit','POST',{mode})
+    auditMode.value=mode;auditSaved.value=true
+  } catch(reason) {auditError.value=messageOf(reason)}
+  finally {auditSaving.value=false}
+}
+
 async function changePassword() {
   if(changing.value || saving.value) return
   passwordError.value=''
@@ -55,7 +72,7 @@ async function changePassword() {
   } catch(reason) {passwordError.value=messageOf(reason);changing.value=false}
 }
 
-onMounted(load)
+onMounted(()=>{void load();void loadAuditMode()})
 </script>
 
 <template>
@@ -80,6 +97,15 @@ onMounted(load)
           <p v-if="saved" role="status" class="text-sm text-success">{{ t('Профиль сохранён.') }}</p>
         </div>
       </form>
+      <USeparator />
+      <section :aria-label="t('Проверка команд в новых диалогах')" class="space-y-3">
+        <h2 class="text-lg font-semibold text-highlighted">{{ t('Проверка команд в новых диалогах') }}</h2>
+        <p class="text-sm text-muted">{{ t('Этот режим применяется только к новым диалогам и веткам. Настройки существующих диалогов не изменятся.') }}</p>
+        <CommandAuditMenu v-if="auditMode" :mode="auditMode" profile :disabled="auditSaving" :loading="auditSaving" @select="saveAuditMode" />
+        <p v-if="auditSaved" role="status" class="text-sm text-success">{{ t('Режим новых диалогов сохранён.') }}</p>
+        <p v-if="auditError" role="alert" class="text-sm text-error">{{ t(auditError) }}</p>
+        <UButton v-if="!auditMode && auditError" :label="t('Повторить')" color="neutral" variant="soft" @click="loadAuditMode" />
+      </section>
       <USeparator />
       <PushSettings />
       <USeparator />

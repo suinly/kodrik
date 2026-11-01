@@ -1,5 +1,5 @@
 use crate::i18n::Language;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{style::Style, text::Span};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -20,6 +20,16 @@ pub struct App {
     pub messages: Vec<AppMessage>,
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
+    pub shown_approvals: HashMap<String, String>,
+    pub approval_session: Option<crate::agent::session::SessionId>,
+    pub approval: Option<crate::agent::command_audit::CommandApproval>,
+    pub approval_choice: Option<usize>,
+    pub audit_disabled_sessions: Vec<String>,
+    pub audit_mode: crate::agent::command_audit::CommandAuditMode,
+    pub audit_session: Option<crate::agent::session::SessionId>,
+    pub mode_picker: Option<super::approvals::ModePicker>,
+    pub mode_button: ratatui::layout::Rect,
+    pub mode_popup: ratatui::layout::Rect,
     pub scroll: usize,
     pub view: super::view::View,
     pub copy_notice: Option<(String, std::time::Instant)>,
@@ -47,6 +57,9 @@ impl App {
         ));
     }
     pub fn command_suggestions(&self) -> Vec<(&'static str, &'static str)> {
+        if self.approval.is_some() {
+            return Vec::new();
+        }
         [
             (
                 "/new",
@@ -61,6 +74,32 @@ impl App {
                 "/language",
                 self.language
                     .pick("Interface language: en|ru", "Язык интерфейса: en|ru"),
+            ),
+            (
+                "/approvals",
+                self.language.pick(
+                    "Show pending commands: /approvals [SESSION_ID]",
+                    "Ожидающие команды: /approvals [SESSION_ID]",
+                ),
+            ),
+            (
+                "/approve",
+                self.language.pick(
+                    "Allow one command: /approve ID",
+                    "Разрешить одну команду: /approve ID",
+                ),
+            ),
+            (
+                "/deny",
+                self.language
+                    .pick("Reject a command: /deny ID", "Отклонить команду: /deny ID"),
+            ),
+            (
+                "/audit",
+                self.language.pick(
+                    "Mode: /audit trusted|review|ask|status [SESSION_ID]",
+                    "Режим: /audit trusted|review|ask|status [SESSION_ID]",
+                ),
             ),
         ]
         .into_iter()
@@ -78,6 +117,9 @@ impl App {
     }
 
     pub fn insert_input(&mut self, text: &str) {
+        if self.approval.is_some() || self.mode_picker.is_some() {
+            return;
+        }
         self.commands_dismissed = false;
         self.command_index = 0;
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -211,6 +253,20 @@ impl App {
     }
 
     pub fn update(&mut self, key: KeyEvent) -> Option<String> {
+        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
+            return None;
+        }
+        if key.code == KeyCode::F(2) && key.modifiers.is_empty() && key.kind == KeyEventKind::Press
+        {
+            super::approvals::toggle_modes(self);
+            return None;
+        }
+        if self.mode_picker.is_some() {
+            return super::approvals::update_modes(self, key);
+        }
+        if self.approval.is_some() {
+            return super::approvals::update(self, key);
+        }
         if let Some(sessions) = &self.sessions {
             match key.code {
                 KeyCode::Up => self.session_index = self.session_index.saturating_sub(1),
@@ -275,7 +331,8 @@ impl App {
                 self.insert_input("\n");
             }
             KeyCode::Enter
-                if !matches!(self.status, Status::Recovering | Status::Stopping)
+                if (!matches!(self.status, Status::Recovering | Status::Stopping)
+                    || super::approvals::is_command(&self.input))
                     && !self.input.trim().is_empty() =>
             {
                 if matches!(self.status, Status::Working)
@@ -287,6 +344,7 @@ impl App {
                 self.input_cursor = 0;
                 if matches!(input.as_str(), "/new" | "/sessions")
                     || input.split_whitespace().next() == Some("/language")
+                    || super::approvals::is_command(&input)
                 {
                     return Some(input);
                 }
@@ -353,6 +411,7 @@ pub enum AppMessageRole {
     Kodrik,
     User,
     Plan,
+    Approval,
     Tool(ToolState),
 }
 
@@ -369,6 +428,26 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) -> Option<String> {
         app.update(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn mode_picker_requires_explicit_selection_and_preserves_draft() {
+        let mut app = App::default();
+        app.insert_input("draft");
+        app.input_cursor = 2;
+        app.scroll = 7;
+        assert_eq!(key(&mut app, KeyCode::F(2)), None);
+        assert_eq!(key(&mut app, KeyCode::Enter), None);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/audit ask"));
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.input_cursor, 2);
+        assert_eq!(app.scroll, 7);
+        key(&mut app, KeyCode::F(2));
+        assert_eq!(key(&mut app, KeyCode::Esc), None);
+        assert_eq!(app.input, "draft");
     }
 
     #[test]
@@ -402,7 +481,7 @@ mod tests {
     fn sessions_command_and_picker_navigation() {
         let mut app = App::default();
         app.insert_input("/");
-        assert_eq!(app.command_suggestions().len(), 3);
+        assert_eq!(app.command_suggestions().len(), 7);
         key(&mut app, KeyCode::Down);
         assert_eq!(app.command_suggestion().unwrap().0, "/sessions");
         key(&mut app, KeyCode::Tab);
@@ -475,6 +554,31 @@ mod tests {
             assert_eq!(app.input, "/");
             key(&mut app, KeyCode::Char('n'));
             assert!(app.command_suggestion().is_some());
+        }
+    }
+
+    #[test]
+    fn command_approval_input_is_local_even_during_recovery() {
+        for status in [Status::Ready, Status::Working, Status::Recovering] {
+            let mut app = App {
+                status,
+                ..Default::default()
+            };
+            for input in [
+                "/approve request-id",
+                "/deny request-id",
+                "/approvals",
+                "/audit off",
+                "/audit on",
+                "/audit status",
+            ] {
+                app.insert_input(input);
+                assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some(input));
+                assert!(
+                    app.messages.is_empty(),
+                    "approval controls must not become model input"
+                );
+            }
         }
     }
 

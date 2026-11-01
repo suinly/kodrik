@@ -230,7 +230,10 @@ impl SqliteSessionStore {
             let _ownership = ownership;
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut receipt = read(&tx, &id)?.context("Delivery missing")?;
-            ensure!(receipt.notification && matches!(receipt.interface.as_str(), "web" | "local"), "Not a local notification");
+            ensure!(
+                receipt.notification && matches!(receipt.interface.as_str(), "web" | "local"),
+                "Not a local notification"
+            );
             if receipt.status == Status::Sent {
                 return Ok(receipt.message_id.map(MessageId));
             }
@@ -241,9 +244,17 @@ impl SqliteSessionStore {
                 anyhow::bail!("Web notifications require text");
             };
             let mut session = if receipt.chat == "new" {
-                Session::new(super::session::SessionId::new(uuid::Uuid::new_v4().to_string()))
+                Session::new(super::session::SessionId::new(
+                    uuid::Uuid::new_v4().to_string(),
+                ))
             } else {
-                let bytes: Option<Vec<u8>> = tx.query_row("SELECT payload FROM sessions WHERE id=?1", [&receipt.chat], |row| row.get(0)).optional()?;
+                let bytes: Option<Vec<u8>> = tx
+                    .query_row(
+                        "SELECT payload FROM sessions WHERE id=?1",
+                        [&receipt.chat],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 let Some(bytes) = bytes else {
                     receipt.status = Status::Rejected;
                     write(&tx, &receipt)?;
@@ -255,18 +266,27 @@ impl SqliteSessionStore {
                 }
                 serde_json::from_slice::<Session>(&bytes)?
             };
-            session.push(super::message::Message::Assistant(super::AssistantMessage { content: body.clone() }));
-            receipt.message_id = Some(format!("{}:{}", session.id().as_str(), session.messages().len()-1));
+            session.push(super::message::Message::Assistant(
+                super::AssistantMessage {
+                    content: body.clone(),
+                },
+            ));
+            receipt.message_id = Some(format!(
+                "{}:{}",
+                session.id().as_str(),
+                session.messages().len() - 1
+            ));
             receipt.status = Status::Sent;
-            tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
-                params![session.id().as_str(),serde_json::to_vec(&session)?,Utc::now().timestamp_nanos_opt().context("Session timestamp overflow")?])?;
+            super::session::save_in_transaction(&tx, &session)?;
             write(&tx, &receipt)?;
             if receipt.interface == "web" {
                 crate::web::push_store::enqueue(&tx, &receipt.id, &session)?;
             }
             tx.commit()?;
             Ok(receipt.message_id.map(MessageId))
-        }).await.map_err(storage_failure)
+        })
+        .await
+        .map_err(storage_failure)
     }
 
     pub(crate) async fn cancel_session_deliveries(&self, session: &str) -> anyhow::Result<()> {

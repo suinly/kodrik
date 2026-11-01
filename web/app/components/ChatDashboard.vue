@@ -571,7 +571,7 @@ onMounted(() => {
 
     <UDashboardPanel id="chat" class="bg-default dark:[--ui-bg:#23273a]" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">
       <template #header>
-        <UDashboardNavbar :title="mainTitle">
+        <UDashboardNavbar as="header" :title="mainTitle">
           <template #left>
             <div v-if="section==='pages' && selectedPage" class="flex min-w-0 items-center gap-1.5">
               <UButton icon="i-lucide-arrow-left" :aria-label="t('Вернуться в диалог')" :title="t('Вернуться в диалог')" color="neutral" variant="ghost" @click="closePage" />
@@ -597,7 +597,11 @@ onMounted(() => {
               <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить страницу')" :title="t('Обновить страницу')" color="neutral" variant="ghost" @click="pageRevision++" />
               <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
             </template>
-            <UButton v-else-if="viewingConversation && selected" icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
+            <template v-else-if="viewingConversation && selected">
+              <CommandAuditMenu :mode="conversationView?.commandAuditMode ?? 'trusted'" :disabled="!conversationView || conversationView.commandAuditDisabled"
+                :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
+              <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
+            </template>
           </template>
         </UDashboardNavbar>
       </template>

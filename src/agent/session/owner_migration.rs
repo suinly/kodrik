@@ -106,6 +106,24 @@ pub(crate) fn stage_personal_sessions(
                     4,
                 )?;
             }
+            if version >= 9 {
+                merge_table(&snapshot, &tx, "command_audits", &["id"], 5)?;
+            }
+            if version >= 11 {
+                merge_table(&snapshot, &tx, "command_audit_modes", &["session_id"], 3)?;
+                merge_table(&snapshot, &tx, "command_audit_profile", &["id"], 2)?;
+            } else {
+                // Adapt legacy settings without changing the read-only snapshot or bypassing conflict checks.
+                let mode = if version == 10 {
+                    "CASE WHEN EXISTS(SELECT 1 FROM command_audit_disabled d WHERE d.session_id=s.id AND d.generation=coalesce(json_extract(CAST(s.payload AS TEXT),'$.generation'),'')) THEN 'trusted' ELSE 'review' END"
+                } else if version == 9 {
+                    "'review'"
+                } else {
+                    "'trusted'"
+                };
+                snapshot.execute_batch(&format!("CREATE TEMP VIEW command_audit_modes AS SELECT s.id AS session_id,coalesce(json_extract(CAST(s.payload AS TEXT),'$.generation'),'') AS generation,{mode} AS mode FROM sessions s"))?;
+                merge_table(&snapshot, &tx, "command_audit_modes", &["session_id"], 3)?;
+            }
             if version >= 4 {
                 merge_table(&snapshot, &tx, "deliveries", &["id"], 4)?;
             }
@@ -262,4 +280,129 @@ pub(crate) fn checkpoint_owner_destination(directory: &Path) -> anyhow::Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::session::{Session, SessionId, SessionStore};
+
+    #[tokio::test]
+    async fn owner_migration_preserves_command_audit_modes_and_profile() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(source.path().into()).unwrap();
+        let mut expected = Vec::new();
+        for mode in ["ask", "review", "trusted"] {
+            let session = Session::new(SessionId::new(mode));
+            store.save(&session).await.unwrap();
+            expected.push((
+                mode.to_owned(),
+                session.generation().to_owned(),
+                mode.to_owned(),
+            ));
+        }
+        store
+            .with_connection(|db| {
+                db.execute("UPDATE command_audit_modes SET mode=session_id", [])?;
+                db.execute("INSERT INTO command_audit_profile VALUES(1,'ask')", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        drop(store);
+        stage_personal_sessions(&[source.path().into()], destination.path()).unwrap();
+        let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+        let actual = migrated.with_connection(|db| {
+            let mut query = db.prepare("SELECT session_id,generation,mode FROM command_audit_modes ORDER BY session_id")?;
+            let modes = query.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let profile: String = db.query_row("SELECT mode FROM command_audit_profile WHERE id=1", [], |row| row.get(0))?;
+            Ok((modes, profile))
+        }).await.unwrap();
+        assert_eq!(actual, (expected, "ask".into()));
+    }
+
+    #[tokio::test]
+    async fn owner_migration_converts_legacy_command_audit_settings() {
+        for version in [8, 9, 10] {
+            let source = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let store = SqliteSessionStore::open(source.path().into()).unwrap();
+            let mut expected = Vec::new();
+            for id in ["disabled", "review", "stale"] {
+                let session = Session::new(SessionId::new(id));
+                store.save(&session).await.unwrap();
+                expected.push((
+                    id.to_owned(),
+                    session.generation().to_owned(),
+                    if version < 9 || version == 10 && id == "disabled" {
+                        "trusted"
+                    } else {
+                        "review"
+                    }
+                    .to_owned(),
+                ));
+            }
+            store.with_connection(move |db| {
+                db.execute_batch("DROP TABLE command_audit_modes; DROP TABLE command_audit_profile;")?;
+                if version < 9 {
+                    db.execute_batch("DROP TABLE command_audits;")?;
+                }
+                if version == 10 {
+                    db.execute_batch("CREATE TABLE command_audit_disabled (session_id TEXT PRIMARY KEY, generation TEXT NOT NULL);
+                        INSERT INTO command_audit_disabled SELECT id,json_extract(CAST(payload AS TEXT),'$.generation') FROM sessions WHERE id='disabled';
+                        INSERT INTO command_audit_disabled VALUES('stale','old-generation');")?;
+                }
+                db.pragma_update(None, "user_version", version)?;
+                Ok(())
+            }).await.unwrap();
+            drop(store);
+            stage_personal_sessions(&[source.path().into()], destination.path()).unwrap();
+            let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+            let actual = migrated.with_connection(|db| {
+                let mut query = db.prepare("SELECT session_id,generation,mode FROM command_audit_modes ORDER BY session_id")?;
+                let modes = query.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let profile_count: i64 = db.query_row("SELECT count(*) FROM command_audit_profile", [], |row| row.get(0))?;
+                Ok((modes, profile_count))
+            }).await.unwrap();
+            assert_eq!(actual, (expected, 0), "schema {version}");
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_migration_rejects_conflicting_command_audit_settings() {
+        for profile in [false, true] {
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let session = Session::new(SessionId::new("shared"));
+            for (directory, mode) in [(first.path(), "review"), (second.path(), "trusted")] {
+                let store = SqliteSessionStore::open(directory.into()).unwrap();
+                store.save(&session).await.unwrap();
+                store
+                    .with_connection(move |db| {
+                        if profile {
+                            db.execute("INSERT INTO command_audit_profile VALUES(1,?1)", [mode])?;
+                        } else {
+                            db.execute(
+                                "UPDATE command_audit_modes SET mode=?1 WHERE session_id='shared'",
+                                [mode],
+                            )?;
+                        }
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }
+            let error = stage_personal_sessions(
+                &[first.path().into(), second.path().into()],
+                destination.path(),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("Different records for key"),
+                "{error:#}"
+            );
+        }
+    }
 }

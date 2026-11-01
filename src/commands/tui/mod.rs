@@ -1,4 +1,5 @@
 mod app;
+mod approvals;
 mod clipboard;
 #[cfg(all(test, unix))]
 mod startup_tests;
@@ -77,6 +78,7 @@ async fn run_session(
     };
     app.model = model;
     restore_history(&mut app, &session);
+    approvals::refresh(&mut app, &runner, &session_id).await?;
 
     let mut tui = Tui::enter()?;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -84,6 +86,8 @@ async fn run_session(
     let mut history_tick = tokio::time::interval(Duration::from_secs(1));
     history_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut history_revision = None;
+    let mut approval_tick = tokio::time::interval(Duration::from_secs(1));
+    approval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (progress_tx, mut progress_rx) = mpsc::channel(32);
     let mut requests = JoinSet::new();
     let mut copies = JoinSet::new();
@@ -143,9 +147,11 @@ async fn run_session(
                 }
                 let session = runner.load_session(session_id.clone()).await?;
                 app.messages.clear();
+                app.shown_approvals.clear();
                 app.pending_tools.clear();
                 app.streaming_message = None;
                 restore_history(&mut app, &session);
+                approvals::refresh(&mut app, &runner, &session_id).await?;
                 app.status = if !report.blocked.is_empty() {
                     Status::Error
                 } else if stopped || !report.cancelled.is_empty() {
@@ -162,6 +168,16 @@ async fn run_session(
             event = next_terminal_event() => {
                 match event {
                     Ok(Event::Key(key)) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                        if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        if key.code == KeyCode::F(2) || app.mode_picker.is_some() {
+                            if let Some(input) = app.update(key) {
+                                approvals::handle_command(&mut app, &runner, &session_id, &input).await;
+                            }
+                            redraw = true;
+                            continue;
+                        }
                         match selection_command(&mut app, key) {
                             Some(SelectionCommand::Clear) => { redraw = true; continue; }
                             Some(SelectionCommand::Copy(text)) => {
@@ -172,6 +188,13 @@ async fn run_session(
                                 continue;
                             }
                             None => {}
+                        }
+                        if app.approval.is_some() {
+                            if let Some(input) = app.update(key) {
+                                approvals::handle_command(&mut app, &runner, &session_id, &input).await;
+                            }
+                            redraw = true;
+                            continue;
                         }
                         if key.code == KeyCode::Esc && recovering && app.command_suggestion().is_none() {
                             // Recovery is paused here, so queued work cannot start during cancellation.
@@ -189,6 +212,7 @@ async fn run_session(
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
+                                        approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
                                     }
                                     Err(error) => {
@@ -210,6 +234,10 @@ async fn run_session(
                             continue;
                         }
                         if let Some(input) = app.update(key) {
+                            if approvals::handle_command(&mut app, &runner, &session_id, &input).await {
+                                redraw = true;
+                                continue;
+                            }
                             if handle_language_command(&mut app, &input, language_path) {
                                 redraw = true;
                                 continue;
@@ -239,6 +267,7 @@ async fn run_session(
                                     Ok(_) => {
                                         reset_session(&mut app);
                                         app.push_kodrik_message(app.language.pick("New session created.", "Создан новый сеанс.").into());
+                                        approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
                                     }
                                     Err(error) => {
@@ -263,6 +292,12 @@ async fn run_session(
                         redraw = true;
                     }
                     Ok(Event::Mouse(mouse)) => {
+                        let (handled, input) = approvals::modes_mouse(&mut app, mouse);
+                        if handled {
+                            if let Some(input) = input { approvals::handle_command(&mut app, &runner, &session_id, &input).await; }
+                            redraw = true;
+                            continue;
+                        }
                         if let Some(sessions) = &app.sessions {
                             match mouse.kind {
                                 MouseEventKind::ScrollUp => { app.view.clear_selection(); app.session_index = app.session_index.saturating_sub(1); },
@@ -349,8 +384,15 @@ async fn run_session(
                     if history_revision != Some(revision) {
                         let session = runner.load_session(session_id.clone()).await?;
                         redraw |= refresh_history(&mut app, &session);
+                        redraw |= approvals::refresh(&mut app, &runner, &session_id).await?;
                         history_revision = Some(revision);
                     }
+                }
+            }
+            _ = approval_tick.tick() => {
+                match approvals::refresh(&mut app, &runner, &session_id).await {
+                    Ok(changed) => redraw |= changed,
+                    Err(error) => log::warn!("Could not refresh command approvals: {error:#}"),
                 }
             }
             _ = tick.tick() => {
@@ -557,6 +599,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
         return false;
     }
     app.messages = saved.messages;
+    app.shown_approvals.clear();
     app.pending_tools = saved.pending_tools;
     app.streaming_message = None;
     app.view.clear_selection();

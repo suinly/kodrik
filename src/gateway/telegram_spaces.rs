@@ -272,6 +272,10 @@ mod tests {
                 }
                 let stream = request["stream"] == true;
                 let input = request["input"].as_array().unwrap();
+                if let Some(response) = crate::agent::command_audit::tests::safe_audit_response(&request) {
+                    use axum::response::IntoResponse;
+                    return axum::Json(response).into_response();
+                }
                 let last_user = input.iter().rposition(|item| item["role"] == "user");
                 let output = if let Some(last_user) = last_user {
                     let steps = input[last_user + 1..].iter().filter(|item| item["type"] == "function_call_output").count();

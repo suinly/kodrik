@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 8;
+pub(super) const VERSION: i64 = 11;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -193,6 +193,15 @@ impl SqliteSessionStore {
         if version < 8 {
             crate::web::push_store::migrate_presence(&tx)?;
         }
+        if version < 9 {
+            crate::agent::command_audit::migrate(&tx)?;
+        }
+        if version < 10 {
+            crate::agent::command_audit::migrate_settings(&tx)?;
+        }
+        if version < 11 {
+            crate::agent::command_audit::migrate_modes(&tx, version >= 9)?;
+        }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
         // SQLite derives sidecar permissions from the already-private main database.
@@ -354,7 +363,7 @@ pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
                 .context("Session timestamp overflow")?
         ],
     )?;
-    Ok(())
+    crate::agent::command_audit::capture_mode(db, session)
 }
 
 pub(crate) fn select(db: &Connection, conversation: &str, id: &str) -> anyhow::Result<()> {
@@ -450,6 +459,10 @@ pub(super) fn import_files(tx: &Connection, directory: &Path) -> anyhow::Result<
                 tx.execute(
                     "INSERT INTO sessions VALUES (?1,?2,?3)",
                     params![session.id().as_str(), payload, i64::try_from(modified)?],
+                )?;
+                tx.execute(
+                    "INSERT INTO command_audit_modes VALUES (?1,?2,'trusted')",
+                    params![session.id().as_str(), session.generation()],
                 )?;
             }
             Ok(())
@@ -557,7 +570,13 @@ impl SessionStore for SqliteSessionStore {
 
     async fn save(&self, session: &Session) -> anyhow::Result<()> {
         let session = session.clone();
-        self.with_connection(move |db| save(db, &session)).await
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            save(&tx, &session)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn delete(&self, id: &SessionId) -> anyhow::Result<()> {
@@ -659,6 +678,10 @@ impl SqliteSessionStore {
             }
             if matches!(run.phase,crate::agent::run_state::RunPhase::Cancelled|crate::agent::run_state::RunPhase::Failed{..}) {
                 tx.execute("UPDATE compaction_jobs SET status='cancelled',payload=CAST(json_set(payload,'$.status','cancelled') AS BLOB) WHERE run_id=?1 AND status IN ('preparing','ready')",[&run.id])?;
+            }
+            if run.command_audit && let Some(tool) = &tool
+                && tool.call.name == "exec_command" && tool.result.is_none() {
+                crate::agent::command_audit::check_execution(&tx, &run, &tool.call)?;
             }
             save(&tx, &session)?;
             if previous.is_none() && run.routing_from.is_some(){select(&tx,&run.conversation_id,&run.session_id)?;}

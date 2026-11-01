@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+#[path = "chat_approvals_tests.rs"]
+mod approvals;
 #[path = "chat_subagents_tests.rs"]
 mod subagents;
 

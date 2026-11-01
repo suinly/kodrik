@@ -303,7 +303,7 @@ async fn admit(
                 let session_id = uuid::Uuid::new_v4().to_string();
                 let mut session = Session::new(SessionId::new(&session_id));
                 session.webhook_instruction = Some(format!("## Recorded delivery source\n{source}\n\n## Owner instruction\n{instruction}"));
-                tx.execute("INSERT INTO sessions(id,payload,updated_at) VALUES(?1,?2,?3)", params![session_id,serde_json::to_vec(&session)?,now.timestamp_nanos_opt().ok_or_else(|| anyhow::anyhow!("Session timestamp overflow"))?])?;
+                crate::agent::session::save_in_transaction(&tx, &session)?;
                 session_id
             }
         };

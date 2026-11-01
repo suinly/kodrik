@@ -50,7 +50,7 @@ release workflows. Neither check installs Kodrik or starts a service.
 | `src/agent/subagents.rs`, `tools/subagents.rs` | Parent-bound child sessions, durable input, lifecycle controls and tool schemas |
 | `src/agent/context.rs` | Prompt and session context snapshots |
 | `src/agent/session/` | Transactional SQLite sessions, checkpoints and legacy JSON import |
-| `src/agent/system_one.rs`, `session_router.rs`, `group_reply.rs` | Reusable decision service, session routing and group participation policy |
+| `src/agent/system_one.rs`, `command_audit.rs`, `session_router.rs`, `group_reply.rs` | Independent decisions, batched shell audit and durable approvals, session routing and group participation policy |
 | `src/agent/llm/` | Provider contract and Responses API adapter |
 | `src/agent/tools/` | Tool schemas, execution and registration |
 | `src/agent/memory.rs`, `companion.rs`, `learning.rs` | Explicit memory and automatic learning |
@@ -88,9 +88,25 @@ Implement the `Tool` trait under `src/agent/tools/` and register the tool in
 grant access to proactive research. Keep that tool set explicit.
 
 Use System One for bounded choices with a clear validation and fallback policy;
-session routing and group participation are its current consumers. A new consumer should define its own
+session routing, group participation and shell command review are its consumers. A new consumer should define its own
 state, question, criteria and error handling rather than embedding side effects
 in the decision provider.
+
+Shell review runs before the common tool execution checkpoint, so native shell,
+Bashkit and child agents use the same gate. Batch verdicts require exact ID coverage;
+malformed or failed decisions require confirmation for every command in that batch.
+Approval records are bound to immutable arguments and a live run in SQLite. Human
+decision endpoints are session-scoped and are not exposed as model tools.
+Session audit settings live separately from transcript/checkpoint payloads and
+are bound to the session generation. Child agents read the current parent setting.
+New session generations capture the user's profile default atomically with their
+first save; the fallback is Trusted. Trusted skips review, Review batches System One
+requests, and Ask requires a human decision for every shell call without a reviewer.
+An Ask record is re-reviewed when switching to Review; reviewed Safe records need
+human approval in Ask. Reason codes are localized at each interface boundary.
+The execution-intent transaction rechecks both the verdict and session setting;
+if either changed, the agent returns to the approval gate before starting a tool.
+Claimed invocations no longer accept approval decisions.
 
 Update the relevant feature page and [configuration reference](configuration.md)
 when behavior or settings change. See [Documentation conventions](publishing.md) for

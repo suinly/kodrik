@@ -44,6 +44,16 @@ api_key = "your-key"
 Without `system_one`, decisions use `primary` with separate limits. There is no
 automatic model substitution after a provider error. See [System One](sessions.md).
 
+The **AI review** command mode uses `system_one` (or `primary` when absent). Configure
+a fast model here to reduce the delay before shell execution. All `exec_command`
+calls from one model response share one review request, with a separate decision
+for each command. Reviews have a 15-second timeout, no retries and a bounded output;
+failure requires user confirmation. See [command approvals](usage.md#command-approvals).
+The default mode is **No checks**. In **Profile → Command audit in new conversations**, choose
+**No checks**, **AI review**, or **Always ask** for new sessions. Existing sessions
+keep their mode, which can be changed in the chat header. These persistent settings
+are stored per user, separately from TOML.
+
 ## Telegram
 
 Add a named gateway to the minimal configuration:

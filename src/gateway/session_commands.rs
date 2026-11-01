@@ -28,6 +28,16 @@ impl GatewayRunner {
         if !message.images.is_empty() || !message.files.is_empty() {
             return Ok(false);
         }
+        if message
+            .callback
+            .as_ref()
+            .is_some_and(|callback| callback.data.starts_with("ca:"))
+        {
+            if let Err(error) = Box::pin(self.handle_command_approval(message)).await {
+                warn!("Telegram command approval failed: {error:#}");
+            }
+            return Ok(true);
+        }
         if message.callback.is_some() {
             if let Err(error) = Box::pin(self.handle_session_callback(message)).await {
                 warn!("Telegram session callback failed: {error:#}");
@@ -35,7 +45,7 @@ impl GatewayRunner {
             return Ok(true);
         }
         let mut words = message.text.split_whitespace();
-        let Some(command @ ("/sessions" | "/session")) = words.next() else {
+        let Some(command @ ("/sessions" | "/session" | "/audit")) = words.next() else {
             return Ok(false);
         };
         let interface = self
@@ -104,6 +114,9 @@ impl GatewayRunner {
         command: &str,
         args: Vec<&str>,
     ) -> anyhow::Result<String> {
+        if command == "/audit" {
+            return self.audit_command_text(message, &args).await;
+        }
         let language = self.message_language(message);
         let conversation = SessionId::new(format!(
             "{}:{}",
@@ -191,6 +204,7 @@ mod tests {
     use super::*;
     include!("session_picker_tests.rs");
     include!("telegram_login_tests.rs");
+    include!("command_approval_tests.rs");
     use crate::interfaces::InlineButton;
     use crate::{
         agent::{
@@ -228,6 +242,9 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Interface for Commands {
+        fn allows_recipient(&self, chat: &str) -> bool {
+            matches!(chat, "42" | "7")
+        }
         fn language(&self, _: &str) -> Language {
             self.language
         }

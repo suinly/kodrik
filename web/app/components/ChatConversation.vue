@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
-import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage } from '../utils/api'
+import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage, type CommandAuditMode } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
 import { TableKit } from '@tiptap/extension-table'
 import { TaskList, TaskItem } from '@tiptap/extension-list'
@@ -30,6 +30,9 @@ const busy = ref(props.conversation.busy)
 const stopping = ref(false)
 const childStopping = ref(new Set<string>())
 const childProblems = ref<Record<string,string>>({})
+const decidingCommands = ref(new Set<string>())
+const commandProblems = ref<Record<string,string>>({})
+const savingCommandAudit = ref(false)
 const resuming = ref(false)
 const problem = ref('')
 const connection = ref('')
@@ -245,7 +248,9 @@ function recoverInputFocus(event:KeyboardEvent) {
   // Focus synchronously so the browser inserts the first character at the saved selection.
   prompt.value?.editor?.view.focus()
 }
-defineExpose({focusInput})
+const commandAuditMode=computed(()=>snapshot.value?.command_audit_mode ?? 'trusted')
+const commandAuditDisabled=computed(()=>!snapshot.value || editorLocked.value || savingCommandAudit.value || decidingCommands.value.size > 0)
+defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
   if(!editor) return
   // UEditor applies options only at creation; keep its live instance in sync.
@@ -445,6 +450,34 @@ async function stopChild(id:string) {
   } finally {childStopping.value.delete(id)}
 }
 
+async function decideCommand(id:string,approve:boolean) {
+  if(editorLocked.value || savingCommandAudit.value || decidingCommands.value.has(id)) return
+  decidingCommands.value.add(id)
+  delete commandProblems.value[id]
+  try {
+    await api(`sessions/${props.conversation.id}/command-approvals/${encodeURIComponent(id)}`,'POST',{approve})
+    if(mounted) await reload()
+  } catch(error) {
+    if(!mounted) return
+    if(error instanceof AuthenticationError) {authExpired.value=true;problem.value=messageOf(error)}
+    commandProblems.value[id]=messageOf(error)
+  } finally {decidingCommands.value.delete(id)}
+}
+
+async function setCommandAudit(mode:CommandAuditMode) {
+  if(editorLocked.value || savingCommandAudit.value || decidingCommands.value.size) return
+  savingCommandAudit.value=true
+  problem.value=''
+  try {
+    await api(`sessions/${props.conversation.id}/command-audit`,'POST',{mode})
+    if(mounted) await reload()
+  } catch(error) {
+    if(!mounted) return
+    if(error instanceof AuthenticationError) authExpired.value=true
+    problem.value=messageOf(error)
+  } finally {savingCommandAudit.value=false}
+}
+
 async function resumeQueue() {
   resuming.value=true
   try {await api(`sessions/${props.conversation.id}/resume`,'POST');await reload(true);emit('saved')}
@@ -475,7 +508,7 @@ const compactionLabels = {
       <div ref="transcript" data-testid="chat-transcript" class="min-h-0 flex-1 overflow-y-auto overscroll-contain" :class="{'flex flex-col justify-end':home}" @scroll="trackScroll">
         <div ref="transcriptContent" class="mx-auto w-full max-w-3xl space-y-5 px-4 py-6 sm:px-6">
           <p v-if="loading" role="status" class="text-muted text-sm"> {{ t("Загружаю историю…") }} </p>
-          <div v-if="!loading && !submitting && !snapshot?.messages.length && !queuedMessages.length" class="text-center space-y-3" :class="home ? 'pb-4' : 'py-12'">
+          <div v-if="!loading && !submitting && !snapshot?.messages.length && !queuedMessages.length && !snapshot?.command_approvals?.length" class="text-center space-y-3" :class="home ? 'pb-4' : 'py-12'">
             <KodrikLogo v-if="home" class="mx-auto mb-5 h-10" />
             <h1 class="text-2xl font-semibold text-highlighted">{{ home ? t('С чего начнём?') : t('Есть мысль?') }}</h1>
             <p class="text-muted">{{ home ? t('Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.') : t('Начните с вопроса, задачи, файла или фотографии.') }}</p>
@@ -495,7 +528,7 @@ const compactionLabels = {
           </UCollapsible>
           <ChatItem v-for="message in queuedMessages" :key="message.id" :message="message"
             :status="snapshot?.blocked_reason ? t('Передача приостановлена') : t('Ожидает передачи агенту')" />
-          <UChatShimmer v-if="busy && !hint && !stopping" as="p" :text="t('Кодрик работает…')" role="status" aria-live="polite" class="text-sm" />
+          <UChatShimmer v-if="busy && !hint && !stopping && !snapshot?.command_approvals?.length" as="p" :text="t('Кодрик работает…')" role="status" aria-live="polite" class="text-sm" />
         </div>
       </div>
       <div v-if="!follow" class="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center bg-transparent">
@@ -503,7 +536,7 @@ const compactionLabels = {
       </div>
     </div>
     <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent.capture="drop" @paste.capture="paste">
-      <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
+      <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length || snapshot?.command_approvals?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
           <div class="flex flex-wrap gap-2">
@@ -515,6 +548,8 @@ const compactionLabels = {
           :actions="[{label:t('Убрать напоминание'),onClick:()=>{draftState.missingFiles=[]}}]" />
         <UAlert v-if="snapshot?.blocked_reason && snapshot.queued.length" variant="soft" :description="t('Передача сообщений приостановлена.')"
           :actions="[{label:t('Продолжить очередь'),loading:resuming,disabled:editorLocked || busy || resuming,onClick:resumeQueue}]" />
+        <ChatCommandApprovals v-if="snapshot?.command_approvals?.length" :approvals="snapshot.command_approvals" :deciding="decidingCommands" :problems="commandProblems" :disabled="editorLocked || savingCommandAudit"
+          @decide="decideCommand" @refresh="reload()" />
         <UFileUpload v-if="attachmentsOpen || files.length" :model-value="files" multiple layout="list" :disabled="editorLocked" :dropzone="false"
           :label="t('Добавить файлы и фото')" :description="t('До 10 вложений · фото до 10 MiB · файлы до 20 MB')"
           icon="i-lucide-paperclip" class="max-h-56 overflow-y-auto" @update:model-value="selectFiles" />

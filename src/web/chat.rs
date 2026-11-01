@@ -31,6 +31,8 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
+#[path = "chat_approvals.rs"]
+mod approvals;
 #[path = "chat_management.rs"]
 mod management;
 #[path = "chat_push.rs"]
@@ -288,6 +290,8 @@ impl Chat {
             }
         }
         snapshot["subagents"] = json!(children);
+        snapshot["command_approvals"] = json!(self.sessions.pending_command_approvals(id).await?);
+        snapshot["command_audit_mode"] = json!(self.sessions.command_audit_mode(id).await?);
         self.decorate_versions(id, &mut snapshot).await?;
         Ok(snapshot)
     }
@@ -390,6 +394,10 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
     };
     let api = Router::new()
         .route(
+            "/api/profile/command-audit",
+            get(approvals::default_mode).post(approvals::set_default_mode),
+        )
+        .route(
             "/api/chat/push",
             get(push::config)
                 .post(push::subscribe)
@@ -410,6 +418,14 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
             post(management::edit),
         )
         .route("/api/chat/sessions/{id}/stop", post(stop))
+        .route(
+            "/api/chat/sessions/{id}/command-approvals/{approval}",
+            post(approvals::decide),
+        )
+        .route(
+            "/api/chat/sessions/{id}/command-audit",
+            post(approvals::set_mode),
+        )
         .route(
             "/api/chat/sessions/{id}/subagents/{agent}/stop",
             post(subagents::stop),

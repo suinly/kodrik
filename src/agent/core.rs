@@ -22,6 +22,7 @@ pub struct Agent {
     journal: Option<crate::audit::Journal>,
     sandbox: Option<Arc<super::sandbox::Sandbox>>,
     subagents: Option<Arc<super::subagents::Subagents>>,
+    command_auditor: Option<Arc<super::system_one::SystemOne>>,
 }
 
 #[derive(Debug)]
@@ -104,6 +105,7 @@ impl Agent {
             journal: None,
             sandbox: None,
             subagents: None,
+            command_auditor: None,
         }
     }
 
@@ -129,6 +131,11 @@ impl Agent {
 
     pub(crate) fn with_journal(mut self, journal: crate::audit::Journal) -> Self {
         self.journal = Some(journal);
+        self
+    }
+
+    pub(crate) fn with_command_auditor(mut self, auditor: super::system_one::SystemOne) -> Self {
+        self.command_auditor = Some(Arc::new(auditor));
         self
     }
 
@@ -274,6 +281,9 @@ impl Agent {
         call_budget: Option<usize>,
         mut checkpoint: Option<&mut Checkpoint>,
     ) -> anyhow::Result<AssistantMessage> {
+        if let Some(cp) = checkpoint.as_deref_mut() {
+            cp.record.command_audit = self.command_auditor.is_some();
+        }
         if input.is_some()
             && let Some(cp) = checkpoint.as_deref_mut()
         {
@@ -306,14 +316,15 @@ impl Agent {
         let result = {
             let work = crate::audit::scope(
                 context,
-                super::tools::telegram_reply::with_owner_reply_state(self.run_loop(
+                // Audit and tool futures must not multiply across nested gateway callers.
+                super::tools::telegram_reply::with_owner_reply_state(Box::pin(self.run_loop(
                     session,
                     input,
                     progress,
                     incoming,
                     call_budget,
                     checkpoint.as_deref_mut(),
-                )),
+                ))),
             );
             if let Some(deadline) = deadline {
                 match (deadline - chrono::Utc::now()).to_std() {
@@ -573,7 +584,7 @@ impl Agent {
                     }
                     continue;
                 }
-                let (messages, input_tokens) = match generated {
+                let (mut messages, input_tokens) = match generated {
                     Ok(output) => {
                         overflow_retry_used = false;
                         if let Some(cp) = checkpoint.as_deref_mut() {
@@ -626,6 +637,13 @@ impl Agent {
                         return Err(error);
                     }
                 };
+                if self.command_auditor.is_some() {
+                    for message in &mut messages {
+                        if let Message::ToolCall(call) = message {
+                            super::command_audit::normalize(call, self.isolated())?;
+                        }
+                    }
+                }
                 session.input_tokens = input_tokens;
                 if let Some(tx) = progress {
                     let _ = tx.try_send(AgentEvent::ContextTokens(input_tokens));
@@ -688,28 +706,77 @@ impl Agent {
                 }
             }
 
+            let verdicts = if let Some(auditor) = &self.command_auditor {
+                super::command_audit::prepare(
+                    auditor,
+                    session,
+                    &messages,
+                    checkpoint.as_deref(),
+                    self.isolated(),
+                )
+                .await?
+            } else {
+                Default::default()
+            };
             let mut answer = None;
 
             for message in messages {
                 match message {
                     Message::Assistant(message) => answer = Some(message),
                     Message::ToolCall(call) => {
+                        use super::command_audit::Permission;
                         let replay = self.tools.replay_policy(&call.name);
-                        if let Some(cp) = checkpoint.as_deref_mut() {
-                            cp.save(
-                                session,
-                                RunPhase::ExecutingTool {
-                                    call_id: call.call_id.clone(),
-                                    replay,
-                                },
-                                Some(ToolExecution {
-                                    call: call.clone(),
-                                    replay,
-                                    result: None,
-                                }),
-                            )
-                            .await?;
-                        }
+                        let permission = loop {
+                            let permission = if call.name == "exec_command"
+                                && let Some(auditor) = &self.command_auditor
+                            {
+                                if let Some(cp) = checkpoint.as_deref_mut() {
+                                    super::command_audit::wait_for_decision(
+                                        auditor,
+                                        cp,
+                                        session,
+                                        &call,
+                                        self.isolated(),
+                                    )
+                                    .await?
+                                } else {
+                                    if verdicts
+                                        .get(&call.call_id)
+                                        .is_some_and(|verdict| verdict == "safe")
+                                    {
+                                        Permission::Allowed
+                                    } else {
+                                        Permission::Unavailable
+                                    }
+                                }
+                            } else {
+                                Permission::Allowed
+                            };
+                            let allowed = matches!(permission, Permission::Allowed);
+                            if allowed && let Some(cp) = checkpoint.as_deref_mut() {
+                                let saved = cp
+                                    .save(
+                                        session,
+                                        RunPhase::ExecutingTool {
+                                            call_id: call.call_id.clone(),
+                                            replay,
+                                        },
+                                        Some(ToolExecution {
+                                            call: call.clone(),
+                                            replay,
+                                            result: None,
+                                        }),
+                                    )
+                                    .await;
+                                if saved.as_ref().is_err_and(|error| {
+                                    error.is::<super::command_audit::AuditChanged>()
+                                }) {
+                                    continue;
+                                }
+                                saved?;
+                            }
+                            break permission;
+                        };
                         let name = if tools.iter().any(|tool| tool.name() == call.name) {
                             call.name.as_str()
                         } else {
@@ -737,31 +804,40 @@ impl Agent {
                                 cp.record.conversation_id.clone(),
                             )
                         });
-                        let result = super::delivery::CURRENT_DELIVERY
-                            .scope(
-                                delivery,
-                                super::run_state::CURRENT_TOOL.scope(
-                                    identity,
-                                    super::subagents::CURRENT_PARENT.scope(
-                                        matches!(
-                                            call.name.as_str(),
-                                            "spawn_agent"
-                                                | "send_message"
-                                                | "list_agents"
-                                                | "wait_agent"
-                                                | "stop_agent"
-                                        )
-                                        .then(|| {
-                                            super::subagents::ParentContext {
-                                                session: session.clone(),
-                                                finished: child_lifetime.clone(),
-                                            }
-                                        }),
-                                        self.tools.execute(&call.name, call.arguments.clone()),
-                                    ),
-                                ),
-                            )
-                            .await;
+                        let result = match permission {
+                            Permission::Denied => Err(anyhow::anyhow!(
+                                "Shell command was not approved. Do not retry or work around the user's decision."
+                            )),
+                            Permission::Unavailable => Err(anyhow::anyhow!(
+                                "Shell command requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this command."
+                            )),
+                            Permission::Allowed => {
+                                super::delivery::CURRENT_DELIVERY
+                                    .scope(
+                                        delivery,
+                                        super::run_state::CURRENT_TOOL.scope(
+                                            identity,
+                                            super::subagents::CURRENT_PARENT.scope(
+                                                matches!(
+                                                    call.name.as_str(),
+                                                    "spawn_agent"
+                                                        | "send_message"
+                                                        | "list_agents"
+                                                        | "wait_agent"
+                                                        | "stop_agent"
+                                                )
+                                                .then(|| super::subagents::ParentContext {
+                                                    session: session.clone(),
+                                                    finished: child_lifetime.clone(),
+                                                }),
+                                                self.tools
+                                                    .execute(&call.name, call.arguments.clone()),
+                                            ),
+                                        ),
+                                    )
+                                    .await
+                            }
+                        };
                         if result
                             .as_ref()
                             .is_err_and(|error| error.is::<super::delivery::StorageFailure>())

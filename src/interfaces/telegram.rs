@@ -461,7 +461,8 @@ impl TelegramInterface {
         if (photo.is_none() && document.is_none() || login_start(&text))
             && let Some(word) = text.split_whitespace().next()
             && let Some((
-                command @ ("/new" | "/stop" | "/sessions" | "/session" | "/start" | "/language"),
+                command @ ("/new" | "/stop" | "/sessions" | "/session" | "/start" | "/language"
+                | "/audit"),
                 target,
             )) = word.split_once('@')
         {
@@ -478,7 +479,7 @@ impl TelegramInterface {
                 && document.is_none()
                 && matches!(
                     text.split_whitespace().next(),
-                    Some("/sessions" | "/session")
+                    Some("/sessions" | "/session" | "/audit")
                 );
         let is_group = message.chat.is_group() || message.chat.is_supergroup();
         let mut telegram_group = None;
@@ -679,7 +680,7 @@ impl TelegramInterface {
             && !login_start(&text)
             && !matches!(
                 text.split_whitespace().next(),
-                Some("/sessions" | "/session")
+                Some("/sessions" | "/session" | "/audit")
             )
         {
             let mut sender = guest_sender(&guest["from"]);
@@ -698,7 +699,7 @@ impl TelegramInterface {
             && !login_start(&text)
             && !matches!(
                 text.split_whitespace().next(),
-                Some("/sessions" | "/session")
+                Some("/sessions" | "/session" | "/audit")
             )
         {
             let mut group = TelegramGroup {
@@ -2622,7 +2623,7 @@ mod tests {
     #[tokio::test]
     async fn personal_commands_in_groups_reach_private_chat_rejection_unchanged() {
         let interface = TelegramInterface::new("test", "123:test", std::path::PathBuf::new());
-        for text in ["/sessions", "/session cli:main"] {
+        for text in ["/sessions", "/session cli:main", "/audit off"] {
             let update = Update {
                 id: teloxide::types::UpdateId(1),
                 kind: UpdateKind::Message(serde_json::from_value(json!({
@@ -2677,6 +2678,8 @@ mod tests {
             (42, " /stop@testbot ", Some("/stop")),
             (42, "/sessions@TestBot 2", Some("/sessions 2")),
             (42, "/session@TestBot cli:main", Some("/session cli:main")),
+            (42, "/audit@TestBot off", Some("/audit off")),
+            (42, "/audit@OtherBot off", None),
             (42, "/login@TestBot", Some("/login@TestBot")),
             (42, "/sessions@OtherBot", None),
             (42, "/session@OtherBot cli:main", None),

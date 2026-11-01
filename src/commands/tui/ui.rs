@@ -65,6 +65,7 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
     let (icon, color, bg) = match message.role {
         AppMessageRole::User => (">", Color::White, Color::Rgb(54, 58, 79)),
         AppMessageRole::Plan => ("☷", Color::Cyan, Color::default()),
+        AppMessageRole::Approval => ("!", Color::Yellow, Color::default()),
         AppMessageRole::Kodrik => ("●", Color::White, Color::default()),
         AppMessageRole::Tool(ToolState::Running) => ("○", Color::Yellow, Color::default()),
         AppMessageRole::Tool(ToolState::Success) => ("●", Color::Green, Color::default()),
@@ -91,7 +92,13 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
-    let area = frame.area();
+    let full_area = frame.area();
+    let area = Rect::new(
+        full_area.x,
+        full_area.y.saturating_add(u16::from(full_area.height > 0)),
+        full_area.width,
+        full_area.height.saturating_sub(1),
+    );
     let language = app.language;
     if let Some(sessions) = &app.sessions {
         app.view
@@ -126,11 +133,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }
         app.view.restore_footer(frame.buffer_mut());
         app.view.finish_frame(frame.buffer_mut(), None);
+        render_modes(app, frame);
         return;
     }
     app.input_width = usize::from(area.width.saturating_sub(3).max(1));
     let (input_rows, (cursor_x, cursor_y)) = app.input_layout(app.input_width);
-    let input_lines = input_rows.len().min(6) as u16;
+    let input_lines = if app.approval.is_some() {
+        3
+    } else {
+        input_rows.len().min(6) as u16
+    };
     let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
     let history_height = area
         .height
@@ -171,29 +183,40 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         )
     };
 
-    let (animation_frame, state, done_at) = match &app.status {
-        Status::Ready => ("○", language.pick("Ready", "Готов"), String::new()),
-        Status::Recovering => (
-            FRAMES[app.animation_frame % FRAMES.len()],
+    let (animation_frame, state, done_at) = if app.approval.is_some() {
+        (
+            "!",
             language.pick(
-                "Recovering session · Esc to stop",
-                "Восстанавливаю сеанс · Esc для остановки",
+                "Approve command · ↑/↓ select · Enter confirm · Esc reject",
+                "Подтверждение · ↑/↓ выбор · Enter подтвердить · Esc отклонить",
             ),
             String::new(),
-        ),
-        Status::Stopping => (
-            FRAMES[app.animation_frame % FRAMES.len()],
-            language.pick("Stopping", "Остановка"),
-            String::new(),
-        ),
-        Status::Stopped => ("■", language.pick("Stopped", "Остановлено"), String::new()),
-        Status::Working => (
-            FRAMES[app.animation_frame % FRAMES.len()],
-            language.pick("Working · Esc to stop", "Работаю · Esc для остановки"),
-            String::new(),
-        ),
-        Status::Done(time) => ("✓", language.pick("Done", "Готово"), format!(" {time}")),
-        Status::Error => ("✗", language.pick("Error", "Ошибка"), String::new()),
+        )
+    } else {
+        match &app.status {
+            Status::Ready => ("○", language.pick("Ready", "Готов"), String::new()),
+            Status::Recovering => (
+                FRAMES[app.animation_frame % FRAMES.len()],
+                language.pick(
+                    "Recovering session · Esc to stop",
+                    "Восстанавливаю сеанс · Esc для остановки",
+                ),
+                String::new(),
+            ),
+            Status::Stopping => (
+                FRAMES[app.animation_frame % FRAMES.len()],
+                language.pick("Stopping", "Остановка"),
+                String::new(),
+            ),
+            Status::Stopped => ("■", language.pick("Stopped", "Остановлено"), String::new()),
+            Status::Working => (
+                FRAMES[app.animation_frame % FRAMES.len()],
+                language.pick("Working · Esc to stop", "Работаю · Esc для остановки"),
+                String::new(),
+            ),
+            Status::Done(time) => ("✓", language.pick("Done", "Готово"), format!(" {time}")),
+            Status::Error => ("✗", language.pick("Error", "Ошибка"), String::new()),
+        }
     };
 
     frame.render_widget(
@@ -240,14 +263,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         );
     }
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::default(),
-            Line::styled(" > ", Style::default().fg(Color::White).bold()),
-        ])
-        .style(Style::default().bg(Color::Rgb(54, 58, 79))),
-        layout[1],
-    );
+    if app.approval.is_none() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::default(),
+                Line::styled(" > ", Style::default().fg(Color::White).bold()),
+            ])
+            .style(Style::default().bg(Color::Rgb(54, 58, 79))),
+            layout[1],
+        );
+    }
 
     let input_area = Rect::new(
         layout[1].x.saturating_add(3),
@@ -258,12 +283,33 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let cursor_x = cursor_x.min(u16::MAX as usize) as u16;
     let cursor_y = cursor_y.min(u16::MAX as usize) as u16;
     let scroll_y = cursor_y.saturating_sub(input_area.height.saturating_sub(1));
-    frame.render_widget(
-        Paragraph::new(input)
-            .style(Style::default().fg(input_color))
-            .scroll((scroll_y, 0)),
-        input_area,
-    );
+    if app.approval.is_some() {
+        frame.render_widget(
+            Block::new().style(Style::default().bg(Color::Rgb(54, 58, 79))),
+            layout[1],
+        );
+        frame.render_stateful_widget(
+            List::new([
+                language.pick("Allow once", "Разрешить один раз"),
+                language.pick("Reject", "Отклонить"),
+                language.pick(
+                    "No checks for this session",
+                    "Без проверок для этого сеанса",
+                ),
+            ])
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().fg(Color::Yellow).bold()),
+            input_area,
+            &mut ListState::default().with_selected(app.approval_choice),
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(input)
+                .style(Style::default().fg(input_color))
+                .scroll((scroll_y, 0)),
+            input_area,
+        );
+    }
 
     let footer = Rect::new(
         layout[2].x.saturating_add(3),
@@ -280,12 +326,21 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .width
         .saturating_sub(notice_width)
         .saturating_sub(u16::from(notice_width > 0));
+    let model = match app.context_tokens {
+        Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
+        None => app.model.clone(),
+    };
+    let model = if app.audit_disabled_sessions.is_empty() {
+        model
+    } else {
+        format!(
+            "{}: {} · {model}",
+            language.pick("No checks", "Без проверок"),
+            app.audit_disabled_sessions.join(", ")
+        )
+    };
     frame.render_widget(
-        Paragraph::new(match app.context_tokens {
-            Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
-            None => app.model.clone(),
-        })
-        .style(Style::default().fg(Color::Yellow)),
+        Paragraph::new(model).style(Style::default().fg(Color::Yellow)),
         Rect::new(footer.x, footer.y, model_width, footer.height),
     );
     if let Some((notice, _)) = &app.copy_notice {
@@ -305,7 +360,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.view.restore_footer(frame.buffer_mut());
     app.view.finish_frame(
         frame.buffer_mut(),
-        Some(super::view::InputRows {
+        app.approval.is_none().then_some(super::view::InputRows {
             text: &app.input,
             rows: &input_rows,
             area: input_area,
@@ -313,12 +368,70 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }),
     );
 
-    if input_area.width > 0 && input_area.height > 0 {
+    if app.approval.is_none()
+        && app.mode_picker.is_none()
+        && input_area.width > 0
+        && input_area.height > 0
+    {
         frame.set_cursor_position((
             input_area.x + cursor_x.min(input_area.width - 1),
             input_area.y + cursor_y.saturating_sub(scroll_y),
         ));
     }
+    render_modes(app, frame);
+}
+
+fn render_modes(app: &mut App, frame: &mut Frame) {
+    let full = frame.area();
+    let label = format!(" ◈ {}  ▾ F2 ", app.audit_mode.label(app.language));
+    app.mode_button = Rect::new(
+        full.x,
+        full.y,
+        (Span::raw(&label).width() as u16).min(full.width),
+        u16::from(full.height > 0),
+    );
+    frame.render_widget(
+        Paragraph::new(label).style(Style::default().fg(Color::Cyan)),
+        app.mode_button,
+    );
+    let Some(picker) = &mut app.mode_picker else {
+        app.mode_popup = Rect::default();
+        return;
+    };
+    app.mode_popup = Rect::new(
+        full.x,
+        full.y.saturating_add(1),
+        full.width.min(62),
+        full.height.saturating_sub(1).min(5),
+    );
+    frame.render_widget(ratatui::widgets::Clear, app.mode_popup);
+    let items = super::approvals::MODES
+        .iter()
+        .map(|mode| {
+            ListItem::new(format!(
+                "{}{}",
+                mode.label(app.language),
+                if *mode == picker.current {
+                    app.language.pick(" · current", " · текущий")
+                } else {
+                    ""
+                }
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default().with_selected(picker.choice);
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::bordered().title(app.language.pick(
+                " Command mode · Enter select · Esc close ",
+                " Режим команд · Enter выбрать · Esc закрыть ",
+            )))
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().fg(Color::Yellow).bold()),
+        app.mode_popup,
+        &mut state,
+    );
+    picker.offset = state.offset();
 }
 
 pub fn message_text(message: &AppMessage) -> Text<'static> {
@@ -351,7 +464,10 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
             }
         }));
         ratatui::text::Text::from(text)
-    } else if matches!(message.role, AppMessageRole::Plan) {
+    } else if matches!(
+        message.role,
+        AppMessageRole::Plan | AppMessageRole::Approval
+    ) {
         ratatui::text::Text::from(source)
     } else {
         let text = tui_markdown::from_str(&source);

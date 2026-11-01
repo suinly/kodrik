@@ -229,7 +229,8 @@ pub(super) fn commands(language: Language) -> Value {
         {"command":"stop","description":language.pick("Stop the agent", "Остановить агента")},
         {"command":"sessions","description":language.pick("Choose a session", "Выбрать диалог")},
         {"command":"chatid","description":language.pick("Show this chat's ID", "Показать ID чата")},
-        {"command":"language","description":language.pick("Choose language: en or ru", "Выбрать язык: en или ru")}
+        {"command":"language","description":language.pick("Choose language: en or ru", "Выбрать язык: en или ru")},
+        {"command":"audit","description":language.pick("Command mode: trusted, review or ask", "Режим команд: trusted, review или ask")}
     ])
 }
 

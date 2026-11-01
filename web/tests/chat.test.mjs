@@ -2659,6 +2659,183 @@ test('long tool lists keep compact summaries and collapse back to their header',
   } finally {await browser.close();}
 });
 
+test('session command audit header offers three modes with durable state and errors',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  let finishSave;
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844}});
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,
+      live:{current:null,interrupted:null},plan:null,queued:[],subagents:[],command_approvals:[],command_audit_mode:'trusted',messages:[]};
+    await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',route=>route.fulfill({json:snapshot}));
+    const changes=[];
+    await page.route('**/command-audit',async route=>{
+      assert.equal(route.request().url(),new URL(`api/chat/sessions/${id}/command-audit`,base).href);
+      assert.equal(route.request().method(),'POST');
+      changes.push(route.request().postDataJSON());
+      if(changes.length===1) {await route.fulfill({status:503,json:{error:'unavailable'}});return;}
+      await new Promise(resolve=>{finishSave=resolve});
+      snapshot.command_audit_mode=changes.at(-1).mode;
+      if(snapshot.command_audit_mode==='trusted') snapshot.command_approvals=[];
+      snapshot.revision++;
+      await route.fulfill({status:204});
+    });
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const button=page.getByRole('button',{name:/^Command audit:/});
+    const choose=async label=>{await button.click();await page.getByRole('menuitemcheckbox',{name:new RegExp(`^${label}`)}).click();};
+    await expect(button).toHaveAccessibleName('Command audit: No checks');
+    assert.ok(await button.evaluate(el=>!!el.closest('header')),'mode control belongs in the top header');
+    await expect(button.locator('[class*="shield-off"]')).toHaveCount(1);
+    await expect(page.getByTestId('chat-composer').getByRole('switch')).toHaveCount(0);
+    await expect(page.getByRole('region',{name:'Command approvals',exact:true})).toHaveCount(0);
+    const composer=page.getByRole('textbox',{name:'Message',exact:true});
+    await composer.fill('Keep the draft');
+    await choose('AI review');
+    await expect(page.getByRole('alert')).toContainText('503');
+    await expect(button).toHaveAccessibleName('Command audit: No checks');
+    await expect(button).toBeEnabled();
+    await choose('AI review');
+    await expect(button).toBeDisabled();
+    await expect.poll(()=>typeof finishSave).toBe('function');finishSave();finishSave=undefined;
+    await expect(button).toHaveAccessibleName('Command audit: AI review');
+    await expect(button.locator('[class*="shield-check"]')).toHaveCount(1);
+    await expect(composer).toHaveText('Keep the draft');
+    await page.reload();await expect(button).toHaveAccessibleName('Command audit: AI review');
+    await choose('Always ask');
+    await expect.poll(()=>typeof finishSave).toBe('function');finishSave();finishSave=undefined;
+    await expect(button).toHaveAccessibleName('Command audit: Always ask');
+    await expect(button.locator('[class*="hand"]')).toHaveCount(1);
+    for(const width of [1280,390]) {
+      await page.setViewportSize({width,height:844});
+      await expect(button).toBeInViewport();
+      await expect(composer).toBeInViewport();
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      await page.screenshot({path:`/tmp/kodrik-command-modes-${width}.png`,fullPage:true,animations:'disabled'});
+    }
+    snapshot.command_approvals=[{id:'pending',run_id:'run',call_id:'shell',cmd:'rm file',workdir:'/tmp',reason:'ignored',reason_code:'ask'}];snapshot.revision++;
+    await page.reload();
+    await expect(page.getByText('This session requires permission for every command',{exact:true})).toBeVisible();
+    await choose('No checks');
+    await expect.poll(()=>typeof finishSave).toBe('function');finishSave();finishSave=undefined;
+    await expect(page.getByRole('region',{name:'Command approvals',exact:true})).toHaveCount(0);
+    assert.deepEqual(changes,[{mode:'review'},{mode:'review'},{mode:'ask'},{mode:'trusted'}]);
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.evaluate(()=>localStorage.setItem('kodrik.language','ru'));await page.reload();
+    const russian=page.getByRole('button',{name:'Проверка команд: Без проверок',exact:true});
+    await expect(russian).toBeVisible();
+    await page.unroute('**/command-audit');
+    await page.route('**/command-audit',route=>route.fulfill({status:401,json:{error:'expired'}}));
+    await russian.click();
+    await page.getByRole('menuitemcheckbox',{name:/^Спрашивать всегда/}).click();
+    await expect(page.getByRole('link',{name:'Войти',exact:true})).toBeVisible();
+    await expect(russian).toBeDisabled();
+  } finally {finishSave?.();await browser.close();}
+});
+
+test('profile command audit default affects new conversations and keeps existing modes',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844}});
+    await page.goto(new URL('app/profile',base).href);
+    const section=page.getByRole('region',{name:'Command audit in new conversations',exact:true});
+    const button=section.getByRole('button',{name:/^New conversation mode:/});
+    await expect(button).toHaveAccessibleName('New conversation mode: No checks');
+    await expect(section.getByText('This mode applies only to new conversations and branches. Existing conversations keep their settings.',{exact:true})).toBeVisible();
+    await page.route('**/api/profile/command-audit',route=>route.request().method()==='POST' ? route.fulfill({status:503,json:{error:'unavailable'}}) : route.continue());
+    await button.click();await page.getByRole('menuitemcheckbox',{name:/^Always ask/}).click();
+    await expect(section.getByRole('alert')).toContainText('503');
+    await expect(button).toHaveAccessibleName('New conversation mode: No checks');
+    await page.unroute('**/api/profile/command-audit');
+    await button.click();await page.getByRole('menuitemcheckbox',{name:/^Always ask/}).click();
+    await expect(section.getByRole('status')).toHaveText('New conversation mode saved.');
+    await page.reload();await expect(button).toHaveAccessibleName('New conversation mode: Always ask');
+    assert.equal((await(await request(`sessions/${id}/run`)).json()).command_audit_mode,'trusted');
+    const fresh=await(await request('sessions',{})).json();
+    assert.equal((await(await request(`sessions/${fresh.id}/run`)).json()).command_audit_mode,'ask');
+    await page.goto(new URL(`app/chat/${fresh.id}`,base).href);
+    await expect(page.getByRole('button',{name:'Command audit: Always ask',exact:true})).toBeVisible();
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.evaluate(()=>localStorage.setItem('kodrik.language','ru'));
+    await page.goto(new URL('app/profile',base).href);
+    const russian=page.getByRole('region',{name:'Проверка команд в новых диалогах',exact:true});
+    await expect(russian.getByRole('button',{name:'Режим новых диалогов: Спрашивать всегда',exact:true})).toBeVisible();
+    await russian.getByRole('button',{name:'Режим новых диалогов: Спрашивать всегда',exact:true}).click();
+    await page.getByRole('menuitemcheckbox',{name:/^Без проверок/}).click();
+    await expect(russian.getByRole('status')).toHaveText('Режим новых диалогов сохранён.');
+  } finally {
+    await fetch(new URL('api/profile/command-audit',base),{method:'POST',headers:{Cookie:cookie,Origin:new URL(base).origin,'Content-Type':'application/json'},body:JSON.stringify({mode:'trusted'})});
+    await browser.close();
+  }
+});
+
+test('command approvals show exact arguments and require an explicit allow or reject',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  let finishDecision;
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    const approvals=[
+      {id:'approve-parent',run_id:'parent',call_id:'shell-1',cmd:`printf '%s\\n' '${'exact <command> & '.repeat(80)}'\nprintf done`,workdir:'/tmp/work dir',reason:'This command changes files.'},
+      {id:'approve-child',run_id:'child',call_id:'shell-2',cmd:'rm important.txt',workdir:null,reason:'The child task requests a destructive command.'},
+    ];
+    const snapshot={type:'snapshot',session_id:id,run_id:'parent',revision:1,busy:true,cancel_requested:false,phase:'NeedModel',blocked_reason:null,
+      live:{current:null,interrupted:null},plan:null,queued:[],subagents:[],command_approvals:approvals,command_audit_mode:'review',messages:[]};
+    await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',route=>route.fulfill({json:snapshot}));
+    const decisions=[];
+    await page.route('**/command-approvals/*',async route=>{
+      const approval=new URL(route.request().url()).pathname.split('/').at(-1);
+      assert.equal(route.request().method(),'POST');
+      assert.ok(route.request().url().includes(`/sessions/${id}/command-approvals/`));
+      decisions.push({id:approval,...route.request().postDataJSON()});
+      if(decisions.length===1) {await route.fulfill({status:503,json:{error:'unavailable'}});return;}
+      await new Promise(resolve=>{finishDecision=resolve});
+      snapshot.command_approvals=snapshot.command_approvals.filter(item=>item.id!==approval);snapshot.revision++;
+      await route.fulfill({status:204});
+    });
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const panel=page.getByRole('region',{name:'Command approvals',exact:true});
+    const parent=panel.getByTestId('command-approval-approve-parent');
+    await expect(parent.locator('pre')).toHaveText(approvals[0].cmd);
+    await expect(parent.getByText('/tmp/work dir',{exact:true})).toBeVisible();
+    await expect(parent.getByText(approvals[0].reason,{exact:true})).toBeVisible();
+    assert.equal(await parent.locator('pre').textContent(),approvals[0].cmd);
+    assert.ok(await parent.locator('pre').evaluate(el=>el.scrollWidth>el.clientWidth));
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    const composer=page.getByRole('textbox',{name:'Message',exact:true});
+    await composer.fill('Keep this draft');
+    assert.deepEqual(decisions,[],'ordinary chat text must not grant permission');
+    const allow=parent.getByRole('button',{name:'Allow once',exact:true});
+    await allow.click();
+    await expect(parent.getByRole('alert')).toContainText('503');
+    await expect(allow).toBeEnabled();
+    await allow.click();
+    await expect(allow).toBeDisabled();
+    await expect(parent.getByRole('button',{name:'Reject',exact:true})).toBeDisabled();
+    await expect.poll(()=>typeof finishDecision).toBe('function');finishDecision();finishDecision=undefined;
+    await expect(parent).toHaveCount(0);
+    const child=panel.getByTestId('command-approval-approve-child');
+    await expect(child.getByText('Default working directory',{exact:true})).toBeVisible();
+    await child.getByRole('button',{name:'Reject',exact:true}).click();
+    await expect.poll(()=>typeof finishDecision).toBe('function');finishDecision();finishDecision=undefined;
+    await expect(panel).toHaveCount(0);
+    assert.deepEqual(decisions,[{id:'approve-parent',approve:true},{id:'approve-parent',approve:true},{id:'approve-child',approve:false}]);
+    await expect(composer).toHaveText('Keep this draft');
+    snapshot.command_approvals=[approvals[0]];snapshot.revision++;
+    await page.evaluate(()=>localStorage.setItem('kodrik.language','ru'));await page.reload();
+    await expect(page.getByRole('button',{name:'Разрешить один раз',exact:true})).toBeVisible();
+    await page.unroute('**/command-approvals/*');
+    await page.route('**/command-approvals/*',route=>route.fulfill({status:401,json:{error:'expired'}}));
+    await page.getByRole('button',{name:'Отклонить',exact:true}).click();
+    await expect(page.getByRole('link',{name:'Войти',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Разрешить один раз',exact:true})).toBeDisabled();
+    assert.deepEqual(errors,[]);
+  } finally {finishDecision?.();await browser.close();}
+});
+
 test('child task panel shows live outcomes and handles cancellation without losing the draft',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

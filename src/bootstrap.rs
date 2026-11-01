@@ -310,7 +310,13 @@ pub(crate) async fn build_app_with_access(
     if !isolated {
         context = context.with_skills(&data.join("skills"));
     }
+    let decision_provider = config.provider.get("system_one").unwrap_or(provider);
     let mut agent = Agent::new(llm, tools, context)
+        .with_command_auditor(SystemOne::new(Arc::new(
+            make_llm(decision_provider)
+                .with_max_output_tokens(4096)
+                .without_retries(),
+        )))
         .with_compaction(
             Arc::new(make_llm(provider).for_compaction()),
             config.sessions.compact_threshold_tokens,
@@ -340,7 +346,6 @@ pub(crate) async fn build_app_with_access(
             .with_companion(data)
     ).with_limits(4, 32_000).with_journal(journal.clone()));
 
-    let decision_provider = config.provider.get("system_one").unwrap_or(provider);
     let decision_llm = Arc::new(
         make_llm(decision_provider)
             .with_max_output_tokens(128)
@@ -546,6 +551,9 @@ mod tests {
             let secret = secret.clone();
             async move {
                 seen.lock().unwrap().push(request.clone());
+                if let Some(response) = crate::agent::command_audit::tests::safe_audit_response(&request) {
+                    return axum::Json(response);
+                }
                 let count = request["input"].as_array().unwrap().iter().filter(|item| item["type"] == "function_call_output").count();
                 let calls = [
                     ("memory", json!({"action":"list","target":"user"})),

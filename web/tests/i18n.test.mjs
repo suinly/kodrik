@@ -88,6 +88,7 @@ test('API errors send the selected language and localize known payloads while pr
       [401,'','Your session has expired. Sign in again.',AuthenticationError],
       [404,'','Conversation was deleted or could not be found.',ConversationNotFoundError],
       [409,'Resume the queue in its original interface','Resume the pending queue in its original Telegram or CLI interface.',Error],
+      [409,'Command approval is no longer pending','This command approval is no longer pending. Refresh the conversation.',Error],
       [429,'Inbox queue is full','The message queue is full. Wait for earlier messages to finish.',Error],
       [429,'Too many password attempts','Too many password change attempts. Wait a minute.',Error],
       [413,'','File or message is too large.',Error],

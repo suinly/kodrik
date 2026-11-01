@@ -209,6 +209,79 @@ or use a second guest response.
 
 ## Available tools
 
+### Command approvals
+
+The top of a Web or TUI chat shows an icon and the current command mode. Choose:
+
+- **No checks** (default): execute shell commands without review or confirmation.
+- **AI review**: System One reviews each shell command and asks about risky or
+  uncertain effects.
+- **Always ask**: require permission for every shell command, without calling
+  System One.
+
+In **AI review**, an independent, tool-free model reviews `exec_command` and its
+working directory. Shell calls from the same response
+are reviewed together, then execute in their original order. Each has its own
+verdict and, when required, its own approval. This covers native shell, Bashkit
+and child agents. Other tools, including `apply_patch` and MCP, are not reviewed
+by this gate.
+
+Potential data loss, private-data disclosure, security changes and uncertain
+effects require confirmation. An unavailable reviewer or invalid response also
+requires confirmation. Review the full command, working directory and reason:
+
+- In Web or a private Telegram bot chat, choose **Allow once** or **Reject**.
+- In TUI, pending commands replace the input field with **Allow once**, **Reject**
+  and **No checks for this session**.
+  Read the command above, select with ↑/↓ and confirm with Enter; Esc rejects it.
+  No option is selected initially. Requests appear one at a time, and your draft
+  returns after the last decision. `/approvals SESSION_ID` reviews another personal
+  session in the same local store without switching sessions. `/approvals`,
+  `/approve ID` and `/deny ID` remain available as local commands.
+- Commands too long for Telegram's message limit must be reviewed in Web or TUI;
+  Telegram never offers approval for a truncated command.
+
+Ordinary chat replies such as “yes” do not grant permission. Approval applies only
+to the displayed invocation and its arguments, never a command prefix or a future
+retry. Rejection produces a denied tool result without starting the command.
+Requests survive restart for resumable foreground runs; waiting for a person does
+not count as a crashed attempt. Existing cancellation of abandoned child agents
+still applies, so their requests cannot authorize a new child invocation.
+
+Click the header mode button to change it. TUI also opens the menu with **F2**;
+use ↑/↓ and Enter to select, or Esc to cancel. TUI and Telegram accept
+`/audit trusted|review|ask|status`; TUI also accepts a trailing `SESSION_ID` to
+control another personal session in the same store. `/audit off` and `/audit on`
+remain aliases for No checks and AI review. These commands are handled directly
+by the interface and are not sent to the model.
+
+The mode survives restart and applies to the session's child agents. Changing it
+affects commands that have not started. No checks releases pending requests;
+previously rejected invocations stay rejected. Always ask also blocks commands
+already assessed as safe, until explicitly approved.
+
+In **Profile → Command audit in new conversations**, set the mode for new sessions and
+edited-message branches. Changing this default leaves existing sessions unchanged.
+Mode labels, approval reasons and status messages follow the interface's English
+or Russian language setting.
+
+When confirmation is required, noninteractive `kodrik ask` saves pending requests,
+prints the session ID and exits
+without executing an unapproved command. Review the saved session in Web or TUI;
+the next CLI invocation performs normal recovery of the approved one-shot run.
+Without an approval channel,
+the command remains blocked. Stop/cancel can discard the pending run. Guest and
+internal companion runs, and their children, cannot display approval controls;
+commands requiring confirmation return an explicit blocked tool result. The same
+applies to children of noninteractive one-shot runs. Continue that work in a
+personal interactive session to review and approve a new invocation.
+
+The review model is configured under [providers](configuration.md#providers).
+Review is a risk assessment, not an OS sandbox: it can misclassify commands, and
+approval does not freeze filesystem contents or remote state.
+
+### Tool catalog
+
 The agent receives the current date, time and weekday automatically before each
 model call, using `companion.timezone`. This also applies to resumed sessions and
 steps after tool execution. The clock context is not saved in session snapshots.

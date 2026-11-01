@@ -41,7 +41,10 @@ impl TelegramInterface {
                 })
             });
         let data = query.data.as_deref().unwrap_or_default();
-        if !valid || !(data.starts_with("cs:") || data.starts_with("wa:")) || data.len() > 64 {
+        if !valid
+            || !(data.starts_with("cs:") || data.starts_with("wa:") || data.starts_with("ca:"))
+            || data.len() > 64
+        {
             self.answer_callback(
                 &query.id.0,
                 language.pick(
@@ -133,6 +136,9 @@ mod tests {
             callback(42, 7, "cs:n"),
             callback(42, 42, "invalid"),
             callback(42, 42, &"x".repeat(65)),
+            callback(-42, 42, "ca:a:request"),
+            callback(42, 7, "ca:a:request"),
+            callback(42, 42, &format!("ca:a:{}", "x".repeat(65))),
         ];
         let UpdateKind::CallbackQuery(mut query) = callback(42, 42, "cs:n").kind else {
             panic!()
@@ -168,7 +174,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(captured.lock().unwrap().len(), 6);
+        assert_eq!(captured.lock().unwrap().len(), 9);
         assert!(
             captured
                 .lock()
@@ -177,6 +183,17 @@ mod tests {
                 .all(|body| body["callback_query_id"] == "picker-query"
                     && body["text"].as_str().unwrap().contains("/sessions"))
         );
+        for data in ["ca:a:request", "ca:s:request"] {
+            let Some(Event::Message(message)) = interface
+                .map_update(callback(42, 42, data), "TestBot")
+                .await
+                .unwrap()
+            else {
+                panic!("verified approval callback must reach the gateway");
+            };
+            assert_eq!(message.callback.unwrap().data, data);
+            assert!(message.text.is_empty());
+        }
         server.abort();
     }
 

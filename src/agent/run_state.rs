@@ -87,6 +87,8 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub isolated: Option<bool>,
     #[serde(default)]
+    pub command_audit: bool,
+    #[serde(default)]
     pub cancel_requested: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,6 +135,7 @@ impl Checkpoint {
                 submission_ids: vec![],
                 routing_from: None,
                 isolated: None,
+                command_audit: false,
                 cancel_requested: false,
             },
         }
@@ -199,6 +202,7 @@ impl Checkpoint {
         phase: RunPhase,
         tool: Option<ToolExecution>,
     ) -> anyhow::Result<()> {
+        let previous = self.record.clone();
         anyhow::ensure!(
             !self.storage_uncertain,
             "Previous durable commit is unconfirmed; recovery required"
@@ -212,7 +216,16 @@ impl Checkpoint {
         self.record.phase = phase;
         self.record.attempt_active =
             !self.record.phase.terminal() && !matches!(self.record.phase, RunPhase::Parked { .. });
-        self.persist(session, tool).await
+        let result = self.persist(session, tool).await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.is::<super::command_audit::AuditChanged>())
+        {
+            // The permission guard rejected before committing any execution intent.
+            self.record = previous;
+            self.storage_uncertain = false;
+        }
+        result
     }
     pub(super) async fn persist(
         &mut self,
