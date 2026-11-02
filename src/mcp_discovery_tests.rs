@@ -41,6 +41,10 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
     let llm = Router::new().route("/responses", post(move |Json(body): Json<Value>| {
         let tx = tx.clone();
         async move {
+            if let Some(response) = crate::agent::command_audit::tests::safe_audit_response(&body) {
+                return Json(response).into_response();
+            }
+
             tx.send(body.clone()).unwrap();
             let items = body["input"].as_array().unwrap();
             let start = items.iter().rposition(|item| item["role"] == "user").unwrap();

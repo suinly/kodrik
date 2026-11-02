@@ -598,7 +598,7 @@ onMounted(() => {
               <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
             </template>
             <template v-else-if="viewingConversation && selected">
-              <CommandAuditMenu :mode="conversationView?.commandAuditMode ?? 'trusted'" :disabled="!conversationView || conversationView.commandAuditDisabled"
+              <CommandAuditMenu :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
               <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
             </template>

@@ -78,21 +78,23 @@ impl App {
             (
                 "/approvals",
                 self.language.pick(
-                    "Show pending commands: /approvals [SESSION_ID]",
-                    "Ожидающие команды: /approvals [SESSION_ID]",
+                    "Show pending tool calls: /approvals [SESSION_ID]",
+                    "Ожидающие действия: /approvals [SESSION_ID]",
                 ),
             ),
             (
                 "/approve",
                 self.language.pick(
-                    "Allow one command: /approve ID",
-                    "Разрешить одну команду: /approve ID",
+                    "Allow one tool call: /approve ID",
+                    "Разрешить одно действие: /approve ID",
                 ),
             ),
             (
                 "/deny",
-                self.language
-                    .pick("Reject a command: /deny ID", "Отклонить команду: /deny ID"),
+                self.language.pick(
+                    "Reject a tool call: /deny ID",
+                    "Отклонить действие: /deny ID",
+                ),
             ),
             (
                 "/audit",

@@ -125,7 +125,7 @@ async fn telegram_audit_commands_toggle_only_the_private_active_session_without_
             sent.last()
                 .unwrap()
                 .1
-                .starts_with(&format!("◈ Режим команд диалога: {label}."))
+                .starts_with(&format!("◈ Режим инструментов диалога: {label}."))
         );
         assert!(!sent.last().unwrap().1.contains("Command checks"));
     }
@@ -160,7 +160,7 @@ async fn telegram_audit_commands_use_only_the_senders_store() {
     );
     assert!(owner_store.list().await.unwrap().is_empty());
     assert!(
-        !owner_store
+        owner_store
             .command_audit_enabled("telegram:test:42")
             .await
             .unwrap()

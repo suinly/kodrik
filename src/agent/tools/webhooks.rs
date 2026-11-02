@@ -131,6 +131,10 @@ mod tests {
         let router = Router::new().route("/responses", post(move |Json(body): Json<Value>| {
             let tx = tx.clone();
             async move {
+            if let Some(response) = crate::agent::command_audit::tests::safe_audit_response(&body) {
+                return Json(response).into_response();
+            }
+
                 let result = body["input"].as_array().unwrap().iter().find(|part| part["type"] == "function_call_output");
                 let output = if let Some(result) = result {
                     tx.send((body["tools"].clone(), serde_json::from_str::<Value>(result["output"].as_str().unwrap()).unwrap())).unwrap();

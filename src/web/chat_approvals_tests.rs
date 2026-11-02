@@ -59,7 +59,7 @@ async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_uncha
     let store = SqliteSessionStore::open(data.path().join("owner-sessions")).unwrap();
     assert_eq!(
         snapshot(&fixture, &id).await["command_audit_mode"],
-        "trusted"
+        "review"
     );
     let session = store.load(&SessionId::new(&id)).await.unwrap().unwrap();
     pending(&store, session, &id).await;
@@ -84,7 +84,7 @@ async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_uncha
             .client
             .post(&url)
             .header("Origin", origin)
-            .json(&json!({"mode":"trusted"}));
+            .json(&json!({"mode":"review"}));
         if let Some(cookie) = cookie {
             request = request.header("Cookie", cookie);
         }
@@ -96,7 +96,7 @@ async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_uncha
     );
     for body in [
         json!({"mode":"unknown"}),
-        json!({"mode":"trusted","session_id":other}),
+        json!({"mode":"review","session_id":other}),
         json!({"enabled":false}),
     ] {
         assert_eq!(
@@ -119,7 +119,7 @@ async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_uncha
                 reqwest::Method::POST,
                 "sessions/missing-session/command-audit"
             )
-            .json(&json!({"mode":"trusted"}))
+            .json(&json!({"mode":"review"}))
             .send()
             .await
             .unwrap()
@@ -152,7 +152,7 @@ async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_uncha
         }
         assert_eq!(
             snapshot(&fixture, &other).await["command_audit_mode"],
-            "trusted"
+            "review"
         );
         assert_eq!(
             SqliteSessionStore::open(data.path().join("owner-sessions"))
@@ -230,7 +230,7 @@ async fn profile_command_audit_default_is_authenticated_isolated_and_only_affect
             .json()
             .await
             .unwrap();
-        assert_eq!(value, json!({"mode":"trusted"}));
+        assert_eq!(value, json!({"mode":"review"}));
     }
     for (cookie, mode) in [(&fixture.cookie, "ask"), (&guest_cookie, "review")] {
         assert_eq!(
@@ -249,7 +249,7 @@ async fn profile_command_audit_default_is_authenticated_isolated_and_only_affect
     }
     assert_eq!(
         snapshot(&fixture, &existing).await["command_audit_mode"],
-        "trusted"
+        "review"
     );
     let fresh = fixture.create().await;
     assert_eq!(
@@ -346,7 +346,7 @@ async fn edited_branch_captures_profile_mode_before_its_first_run_save() {
     );
     assert_eq!(
         snapshot(&fixture, &parent).await["command_audit_mode"],
-        "trusted"
+        "review"
     );
     drop(lock);
     // Retry the same edit if the worker retired while its execution lock was held.
@@ -367,7 +367,7 @@ async fn edited_branch_captures_profile_mode_before_its_first_run_save() {
     );
     assert_eq!(
         snapshot(&fixture, &parent).await["command_audit_mode"],
-        "trusted"
+        "review"
     );
 }
 

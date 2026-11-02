@@ -680,7 +680,7 @@ impl SqliteSessionStore {
                 tx.execute("UPDATE compaction_jobs SET status='cancelled',payload=CAST(json_set(payload,'$.status','cancelled') AS BLOB) WHERE run_id=?1 AND status IN ('preparing','ready')",[&run.id])?;
             }
             if run.command_audit && let Some(tool) = &tool
-                && tool.call.name == "exec_command" && tool.result.is_none() {
+                && tool.result.is_none() {
                 crate::agent::command_audit::check_execution(&tx, &run, &tool.call)?;
             }
             save(&tx, &session)?;

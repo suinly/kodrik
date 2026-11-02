@@ -50,7 +50,7 @@ release workflows. Neither check installs Kodrik or starts a service.
 | `src/agent/subagents.rs`, `tools/subagents.rs` | Parent-bound child sessions, durable input, lifecycle controls and tool schemas |
 | `src/agent/context.rs` | Prompt and session context snapshots |
 | `src/agent/session/` | Transactional SQLite sessions, checkpoints and legacy JSON import |
-| `src/agent/system_one.rs`, `command_audit.rs`, `session_router.rs`, `group_reply.rs` | Independent decisions, batched shell audit and durable approvals, session routing and group participation policy |
+| `src/agent/system_one.rs`, `command_audit.rs`, `session_router.rs`, `group_reply.rs` | Independent decisions, batched tool audit and durable approvals, session routing and group participation policy |
 | `src/agent/llm/` | Provider contract and Responses API adapter |
 | `src/agent/tools/` | Tool schemas, execution and registration |
 | `src/agent/memory.rs`, `companion.rs`, `learning.rs` | Explicit memory and automatic learning |
@@ -88,14 +88,14 @@ Implement the `Tool` trait under `src/agent/tools/` and register the tool in
 grant access to proactive research. Keep that tool set explicit.
 
 Use System One for bounded choices with a clear validation and fallback policy;
-session routing, group participation and shell command review are its consumers. A new consumer should define its own
+session routing, group participation and tool review are its consumers. A new consumer should define its own
 state, question, criteria and error handling rather than embedding side effects
 in the decision provider.
 
-Shell review runs before the common tool execution checkpoint, so native shell,
-Bashkit and child agents use the same gate. Batch verdicts require exact ID coverage;
-malformed or failed decisions require confirmation for every command in that batch.
-Approval records are bound to immutable arguments and a live run in SQLite. Human
+Tool review runs before the common tool execution checkpoint, so native tools,
+Bashkit, MCP and child agents use the same gate. Batch verdicts require exact ID coverage;
+malformed or failed decisions require confirmation for every call in that batch.
+Approval records are bound to immutable tool names and arguments and a live run in SQLite. Human
 decision endpoints are session-scoped and are not exposed as model tools.
 Session audit settings live separately from transcript/checkpoint payloads and
 are bound to the session generation. Child agents read the current parent setting.

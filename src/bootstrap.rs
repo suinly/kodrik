@@ -311,12 +311,15 @@ pub(crate) async fn build_app_with_access(
         context = context.with_skills(&data.join("skills"));
     }
     let decision_provider = config.provider.get("system_one").unwrap_or(provider);
-    let mut agent = Agent::new(llm, tools, context)
-        .with_command_auditor(SystemOne::new(Arc::new(
+    let tool_auditor = || {
+        SystemOne::new(Arc::new(
             make_llm(decision_provider)
                 .with_max_output_tokens(4096)
                 .without_retries(),
-        )))
+        ))
+    };
+    let mut agent = Agent::new(llm, tools, context)
+        .with_command_auditor(tool_auditor())
         .with_compaction(
             Arc::new(make_llm(provider).for_compaction()),
             config.sessions.compact_threshold_tokens,
@@ -344,7 +347,7 @@ pub(crate) async fn build_app_with_access(
             .with_soul(&data.join("SOUL.md"))
             .with_memory(&data.join("memories"))
             .with_companion(data)
-    ).with_limits(4, 32_000).with_journal(journal.clone()));
+    ).with_limits(4, 32_000).with_command_auditor(tool_auditor()).with_journal(journal.clone()));
 
     let decision_llm = Arc::new(
         make_llm(decision_provider)

@@ -713,6 +713,7 @@ impl Agent {
                     &messages,
                     checkpoint.as_deref(),
                     self.isolated(),
+                    &tools,
                 )
                 .await?
             } else {
@@ -727,9 +728,7 @@ impl Agent {
                         use super::command_audit::Permission;
                         let replay = self.tools.replay_policy(&call.name);
                         let permission = loop {
-                            let permission = if call.name == "exec_command"
-                                && let Some(auditor) = &self.command_auditor
-                            {
+                            let permission = if let Some(auditor) = &self.command_auditor {
                                 if let Some(cp) = checkpoint.as_deref_mut() {
                                     super::command_audit::wait_for_decision(
                                         auditor,
@@ -737,6 +736,7 @@ impl Agent {
                                         session,
                                         &call,
                                         self.isolated(),
+                                        &tools,
                                     )
                                     .await?
                                 } else {
@@ -806,10 +806,10 @@ impl Agent {
                         });
                         let result = match permission {
                             Permission::Denied => Err(anyhow::anyhow!(
-                                "Shell command was not approved. Do not retry or work around the user's decision."
+                                "Tool call was not approved. Do not retry or work around the user's decision using another tool."
                             )),
                             Permission::Unavailable => Err(anyhow::anyhow!(
-                                "Shell command requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this command."
+                                "Tool call requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this action."
                             )),
                             Permission::Allowed => {
                                 super::delivery::CURRENT_DELIVERY

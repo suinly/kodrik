@@ -73,6 +73,10 @@ async fn mcp_http_owner_can_call_tools_but_isolated_and_proactive_agents_cannot(
     let router = Router::new().route("/responses", post(move |Json(body): Json<Value>| {
         let tx = tx.clone();
         async move {
+            if let Some(response) = crate::agent::command_audit::tests::safe_audit_response(&body) {
+                return Json(response).into_response();
+            }
+
             tx.send(body.clone()).unwrap();
             let results: Vec<_> = body["input"].as_array().unwrap().iter().filter(|item| item["type"] == "function_call_output").collect();
             let failed = results.first().is_some_and(|item| serde_json::from_str::<Value>(item["output"].as_str().unwrap()).unwrap()["error"].is_string());
@@ -219,6 +223,113 @@ X-Tenant = "test-tenant"
     );
     mcp_task.abort();
     llm_task.abort();
+}
+
+#[tokio::test]
+async fn mcp_http_call_waits_for_approval_before_contacting_server() {
+    use crate::agent::{
+        Agent, ContextBuilder,
+        command_audit::{CommandAuditMode, tests::SingleToolCall},
+        message::ToolCall,
+        run_state::Checkpoint,
+        system_one::SystemOne,
+        tools::ToolRegistry,
+    };
+    for approve in [false, true] {
+        let (url, mut requests, server) = mcp_server(false, ["list_issues", "resolve_issue"]).await;
+        let definitions = crate::agent::tools::mcp::connect(&std::collections::HashMap::from([(
+            "rustrak".into(),
+            crate::config::McpServerConfig::Http {
+                url,
+                headers: Default::default(),
+            },
+        )]))
+        .await
+        .unwrap();
+        while requests.try_recv().is_ok() {}
+        let mut tools = ToolRegistry::default();
+        for tool in definitions {
+            tools = tools.register(tool);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        store
+            .set_default_command_audit_mode(CommandAuditMode::Ask)
+            .await
+            .unwrap();
+        let model = Arc::new(SingleToolCall(ToolCall {
+            call_id: "mcp-call".into(),
+            name: "mcp__rustrak__list_issues".into(),
+            arguments: json!({"project":9007199254740993u64}),
+        }));
+        let agent = Agent::new(model.clone(), tools, ContextBuilder::new("test"))
+            .with_command_auditor(SystemOne::new(model));
+        let mut session = Session::new(SessionId::new("mcp-approval"));
+        let mut cp = Checkpoint::new(&store, session.id(), &session);
+        let task = tokio::spawn(async move {
+            agent
+                .run_durable(
+                    &mut session,
+                    UserMessage {
+                        content: "list issues".into(),
+                        files: vec![],
+                        images: vec![],
+                    },
+                    None,
+                    None,
+                    Some(&mut cp),
+                )
+                .await
+        });
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(request) = store
+                    .pending_command_approvals("mcp-approval")
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .next()
+                {
+                    break request;
+                }
+                assert!(!task.is_finished(), "MCP call bypassed approval");
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            requests.try_recv().is_err(),
+            "MCP server contacted before approval"
+        );
+        assert_eq!(request.tool_name, "mcp__rustrak__list_issues");
+        assert_eq!(
+            request.arguments_json.as_deref(),
+            Some("{\n  \"project\": 9007199254740993\n}")
+        );
+        store
+            .decide_command_approval("mcp-approval", &request.id, approve)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if approve {
+            let (_, request) = requests.try_recv().unwrap();
+            assert_eq!(request["method"], "tools/call");
+            assert_eq!(
+                request["params"]["arguments"],
+                json!({"project":9007199254740993u64})
+            );
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "unapproved or duplicate MCP call"
+        );
+        server.abort();
+    }
 }
 
 #[tokio::test]

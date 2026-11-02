@@ -98,8 +98,8 @@ onMounted(()=>{void load();void loadAuditMode()})
         </div>
       </form>
       <USeparator />
-      <section :aria-label="t('Проверка команд в новых диалогах')" class="space-y-3">
-        <h2 class="text-lg font-semibold text-highlighted">{{ t('Проверка команд в новых диалогах') }}</h2>
+      <section :aria-label="t('Проверка инструментов в новых диалогах')" class="space-y-3">
+        <h2 class="text-lg font-semibold text-highlighted">{{ t('Проверка инструментов в новых диалогах') }}</h2>
         <p class="text-sm text-muted">{{ t('Этот режим применяется только к новым диалогам и веткам. Настройки существующих диалогов не изменятся.') }}</p>
         <CommandAuditMenu v-if="auditMode" :mode="auditMode" profile :disabled="auditSaving" :loading="auditSaving" @select="saveAuditMode" />
         <p v-if="auditSaved" role="status" class="text-sm text-success">{{ t('Режим новых диалогов сохранён.') }}</p>

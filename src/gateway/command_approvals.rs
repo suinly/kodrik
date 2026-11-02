@@ -16,31 +16,25 @@ fn approval_view(
     // Literal menus and debug quoting keep command control characters visible.
     let text = format!(
         "{}\n{}: {:?}\n{}: {:?}\n{}: {}",
-        language.pick(
-            "Command approval required",
-            "Требуется подтверждение команды"
-        ),
-        language.pick("Command", "Команда"),
-        approval.cmd,
-        language.pick("Workdir", "Рабочий каталог"),
-        approval
-            .workdir
-            .as_deref()
-            .unwrap_or(language.pick("(default)", "(по умолчанию)")),
+        language.pick("Tool approval required", "Требуется подтверждение действия"),
+        language.pick("Tool", "Инструмент"),
+        approval.tool_name,
+        language.pick("Arguments", "Аргументы"),
+        approval.arguments_text(),
         language.pick("Reason", "Причина"),
         approval.reason_text(language),
     );
     // Never offer approval for a command that Telegram cannot display completely.
     if text.encode_utf16().count() > 4000 || approval.id.len() > 59 {
         let text = format!("{}\n{}: {session}\n/approvals {session}", language.pick(
-            "A command needs approval, but is too long to review here. Open this session in Web or TUI using the same local store and review the complete command before allowing it. TUI command:",
-            "Команда требует подтверждения, но слишком длинная для просмотра здесь. Откройте диалог в Web или TUI с тем же локальным хранилищем и просмотрите команду целиком. Команда TUI:",
+            "A tool call needs approval, but is too long to review here. Open this session in Web or TUI using the same local store and review the complete tool call before allowing it. TUI command:",
+            "Вызов инструмента требует подтверждения, но слишком длинная для просмотра здесь. Откройте диалог в Web или TUI с тем же локальным хранилищем и просмотрите вызов целиком. Команда TUI:",
         ), language.pick("Session", "Сеанс"));
         return (
             if text.encode_utf16().count() <= 4000 {
                 text
             } else {
-                language.pick("A command needs approval but cannot be reviewed here. Open this session in Web.", "Команда требует подтверждения, но её нельзя просмотреть здесь. Откройте диалог в Web.").into()
+                language.pick("A tool call needs approval but cannot be reviewed here. Open this session in Web.", "Вызов инструмента требует подтверждения, но её нельзя просмотреть здесь. Откройте диалог в Web.").into()
             },
             Vec::new(),
         );
@@ -123,12 +117,12 @@ impl GatewayRunner {
         let mode = store.command_audit_mode(session.as_str()).await?;
         Ok(format!(
             "◈ {}: {}.{}\n/audit trusted — {}\n/audit review — {}\n/audit ask — {}",
-            language.pick("Session command mode", "Режим команд диалога"),
+            language.pick("Session command mode", "Режим инструментов диалога"),
             mode.label(language),
             if mode == CommandAuditMode::Trusted {
                 language.pick(
-                    " Pending commands may proceed.",
-                    " Ожидающие команды могут выполняться.",
+                    " Pending tool calls may proceed.",
+                    " Ожидающие действия могут выполняться.",
                 )
             } else {
                 ""
@@ -223,7 +217,7 @@ impl GatewayRunner {
         let result = self.decide_command_approval(message).await;
         let notice = match &result {
             Ok(notice) => *notice,
-            Err(_) => language.pick("Approval unavailable or already decided. Review pending commands in Web or TUI.", "Подтверждение недоступно или уже обработано. Проверьте ожидающие команды в Web или TUI."),
+            Err(_) => language.pick("Approval unavailable or already decided. Review pending tool calls in Web or TUI.", "Подтверждение недоступно или уже обработано. Проверьте ожидающие действия в Web или TUI."),
         };
         // A failed acknowledgement must never undo or repeat a durable decision.
         interface.answer_callback(&callback.id, notice).await?;
@@ -286,16 +280,16 @@ impl GatewayRunner {
             store
                 .disable_command_audit_for_approval(session.as_str(), id)
                 .await?;
-            return Ok(language.pick("No checks for this session. Pending commands may proceed. /audit review enables AI review; /audit ask always asks.", "Без проверок для этого диалога. Ожидающие команды могут выполняться. /audit review включает проверку ИИ; /audit ask спрашивает всегда."));
+            return Ok(language.pick("No checks for this session. Pending tool calls may proceed. /audit review enables AI review; /audit ask always asks.", "Без проверок для этого диалога. Ожидающие действия могут выполняться. /audit review включает проверку ИИ; /audit ask спрашивает всегда."));
         }
         let approve = *action == "a";
         store
             .decide_command_approval(session.as_str(), id, approve)
             .await?;
         Ok(if approve {
-            language.pick("Command allowed once.", "Команда разрешена один раз.")
+            language.pick("Tool call allowed once.", "Действие разрешено один раз.")
         } else {
-            language.pick("Command rejected.", "Команда отклонена.")
+            language.pick("Tool call rejected.", "Действие отклонено.")
         })
     }
 }
@@ -310,13 +304,15 @@ mod tests {
             id: "request".into(),
             run_id: "run".into(),
             call_id: "call".into(),
+            tool_name: "exec_command".into(),
+            arguments_json: None,
             cmd: "rm -rf /tmp/test\necho `done`".into(),
             workdir: Some("/tmp/a b".into()),
             reason: "Destructive action".into(),
             reason_code: "destructive".into(),
         };
         let (text, buttons) = approval_view(&approval, "session", Language::En);
-        assert!(text.contains("rm -rf /tmp/test\\necho `done`"));
+        assert!(text.contains("rm -rf /tmp/test\\\\necho `done`"));
         assert!(text.contains("/tmp/a b"));
         assert!(text.contains("May delete data"));
         assert_eq!(buttons[0][0].data, "ca:a:request");

@@ -105,7 +105,7 @@ impl LlmProvider for Auditor {
                 content: if self.malformed {
                     "bad response".into()
                 } else {
-                    r#"{"choices":[{"id":"first","choice":"safe"},{"id":"risk","choice":"destructive"},{"id":"last","choice":"safe"}]}"#.into()
+                    r#"{"choices":[{"id":"first","choice":"safe"},{"id":"risk","choice":"destructive"},{"id":"last","choice":"safe"},{"id":"other-tool","choice":"safe"}]}"#.into()
                 },
             })],
             None,
@@ -256,7 +256,7 @@ async fn malformed_batch_requires_separate_permission_for_every_command() {
                     .pending_command_approvals("audit-failure")
                     .await
                     .unwrap();
-                if pending.len() == 3 {
+                if pending.len() == 4 {
                     break pending;
                 }
                 tokio::task::yield_now().await;
@@ -315,7 +315,7 @@ async fn command_review_errors_and_timeouts_require_confirmation() {
             arguments: json!({"cmd":"pwd"}),
         }];
         let started = tokio::time::Instant::now();
-        let result = review(&service, &session, &calls, false).await;
+        let result = review(&service, &session, &calls, false, &[]).await;
         assert_eq!(result[0].1, "unavailable");
         if timeout {
             assert_eq!(started.elapsed(), std::time::Duration::from_secs(15));
@@ -439,7 +439,7 @@ async fn noninteractive_run_saves_pending_without_running_the_command() {
             .await
             .unwrap()
             .len(),
-        3
+        4
     );
     for marker in ["first", "risk", "last"] {
         assert!(!dir.path().join(marker).exists());
@@ -472,6 +472,10 @@ async fn pending_run(store: &SqliteSessionStore) -> (Checkpoint, Session, ToolCa
 async fn trusted_default_executes_without_auditor_or_approvals() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    store
+        .set_default_command_audit_mode(CommandAuditMode::Trusted)
+        .await
+        .unwrap();
     assert_eq!(
         store.default_command_audit_mode().await.unwrap(),
         CommandAuditMode::Trusted
@@ -520,6 +524,462 @@ async fn trusted_default_executes_without_auditor_or_approvals() {
     );
 }
 
+pub(crate) struct SingleToolCall(pub(crate) ToolCall);
+
+#[async_trait::async_trait]
+impl LlmProvider for SingleToolCall {
+    async fn generate(
+        &self,
+        context: &LlmContext<'_>,
+        _: &[&dyn Tool],
+        _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        Ok((
+            vec![if context
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::ToolResult(_)))
+            {
+                Message::Assistant(AssistantMessage {
+                    content: "done".into(),
+                })
+            } else {
+                Message::ToolCall(self.0.clone())
+            }],
+            None,
+        ))
+    }
+}
+
+struct McpDeleteFile(std::path::PathBuf);
+
+#[async_trait::async_trait]
+impl Tool for McpDeleteFile {
+    fn name(&self) -> String {
+        "mcp__files__delete".into()
+    }
+    fn description(&self) -> String {
+        "Delete a file permanently".into()
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"}}})
+    }
+    async fn execute(&self, _: Value) -> anyhow::Result<crate::agent::tools::ToolOutput> {
+        std::fs::remove_file(&self.0)?;
+        Ok(json!({"deleted":true}).into())
+    }
+}
+
+struct SafeToolReviewer;
+
+#[async_trait::async_trait]
+impl LlmProvider for SafeToolReviewer {
+    async fn generate(
+        &self,
+        context: &LlmContext<'_>,
+        tools: &[&dyn Tool],
+        _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        assert!(tools.is_empty());
+        let Message::User(input) = &context.messages[0] else {
+            panic!()
+        };
+        let input: Value = serde_json::from_str(&input.content)?;
+        assert_eq!(input["state"]["tools"][0]["name"], "apply_patch");
+        assert!(
+            input["state"]["tools"][0]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Edit files")
+        );
+        assert_eq!(input["state"]["tools"][0]["parameters"]["type"], "object");
+        Ok((
+            vec![Message::Assistant(AssistantMessage {
+                content: r#"{"choices":[{"id":"create","choice":"safe"}]}"#.into(),
+            })],
+            None,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn default_review_allows_safe_tool_calls_and_records_the_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    let call = ToolCall {
+        call_id: "create".into(),
+        name: "apply_patch".into(),
+        arguments: json!({"patch":"*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch","workdir":dir.path()}),
+    };
+    let agent = Agent::new(
+        Arc::new(SingleToolCall(call.clone())),
+        ToolRegistry::default().register(Arc::new(crate::agent::tools::ApplyPatchTool)),
+        ContextBuilder::new("test"),
+    )
+    .with_command_auditor(SystemOne::new(Arc::new(SafeToolReviewer)));
+    let mut session = Session::new(SessionId::new("safe-tool"));
+    let mut cp = Checkpoint::new(&store, session.id(), &session);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.run_durable(
+            &mut session,
+            UserMessage {
+                content: "create note".into(),
+                files: vec![],
+                images: vec![],
+            },
+            None,
+            None,
+            Some(&mut cp),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        store.command_decision(&cp.record.id, &call).await.unwrap(),
+        Some(Decision::Safe)
+    );
+    assert!(
+        store
+            .pending_command_approvals("safe-tool")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recovered_safe_tool_can_be_approved_after_switching_to_ask() {
+    use crate::agent::{
+        run_state::ToolExecution,
+        tools::{ReplayPolicy, ViewImageTool},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("image.png");
+    image::RgbImage::new(1, 1).save(&path).unwrap();
+    let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    let call = ToolCall {
+        call_id: "image".into(),
+        name: "view_image".into(),
+        arguments: json!({"path":path}),
+    };
+    let mut session = Session::new(SessionId::new("replay-approval"));
+    session.push(Message::ToolCall(call.clone()));
+    let mut cp = Checkpoint::new(&store, session.id(), &session);
+    cp.record.command_audit = true;
+    cp.record.isolated = Some(false);
+    cp.record.pending_calls = vec![call.clone()];
+    cp.save(
+        &session,
+        RunPhase::NeedTool {
+            call_id: call.call_id.clone(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    store
+        .record_command_audits(&cp.record, &[(call.clone(), "safe".into())])
+        .await
+        .unwrap();
+    cp.save(
+        &session,
+        RunPhase::ExecutingTool {
+            call_id: call.call_id.clone(),
+            replay: ReplayPolicy::Safe,
+        },
+        Some(ToolExecution {
+            call: call.clone(),
+            replay: ReplayPolicy::Safe,
+            result: None,
+        }),
+    )
+    .await
+    .unwrap();
+    store
+        .set_command_audit_mode("replay-approval", CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .pending_command_approvals("replay-approval")
+            .await
+            .unwrap()
+            .is_empty(),
+        "active execution must not be re-approved"
+    );
+    let agent = Agent::new(
+        Arc::new(SingleToolCall(call)),
+        ToolRegistry::default().register(Arc::new(ViewImageTool)),
+        ContextBuilder::new("test"),
+    )
+    .with_command_auditor(SystemOne::new(Arc::new(Unavailable(false))));
+    let task = tokio::spawn(async move {
+        agent.resume_durable(&mut session, &mut cp).await.unwrap();
+        session
+    });
+    let request = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Some(request) = store
+                .pending_command_approvals("replay-approval")
+                .await
+                .unwrap()
+                .into_iter()
+                .next()
+            {
+                break request;
+            }
+            assert!(
+                !task.is_finished(),
+                "recovered tool bypassed current Ask mode"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recovered invocation has no approval controls");
+    store
+        .decide_command_approval("replay-approval", &request.id, true)
+        .await
+        .unwrap();
+    let session = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(session.messages().iter().any(|m| matches!(m,Message::ToolResult(result) if result.call_id == "image" && !result.content.images.is_empty())));
+    assert!(
+        store
+            .pending_command_approvals("replay-approval")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .decide_command_approval("replay-approval", &request.id, true)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn tool_execution_checkpoint_rejects_unapproved_calls_after_mode_change() {
+    use crate::agent::{run_state::ToolExecution, tools::ReplayPolicy};
+    for name in ["apply_patch", "mcp__files__delete"] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        let call = ToolCall {
+            call_id: "delete".into(),
+            name: name.into(),
+            arguments: json!({"path":"important.txt"}),
+        };
+        let mut session = Session::new(SessionId::new("guard"));
+        session.push(Message::ToolCall(call.clone()));
+        let mut cp = Checkpoint::new(&store, session.id(), &session);
+        cp.record.command_audit = true;
+        cp.record.pending_calls = vec![call.clone()];
+        cp.save(
+            &session,
+            RunPhase::NeedTool {
+                call_id: call.call_id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        store
+            .record_command_audits(&cp.record, &[(call.clone(), "safe".into())])
+            .await
+            .unwrap();
+        store
+            .set_command_audit_mode("guard", CommandAuditMode::Ask)
+            .await
+            .unwrap();
+        let result = cp
+            .save(
+                &session,
+                RunPhase::ExecutingTool {
+                    call_id: call.call_id.clone(),
+                    replay: ReplayPolicy::Never,
+                },
+                Some(ToolExecution {
+                    call: call.clone(),
+                    replay: ReplayPolicy::Never,
+                    result: None,
+                }),
+            )
+            .await;
+        assert!(result.unwrap_err().is::<AuditChanged>());
+        let request = store
+            .pending_command_approvals("guard")
+            .await
+            .unwrap()
+            .remove(0);
+        store
+            .decide_command_approval("guard", &request.id, true)
+            .await
+            .unwrap();
+        cp.save(
+            &session,
+            RunPhase::ExecutingTool {
+                call_id: call.call_id.clone(),
+                replay: ReplayPolicy::Never,
+            },
+            Some(ToolExecution {
+                call,
+                replay: ReplayPolicy::Never,
+                result: None,
+            }),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn tool_approvals_block_patch_and_mcp_effects_until_exact_permission() {
+    use crate::agent::tools::ApplyPatchTool;
+    for mcp in [false, true] {
+        for (mode, approve) in [
+            (CommandAuditMode::Review, false),
+            (CommandAuditMode::Review, true),
+            (CommandAuditMode::Ask, false),
+            (CommandAuditMode::Ask, true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("important.txt");
+            std::fs::write(&file, "keep").unwrap();
+            let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+            if mode == CommandAuditMode::Ask {
+                store.set_default_command_audit_mode(mode).await.unwrap();
+            }
+            let call = ToolCall {
+                call_id: "delete".into(),
+                name: if mcp {
+                    "mcp__files__delete"
+                } else {
+                    "apply_patch"
+                }
+                .into(),
+                arguments: if mcp {
+                    json!({"path":file})
+                } else {
+                    json!({"patch":"*** Begin Patch\n*** Delete File: important.txt\n*** End Patch", "workdir":dir.path()})
+                },
+            };
+            let agent = Agent::new(
+                Arc::new(SingleToolCall(call.clone())),
+                ToolRegistry::default()
+                    .register(Arc::new(ApplyPatchTool))
+                    .register(Arc::new(McpDeleteFile(file.clone()))),
+                ContextBuilder::new("test"),
+            )
+            .with_command_auditor(SystemOne::new(Arc::new(Unavailable(false))));
+            let mut session = Session::new(SessionId::new("tool-approval"));
+            let mut cp = Checkpoint::new(&store, session.id(), &session);
+            let task = tokio::spawn(async move {
+                agent
+                    .run_durable(
+                        &mut session,
+                        UserMessage {
+                            content: "work".into(),
+                            files: vec![],
+                            images: vec![],
+                        },
+                        None,
+                        None,
+                        Some(&mut cp),
+                    )
+                    .await
+            });
+            let request = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if let Some(request) = store
+                        .pending_command_approvals("tool-approval")
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .next()
+                    {
+                        break request;
+                    }
+                    assert!(file.exists(), "tool ran without permission");
+                    assert!(!task.is_finished(), "tool bypassed approval");
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(file.exists());
+            assert_eq!(request.tool_name, call.name);
+            assert!(
+                request.cmd.contains(&call.name),
+                "older clients must show the tool identity"
+            );
+            assert!(
+                request.cmd.contains("important.txt"),
+                "older clients must show the full invocation"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(request.arguments_json.as_deref().unwrap()).unwrap(),
+                call.arguments
+            );
+            assert!(
+                store
+                    .decide_command_approval("foreign", &request.id, true)
+                    .await
+                    .is_err()
+            );
+            let reopened = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+            assert_eq!(
+                reopened
+                    .pending_command_approvals("tool-approval")
+                    .await
+                    .unwrap()[0]
+                    .id,
+                request.id
+            );
+            reopened
+                .decide_command_approval("tool-approval", &request.id, approve)
+                .await
+                .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(file.exists(), !approve);
+            let mut changed = call.clone();
+            changed.name = "exec_command".into();
+            assert!(
+                store
+                    .command_decision(&request.run_id, &changed)
+                    .await
+                    .is_err()
+            );
+            changed = call;
+            changed.arguments["extra"] = json!(true);
+            assert!(
+                store
+                    .command_decision(&request.run_id, &changed)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                store
+                    .decide_command_approval("tool-approval", &request.id, true)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn profile_default_is_captured_per_generation_and_survives_reopen() {
     use crate::agent::session::SessionStore;
@@ -534,7 +994,7 @@ async fn profile_default_is_captured_per_generation_and_survives_reopen() {
     store.save(&original).await.unwrap();
     assert_eq!(
         store.command_audit_mode("original").await.unwrap(),
-        CommandAuditMode::Trusted
+        CommandAuditMode::Review
     );
     let new = store
         .new_session(&SessionId::new("cli:main"))
@@ -645,7 +1105,7 @@ async fn ask_to_review_rechecks_unreviewed_commands_without_losing_human_decisio
         });
         let auditor = SystemOne::new(provider.clone());
         let messages = [Message::ToolCall(call.clone())];
-        prepare(&auditor, &session, &messages, Some(&cp), false)
+        prepare(&auditor, &session, &messages, Some(&cp), false, &[])
             .await
             .unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
@@ -663,7 +1123,7 @@ async fn ask_to_review_rechecks_unreviewed_commands_without_losing_human_decisio
             .set_command_audit_mode("audit-session", CommandAuditMode::Review)
             .await
             .unwrap();
-        prepare(&auditor, &session, &messages, Some(&cp), false)
+        prepare(&auditor, &session, &messages, Some(&cp), false, &[])
             .await
             .unwrap();
         assert_eq!(
@@ -711,7 +1171,16 @@ fn approval_reasons_support_both_languages_and_legacy_records() {
         let mut approval: CommandApproval = serde_json::from_value(json!({
             "id":"id", "run_id":"run", "call_id":"call", "cmd":"ls", "workdir":null, "reason":reason(code).unwrap()
         })).unwrap();
-        assert_eq!(approval.reason_text(Language::En), reason(code).unwrap());
+        assert_eq!(
+            approval.reason_text(Language::En),
+            match code {
+                "safe" => "Tool call assessed as safe",
+                "uncertain" => "Tool effects could not be established safely",
+                "unavailable" => "Independent tool review was unavailable",
+                "ask" => "This session requires permission for every tool call",
+                _ => reason(code).unwrap(),
+            }
+        );
         assert_ne!(
             approval.reason_text(Language::Ru),
             approval.reason_text(Language::En)
@@ -723,7 +1192,7 @@ fn approval_reasons_support_both_languages_and_legacy_records() {
 }
 
 #[tokio::test]
-async fn schema_upgrade_preserves_existing_modes_and_defaults_new_sessions_to_trusted() {
+async fn schema_upgrade_preserves_existing_modes_and_defaults_new_sessions_to_review() {
     use crate::agent::session::SessionStore;
     for version in [8, 9, 10] {
         let dir = tempfile::tempdir().unwrap();
@@ -757,7 +1226,7 @@ async fn schema_upgrade_preserves_existing_modes_and_defaults_new_sessions_to_tr
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
         assert_eq!(
             store.default_command_audit_mode().await.unwrap(),
-            CommandAuditMode::Trusted
+            CommandAuditMode::Review
         );
         assert_eq!(
             store.command_audit_mode("first").await.unwrap(),
@@ -944,7 +1413,7 @@ async fn disabling_command_audit_releases_pending_but_preserves_denial() {
                 .pending_command_approvals("audit-toggle")
                 .await
                 .unwrap();
-            if pending.len() == 3 {
+            if pending.len() == 4 {
                 break pending;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -995,13 +1464,13 @@ async fn disabled_session_skips_auditor_and_reenabling_checks_unreviewed_calls()
         .unwrap();
     let messages = [Message::ToolCall(call.clone())];
     assert!(
-        prepare(&auditor, &session, &messages, Some(&cp), false)
+        prepare(&auditor, &session, &messages, Some(&cp), false, &[])
             .await
             .unwrap()
             .is_empty()
     );
     assert!(matches!(
-        wait_for_decision(&auditor, &mut cp, &session, &call, false)
+        wait_for_decision(&auditor, &mut cp, &session, &call, false, &[])
             .await
             .unwrap(),
         Permission::Allowed
@@ -1011,10 +1480,9 @@ async fn disabled_session_skips_auditor_and_reenabling_checks_unreviewed_calls()
         .set_command_audit_enabled("audit-session", true)
         .await
         .unwrap();
-    let task =
-        tokio::spawn(
-            async move { wait_for_decision(&auditor, &mut cp, &session, &call, false).await },
-        );
+    let task = tokio::spawn(async move {
+        wait_for_decision(&auditor, &mut cp, &session, &call, false, &[]).await
+    });
     let request = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             if let Some(request) = store
@@ -1142,7 +1610,7 @@ async fn execution_intent_rechecks_permission_and_rolls_back_when_it_changed() {
             .await
             .unwrap();
         assert!(matches!(
-            wait_for_decision(&auditor, &mut cp, &session, &call, false)
+            wait_for_decision(&auditor, &mut cp, &session, &call, false, &[])
                 .await
                 .unwrap(),
             Permission::Allowed
@@ -1211,6 +1679,11 @@ async fn pending_decisions_survive_reopen_and_bind_session_call_and_arguments() 
         .record_command_audits(&cp.record, &[(call.clone(), "destructive".into())])
         .await
         .unwrap();
+    // Exercise a persisted shell approval from before generic tool approvals.
+    store.with_connection(|db| {
+        db.execute("UPDATE command_audits SET payload=CAST(json_remove(CAST(payload AS TEXT),'$.approval.tool_name','$.approval.arguments_json') AS BLOB)",[])?;
+        Ok(())
+    }).await.unwrap();
     let pending = store
         .pending_command_approvals("audit-session")
         .await
@@ -1469,7 +1942,7 @@ async fn real_children_use_the_parents_approval_channel() {
                         .pending_command_approvals(parent.session.id().as_str())
                         .await
                         .unwrap();
-                    if pending.len() == 3 {
+                    if pending.len() == 4 {
                         break pending;
                     }
                     tokio::task::yield_now().await;

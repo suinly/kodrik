@@ -248,7 +248,7 @@ function recoverInputFocus(event:KeyboardEvent) {
   // Focus synchronously so the browser inserts the first character at the saved selection.
   prompt.value?.editor?.view.focus()
 }
-const commandAuditMode=computed(()=>snapshot.value?.command_audit_mode ?? 'trusted')
+const commandAuditMode=computed(()=>snapshot.value?.command_audit_mode ?? 'review')
 const commandAuditDisabled=computed(()=>!snapshot.value || editorLocked.value || savingCommandAudit.value || decidingCommands.value.size > 0)
 defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {

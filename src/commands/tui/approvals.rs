@@ -112,20 +112,15 @@ fn show(app: &mut App, session: &SessionId, approval: &CommandApproval) {
         role: AppMessageRole::Approval,
         content: format!(
             "{}\n{}: {}\nID: {}\n{}: {:?}\n{}: {:?}\n{}: {}",
-            app.language.pick(
-                "Command approval required",
-                "Требуется подтверждение команды"
-            ),
+            app.language
+                .pick("Tool approval required", "Требуется подтверждение действия"),
             app.language.pick("Session", "Сеанс"),
             session.as_str(),
             approval.id,
-            app.language.pick("Command", "Команда"),
-            approval.cmd,
-            app.language.pick("Workdir", "Рабочий каталог"),
-            approval
-                .workdir
-                .as_deref()
-                .unwrap_or(app.language.pick("(default)", "(по умолчанию)")),
+            app.language.pick("Tool", "Инструмент"),
+            approval.tool_name,
+            app.language.pick("Arguments", "Аргументы"),
+            approval.arguments_text(),
             app.language.pick("Reason", "Причина"),
             approval.reason_text(app.language),
         ),
@@ -255,7 +250,7 @@ pub(super) async fn handle_command(
     if let Err(error) = result {
         log::warn!("Command control failed: {error:#}");
         app.push_kodrik_message(if error.is::<crate::agent::command_audit::CommandApprovalUnavailable>() {
-            app.language.pick("This command is no longer pending. Refresh with /approvals.", "Эта команда больше не ожидает решения. Обновите список через /approvals.")
+            app.language.pick("This tool call is no longer pending. Refresh with /approvals.", "Это действие больше не ожидает решения. Обновите список через /approvals.")
         } else {
             app.language.pick("Could not apply the command control. Check the session ID and use /audit trusted|review|ask|status [SESSION_ID] or /approvals.", "Не удалось применить управление командой. Проверьте ID сеанса и используйте /audit trusted|review|ask|status [SESSION_ID] или /approvals.")
         }.into());
@@ -306,8 +301,8 @@ async fn decide(
             app.push_kodrik_message(
                 app.language
                     .pick(
-                        "No pending command approvals.",
-                        "Нет команд, ожидающих подтверждения.",
+                        "No pending tool approvals.",
+                        "Нет действий, ожидающих подтверждения.",
                     )
                     .into(),
             );
@@ -325,7 +320,7 @@ async fn decide(
     };
     let session = app.shown_approvals.get(*id).context(app.language.pick(
         "Review the command with /approvals first.",
-        "Сначала просмотрите команду через /approvals.",
+        "Сначала просмотрите действие через /approvals.",
     ))?;
     let store = runner
         .sqlite_store()
@@ -338,9 +333,10 @@ async fn decide(
         "{}: {id}",
         if *command == "/approve" {
             app.language
-                .pick("Command allowed once", "Команда разрешена один раз")
+                .pick("Tool call allowed once", "Действие разрешено один раз")
         } else {
-            app.language.pick("Command rejected", "Команда отклонена")
+            app.language
+                .pick("Tool call rejected", "Действие отклонено")
         }
     ));
     refresh(app, runner, conversation).await?;
@@ -409,12 +405,12 @@ async fn audit_command(
         "{}: {}. {}: {}.{}\n/audit trusted|review|ask {}",
         app.language.pick("Session", "Сеанс"),
         session.as_str(),
-        app.language.pick("Command mode", "Режим команд"),
+        app.language.pick("Tool mode", "Режим инструментов"),
         mode.label(app.language),
         if mode == CommandAuditMode::Trusted {
             app.language.pick(
-                " Pending commands may proceed.",
-                " Ожидающие команды могут выполняться.",
+                " Pending tool calls may proceed.",
+                " Ожидающие действия могут выполняться.",
             )
         } else {
             ""
@@ -459,6 +455,8 @@ mod tests {
                 id: "request".into(),
                 run_id: "run".into(),
                 call_id: "call".into(),
+                tool_name: "exec_command".into(),
+                arguments_json: None,
                 cmd: "rm important.txt".into(),
                 workdir: Some("/workspace".into()),
                 reason: "English fallback must not appear".into(),
@@ -567,6 +565,8 @@ mod tests {
                 id: "request".into(),
                 run_id: "run".into(),
                 call_id: "call".into(),
+                tool_name: "exec_command".into(),
+                arguments_json: None,
                 cmd: "rm file".into(),
                 workdir: Some("/workspace".into()),
                 reason: "Destructive".into(),
@@ -601,6 +601,8 @@ mod tests {
                 id: "request".into(),
                 run_id: "run".into(),
                 call_id: "call".into(),
+                tool_name: "exec_command".into(),
+                arguments_json: None,
                 cmd: "rm file".into(),
                 workdir: Some("/workspace".into()),
                 reason: "Destructive".into(),
@@ -655,7 +657,7 @@ mod tests {
         app.insert_input("draft message");
         app.input_cursor = 5;
         refresh(&mut app, &runner, &conversation).await.unwrap();
-        assert_eq!(app.audit_mode, CommandAuditMode::Trusted);
+        assert_eq!(app.audit_mode, CommandAuditMode::Review);
         decide(&mut app, &runner, &conversation, "/audit off")
             .await
             .unwrap();
@@ -1141,7 +1143,9 @@ mod tests {
         app.language = crate::i18n::Language::En;
         let displayed = app.messages.last().unwrap();
         assert!(
-            displayed.content.contains(&format!("{command:?}")),
+            displayed.content.contains(
+                format!("{:?}", serde_json::to_string(&command).unwrap()).trim_matches('"')
+            ),
             "even long commands must be shown completely"
         );
         assert!(displayed.content.contains("/workspace/a b"));
@@ -1165,11 +1169,9 @@ mod tests {
         assert!(super::super::refresh_history(&mut app, &session));
         assert!(refresh(&mut app, &runner, &session_id).await.unwrap());
         assert!(
-            app.messages
-                .last()
-                .unwrap()
-                .content
-                .contains(&format!("{command:?}"))
+            app.messages.last().unwrap().content.contains(
+                format!("{:?}", serde_json::to_string(&command).unwrap()).trim_matches('"')
+            )
         );
         assert!(!handle_command(&mut app, &runner, &session_id, "yes, approve that").await);
         assert!(
