@@ -13,23 +13,26 @@ use crate::agent::command_audit::CommandAuditMode;
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const USER_TEXT_COLOR: Color = Color::Reset;
 pub const VIEWPORT_HEIGHT: u16 = 7;
-const LOGO: [&str; 6] = [
-    "██                        ██            ██  ██        ",
-    "██    ██  ████████  ████████  ████████      ██    ██  ",
-    "██  ██    ██    ██  ██    ██  ██    ██  ██  ██  ██    ",
-    "████      ██    ██  ██    ██  ██        ██  ████      ",
-    "██  ██    ██    ██  ██    ██  ██        ██  ██  ██    ",
-    "██    ██  ████████  ████████  ██        ██  ██    ██  ",
+const LOGO: [&str; 3] = [
+    "█  ▄ ▄▄▄▄ ▄▄▄█ ▄▄▄▄ ▀ █  ▄",
+    "█▄▀  █  █ █  █ █  ▀ █ █▄▀",
+    "█ ▀▄ █▄▄█ █▄▄█ █    █ █ ▀▄",
 ];
 // Pastel steps derived from Catppuccin Mocha Blue (#89b4fa).
-const LOGO_COLORS: [Color; 6] = [
+const LOGO_COLORS: [Color; 3] = [
     Color::Rgb(194, 209, 235),
-    Color::Rgb(171, 192, 227),
-    Color::Rgb(148, 175, 220),
     Color::Rgb(124, 158, 212),
-    Color::Rgb(101, 141, 205),
     Color::Rgb(78, 124, 197),
 ];
+
+pub fn logo_height(width: u16) -> u16 {
+    // Reserve one column on the left and one blank row below the logo.
+    if width.saturating_sub(1) >= LOGO[0].chars().count() as u16 {
+        LOGO.len() as u16 + 1
+    } else {
+        2
+    }
+}
 
 pub fn render_logo(buf: &mut Buffer) {
     let area = Rect {
@@ -38,6 +41,9 @@ pub fn render_logo(buf: &mut Buffer) {
         height: buf.area.height.saturating_sub(1),
         ..buf.area
     };
+    if area.is_empty() {
+        return;
+    }
     if area.width >= LOGO[0].chars().count() as u16 {
         let lines = LOGO
             .iter()
@@ -568,6 +574,45 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn compact_logo_keeps_its_gradient_and_bottom_spacing() {
+        let width = LOGO[0].chars().count() as u16 + 1;
+        assert_eq!(logo_height(width), 4);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, logo_height(width)));
+        render_logo(&mut buffer);
+        for (y, line) in LOGO.iter().enumerate() {
+            let actual = (0..width)
+                .map(|x| buffer[(x, y as u16)].symbol())
+                .collect::<String>();
+            assert_eq!(actual.trim_end(), format!(" {line}"));
+            assert_eq!(buffer[(1, y as u16)].fg, LOGO_COLORS[y]);
+        }
+        assert!((0..width).all(|x| buffer[(x, 3)].symbol() == " "));
+    }
+
+    #[test]
+    fn narrow_logo_uses_only_two_rows() {
+        let width = LOGO[0].chars().count() as u16;
+        assert_eq!(logo_height(width), 2);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, width, logo_height(width)));
+        render_logo(&mut buffer);
+        let first_row = (0..width)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect::<String>();
+        assert_eq!(first_row.trim_end(), " kodrik");
+        assert!((0..width).all(|x| buffer[(x, 1)].symbol() == " "));
+    }
+
+    #[test]
+    fn logo_handles_empty_and_tiny_buffers() {
+        for width in 0..=2 {
+            for height in 0..=2 {
+                let mut buffer = Buffer::empty(Rect::new(3, 5, width, height));
+                render_logo(&mut buffer);
+            }
+        }
+    }
 
     #[test]
     fn pasted_user_text_keeps_literal_indentation_and_line_breaks() {

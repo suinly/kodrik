@@ -277,12 +277,13 @@ impl View {
             self.cached_width = area.width;
             if !picker && area.width > 0 {
                 if self.document.blocks.is_empty() {
-                    let mut logo = Buffer::empty(Rect::new(0, 0, area.width, 7));
+                    let height = ui::logo_height(area.width);
+                    let mut logo = Buffer::empty(Rect::new(0, 0, area.width, height));
                     ui::render_logo(&mut logo);
                     self.document.blocks.push(Arc::new(Block {
                         content: String::new(),
                         role: None,
-                        rows: (0..7).map(|y| Row::capture(&logo, y)).collect(),
+                        rows: (0..height).map(|y| Row::capture(&logo, y)).collect(),
                     }));
                 }
                 for (index, message) in messages.iter().enumerate() {
@@ -616,6 +617,17 @@ mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn logo_block_height_tracks_terminal_width() {
+        let mut view = View::default();
+        let mut scroll = 0;
+        for (width, expected_height) in [(80, 4), (20, 2), (40, 4)] {
+            view.prepare(&[], Rect::new(0, 0, width, 24), 17, &mut scroll, false);
+            assert_eq!(view.document.blocks[0].rows.len(), expected_height);
+            assert_eq!(view.document.history_len(), expected_height);
+        }
+    }
 
     #[test]
     #[ignore = "Local selection rendering profile; run explicitly with --ignored --nocapture"]
