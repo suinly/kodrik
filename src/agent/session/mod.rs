@@ -1,3 +1,4 @@
+pub(crate) mod branches;
 mod core;
 #[cfg(test)]
 mod json;
@@ -6,6 +7,7 @@ mod runtime;
 mod sqlite;
 mod store;
 mod titles;
+pub(crate) use branches::init_branches;
 pub(crate) use owner_migration::{checkpoint_owner_destination, stage_personal_sessions};
 pub(crate) use runtime::ExecutionOwnership;
 pub(crate) use sqlite::save as save_in_transaction;

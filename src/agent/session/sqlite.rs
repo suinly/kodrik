@@ -53,7 +53,10 @@ impl SqliteSessionStore {
                     && !crate::agent::inbox::session_busy_in(&tx, id.as_str())?,
                 crate::agent::inbox::AdmissionRejected("Session is busy")
             );
+            super::branches::init_branches(&tx)?;
             select(&tx, conversation.as_str(), id.as_str())?;
+            let root = super::branches::root(&tx, id.as_str())?;
+            super::branches::select_branch(&tx, &root, id.as_str())?;
             tx.commit()?;
             Ok(session)
         })
@@ -340,7 +343,7 @@ fn decode(id: &str, bytes: &[u8]) -> anyhow::Result<Session> {
     Ok(session)
 }
 
-fn load(db: &Connection, id: &str) -> anyhow::Result<Option<Session>> {
+pub(super) fn load(db: &Connection, id: &str) -> anyhow::Result<Option<Session>> {
     valid_id(id)?;
     let bytes: Option<Vec<u8>> = db
         .query_row("SELECT payload FROM sessions WHERE id=?1", [id], |r| {

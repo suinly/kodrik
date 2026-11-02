@@ -2,7 +2,10 @@ use super::{Chat, WebState, error, internal};
 use crate::agent::{
     inbox::{BusyMode, SubmissionRequest, admit_submission},
     message::Message,
-    session::{Session, SessionId, SessionStore, SqliteSessionStore},
+    session::{
+        Session, SessionId, SessionStore, SqliteSessionStore,
+        branches::{Branch, anchor, message_versions, read_branches, root, select_branch},
+    },
 };
 use axum::{
     Extension, Json,
@@ -17,35 +20,10 @@ use std::collections::{HashMap, HashSet};
 
 pub(super) async fn init(store: &SqliteSessionStore) -> anyhow::Result<()> {
     store
-        .with_connection(|db| {
-            db.execute_batch(
-                "CREATE TABLE IF NOT EXISTS web_chat_branches (
-            session_id TEXT PRIMARY KEY REFERENCES sessions(id),
-            root_id TEXT NOT NULL REFERENCES sessions(id),
-            parent_id TEXT NOT NULL REFERENCES sessions(id),
-            fork_index INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS web_branches_root ON web_chat_branches(root_id);
-            CREATE TABLE IF NOT EXISTS web_chat_selection (
-            root_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE);
-            CREATE TABLE IF NOT EXISTS web_chat_pins (
-            root_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE);",
-            )?;
-            Ok(())
-        })
+        .with_connection(|db| crate::agent::session::init_branches(db))
         .await
 }
 
-fn root(db: &Connection, id: &str) -> anyhow::Result<String> {
-    Ok(db
-        .query_row(
-            "SELECT root_id FROM web_chat_branches WHERE session_id=?1",
-            [id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or_else(|| id.to_owned()))
-}
 fn members(db: &Connection, root: &str) -> anyhow::Result<Vec<String>> {
     let mut ids = vec![root.to_owned()];
     ids.extend(
@@ -68,32 +46,8 @@ fn idle(db: &Connection, ids: &[String]) -> anyhow::Result<bool> {
     }
     Ok(true)
 }
-fn select_branch(db: &Connection, root: &str, id: &str) -> anyhow::Result<()> {
-    db.execute("INSERT INTO web_chat_selection VALUES(?1,?2) ON CONFLICT(root_id) DO UPDATE SET session_id=excluded.session_id", [root,id])?;
-    db.execute("UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key IN ('run_view_revision','web_titles_revision')", [])?;
-    Ok(())
-}
-
-#[derive(Clone)]
-struct Branch {
-    id: String,
-    root: String,
-    parent: String,
-    index: usize,
-}
 async fn branches(chat: &Chat) -> anyhow::Result<Vec<Branch>> {
-    chat.sessions.with_connection(|db| {
-        Ok(db.prepare("SELECT session_id,root_id,parent_id,fork_index FROM web_chat_branches ORDER BY rowid")?.query_map([], |r| Ok(Branch{id:r.get(0)?,root:r.get(1)?,parent:r.get(2)?,index:r.get::<_, i64>(3)? as usize}))?.collect::<rusqlite::Result<Vec<_>>>()?)
-    }).await
-}
-fn anchor(mut id: String, index: usize, branches: &[Branch]) -> String {
-    while let Some(branch) = branches
-        .iter()
-        .find(|branch| branch.id == id && branch.index >= index)
-    {
-        id = branch.parent.clone();
-    }
-    id
+    chat.sessions.with_connection(|db| read_branches(db)).await
 }
 impl Chat {
     pub(super) async fn root_id(&self, id: &str) -> anyhow::Result<String> {
@@ -115,31 +69,10 @@ impl Chat {
                 else {
                     continue;
                 };
-                let origin = anchor(id.to_owned(), index, &branches);
-                let mut versions = vec![origin.clone()];
-                versions.extend(
-                    branches
-                        .iter()
-                        .filter(|branch| branch.parent == origin && branch.index == index)
-                        .map(|branch| branch.id.clone()),
-                );
-                if versions.len() < 2 {
-                    continue;
+                if let Some(versions) = message_versions(id, index, &branches) {
+                    message["version"] = json!(versions.current);
+                    message["versions"] = json!(versions.ids);
                 }
-                let mut current = id.to_owned();
-                while !versions.contains(&current) {
-                    let Some(parent) = branches.iter().find(|branch| branch.id == current) else {
-                        break;
-                    };
-                    current = parent.parent.clone();
-                }
-                message["version"] = json!(
-                    versions
-                        .iter()
-                        .position(|version| version == &current)
-                        .unwrap_or(0)
-                );
-                message["versions"] = json!(versions);
             }
         }
         Ok(())
@@ -507,22 +440,7 @@ pub(super) async fn edit(
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
-                let parent = anchor(id.clone(), index, &{
-                    let mut stmt = tx.prepare(
-                        "SELECT session_id,root_id,parent_id,fork_index FROM web_chat_branches",
-                    )?;
-                    let rows = stmt
-                        .query_map([], |r| {
-                            Ok(Branch {
-                                id: r.get(0)?,
-                                root: r.get(1)?,
-                                parent: r.get(2)?,
-                                index: r.get::<_, i64>(3)? as usize,
-                            })
-                        })?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    rows
-                });
+                let parent = anchor(id.clone(), index, &read_branches(&tx)?);
                 if let Some((old_parent, old_index)) = prior {
                     anyhow::ensure!(
                         old_parent == parent && old_index == index as i64,
