@@ -71,6 +71,10 @@ Versions use the same conversation family and selection as Web Chat. The session
 picker shows the family once and opens its selected version.
 Ordinary j/k typing and Ctrl+J newlines remain available in the composer.
 
+Sent user text keeps its indentation, blank lines and line breaks. Only fenced
+code blocks are formatted: their delimiters are hidden and recognized languages
+get syntax colors without an extra background. Other user Markdown stays literal.
+
 Text is selectable throughout the interface, including tool rows, input, menus
 and status lines. Drag to a history edge or use the wheel while dragging to select
 offscreen text. Copying preserves explicit newlines without inserting newlines at

@@ -2577,6 +2577,7 @@ dependencies = [
  "libc",
  "log",
  "mime_guess",
+ "pulldown-cmark",
  "ratatui",
  "reqwest 0.13.5",
  "rmcp",

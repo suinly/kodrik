@@ -1,6 +1,7 @@
 mod app;
 mod approvals;
 mod clipboard;
+mod markdown;
 mod navigation;
 #[cfg(all(test, unix))]
 mod startup_tests;

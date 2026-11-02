@@ -692,6 +692,24 @@ mod tests {
     }
 
     #[test]
+    fn copying_pasted_user_text_preserves_indentation_and_blank_lines() {
+        let content = "  alpha\n    beta  界\n\n  gamma";
+        for width in [12, 20, 80] {
+            let mut app = App::default();
+            app.push_user_message(content.into());
+            let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let (_, y) = find(&terminal, "alpha");
+            let (x, last_y) = find(&terminal, "gamma");
+            assert_eq!(
+                select(&mut app, (3, y), (x + 4, last_y)).as_deref(),
+                Some(content),
+                "width {width}"
+            );
+        }
+    }
+
+    #[test]
     fn wrapping_preserves_multiple_spaces_and_unicode_at_various_widths() {
         let content = "alpha  beta   界🙂 e\u{301} omega";
         for width in [10, 11, 12, 15, 20, 40] {

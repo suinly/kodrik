@@ -375,13 +375,14 @@ impl App {
                     return Some(std::mem::take(&mut self.input));
                 }
                 self.navigation.clear_history();
-                let input = std::mem::take(&mut self.input).trim().to_owned();
+                let input = std::mem::take(&mut self.input);
                 self.input_cursor = 0;
-                if matches!(input.as_str(), "/new" | "/sessions")
-                    || input.split_whitespace().next() == Some("/language")
-                    || super::approvals::is_command(&input)
+                let command = input.trim();
+                if matches!(command, "/new" | "/sessions")
+                    || command.split_whitespace().next() == Some("/language")
+                    || super::approvals::is_command(command)
                 {
-                    return Some(input);
+                    return Some(command.to_owned());
                 }
                 self.push_user_message(input.clone());
                 self.status = Status::Working;
@@ -463,6 +464,17 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) -> Option<String> {
         app.update(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn sending_pasted_text_keeps_whitespace_but_local_commands_are_normalized() {
+        let pasted = "    first line\n\tsecond line\n\n  third line  \n";
+        let mut app = App::default();
+        app.insert_input(pasted);
+        assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some(pasted));
+        assert_eq!(app.messages.last().unwrap().content, pasted);
+        app.insert_input("  /audit ask  ");
+        assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/audit ask"));
     }
 
     #[test]

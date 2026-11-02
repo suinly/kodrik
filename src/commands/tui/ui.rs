@@ -560,31 +560,7 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
     } else if matches!(message.role, AppMessageRole::Plan) {
         ratatui::text::Text::from(source)
     } else {
-        let text = tui_markdown::from_str(&source);
-        Text {
-            lines: text
-                .lines
-                .into_iter()
-                .map(|line| Line {
-                    spans: line
-                        .spans
-                        .into_iter()
-                        .map(|span| {
-                            let style = if matches!(message.role, AppMessageRole::User) {
-                                span.style.fg(USER_TEXT_COLOR)
-                            } else {
-                                span.style
-                            };
-                            Span::styled(span.content.into_owned(), style)
-                        })
-                        .collect(),
-                    style: line.style,
-                    alignment: line.alignment,
-                })
-                .collect(),
-            style: text.style,
-            alignment: text.alignment,
-        }
+        super::markdown::render(&source, matches!(message.role, AppMessageRole::User))
     }
 }
 
@@ -592,6 +568,106 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn pasted_user_text_keeps_literal_indentation_and_line_breaks() {
+        let message = AppMessage {
+            role: AppMessageRole::User,
+            content: "  first line\n    second line\n\n# literal heading\n*literal text*  \n"
+                .into(),
+        };
+        let rendered = message_text(&message);
+        assert_eq!(
+            rendered
+                .lines
+                .iter()
+                .map(|line| line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            message.content
+        );
+    }
+
+    #[test]
+    fn fenced_code_is_highlighted_without_fences_or_a_background() {
+        let code = "fn main() {\n    let text = \"hello\"; // comment\n}";
+        let luminance = |color: (u8, u8, u8)| {
+            let component = |value: u8| {
+                let value = f64::from(value) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * component(color.0) + 0.7152 * component(color.1) + 0.0722 * component(color.2)
+        };
+        for role in [AppMessageRole::Kodrik, AppMessageRole::User] {
+            let rendered = message_text(&AppMessage {
+                role,
+                content: format!("```rust\n{code}\n```"),
+            });
+            assert_eq!(
+                rendered
+                    .lines
+                    .iter()
+                    .map(|line| line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                code
+            );
+            let colors = rendered
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .filter_map(|span| {
+                    assert!(span.style.bg.is_none_or(|color| color == Color::Reset));
+                    if let Some(Color::Rgb(r, g, b)) = span.style.fg {
+                        Some((r, g, b))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<std::collections::HashSet<_>>();
+            assert!(colors.len() >= 3, "code should have distinct syntax colors");
+            for color in colors {
+                assert!(
+                    (luminance(color) + 0.05) / (luminance((54, 58, 79)) + 0.05) >= 4.5,
+                    "low-contrast syntax color: {color:?}"
+                );
+            }
+        }
+        for source in [
+            "```unknown-language\n  literal text\n```",
+            "```\n  literal text\n```",
+            "```rust\n  literal text",
+        ] {
+            let text = message_text(&AppMessage {
+                role: AppMessageRole::Kodrik,
+                content: source.into(),
+            });
+            let rendered = text
+                .lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(rendered, "  literal text");
+        }
+    }
 
     #[test]
     fn message_selection_does_not_highlight_the_separator_above_the_bubble() {
