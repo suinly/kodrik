@@ -310,6 +310,8 @@ struct AuditRecord {
     approval: CommandApproval,
     arguments: Value,
     decision: Decision,
+    #[serde(default)]
+    push_queued: bool,
 }
 
 #[derive(Debug)]
@@ -573,6 +575,33 @@ fn set_audit_mode(db: &Connection, id: &str, mode: CommandAuditMode) -> anyhow::
         "Personal session required"
     );
     db.execute("INSERT INTO command_audit_modes VALUES(?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation,mode=excluded.mode", params![id, session.generation(), mode.code()])?;
+    notify_pending_approvals(db, id)?;
+    Ok(())
+}
+
+pub(super) fn notify_pending_approvals(db: &Connection, session_id: &str) -> anyhow::Result<()> {
+    if let Some(session) = audit_owner(db, session_id)? {
+        for approval in pending(db, session_id)? {
+            let bytes: Vec<u8> = db.query_row(
+                "SELECT payload FROM command_audits WHERE id=?1",
+                [&approval.id],
+                |row| row.get(0),
+            )?;
+            let mut record: AuditRecord = serde_json::from_slice(&bytes)?;
+            if !record.push_queued {
+                crate::web::push_store::enqueue(
+                    db,
+                    &format!("approval:{}", approval.id),
+                    &session,
+                )?;
+                record.push_queued = true;
+                db.execute(
+                    "UPDATE command_audits SET payload=?2 WHERE id=?1",
+                    params![approval.id, serde_json::to_vec(&record)?],
+                )?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -808,6 +837,7 @@ impl SqliteSessionStore {
                     "Command audit does not match pending call"
                 );
                 let mut record = AuditRecord {
+                    push_queued: false,
                     approval: CommandApproval {
                         id: uuid::Uuid::new_v4().to_string(),
                         run_id: run.id.clone(),
@@ -842,6 +872,7 @@ impl SqliteSessionStore {
                     );
                     if old.decision == Decision::Ask && record.decision != Decision::Ask {
                         record.approval.id = old.approval.id;
+                        record.push_queued = old.push_queued;
                         tx.execute(
                             "UPDATE command_audits SET payload=?2 WHERE id=?1",
                             params![record.approval.id, serde_json::to_vec(&record)?],
@@ -860,6 +891,7 @@ impl SqliteSessionStore {
                     )?;
                 }
             }
+            notify_pending_approvals(&tx, &owner)?;
             tx.commit()?;
             Ok(())
         })

@@ -663,6 +663,16 @@ async fn recovered_safe_tool_can_be_approved_after_switching_to_ask() {
     let path = dir.path().join("image.png");
     image::RgbImage::new(1, 1).save(&path).unwrap();
     let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let call = ToolCall {
         call_id: "image".into(),
         name: "view_image".into(),
@@ -719,7 +729,8 @@ async fn recovered_safe_tool_can_be_approved_after_switching_to_ask() {
         ContextBuilder::new("test"),
     )
     .with_command_auditor(SystemOne::new(Arc::new(Unavailable(false))));
-    let task = tokio::spawn(async move {
+    let resumed_agent = agent.clone();
+    let mut task = tokio::spawn(async move {
         agent.resume_durable(&mut session, &mut cp).await.unwrap();
         session
     });
@@ -743,6 +754,69 @@ async fn recovered_safe_tool_can_be_approved_after_switching_to_ask() {
     })
     .await
     .expect("recovered invocation has no approval controls");
+    let queued = store
+        .with_connection(|db| {
+            Ok(
+                db.query_row("SELECT event_id,session_id FROM web_push_queue", [], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        queued,
+        (format!("approval:{}", request.id), "replay-approval".into())
+    );
+    store
+        .with_connection(|db| {
+            db.execute("DELETE FROM web_push_queue", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    let (record, mut saved) = store.load_run(&request.run_id).await.unwrap().unwrap();
+    let ownership = store
+        .claim_execution(&record.conversation_id, &record.session_id)
+        .await
+        .unwrap();
+    let mut checkpoint = Checkpoint::resume(&store, record, ownership);
+    assert!(checkpoint.prepare_recovery(&saved, 3).await.unwrap());
+    task = tokio::spawn(async move {
+        resumed_agent
+            .resume_durable(&mut saved, &mut checkpoint)
+            .await
+            .unwrap();
+        saved
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while store
+            .pending_command_approvals("replay-approval")
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            assert!(!task.is_finished());
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        store
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT count(*) FROM web_push_queue",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        0,
+        "recovery must not repeat an already delivered approval push"
+    );
     store
         .decide_command_approval("replay-approval", &request.id, true)
         .await

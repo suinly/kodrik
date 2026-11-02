@@ -462,6 +462,16 @@ async fn command_approvals_for_children_are_visible_and_decidable_only_in_the_pa
     let parent = fixture.create().await;
     let other = fixture.create().await;
     let store = SqliteSessionStore::open(fixture.data.path().join("owner-sessions")).unwrap();
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let session = store.load(&SessionId::new(&parent)).await.unwrap().unwrap();
     let child_id = format!("companion:subagent:{}", uuid::Uuid::new_v4());
     let _child_worker = store.execution_lock("subagent", &child_id).await.unwrap();
@@ -484,6 +494,20 @@ async fn command_approvals_for_children_are_visible_and_decidable_only_in_the_pa
         .await
         .unwrap();
     let approval = pending(&store, child_session, &parent).await;
+    let queued = store
+        .with_connection(|db| {
+            Ok(
+                db.query_row("SELECT event_id,session_id FROM web_push_queue", [], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        queued,
+        (format!("approval:{}", approval.id), parent.clone())
+    );
     assert_eq!(
         snapshot(&fixture, &parent).await["command_approvals"],
         json!([approval])

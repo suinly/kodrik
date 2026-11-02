@@ -266,6 +266,16 @@ impl Chat {
         if !bound || !allowed {
             return self.remove_push(&row.endpoint, &row.hash).await;
         }
+        if let Some(id) = row.event.strip_prefix("approval:")
+            && !self
+                .sessions
+                .pending_command_approvals(&row.session)
+                .await?
+                .iter()
+                .any(|approval| approval.id == id)
+        {
+            return self.finish_push(row).await;
+        }
         let (event, endpoint, hash) = (row.event.clone(), row.endpoint.clone(), row.hash.clone());
         let viewers = self.sessions.with_connection(move |db| {
             let root: Option<String> = db.query_row("SELECT coalesce((SELECT root_id FROM web_chat_branches WHERE session_id=q.session_id),q.session_id)

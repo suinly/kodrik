@@ -34,6 +34,18 @@ test('push displays generic text, a stable event tag and a prefix-aware conversa
   }
 })
 
+test('approval push identifies required action without exposing tool arguments',async()=>{
+  for(const [locale,body] of [['ru','Требуется подтверждение действия'],['en','Action approval required']]) {
+    const w=await worker()
+    await w.fire('push',{data:{json:()=>({session_id:'personal',event_id:'approval:request-1',locale,arguments:'secret command'})}})
+    const [,options]=w.shown[0]
+    assert.equal(options.body,body)
+    assert.equal(options.tag,'kodrik-approval:request-1')
+    assert.equal(options.data.url,'https://example.com/kodrik/app/chat/personal')
+    assert.ok(!JSON.stringify(w.shown).includes('secret command'))
+  }
+})
+
 test('notification click focuses/navigates an existing app window or opens the conversation',async()=>{
   const w=await worker()
   let closed=0

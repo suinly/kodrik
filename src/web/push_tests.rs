@@ -1,9 +1,146 @@
 use crate::agent::{
     AssistantMessage, UserMessage,
+    command_audit::CommandAuditMode,
     message::Message,
     run_state::{Checkpoint, RunPhase},
     session::{Session, SessionId, SessionStore, SqliteSessionStore},
 };
+
+#[tokio::test]
+async fn push_outbox_queues_new_approvals_once_and_follows_audit_mode_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (id, mode, verdict, expected) in [
+        ("review-risk", CommandAuditMode::Review, "destructive", true),
+        ("review-safe", CommandAuditMode::Review, "safe", false),
+        ("ask", CommandAuditMode::Ask, "ask", true),
+        ("trusted", CommandAuditMode::Trusted, "destructive", false),
+        (
+            "telegram:main:-123",
+            CommandAuditMode::Review,
+            "destructive",
+            false,
+        ),
+        (
+            "telegram:main:42:guest",
+            CommandAuditMode::Review,
+            "destructive",
+            false,
+        ),
+    ] {
+        store.set_default_command_audit_mode(mode).await.unwrap();
+        let mut session = Session::new(SessionId::new(id));
+        let call = crate::agent::message::ToolCall {
+            call_id: "call".into(),
+            name: "exec_command".into(),
+            arguments: serde_json::json!({"cmd":"secret command"}),
+        };
+        session.push(Message::ToolCall(call.clone()));
+        store.save(&session).await.unwrap();
+        let mut cp = Checkpoint::new(&store, session.id(), &session);
+        cp.record.pending_calls = vec![call.clone()];
+        cp.save(
+            &session,
+            RunPhase::NeedTool {
+                call_id: call.call_id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let audits = [(call, verdict.into())];
+        store
+            .record_command_audits(&cp.record, &audits)
+            .await
+            .unwrap();
+        let target = id.to_owned();
+        let queued: Vec<String> = store
+            .with_connection(move |db| {
+                Ok(db
+                    .prepare("SELECT event_id FROM web_push_queue WHERE session_id=?1")?
+                    .query_map([target], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued.len(), usize::from(expected), "{id}");
+        if expected {
+            let approval = store.pending_command_approvals(id).await.unwrap().remove(0);
+            assert_eq!(queued, [format!("approval:{}", approval.id)]);
+        }
+        // Delivery removes queue rows; replaying an audit must not notify again.
+        store
+            .with_connection(|db| {
+                db.execute("DELETE FROM web_push_queue", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        store
+            .record_command_audits(&cp.record, &audits)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .with_connection(|db| Ok(db.query_row(
+                    "SELECT count(*) FROM web_push_queue",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?))
+                .await
+                .unwrap(),
+            0
+        );
+    }
+    store
+        .set_command_audit_mode("review-safe", CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    assert_eq!(
+        store
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT session_id FROM web_push_queue",
+                [],
+                |r| r.get::<_, String>(0)
+            )?))
+            .await
+            .unwrap(),
+        "review-safe"
+    );
+    store
+        .with_connection(|db| {
+            db.execute("DELETE FROM web_push_queue", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    store
+        .set_command_audit_mode("review-safe", CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .with_connection(|db| Ok(db.query_row(
+                "SELECT count(*) FROM web_push_queue",
+                [],
+                |r| r.get::<_, i64>(0)
+            )?))
+            .await
+            .unwrap(),
+        0
+    );
+}
 
 #[tokio::test]
 async fn push_api_requires_authentication_and_the_configured_origin() {

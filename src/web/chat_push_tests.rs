@@ -375,6 +375,102 @@ async fn sender_encrypts_generic_payload_retries_temporarily_and_removes_expired
 }
 
 #[tokio::test]
+async fn approval_push_retries_only_while_the_request_is_pending() {
+    use crate::agent::{
+        command_audit::CommandAuditMode,
+        message::ToolCall,
+        run_state::{Checkpoint, RunPhase},
+    };
+    for resolution in ["approve", "reject", "stop", "trusted"] {
+        let (_dir, chat, token) = fixture().await;
+        let now = chrono::Utc::now().timestamp();
+        seed(&chat, &token, "http://127.0.0.1:1/push", "initial", now).await;
+        chat.sessions
+            .with_connection(|db| {
+                db.execute("DELETE FROM web_push_queue", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let mut session = chat
+            .sessions
+            .load(&SessionId::new("personal"))
+            .await
+            .unwrap()
+            .unwrap();
+        let call = ToolCall {
+            call_id: "approval".into(),
+            name: "exec_command".into(),
+            arguments: json!({"cmd":"secret command"}),
+        };
+        session.push(Message::ToolCall(call.clone()));
+        let mut cp = Checkpoint::new(&chat.sessions, session.id(), &session);
+        cp.record.pending_calls = vec![call.clone()];
+        cp.save(
+            &session,
+            RunPhase::NeedTool {
+                call_id: call.call_id.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        chat.sessions
+            .set_command_audit_mode("personal", CommandAuditMode::Ask)
+            .await
+            .unwrap();
+        chat.sessions
+            .record_command_audits(&cp.record, &[(call, "ask".into())])
+            .await
+            .unwrap();
+        let approval = chat
+            .sessions
+            .pending_command_approvals("personal")
+            .await
+            .unwrap()
+            .remove(0);
+        chat.push_tick(now).await.unwrap();
+        assert_eq!(
+            chat.sessions
+                .with_connection(|db| Ok(db.query_row(
+                    "SELECT attempts FROM web_push_queue",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?))
+                .await
+                .unwrap(),
+            1
+        );
+        match resolution {
+            "stop" => cp.save(&session, RunPhase::Cancelled, None).await.unwrap(),
+            "trusted" => chat
+                .sessions
+                .set_command_audit_mode("personal", CommandAuditMode::Trusted)
+                .await
+                .unwrap(),
+            _ => chat
+                .sessions
+                .decide_command_approval("personal", &approval.id, resolution == "approve")
+                .await
+                .unwrap(),
+        }
+        chat.push_tick(now + 6).await.unwrap();
+        assert_eq!(
+            chat.sessions
+                .with_connection(|db| Ok(db.query_row(
+                    "SELECT count(*) FROM web_push_queue",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?))
+                .await
+                .unwrap(),
+            0,
+            "{resolution}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn visible_conversation_is_suppressed_but_presence_expires_and_logout_clears_queue() {
     let (_dir, chat, token) = fixture().await;
     let now = chrono::Utc::now().timestamp();

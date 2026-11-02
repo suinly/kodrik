@@ -701,6 +701,10 @@ impl SqliteSessionStore {
             crate::agent::inbox::checkpoint_submissions(&tx,&run,&session)?;
             crate::agent::delivery::checkpoint_final(&tx,&run,&session)?;
             crate::web::push_store::checkpoint(&tx,&run,&session)?;
+            let approval_owner: Option<String> = tx.query_row("SELECT session_id FROM command_audits WHERE run_id=?1 LIMIT 1", [&run.id], |row| row.get(0)).optional()?;
+            if let Some(owner) = approval_owner {
+                crate::agent::command_audit::notify_pending_approvals(&tx, &owner)?;
+            }
             crate::agent::run_view::checkpoint_live(&tx,&run,history_advanced,interrupted_attempt)?;
             #[cfg(test)]
             crate::agent::durable_fixture::checkpoint("before", &run, tool.as_ref())?;
