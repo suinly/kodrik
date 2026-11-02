@@ -7,7 +7,7 @@ import {prepareRangeChart} from './ui-range-chart.ts'
 
 export type Row=Record<string,string|number|boolean|null>
 export type UiSource={id:string;data:unknown;url?:string}
-export type UiAction={id:string;dataset:string;operation:'insert'|'update';fields:{name:string;type:string;required:boolean}[];record_id:string|null;record:{id:string;revision:number;values:Row}|null;url?:string}
+export type UiAction={id:string;dataset:string;operation:'insert'|'update'|'respond';fields:{name:string;type:string;required:boolean}[];record_id:string|null;record:{id:string;revision:number;values:Row}|null;url?:string}
 export type UiDocument={version:1;title:string;body:string;sources:UiSource[];views?:Record<string,unknown>;actions?:UiAction[]}
 export type UiNode={type:'element'|'text'|'binding';tag?:string;value?:string;slot?:string;props?:Record<string,unknown>;bindings?:Record<string,string>;children?:UiNode[]}
 export const uiCatalog:Record<string,{name:string;props:string[];booleans:string[];models:string[]}>=manifest.components
@@ -86,6 +86,7 @@ export function resolveUiProps(node:UiNode,scope:Record<string,unknown>,allowSlo
     if(value!==undefined) checkUiValue(value,key)
     props[key]=value??null
   }
+  if(props.saveOn!==undefined && (node.tag!=='u-form' || props.saveOn!=='change')) fail(t("Неподдерживаемый режим сохранения формы."))
   if(node.tag==='columns' && props.count!==undefined
     && !((typeof props.count==='string'||typeof props.count==='number')&&/^[1-4]$/.test(String(props.count)))) fail(t("Число колонок должно быть от 1 до 4."))
   if((node.tag==='u-table'||node.tag==='data-table') && props.columns!=null) prepareUiTableColumns(props.columns,node.tag==='data-table')
@@ -178,8 +179,8 @@ export async function parseUiDocument(raw:unknown):Promise<{document:UiDocument;
       const jsonCustom=tag==='date-value'||tag==='data-table'&&camel==='columns'||tag==='columns'&&camel==='count'
       const key=component?(/^(aria|data)-/.test(plain) && !component.props.includes(camel)?plain:camel):jsonCustom?camel:rawKey
       if(component||jsonCustom){
-        if(forbidden.test(key) || (component?!component.props.includes(key) && !['id','title','role','name','type','placeholder','required','autocomplete','min','max','step','submitAction','prompt'].includes(key) && !/^(aria|data)[A-Z-]/.test(key):!custom[tag]?.includes(key))) fail(t("Свойство «{0}» не поддерживается.", key))
-        if(key==='prompt' && tag!=='u-button' || key==='submitAction' && tag!=='u-form') fail(t("Действие не поддерживается этим компонентом."))
+        if(forbidden.test(key) || (component?!component.props.includes(key) && !['id','title','role','name','type','placeholder','required','autocomplete','min','max','step','submitAction','saveOn','prompt'].includes(key) && !/^(aria|data)[A-Z-]/.test(key):!custom[tag]?.includes(key))) fail(t("Свойство «{0}» не поддерживается.", key))
+        if(key==='prompt' && tag!=='u-button' || ['submitAction','saveOn'].includes(key) && tag!=='u-form') fail(t("Действие не поддерживается этим компонентом."))
         if(own(props,key)||own(bindings,key)) fail(t("Повторяющееся свойство."))
         let literal=value
         if(rawKey.startsWith(':')){
@@ -206,6 +207,8 @@ export async function parseUiDocument(raw:unknown):Promise<{document:UiDocument;
       props[key]=value
     }
     if(tag==='u-form' && props.submitAction && !actions.has(String(props.submitAction))) fail(t("Действие формы не найдено."))
+    if(tag==='u-form' && (own(bindings,'saveOn') || own(bindings,'submitAction'))) fail(t("Режим и действие формы должны быть буквальными значениями."))
+    if(tag==='u-form' && props.saveOn==='change' && document.actions?.find(action=>action.id===props.submitAction)?.operation==='insert') fail(t("Для автосохранения используйте действие respond или update."))
     for(const field of tag==='button'?['label','prompt']:tag==='metric'?['label']:tag==='line-chart'?['source','x','y','label']:tag==='data-table'?['source']:[]) {
       if(typeof props[field]!=='string' || !String(props[field]).trim()) fail(t("Нужно свойство «{0}».", field))
     }

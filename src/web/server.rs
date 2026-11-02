@@ -578,15 +578,18 @@ async fn page_response(
                     }
                 }
             }
-            // Frozen publications never carry write capabilities.
+            // Public pages expose only isolated respondent actions, never owner writes.
             if let Some(actions) = snapshot["actions"].as_array_mut() {
                 for action in actions.iter_mut() {
                     if let Some(object) = action.as_object_mut() {
                         object.remove("url");
                     }
                 }
-                if manifest.visibility == Visibility::Private && state.datasets.is_some() {
+                if state.datasets.is_some() {
                     for (index, action) in published.document.actions.iter().enumerate() {
+                        if manifest.visibility == Visibility::Public && !action.is_response() {
+                            continue;
+                        }
                         actions[index]["url"] = serde_json::json!(state.settings.url(&format!(
                             "api/documents/{slug}/actions/{}?release={}",
                             action.id, manifest.release
@@ -758,12 +761,6 @@ async fn document_action(
                 .authenticated(&token, chrono::Utc::now().timestamp())?,
             None => false,
         };
-        if !authenticated {
-            return Ok(action_error(
-                StatusCode::UNAUTHORIZED,
-                "Owner login is required",
-            ));
-        }
         let Some(manifest) = state.pages.manifest(&slug)? else {
             return Ok(action_error(
                 StatusCode::NOT_FOUND,
@@ -776,16 +773,10 @@ async fn document_action(
                 "Document does not exist",
             ));
         }
-        if manifest.visibility != Visibility::Private {
+        if manifest.visibility == Visibility::Private && !authenticated {
             return Ok(action_error(
-                StatusCode::FORBIDDEN,
-                "Public documents cannot write datasets",
-            ));
-        }
-        if query.release != Some(manifest.release) {
-            return Ok(action_error(
-                StatusCode::CONFLICT,
-                "Page has changed. Reload before submitting.",
+                StatusCode::UNAUTHORIZED,
+                "Owner login is required",
             ));
         }
         let published = load_document(&state.pages, &slug, &manifest)?;
@@ -797,13 +788,34 @@ async fn document_action(
         else {
             return Ok(action_error(StatusCode::NOT_FOUND, "Action does not exist"));
         };
+        if manifest.visibility == Visibility::Public && !action.is_response() {
+            return Ok(action_error(
+                StatusCode::FORBIDDEN,
+                "Public documents only accept responses",
+            ));
+        }
+        if query.release != Some(manifest.release) {
+            return Ok(action_error(
+                StatusCode::CONFLICT,
+                "Page has changed. Reload before submitting.",
+            ));
+        }
         let Some(store) = state.datasets else {
             return Ok(action_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Datasets unavailable",
             ));
         };
-        match action.submit(&store, input) {
+        let result = if action.is_response() {
+            action.submit_response(
+                &store,
+                input,
+                &format!("{slug}/{}/{}", manifest.release, action.id),
+            )
+        } else {
+            action.submit(&store, input)
+        };
+        match result {
             Ok(value) => Ok(axum::Json(value).into_response()),
             Err(error) => {
                 let message = error.to_string();
@@ -1548,6 +1560,135 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[tokio::test]
+    async fn public_questionnaires_accept_only_scoped_responses() {
+        use crate::agent::{
+            datasets::DatasetStore,
+            tools::{ShowUiTool, Tool},
+        };
+        use serde_json::json;
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = DatasetStore::open(dir.path().join("datasets")).unwrap();
+        store.execute(serde_json::from_value(json!({"action":"create","dataset":"answers","title":"Answers","fields":[{"name":"rating","type":"integer","required":false},{"name":"comment","type":"string","required":false}]})).unwrap()).unwrap();
+        let settings = Settings {
+            trusted_proxies: vec![],
+            listen: "127.0.0.1:0".parse().unwrap(),
+            base_url: "http://127.0.0.1/kodrik/".parse().unwrap(),
+        };
+        let tool = ShowUiTool::new(
+            store.clone(),
+            Some((dir.path().to_owned(), settings.clone())),
+        );
+        let publish = json!({"title":"Survey","body":"::u-form{submit-action=\"answer\" save-on=\"change\"}\n::","sources":[],"actions":[{"id":"answer","dataset":"answers","operation":"respond","fields":["rating","comment"],"record_id":null}],"slug":"survey","visibility":"public"});
+        tool.execute(publish.clone()).await.unwrap();
+        let app = router_with_resources(settings, dir.path(), None, Some(store.clone()));
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/kodrik/pages/survey/document.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let document: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let url = document["actions"][0]["url"]
+            .as_str()
+            .expect("Public response URL");
+        assert!(document["actions"][0]["record"].is_null());
+        let uri = url.strip_prefix("http://127.0.0.1").unwrap();
+        let token = uuid::Uuid::new_v4();
+        let payload = json!({"request_id":uuid::Uuid::new_v4(),"response_token":token,"values":{"rating":4},"expected_revision":null});
+        for (origin, body, status) in [
+            ("https://evil.example", payload.clone(), 403),
+            (
+                "http://127.0.0.1",
+                json!({"request_id":uuid::Uuid::new_v4(),"values":{"rating":4},"expected_revision":null}),
+                400,
+            ),
+            ("http://127.0.0.1", payload.clone(), 200),
+            ("http://127.0.0.1", payload.clone(), 200),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header(header::ORIGIN, origin)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+        }
+        let update = json!({"request_id":uuid::Uuid::new_v4(),"response_token":token,"values":{"rating":5,"comment":"Good"},"expected_revision":1});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::ORIGIN, "http://127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(update.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let records = store
+            .execute(serde_json::from_value(json!({"action":"query","dataset":"answers"})).unwrap())
+            .unwrap();
+        assert_eq!(records["records"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            records["records"][0]["values"],
+            json!({"rating":5,"comment":"Good"})
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/kodrik/pages/survey/document.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let public = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(!public.contains("Good"));
+        tool.execute(publish).await.unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::ORIGIN, "http://127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

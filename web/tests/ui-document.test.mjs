@@ -141,3 +141,18 @@ test('UChart range adapter accepts a band without boundary line categories',asyn
   await assert.rejects(()=>parseUiDocument({...raw,views:{week:{records:[{id:'a',values:{date:'2026-10-21',low:100,high:200}}]}}}));
   await parseUiDocument({...raw,views:{week:[]}});
 });
+
+
+test('forms accept only explicit change autosave and reject it on other components',async()=>{
+  const action={id:'answer',operation:'respond',fields:[],record:null};
+  const raw={...doc('::u-form{submit-action="answer" save-on="change"}\n::'),actions:[action]};
+  assert.equal((await parseUiDocument(raw)).nodes[0].props.saveOn,'change');
+  await assert.rejects(()=>parseUiDocument({...raw,body:'::u-form{save-on="input"}\n::'}));
+  await assert.rejects(()=>parseUiDocument({...raw,body:'::u-input{save-on="change"}\n::'}));
+});
+
+
+test('autosave refuses insert actions that would create duplicates on every edit',async()=>{
+  const raw={...doc('::u-form{submit-action="answer" save-on="change"}\n::'),actions:[{id:'answer',operation:'insert',fields:[],record:null}]};
+  await assert.rejects(()=>parseUiDocument(raw),/respond|update/);
+});

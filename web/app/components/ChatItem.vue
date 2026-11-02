@@ -47,10 +47,10 @@ function beginEdit() {
                   <UButton :label="t('Предыдущая версия документа')" icon="i-lucide-history" variant="ghost" color="neutral" trailing-icon="i-lucide-chevron-down" />
                   <template #content>
                     <p class="text-sm text-muted"> {{ t("Ниже в переписке есть более новая версия этого документа.") }} </p>
-                    <ChatDocument :output="tool.output" :actions="actions" @prompt="emit('prompt',$event)" />
+                    <ChatDocument :output="tool.output" :actions="actions" :session-id="message.id.slice(0,message.id.lastIndexOf(':'))" :call-id="tool.toolCallId" @prompt="emit('prompt',$event)" />
                   </template>
                 </UCollapsible>
-                <ChatDocument v-else :output="tool.output" :actions="actions" @prompt="emit('prompt',$event)" />
+                <ChatDocument v-else :output="tool.output" :actions="actions" :session-id="message.id.slice(0,message.id.lastIndexOf(':'))" :call-id="tool.toolCallId" @prompt="emit('prompt',$event)" />
               </template>
             </template>
           </template>

@@ -1828,7 +1828,7 @@ test('private MDC forms insert and edit dataset records and refresh dependent vi
     const context=await browser.newContext({locale:'ru-RU'});const [name,...value]=cookie.split('=');await context.addCookies([{name,value:value.join('='),url:base}]);
     const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
-    await expect(page.getByRole('button',{name:'Добавить запись',exact:true})).toBeDisabled();
+    await expect(page.getByRole('button',{name:'Добавить запись',exact:true})).toBeEnabled();
     const url=await page.getByRole('link',{name:'Открыть страницу',exact:true}).getAttribute('href');await page.goto(url);
     await page.getByLabel('Дата нового приёма',{exact:true}).fill('2026-10-22');
     await page.getByLabel('Новое блюдо',{exact:true}).fill('Snack');
@@ -4219,4 +4219,85 @@ test('profile password form validates input and signs out all sessions after a c
     const response=await fetch(new URL('auth/login',base),{method:'POST',redirect:'manual',headers:{Origin:new URL(base).origin},body:new URLSearchParams({password:'preview-password'})});
     assert.equal(response.status,303);cookie=response.headers.get('set-cookie').split(';')[0];
   } finally {await browser.close();}
+});
+
+
+test('autosaving questionnaires preserve edits during writes and retry uncertain saves after reload',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();await request('send',{id,text:'formsui'});
+  let view;await expect.poll(async()=>{view=await(await request(`sessions/${id}/run`)).json();return view.busy}).toBe(false);
+  const url=view.messages.flatMap(message=>message.parts).find(part=>part.toolName==='show_ui'&&part.output?.url).output.url;
+  const html=await(await fetch(url,{headers:{Cookie:cookie}})).text();
+  const actionUrl=new URL('api/documents/respond-client/actions/answer?release=client-test',base).href;
+  const document={version:1,title:'Анкета',sources:[],body:`# Анкета
+
+::u-form{submit-action="answer" save-on="change"}
+:::u-form-field{name="name" label="Ваше имя"}
+::::u-input
+::::
+:::
+:::u-form-field{name="rating" label="Оценка"}
+::::u-radio-group{:items='["1","5"]'}
+::::
+:::
+::`,actions:[{id:'answer',dataset:'responses',operation:'respond',fields:[{name:'name',type:'string',required:false},{name:'rating',type:'string',required:false}],record:null,record_id:null,url:actionUrl}]};
+  const browser=await chromium.launch({headless:true});
+  try {
+    const context=await browser.newContext({locale:'ru-RU'}),page=await context.newPage(),errors=[],requests=[],receipts=new Map(),revisions=new Map();
+    page.on('pageerror',error=>errors.push(error.message));
+    await context.route(url,route=>route.fulfill({status:200,contentType:'text/html',body:html}));
+    await context.route(new URL('document.json',url).href,route=>route.fulfill({status:200,contentType:'application/json',json:document}));
+    let releaseFirst;const firstGate=new Promise(resolve=>{releaseFirst=resolve});let failNext=false;
+    await context.route(actionUrl,async route=>{
+      const body=route.request().postDataJSON();requests.push(body);
+      if(requests.length===1) await firstGate;
+      let result=receipts.get(body.request_id);
+      if(!result){const revision=(revisions.get(body.response_token)||0)+1;revisions.set(body.response_token,revision);result={records:[{id:'server-id',revision}]};receipts.set(body.request_id,result)}
+      if(failNext){failNext=false;await route.abort('failed');return}
+      await route.fulfill({status:200,contentType:'application/json',json:result});
+    });
+    await page.goto(url);const name=page.getByLabel('Ваше имя',{exact:true});await expect(name).toBeVisible();
+    await page.waitForTimeout(600);assert.equal(requests.length,0);
+    await name.fill('First');await expect.poll(()=>requests.length).toBe(1);
+    await expect(name).toBeEditable();await name.fill('Second');await page.getByRole('radio',{name:'5',exact:true}).check();
+    assert.equal(requests.length,1);releaseFirst();await expect.poll(()=>requests.length).toBe(2);
+    await expect(page.getByRole('status')).toContainText('Запись сохранена');
+    assert.deepEqual(requests[1].values,{name:'Second',rating:'5'});assert.equal(requests[1].expected_revision,1);
+    await expect(page.getByRole('radio',{name:'5',exact:true})).toBeFocused();
+    await page.reload();await expect(name).toHaveValue('Second');await expect(page.getByRole('radio',{name:'5',exact:true})).toBeChecked();
+    await page.waitForTimeout(600);assert.equal(requests.length,2);
+    failNext=true;await name.fill('Third');await expect(page.getByRole('button',{name:'Повторить',exact:true})).toBeVisible();
+    assert.equal(requests.length,3);await page.reload();await expect(name).toHaveValue('Third');
+    await page.getByRole('button',{name:'Повторить',exact:true}).click();await expect.poll(()=>requests.length).toBe(4);
+    assert.deepEqual(requests[3],requests[2]);await expect(page.getByRole('status')).toContainText('Запись сохранена');
+    const other=await context.newPage();await other.goto(url);await expect(other.getByLabel('Ваше имя',{exact:true})).toHaveValue('Third');
+    await page.screenshot({path:'/tmp/kodrik-autosave-questionnaire.png',fullPage:true});assert.deepEqual(errors,[]);
+  } finally {await browser.close()}
+});
+
+
+test('chat forms permit consecutive inserts and hydrate current update revisions after reload',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();await request('send',{id,text:'formsui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    for(const meal of ['Chat first','Chat second']){
+      await page.getByLabel('Дата нового приёма',{exact:true}).fill('2026-10-22');
+      await page.getByLabel('Новое блюдо',{exact:true}).fill(meal);
+      await page.getByLabel('Новые калории',{exact:true}).fill('10');
+      const saved=page.waitForResponse(response=>response.request().method()==='POST' && response.url().includes('/forms/') && response.url().endsWith('/add'));
+      await page.getByRole('button',{name:'Добавить запись',exact:true}).click();
+      const response=await saved;assert.equal(response.status(),200);assert.equal(response.request().postDataJSON().expected_revision,null);
+    }
+    for(const kcal of ['410','420']){
+      const calories=page.getByLabel('Изменить калории',{exact:true});await expect(calories).toBeEditable();
+      await calories.fill(kcal);
+      const saved=page.waitForResponse(response=>response.request().method()==='POST' && response.url().includes('/forms/') && response.url().endsWith('/edit'));
+      await page.getByRole('button',{name:'Сохранить изменения',exact:true}).click();assert.equal((await saved).status(),200);
+      await page.reload();await expect(calories).toHaveValue(kcal);
+    }
+    assert.deepEqual(await page.evaluate(()=>Object.keys(localStorage).filter(key=>key.startsWith('kodrik.form.'))),[]);
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close()}
 });

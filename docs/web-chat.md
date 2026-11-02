@@ -4,7 +4,7 @@ The agent discovers available Nuxt UI components through `ui_components` and
 renders them using `show_ui` and MDC. These components inherit the chat theme.
 Inputs, tabs and overlays keep local state; charts use Nuxt UI's UChart.
 Private published forms can insert/edit dataset records without invoking the
-agent; form previews in chat cannot save. Prompt buttons prepare a
+agent; forms in authenticated chat save through their declared dataset actions; `save-on="change"` enables autosave. Prompt buttons prepare a
 follow-up in the composer for review; they do not submit automatically. Chat
 history preserves the shown data snapshot. The same document can be published
 as a persistent page; see [UI documents](ui-documents.md).

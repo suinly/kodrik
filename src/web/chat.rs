@@ -33,6 +33,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 
 #[path = "chat_approvals.rs"]
 mod approvals;
+#[path = "chat_forms.rs"]
+mod forms;
 #[path = "chat_management.rs"]
 mod management;
 #[path = "chat_push.rs"]
@@ -62,6 +64,7 @@ pub(crate) struct Chat {
     users: Option<Arc<crate::users::UserSpaces>>,
     user_chats: Arc<Mutex<HashMap<u64, Chat>>>,
     push: Option<Arc<push::Push>>,
+    datasets: Option<crate::agent::datasets::DatasetStore>,
 }
 
 impl Chat {
@@ -84,6 +87,7 @@ impl Chat {
             users: None,
             user_chats: Default::default(),
             push: None,
+            datasets: None,
         };
         // Reserve recovered conversations before accepting HTTP submissions.
         for id in chat.runner.unfinished_conversations().await? {
@@ -103,6 +107,11 @@ impl Chat {
 
     pub(crate) fn with_users(mut self, users: Arc<crate::users::UserSpaces>) -> Self {
         self.users = Some(users);
+        self
+    }
+
+    pub(crate) fn with_datasets(mut self, datasets: crate::agent::datasets::DatasetStore) -> Self {
+        self.datasets = Some(datasets);
         self
     }
 
@@ -131,7 +140,9 @@ impl Chat {
             return Ok(chat.clone());
         }
         let app = users.app(id).await?;
-        let mut chat = Chat::new(&app.agent_runner, &users.directory(id)).await?;
+        let mut chat = Chat::new(&app.agent_runner, &users.directory(id))
+            .await?
+            .with_datasets(app.datasets.clone());
         chat.push = self.push.clone();
         chats.insert(id, chat.clone());
         Ok(chat)
@@ -418,6 +429,12 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
             post(management::edit),
         )
         .route("/api/chat/sessions/{id}/stop", post(stop))
+        .route(
+            "/api/chat/sessions/{id}/forms/{call}/{action}",
+            get(forms::read)
+                .post(forms::submit)
+                .layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route(
             "/api/chat/sessions/{id}/command-approvals/{approval}",
             post(approvals::decide),

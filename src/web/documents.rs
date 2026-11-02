@@ -140,6 +140,7 @@ impl UiSource {
 pub(crate) enum UiOperation {
     Insert,
     Update,
+    Respond,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -160,10 +161,12 @@ pub(crate) struct FormRequest {
     #[serde(default)]
     clear_fields: Vec<String>,
     expected_revision: Option<i64>,
+    #[serde(default)]
+    response_token: Option<uuid::Uuid>,
 }
 
 impl UiAction {
-    fn snapshot(&self, store: &DatasetStore) -> anyhow::Result<Value> {
+    pub(crate) fn snapshot(&self, store: &DatasetStore) -> anyhow::Result<Value> {
         ensure!(
             !self.id.is_empty()
                 && self.id.len() <= 64
@@ -196,7 +199,7 @@ impl UiAction {
             );
         }
         let record = match self.operation {
-            UiOperation::Insert => {
+            UiOperation::Insert | UiOperation::Respond => {
                 ensure!(
                     self.record_id.is_none(),
                     "Insert actions cannot target a record"
@@ -234,6 +237,48 @@ impl UiAction {
         store: &DatasetStore,
         request: FormRequest,
     ) -> anyhow::Result<Value> {
+        ensure!(
+            !self.is_response(),
+            "Response actions require a respondent token"
+        );
+        self.submit_scoped(store, request, None)
+    }
+
+    pub(crate) fn is_response(&self) -> bool {
+        matches!(self.operation, UiOperation::Respond)
+    }
+
+    pub(crate) fn submit_response(
+        &self,
+        store: &DatasetStore,
+        request: FormRequest,
+        namespace: &str,
+    ) -> anyhow::Result<Value> {
+        use sha2::{Digest, Sha256};
+        ensure!(
+            self.is_response(),
+            "Only response actions accept respondent tokens"
+        );
+        let token = request
+            .response_token
+            .context("A respondent token is required")?;
+        ensure!(
+            token.get_version_num() == 4,
+            "Respondent token must be a random UUID"
+        );
+        let id = format!(
+            "response_{:x}",
+            Sha256::digest(format!("{namespace}\0{token}"))
+        );
+        self.submit_scoped(store, request, Some(id))
+    }
+
+    fn submit_scoped(
+        &self,
+        store: &DatasetStore,
+        request: FormRequest,
+        response_id: Option<String>,
+    ) -> anyhow::Result<Value> {
         let snapshot = self.snapshot(store)?;
         ensure!(
             request.clear_fields.len() <= 32,
@@ -267,6 +312,16 @@ impl UiAction {
             "Form values must be scalars"
         );
         let (id, mut values) = match self.operation {
+            UiOperation::Respond => {
+                ensure!(
+                    request.expected_revision.is_none_or(|r| r > 0),
+                    "Invalid response revision"
+                );
+                (
+                    response_id.context("Missing response scope")?,
+                    serde_json::Map::new(),
+                )
+            }
             UiOperation::Insert => {
                 ensure!(
                     request.clear_fields.is_empty(),
@@ -409,6 +464,47 @@ mod tests {
         let store = DatasetStore::open(dir.path().join("datasets")).unwrap();
         store.execute(serde_json::from_value(json!({"action":"create","dataset":"items","title":"Items","fields":[{"name":"name","type":"string","required":true},{"name":"note","type":"string","required":false}]})).unwrap()).unwrap();
         (dir, store)
+    }
+    #[test]
+    fn responses_are_isolated_revisioned_and_idempotent() {
+        let (_dir, store) = store();
+        let action: UiAction = serde_json::from_value(json!({"id":"survey","dataset":"items","operation":"respond","fields":["name","note"],"record_id":null})).unwrap();
+        let token = uuid::Uuid::new_v4();
+        let first = json!({"request_id":uuid::Uuid::new_v4(),"response_token":token,"values":{"name":"Alice"},"expected_revision":null});
+        let save = |request: Value, namespace: &str| {
+            action.submit_response(&store, serde_json::from_value(request).unwrap(), namespace)
+        };
+        let result = save(first.clone(), "page/release/action").unwrap();
+        assert_eq!(save(first.clone(), "page/release/action").unwrap(), result);
+        let update = json!({"request_id":uuid::Uuid::new_v4(),"response_token":token,"values":{"name":"Alice","note":"changed"},"expected_revision":1});
+        let updated = save(update.clone(), "page/release/action").unwrap();
+        assert_eq!(updated["records"][0]["revision"], 2);
+        assert_eq!(
+            save(update.clone(), "page/release/action").unwrap(),
+            updated
+        );
+        let mut stale = update.clone();
+        stale["request_id"] = json!(uuid::Uuid::new_v4());
+        assert!(save(stale, "page/release/action").is_err());
+        let mut other_request = first.clone();
+        other_request["request_id"] = json!(uuid::Uuid::new_v4());
+        let other = save(other_request, "different/release/action").unwrap();
+        assert_ne!(result["records"][0]["id"], other["records"][0]["id"]);
+        let mut other_token = first.clone();
+        other_token["request_id"] = json!(uuid::Uuid::new_v4());
+        other_token["response_token"] = json!(uuid::Uuid::new_v4());
+        assert_ne!(
+            result["records"][0]["id"],
+            save(other_token, "page/release/action").unwrap()["records"][0]["id"]
+        );
+        let mut invalid = first;
+        invalid["values"]["extra"] = json!("forbidden");
+        assert!(save(invalid, "page/release/action").is_err());
+        assert!(
+            action
+                .submit(&store, serde_json::from_value(update).unwrap())
+                .is_err()
+        );
     }
     #[test]
     fn forms_validate_resolve_and_insert_idempotently() {

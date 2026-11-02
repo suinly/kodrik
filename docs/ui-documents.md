@@ -223,28 +223,54 @@ attributes stay absent; remaining unsupported syntax produces an error alert.
 ## Forms and dataset actions
 
 `show_ui.actions` defaults to `[]` for existing documents. An action declares
-`id`, `dataset`, `operation` (`insert`/`update`), writable `fields`, and
-`record_id` (null for insert, fixed existing ID for update). Up to eight actions
-are allowed. Dataset schemas are authoritative; insert actions cover all required
+`id`, `dataset`, `operation` (`insert`/`update`/`respond`), writable `fields`, and
+`record_id` (null for insert/respond, fixed existing ID for update). Up to eight actions
+are allowed. Dataset schemas are authoritative; insert/respond actions cover all required
 fields. Snapshots resolve field metadata and current update values/revision;
 only declared fields are included in the action's value snapshot.
 
 Bind `::u-form{submit-action="add_meal"}` to an action ID and put named controls
 inside `::u-form-field{name="meal" label="Meal"}`; a `::u-button{type="submit"}`
 submits. See the bundled web-pages skill for a complete example. Plain forms
-without actions remain local. Chat and public action forms are disabled; private
-published pages receive action URLs pinned to the release.
+without actions remain local. Authenticated web-chat forms save through a session/tool-call/action endpoint;
+the server resolves the action from the successful stored `show_ui` call in that
+user's space. Update forms retrieve current values/revision before editing,
+while the rest of the chat document stays a historical snapshot. Private pages receive action URLs pinned to the release.
 
-`POST /api/documents/<slug>/actions/<id>?release=<UUID>` requires owner login,
-same-origin Origin and the current private document release. The body is bounded
+Add `save-on="change"` to `u-form` with a respond/update action to omit the submit button.
+Autosave rejects insert actions to avoid creating a record on every edit. Choices save
+immediately and text inputs debounce 400 ms. Requests are serialized; errors
+retain input and offer retry. Retries reuse uncertain request IDs. Mounting a
+form does not save initial/default values. Autosave keeps focus and in-flight
+edits without remounting the document.
+
+For questionnaires, polls and article ratings use `operation: "respond"`.
+Unlike insert (one new record per submission), respond updates one browser's
+answer to that form. The browser retains a random respondent token and successful
+values/revision per action URL. The server derives an unguessable record ID from
+the token and the release/action scope; clients cannot target dataset record IDs.
+Public pages expose only respond URLs and accept them without login. Insert and
+update remain owner-only on private pages. Public documents never load saved
+responses automatically; avoid publishing raw response datasets as source data.
+Clearing browser storage or using another browser starts a new answer. A new
+publication release starts a new response scope.
+
+Dataset validation is unchanged: use optional fields for a progressively saved
+questionnaire. When a schema has required fields, every save must include them.
+This feature does not add a finalization step or incomplete-record schema.
+
+`POST /api/documents/<slug>/actions/<id>?release=<UUID>` requires same-origin Origin and the current document release;
+private pages require owner login, while public pages accept only respond. The body is bounded
 to 16 KiB: `request_id` UUID, flat `values` object and `expected_revision` (null
-for insert, current record revision for update), plus optional `clear_fields`
+for insert or a new response, current record revision for update or an existing response), plus `response_token` (a random UUID v4, required for respond),
+and optional `clear_fields`
 (default `[]`) to unset declared optional fields on updates. Required fields
 cannot be cleared. Dataset/operation/record target
 come from the published action, never from client input. Writes reuse DatasetStore
 schema validation, receipts and revision checks; other existing fields survive
 updates. Insert retries reuse the request UUID and record ID. Validation errors
-and conflicts are shown in the form; successful saves reload document sources.
+and conflicts are shown in the form; successful manual submissions reload document sources.
+Autosave retains the mounted form and input focus; refresh the page to reload sources.
 No LLM call, generic database endpoint or deletion action is involved.
 
 ## Chat snapshots and live pages

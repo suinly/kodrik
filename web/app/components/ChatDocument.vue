@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
 import {linkTarget} from '../utils/link-target'
-const props=defineProps<{output:unknown;actions?:boolean}>()
+import {endpoint} from '../utils/api'
+import type {UiDocument} from '../utils/ui-document'
+const props=defineProps<{output:unknown;actions?:boolean;sessionId?:string;callId?:string}>()
 const emit=defineEmits<{prompt:[text:string]}>()
-const document=computed(()=>(props.output as {document?:unknown})?.document)
+const document=computed(()=>{
+  const document=(props.output as {document?:UiDocument})?.document
+  if(!document || !props.sessionId || !props.callId) return document
+  return {...document,actions:document.actions?.map(action=>({...action,url:endpoint(`sessions/${encodeURIComponent(props.sessionId!)}/forms/${encodeURIComponent(props.callId!)}/${encodeURIComponent(action.id)}`)}))}
+})
 const url=computed(()=>{
   const value=(props.output as {url?:unknown})?.url
   return typeof value==='string'?value:undefined

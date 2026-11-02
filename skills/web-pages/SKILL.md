@@ -144,6 +144,39 @@ ru-RU/UTC. Calendar dates retain their day; timestamps require an explicit offse
 and convert to the requested timezone. Null shows Нет данных; invalid dates/options
 fail. Do not invent pattern strings or put formatting functions/expressions in MDC.
 
+### Questionnaires and ratings without submit
+
+Use the existing `u-form` with `save-on="change"`. Declare an action with
+`operation: "respond"`, `record_id: null`, and writable dataset fields. This saves
+one editable answer per browser/form, including on public pages without login.
+Choices save immediately; text debounces 400 ms. Initial defaults do not autosave.
+For incremental questionnaires create optional dataset fields: required fields
+must all be present before any save. Keep raw answers out of public sources/views.
+The owner can inspect answers with datasets in the owning space.
+
+```json
+{"id":"answer","dataset":"article_ratings","operation":"respond","fields":["rating","comment"],"record_id":null}
+```
+
+```md
+::u-form{submit-action="answer" save-on="change"}
+:::u-form-field{name="rating" label="Оценка статьи"}
+::::u-radio-group{:items='[{"label":"Полезно","value":5},{"label":"Не помогло","value":1}]'}
+::::
+:::
+:::u-form-field{name="comment" label="Комментарий"}
+::::u-textarea
+::::
+:::
+::
+```
+
+The browser retains its token and saved values; changing an answer updates its
+record. Another browser or cleared storage creates a new answer; this is not
+one-person vote enforcement. Republishing starts a new response scope. Existing
+insert/update actions remain private. Authenticated chat forms work without
+publishing, including isolated user spaces.
+
 ### Forms that save records
 
 Inspect the actual dataset schema first. Declare `actions` in `show_ui`:
@@ -177,10 +210,10 @@ preserved. Bind the action to native UForm and give each field its dataset name:
 
 Use the actual dataset/field names, not these example names blindly. A private
 persistent page enables saves through the gateway without invoking the agent;
-chat-only and public forms cannot save. Update forms load current values and
+authenticated web-chat forms also save. Public pages accept anonymous `respond` actions only. Update forms load current values and
 use record revisions; conflicts show an error rather than overwriting changes.
-Successful saves reload all related source views. Do not imply browser edits
-are persisted without a declared action and private publication.
+Manual saves on private pages reload source views. Autosave preserves input focus; refresh the page to reload related data. Do not imply browser edits
+are persisted without a declared action.
 
 The renderer accepts the generated catalog, JSON props and bounded data paths.
 Do not include HTML, JavaScript, event handlers, executable Vue directives or

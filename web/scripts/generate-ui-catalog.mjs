@@ -45,6 +45,9 @@ export async function buildCatalog(){
     const tag='u-'+kebab(name);
     components[tag]={name:'U'+name,props:[...props].sort(),booleans:[...booleans].sort(),models:[...models].sort(),api,documentation:`https://ui.nuxt.com/docs/components/${kebab(name)}`};
   }
+  components['u-form'].props.push('saveOn','submitAction');
+  components['u-form'].props.sort();
+  components['u-form'].api+='\n\n/** MDC adapter: submitAction: declared action ID. saveOn?: "change" saves on control changes without a submit button (text inputs debounce 400ms). Use operation respond for one editable questionnaire per browser, including anonymous public pages. Use optional dataset fields for progressive saving; required fields must all be populated before any save. Respond never exposes existing answers. insert/update actions remain private/authenticated. */';
   components['u-progress'].props.push('segments');
   components['u-progress'].props.sort();
   components['u-progress'].api+='\n\n/** MDC adapter: segments?: {value: number; color: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral"; label?: string}[] (max 32). Numeric max defaults to 100. Sum must not exceed max; remaining space is empty. Do not combine with modelValue. Bind with :segments="views.portions". */';

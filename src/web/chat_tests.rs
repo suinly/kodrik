@@ -23,7 +23,207 @@ mod approvals;
 #[path = "chat_subagents_tests.rs"]
 mod subagents;
 
+#[tokio::test]
+async fn chat_form_actions_require_a_successful_declaration_in_the_scoped_session() {
+    use crate::agent::{datasets::DatasetStore, message::ToolResult, session::SessionId};
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let other = f.create().await;
+    let datasets = DatasetStore::open(f.data.path().join("datasets")).unwrap();
+    datasets.execute(serde_json::from_value(json!({"action":"create","dataset":"answers","title":"Answers","fields":[{"name":"answer","type":"string","required":true}]})).unwrap()).unwrap();
+    let arguments = json!({"title":"Survey","body":"Survey","sources":[],"actions":[{"id":"add","dataset":"answers","operation":"insert","fields":["answer"],"record_id":null},{"id":"reply","dataset":"answers","operation":"respond","fields":["answer"],"record_id":null}],"slug":null,"visibility":null});
+    let output = crate::agent::tools::ShowUiTool::new(datasets.clone(), None)
+        .execute(arguments.clone())
+        .await
+        .unwrap();
+    let sessions = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut session = sessions.load(&SessionId::new(&id)).await.unwrap().unwrap();
+    session.push(Message::ToolCall(ToolCall {
+        call_id: "survey-call".into(),
+        name: "show_ui".into(),
+        arguments,
+    }));
+    session.push(Message::ToolResult(ToolResult {
+        call_id: "survey-call".into(),
+        content: output,
+    }));
+    session.push(Message::ToolCall(ToolCall {call_id:"pending-call".into(),name:"show_ui".into(),arguments:json!({"actions":[{"id":"add","dataset":"answers","operation":"insert","fields":["answer"],"record_id":null}]})}));
+    sessions.save(&session).await.unwrap();
+    let payload = json!({"request_id":uuid::Uuid::new_v4(),"values":{"answer":"Yes"},"expected_revision":null});
+    let path = format!("sessions/{id}/forms/survey-call/add");
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let stored = datasets
+        .execute(serde_json::from_value(json!({"action":"query","dataset":"answers"})).unwrap())
+        .unwrap();
+    assert_eq!(stored["records"][0]["values"]["answer"], "Yes");
+    for path in [
+        format!("sessions/{other}/forms/survey-call/add"),
+        format!("sessions/{id}/forms/forged/add"),
+        format!("sessions/{id}/forms/survey-call/forged"),
+        format!("sessions/{id}/forms/pending-call/add"),
+    ] {
+        let response = f
+            .request(reqwest::Method::POST, &path)
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+    }
+    let response = f
+        .client
+        .post(format!("{}api/chat/{path}", f.base))
+        .header("Origin", &f.origin)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .header("Origin", "https://evil.invalid")
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let response = f.request(reqwest::Method::POST, &path).json(&json!({"request_id":uuid::Uuid::new_v4(),"values":{"answer":"x".repeat(17000)},"expected_revision":null})).send().await.unwrap();
+    assert_eq!(response.status(), 413);
+    let respondent = uuid::Uuid::new_v4();
+    for (answer, revision) in [("First", None), ("Changed", Some(1))] {
+        let response = f.request(reqwest::Method::POST, &format!("sessions/{id}/forms/survey-call/reply"))
+            .json(&json!({"request_id":uuid::Uuid::new_v4(),"response_token":respondent,"values":{"answer":answer},"expected_revision":revision}))
+            .send().await.unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+    let stored = datasets
+        .execute(serde_json::from_value(json!({"action":"query","dataset":"answers"})).unwrap())
+        .unwrap();
+    assert_eq!(stored["records"].as_array().unwrap().len(), 2);
+    assert_eq!(stored["records"][1]["values"]["answer"], "Changed");
+
+    let record_id = stored["records"][0]["id"].as_str().unwrap();
+    let arguments = json!({"title":"Edit","body":"Edit","sources":[],"actions":[{"id":"change","dataset":"answers","operation":"update","fields":["answer"],"record_id":record_id}],"slug":null,"visibility":null});
+    let output = crate::agent::tools::ShowUiTool::new(datasets.clone(), None)
+        .execute(arguments.clone())
+        .await
+        .unwrap();
+    session.push(Message::ToolCall(ToolCall {
+        call_id: "edit-call".into(),
+        name: "show_ui".into(),
+        arguments,
+    }));
+    session.push(Message::ToolResult(ToolResult {
+        call_id: "edit-call".into(),
+        content: output,
+    }));
+    sessions.save(&session).await.unwrap();
+    let path = format!("sessions/{id}/forms/edit-call/change");
+    let response = f.request(reqwest::Method::POST,&path).json(&json!({"request_id":uuid::Uuid::new_v4(),"values":{"answer":"Edited"},"expected_revision":1})).send().await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let response = f.request(reqwest::Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let action: Value = response.json().await.unwrap();
+    assert_eq!(action["record"]["revision"], 2);
+    assert_eq!(action["record"]["values"]["answer"], "Edited");
+    let response = f
+        .request(
+            reqwest::Method::GET,
+            &format!("sessions/{other}/forms/edit-call/change"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
 struct FakeLlm;
+
+#[tokio::test]
+async fn chat_form_actions_write_only_the_authenticated_users_dataset() {
+    use crate::agent::{
+        datasets::DatasetStore,
+        message::ToolResult,
+        session::{Session, SessionId},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let f = Fixture::configured(Some(root.path()), "127.0.0.1:0").await;
+    let owner = DatasetStore::open(root.path().join("datasets")).unwrap();
+    let guest = DatasetStore::open(root.path().join("users/7/datasets")).unwrap();
+    for store in [&owner, &guest] {
+        store.execute(serde_json::from_value(json!({"action":"create","dataset":"isolated_answers","title":"Answers","fields":[{"name":"answer","type":"string","required":true}]})).unwrap()).unwrap();
+    }
+    owner.execute(serde_json::from_value(json!({"action":"upsert","dataset":"isolated_answers","request_id":uuid::Uuid::new_v4(),"records":[{"id":"owner-secret","expected_revision":null,"values":[{"field":"answer","value":"Owner secret"}]}]})).unwrap()).unwrap();
+    let arguments = json!({"title":"Survey","body":"Survey","sources":[],"actions":[{"id":"reply","dataset":"isolated_answers","operation":"insert","fields":["answer"],"record_id":null}],"slug":null,"visibility":null});
+    let output = crate::agent::tools::ShowUiTool::new(guest.clone(), None)
+        .execute(arguments.clone())
+        .await
+        .unwrap();
+    let sessions = SqliteSessionStore::open(root.path().join("users/7/sessions")).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut session = Session::new(SessionId::new(&id));
+    session.push(Message::ToolCall(ToolCall {
+        call_id: "reply-call".into(),
+        name: "show_ui".into(),
+        arguments,
+    }));
+    session.push(Message::ToolResult(ToolResult {
+        call_id: "reply-call".into(),
+        content: output,
+    }));
+    sessions.save(&session).await.unwrap();
+    let token = AuthStore::new(root.path())
+        .test_session(
+            super::auth::Identity::Telegram(7),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap()
+        .unwrap();
+    let path = format!("sessions/{id}/forms/reply-call/reply");
+    let payload = json!({"request_id":uuid::Uuid::new_v4(),"values":{"answer":"Guest answer"},"expected_revision":null});
+    let response = f
+        .client
+        .post(format!("{}api/chat/{path}", f.base))
+        .header("Cookie", format!("kodrik_web_session={token}"))
+        .header("Origin", &f.origin)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let owner_records = owner
+        .execute(
+            serde_json::from_value(json!({"action":"query","dataset":"isolated_answers"})).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(owner_records["records"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        owner_records["records"][0]["values"]["answer"],
+        "Owner secret"
+    );
+    let guest_records = guest
+        .execute(
+            serde_json::from_value(json!({"action":"query","dataset":"isolated_answers"})).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        guest_records["records"][0]["values"]["answer"],
+        "Guest answer"
+    );
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
 
 #[async_trait::async_trait]
 impl LlmProvider for FakeLlm {
@@ -513,7 +713,7 @@ async fn chat_with_ui(
         ToolRegistry::default()
             .register(Arc::new(UpdatePlanTool))
             .register(Arc::new(crate::agent::tools::ShowUiTool::new(
-                datasets,
+                datasets.clone(),
                 publication,
             )))
             .register(Arc::new(SlowTool(data.join("effects.txt")))),
@@ -527,7 +727,10 @@ async fn chat_with_ui(
         Arc::new(agent.with_subagents(subagents)),
         Arc::new(sessions),
     );
-    Chat::new(&owner, data).await.unwrap()
+    Chat::new(&owner, data)
+        .await
+        .unwrap()
+        .with_datasets(datasets)
 }
 
 #[tokio::test]
