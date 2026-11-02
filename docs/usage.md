@@ -44,21 +44,32 @@ Esc stops recovery, and Ctrl+C with empty input exits while keeping it resumable
 | `/new` | Start a fresh session |
 | `/sessions` | Open the session picker |
 | `/language en` or `/language ru` | Change and save the interface language locally |
-| ↑ / ↓ in the picker | Select a session |
+| ↑ / ↓ or j / k in a picker or command menu | Move the selection |
 | Enter / Esc in the picker | Open / close |
-| Esc while working, with no command menu open | Cancel the current request |
+| Esc while working, with no menu or editor open | Cancel the current request |
+| Double Esc within 500 ms while idle | Select the latest saved user message |
+| ↑ / ↓ or j / k while a message is selected | Select an earlier or later user message |
+| ← / → or h / l while a message is selected | Switch between its saved versions; the counter shows the current version |
+| Enter / Esc while a message is selected | Open for editing / return to the draft |
+| Enter / Esc while editing | Submit the edit in a new branch / restore the draft |
 | Ctrl+C | Clear nonempty input; quit when input is empty |
 | Left-button drag anywhere in the interface | Select text; releasing the button copies it and clears the selection on success |
 | Esc with a selection | Clear the selection before stopping a request or closing a menu |
 | Ctrl+C with a selection | Copy the selection again |
 | Mouse wheel | Scroll the conversation; move the selection in the session picker |
-| ↑ / ↓ with empty input and no menu open | Scroll the conversation |
-| ↑ / ↓ with nonempty input | Move the input cursor between lines |
+| ↑ / ↓ with single-line input and no menu open | Recall the previous / next user message; moving past the latest restores the draft |
+| ↑ / ↓ with multiline input | Move the cursor between rows; recall messages at the first / last row |
 | PageUp / PageDown | Scroll the conversation by ten lines |
 
 The wheel scrolls history independently of the input cursor. Scrolling stops at
 the beginning and end. Reading earlier messages holds the current position while
 new output arrives; at the bottom, the view follows new output.
+
+Editing preserves the original session and the message's attachments. The new
+branch keeps history before the edited turn and continues from its replacement.
+Versions use the same conversation family and selection as Web Chat. The session
+picker shows the family once and opens its selected version.
+Ordinary j/k typing and Ctrl+J newlines remain available in the composer.
 
 Text is selectable throughout the interface, including tool rows, input, menus
 and status lines. Drag to a history edge or use the wheel while dragging to select
@@ -237,8 +248,8 @@ requires confirmation. Review the tool name, full arguments and reason:
 - In Web or a private Telegram bot chat, choose **Allow once** or **Reject**.
 - In TUI, pending commands replace the input field with **Allow once**, **Reject**
   and **No checks for this session**.
-  Read the invocation above, select with ↑/↓ and confirm with Enter; Esc rejects it.
-  No option is selected initially. Requests appear one at a time, and your draft
+  Read the invocation above, select with ↑/↓ or j/k and confirm with Enter; Esc rejects it.
+  **Allow once** is selected initially. Requests appear one at a time, and your draft
   returns after the last decision. `/approvals SESSION_ID` reviews another personal
   session in the same local store without switching sessions. `/approvals`,
   `/approve ID` and `/deny ID` remain available as local commands.
@@ -252,12 +263,15 @@ Requests survive restart for resumable foreground runs; waiting for a person doe
 not count as a crashed attempt. Existing cancellation of abandoned child agents
 still applies, so their requests cannot authorize a new child invocation.
 
-Click the header mode button to change it. TUI also opens the menu with **F2**;
-use ↑/↓ and Enter to select, or Esc to cancel. TUI and Telegram accept
+In Web, click the header mode button to change it. TUI shows the current mode in
+the bottom status line. TUI and Telegram accept
 `/audit trusted|review|ask|status`; TUI also accepts a trailing `SESSION_ID` to
 control another personal session in the same store. `/audit off` and `/audit on`
 remain aliases for No checks and AI review. These commands are handled directly
 by the interface and are not sent to the model.
+
+In TUI, `/audit` without arguments opens a mode picker with the current mode
+selected. Use ↑/↓ or j/k to move, Enter to apply, and Esc to close without changes.
 
 The mode survives restart and applies to the session's child agents. Changing it
 affects tool calls that have not started. No checks releases pending requests;

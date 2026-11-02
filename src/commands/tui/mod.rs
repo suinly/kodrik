@@ -1,6 +1,7 @@
 mod app;
 mod approvals;
 mod clipboard;
+mod navigation;
 #[cfg(all(test, unix))]
 mod startup_tests;
 mod terminal;
@@ -26,7 +27,7 @@ use crate::{
     agent::{
         AgentEvent,
         message::Message,
-        session::{Session, SessionId},
+        session::{Session, SessionId, SessionStore},
     },
     bootstrap::build_app,
     config::{Config, ProviderConfig},
@@ -78,6 +79,7 @@ async fn run_session(
     };
     app.model = model;
     restore_history(&mut app, &session);
+    refresh_versions(&mut app, &runner, &session).await?;
     approvals::refresh(&mut app, &runner, &session_id).await?;
 
     let mut tui = Tui::enter()?;
@@ -151,6 +153,7 @@ async fn run_session(
                 app.pending_tools.clear();
                 app.streaming_message = None;
                 restore_history(&mut app, &session);
+                refresh_versions(&mut app, &runner, &session).await?;
                 approvals::refresh(&mut app, &runner, &session_id).await?;
                 app.status = if !report.blocked.is_empty() {
                     Status::Error
@@ -171,15 +174,8 @@ async fn run_session(
                         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
                             continue;
                         }
-                        if key.code == KeyCode::F(2) || app.mode_picker.is_some() {
-                            if let Some(input) = app.update(key) {
-                                approvals::handle_command(&mut app, &runner, &session_id, &input).await;
-                            }
-                            redraw = true;
-                            continue;
-                        }
                         match selection_command(&mut app, key) {
-                            Some(SelectionCommand::Clear) => { redraw = true; continue; }
+                            Some(SelectionCommand::Clear) => { app.navigation.escape = None; redraw = true; continue; }
                             Some(SelectionCommand::Copy(text)) => {
                                 copies.abort_all();
                                 while copies.try_join_next().is_some() {}
@@ -189,9 +185,22 @@ async fn run_session(
                             }
                             None => {}
                         }
-                        if app.approval.is_some() {
+                        if app.approval.is_some() || app.audit_picker.is_some() {
                             if let Some(input) = app.update(key) {
                                 approvals::handle_command(&mut app, &runner, &session_id, &input).await;
+                            }
+                            redraw = true;
+                            continue;
+                        }
+                        if app.navigation.selected.is_some() || (app.navigation.editing.is_some() && key.code == KeyCode::Esc) {
+                            let user_turn = app.selected_user_turn();
+                            app.update(key);
+                            if let Some(id) = app.navigation.pending_version.take() {
+                                if let Some(turn) = user_turn {
+                                    if let Err(error) = select_message_version(&mut app, &runner, &session_id, &SessionId::new(id), turn).await {
+                                        app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not switch message version", "Не удалось переключить версию сообщения")));
+                                    }
+                                }
                             }
                             redraw = true;
                             continue;
@@ -212,6 +221,7 @@ async fn run_session(
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
+                                        refresh_versions(&mut app, &runner, &session).await?;
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
                                     }
@@ -233,7 +243,31 @@ async fn run_session(
                             redraw = true;
                             continue;
                         }
+                        if key.code == KeyCode::Esc && app.sessions.is_none() && app.command_suggestion().is_none()
+                            && !matches!(app.status, Status::Working | Status::Recovering | Status::Stopping)
+                        {
+                            match runner.load_session(session_id.clone()).await {
+                                Ok(session) => { refresh_history(&mut app, &session); refresh_versions(&mut app, &runner, &session).await?; }
+                                Err(error) => {
+                                    app.navigation.escape = None;
+                                    app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not load saved messages", "Не удалось загрузить сохранённые сообщения")));
+                                    redraw = true;
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some(input) = app.update(key) {
+                            if app.navigation.editing.is_some() {
+                                match submit_edit(&mut app, &runner, &session_id, input).await {
+                                    Ok(message) => { input_tx.send(message)?; }
+                                    Err(error) => {
+                                        app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not edit the message", "Не удалось изменить сообщение")));
+                                        app.status = Status::Error;
+                                    }
+                                }
+                                redraw = true;
+                                continue;
+                            }
                             if approvals::handle_command(&mut app, &runner, &session_id, &input).await {
                                 redraw = true;
                                 continue;
@@ -243,7 +277,7 @@ async fn run_session(
                                 continue;
                             }
                             if input == "/sessions" {
-                                match runner.list_sessions().await {
+                                match runner.list_conversations().await {
                                     Ok(sessions) => {
                                         app.sessions = Some(sessions.iter().map(|session| {
                                             let title = session.messages().iter().find_map(|message| match message {
@@ -292,12 +326,6 @@ async fn run_session(
                         redraw = true;
                     }
                     Ok(Event::Mouse(mouse)) => {
-                        let (handled, input) = approvals::modes_mouse(&mut app, mouse);
-                        if handled {
-                            if let Some(input) = input { approvals::handle_command(&mut app, &runner, &session_id, &input).await; }
-                            redraw = true;
-                            continue;
-                        }
                         if let Some(sessions) = &app.sessions {
                             match mouse.kind {
                                 MouseEventKind::ScrollUp => { app.view.clear_selection(); app.session_index = app.session_index.saturating_sub(1); },
@@ -384,6 +412,7 @@ async fn run_session(
                     if history_revision != Some(revision) {
                         let session = runner.load_session(session_id.clone()).await?;
                         redraw |= refresh_history(&mut app, &session);
+                        redraw |= refresh_versions(&mut app, &runner, &session).await?;
                         redraw |= approvals::refresh(&mut app, &runner, &session_id).await?;
                         history_revision = Some(revision);
                     }
@@ -544,7 +573,106 @@ fn reset_session(app: &mut App) {
     };
 }
 
+async fn submit_edit(
+    app: &mut App,
+    runner: &crate::agent::AgentRunner,
+    conversation: &SessionId,
+    input: String,
+) -> anyhow::Result<IncomingMessage> {
+    use anyhow::Context;
+    let result = async {
+        let edit = app
+            .navigation
+            .editing
+            .as_ref()
+            .context("No message is being edited")?;
+        let source = edit
+            .source
+            .as_ref()
+            .context("The original session is unavailable")?;
+        runner
+            .edit_message(conversation, source, edit.user_turn, input.clone())
+            .await
+    }
+    .await;
+    let (branch, message) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            app.input = input;
+            app.input_cursor = app.input.len();
+            return Err(error);
+        }
+    };
+    reset_session(app);
+    restore_history(app, &branch);
+    app.push_user_message(message.text.clone());
+    app.status = Status::Working;
+    if let Err(error) = refresh_versions(app, runner, &branch).await {
+        log::warn!("Could not refresh message versions after editing: {error:#}");
+    }
+    if let Err(error) = approvals::refresh(app, runner, conversation).await {
+        log::warn!("Could not refresh command approvals after editing: {error:#}");
+    }
+    Ok(message)
+}
+
+async fn refresh_versions(
+    app: &mut App,
+    runner: &crate::agent::AgentRunner,
+    session: &Session,
+) -> anyhow::Result<bool> {
+    let Some(store) = runner.sqlite_store() else {
+        return Ok(false);
+    };
+    let versions = store.message_versions(session).await?;
+    if app.versions == versions {
+        return Ok(false);
+    }
+    app.versions = versions;
+    Ok(true)
+}
+
+async fn select_message_version(
+    app: &mut App,
+    runner: &crate::agent::AgentRunner,
+    conversation: &SessionId,
+    id: &SessionId,
+    user_turn: usize,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let target = runner
+        .sqlite_store()
+        .context("Message versions require SQLite")?
+        .load(id)
+        .await?
+        .context("Message version not found")?;
+    anyhow::ensure!(
+        target
+            .messages()
+            .iter()
+            .filter(|message| matches!(message, Message::User(_)))
+            .nth(user_turn)
+            .is_some(),
+        "This version has no saved user message"
+    );
+    let session = runner.select_session(conversation, id).await?;
+    app.cancel_message_navigation();
+    let navigation = std::mem::take(&mut app.navigation);
+    let draft = std::mem::take(&mut app.input);
+    let cursor = app.input_cursor;
+    reset_session(app);
+    restore_history(app, &session);
+    app.navigation = navigation;
+    app.input = draft;
+    app.input_cursor = cursor;
+    app.select_user_turn(user_turn);
+    refresh_versions(app, runner, &session).await?;
+    approvals::refresh(app, runner, conversation).await?;
+    Ok(())
+}
+
 fn restore_history(app: &mut App, session: &Session) {
+    app.session = Some(session.id().clone());
     let mut plan_calls = std::collections::HashMap::new();
     for message in session.messages() {
         match message {
@@ -589,7 +717,9 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
         ..Default::default()
     };
     restore_history(&mut saved, session);
-    if app.messages.len() == saved.messages.len()
+    let source_changed = app.session != saved.session;
+    if !source_changed
+        && app.messages.len() == saved.messages.len()
         && app
             .messages
             .iter()
@@ -598,12 +728,94 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     {
         return false;
     }
+    let selected_turn = app
+        .navigation
+        .selected
+        .and_then(|index| app.messages.get(..index))
+        .map(|messages| {
+            messages
+                .iter()
+                .filter(|message| message.role == AppMessageRole::User)
+                .count()
+        });
+    if source_changed && app.navigation.selected.is_some() {
+        app.cancel_message_navigation();
+    }
     app.messages = saved.messages;
+    app.session = saved.session;
+    if let Some(turn) = selected_turn.filter(|_| !source_changed) {
+        app.navigation.selected = app
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.role == AppMessageRole::User)
+            .nth(turn)
+            .map(|(index, _)| index);
+        app.navigation.focus = app.navigation.selected;
+        if app.navigation.selected.is_none() {
+            app.cancel_message_navigation();
+        }
+    }
     app.shown_approvals.clear();
     app.pending_tools = saved.pending_tools;
     app.streaming_message = None;
     app.view.clear_selection();
     true
+}
+
+#[test]
+fn message_navigation_survives_reloaded_history_and_session_identity_changes() {
+    let mut session = Session::new(SessionId::new("source"));
+    for content in ["first", "second"] {
+        session.push(Message::User(crate::agent::UserMessage {
+            content: content.into(),
+            files: vec![],
+            images: vec![],
+        }));
+    }
+    for selecting in [false, true] {
+        let mut app = App {
+            input_width: 80,
+            ..Default::default()
+        };
+        restore_history(&mut app, &session);
+        app.messages.insert(
+            0,
+            app::AppMessage {
+                role: AppMessageRole::Kodrik,
+                content: "local command output".into(),
+            },
+        );
+        if selecting {
+            for _ in 0..2 {
+                app.update(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            }
+        } else {
+            app.update(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+            assert_eq!(app.input, "second");
+        }
+        refresh_history(&mut app, &session);
+        app.update(KeyEvent::new(
+            if selecting {
+                KeyCode::Enter
+            } else {
+                KeyCode::Up
+            },
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(app.input, if selecting { "second" } else { "first" });
+    }
+    let mut app = App::default();
+    restore_history(&mut app, &session);
+    let other = session.fork_before(SessionId::new("other"), 1).unwrap();
+    let mut same_messages = other;
+    same_messages.push(Message::User(crate::agent::UserMessage {
+        content: "second".into(),
+        files: vec![],
+        images: vec![],
+    }));
+    assert!(refresh_history(&mut app, &same_messages));
+    assert_eq!(app.session.as_ref().unwrap().as_str(), "other");
 }
 
 #[test]

@@ -17,6 +17,9 @@ pub struct App {
     pub command_index: usize,
     pub sessions: Option<Vec<(crate::agent::session::SessionId, String)>>,
     pub session_index: usize,
+    pub session: Option<crate::agent::session::SessionId>,
+    pub versions: HashMap<usize, crate::agent::session::branches::MessageVersions>,
+    pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
@@ -24,12 +27,9 @@ pub struct App {
     pub approval_session: Option<crate::agent::session::SessionId>,
     pub approval: Option<crate::agent::command_audit::CommandApproval>,
     pub approval_choice: Option<usize>,
-    pub audit_disabled_sessions: Vec<String>,
     pub audit_mode: crate::agent::command_audit::CommandAuditMode,
     pub audit_session: Option<crate::agent::session::SessionId>,
-    pub mode_picker: Option<super::approvals::ModePicker>,
-    pub mode_button: ratatui::layout::Rect,
-    pub mode_popup: ratatui::layout::Rect,
+    pub audit_picker: Option<super::approvals::AuditPicker>,
     pub scroll: usize,
     pub view: super::view::View,
     pub copy_notice: Option<(String, std::time::Instant)>,
@@ -57,7 +57,11 @@ impl App {
         ));
     }
     pub fn command_suggestions(&self) -> Vec<(&'static str, &'static str)> {
-        if self.approval.is_some() {
+        if self.approval.is_some()
+            || self.audit_picker.is_some()
+            || self.navigation.selected.is_some()
+            || self.navigation.editing.is_some()
+        {
             return Vec::new();
         }
         [
@@ -99,8 +103,8 @@ impl App {
             (
                 "/audit",
                 self.language.pick(
-                    "Mode: /audit trusted|review|ask|status [SESSION_ID]",
-                    "Режим: /audit trusted|review|ask|status [SESSION_ID]",
+                    "Choose tool mode: /audit [trusted|review|ask|status] [SESSION_ID]",
+                    "Выбор режима: /audit [trusted|review|ask|status] [SESSION_ID]",
                 ),
             ),
         ]
@@ -119,7 +123,10 @@ impl App {
     }
 
     pub fn insert_input(&mut self, text: &str) {
-        if self.approval.is_some() || self.mode_picker.is_some() {
+        if self.approval.is_some()
+            || self.audit_picker.is_some()
+            || self.navigation.selected.is_some()
+        {
             return;
         }
         self.commands_dismissed = false;
@@ -258,21 +265,25 @@ impl App {
         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
             return None;
         }
-        if key.code == KeyCode::F(2) && key.modifiers.is_empty() && key.kind == KeyEventKind::Press
+        if key.code != KeyCode::Esc
+            || self.sessions.is_some()
+            || self.audit_picker.is_some()
+            || self.approval.is_some()
         {
-            super::approvals::toggle_modes(self);
-            return None;
+            self.navigation.escape = None;
         }
-        if self.mode_picker.is_some() {
-            return super::approvals::update_modes(self, key);
+        if self.audit_picker.is_some() {
+            return super::approvals::update_audit_picker(self, key);
         }
         if self.approval.is_some() {
             return super::approvals::update(self, key);
         }
         if let Some(sessions) = &self.sessions {
             match key.code {
-                KeyCode::Up => self.session_index = self.session_index.saturating_sub(1),
-                KeyCode::Down => {
+                KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                    self.session_index = self.session_index.saturating_sub(1)
+                }
+                KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
                     self.session_index =
                         (self.session_index + 1).min(sessions.len().saturating_sub(1))
                 }
@@ -282,6 +293,7 @@ impl App {
             return None;
         }
         if let Some((command, _)) = self.command_suggestion()
+            && self.navigation.editing.is_none()
             && key.modifiers.is_empty()
         {
             match key.code {
@@ -297,9 +309,9 @@ impl App {
                     self.commands_dismissed = true;
                     return None;
                 }
-                KeyCode::Up | KeyCode::Down => {
+                KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
                     let count = self.command_suggestions().len();
-                    self.command_index = if key.code == KeyCode::Down {
+                    self.command_index = if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
                         (self.command_index + 1) % count
                     } else {
                         (self.command_index + count - 1) % count
@@ -309,6 +321,21 @@ impl App {
                 _ => {}
             }
         }
+        if self.update_message_navigation(key) {
+            return None;
+        }
+        if matches!(key.code, KeyCode::Up | KeyCode::Down)
+            && key.modifiers.is_empty()
+            && self.navigation.editing.is_none()
+        {
+            let (rows, (_, row)) = self.input_layout(self.input_width.max(1));
+            let previous = key.code == KeyCode::Up;
+            if ((previous && row == 0) || (!previous && row + 1 == rows.len()))
+                && self.recall_input(previous)
+            {
+                return None;
+            }
+        }
         match key.code {
             KeyCode::Char('c' | 'C' | 'с' | 'С')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -316,6 +343,7 @@ impl App {
                 if self.input.is_empty() {
                     self.should_quit = true;
                 } else {
+                    self.navigation.clear_history();
                     self.commands_dismissed = false;
                     self.command_index = 0;
                     self.input.clear();
@@ -342,6 +370,11 @@ impl App {
                 {
                     return None;
                 }
+                if self.navigation.editing.is_some() {
+                    self.input_cursor = 0;
+                    return Some(std::mem::take(&mut self.input));
+                }
+                self.navigation.clear_history();
                 let input = std::mem::take(&mut self.input).trim().to_owned();
                 self.input_cursor = 0;
                 if matches!(input.as_str(), "/new" | "/sessions")
@@ -433,23 +466,143 @@ mod tests {
     }
 
     #[test]
-    fn mode_picker_requires_explicit_selection_and_preserves_draft() {
+    fn recall_only_replaces_multiline_input_at_its_outer_rows() {
+        let mut app = App {
+            input_width: 80,
+            ..Default::default()
+        };
+        app.push_user_message("earlier".into());
+        app.insert_input("top\nbottom");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.input, "top\nbottom");
+        assert!(app.input_cursor <= 3);
+        let cursor = app.input_cursor;
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.input, "earlier");
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.input, "top\nbottom");
+        assert_eq!(app.input_cursor, cursor);
+    }
+
+    #[test]
+    fn double_escape_ignores_repeats_and_an_expired_first_press() {
+        let mut app = App::default();
+        app.push_user_message("earlier".into());
+        key(&mut app, KeyCode::Esc);
+        app.update(KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        ));
+        assert!(app.navigation.selected.is_none());
+        app.navigation.escape = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.navigation.selected.is_none());
+        key(&mut app, KeyCode::Char('x'));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.navigation.selected.is_none());
+        key(&mut app, KeyCode::Esc);
+        assert!(app.navigation.selected.is_some());
+    }
+
+    #[test]
+    fn history_recall_restores_the_draft_and_does_not_change_messages() {
+        let mut app = App {
+            input_width: 80,
+            ..Default::default()
+        };
+        app.push_user_message("first".into());
+        app.push_kodrik_message("answer".into());
+        app.push_user_message("second".into());
+        app.insert_input("draft");
+        app.input_cursor = 2;
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.input, "second");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.input, "first");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.input, "first");
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.input, "second");
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.input_cursor, 2);
+        assert_eq!(app.messages.len(), 3);
+        assert_eq!(app.messages[0].content, "first");
+    }
+
+    #[test]
+    fn double_escape_selects_a_user_turn_and_enter_opens_it_for_editing() {
+        let mut app = App {
+            input_width: 80,
+            ..Default::default()
+        };
+        app.push_user_message("first".into());
+        app.push_kodrik_message("answer".into());
+        app.push_user_message("second".into());
+        app.insert_input("draft");
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('k'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(key(&mut app, KeyCode::Enter), None);
+        assert_eq!(app.input, "first");
+        assert_eq!(app.messages.len(), 3);
+        app.insert_input(" edited");
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.input_cursor, 5);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(key(&mut app, KeyCode::Enter), None);
+        app.insert_input(" edited");
+        assert_eq!(
+            key(&mut app, KeyCode::Enter).as_deref(),
+            Some("second edited")
+        );
+        assert_eq!(
+            app.messages.len(),
+            3,
+            "edits are displayed only after durable admission"
+        );
+    }
+
+    #[test]
+    fn jk_navigates_menus_but_remains_text_in_the_composer() {
+        let mut app = App::default();
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('k'));
+        app.update(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        assert_eq!(app.input, "jk\n");
+        app.sessions = Some(vec![
+            (crate::agent::session::SessionId::new("one"), "one".into()),
+            (crate::agent::session::SessionId::new("two"), "two".into()),
+        ]);
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.session_index, 1);
+        key(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.session_index, 0);
+        app.sessions = None;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.command_suggestion().unwrap().0, "/sessions");
+        key(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.command_suggestion().unwrap().0, "/new");
+    }
+
+    #[test]
+    fn f2_leaves_the_composer_active() {
         let mut app = App::default();
         app.insert_input("draft");
         app.input_cursor = 2;
         app.scroll = 7;
         assert_eq!(key(&mut app, KeyCode::F(2)), None);
-        assert_eq!(key(&mut app, KeyCode::Enter), None);
-        key(&mut app, KeyCode::Down);
-        key(&mut app, KeyCode::Down);
-        key(&mut app, KeyCode::Down);
-        assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/audit ask"));
-        assert_eq!(app.input, "draft");
-        assert_eq!(app.input_cursor, 2);
+        app.insert_input("x");
+        assert_eq!(app.input, "drxaft");
+        assert_eq!(app.input_cursor, 3);
         assert_eq!(app.scroll, 7);
-        key(&mut app, KeyCode::F(2));
-        assert_eq!(key(&mut app, KeyCode::Esc), None);
-        assert_eq!(app.input, "draft");
     }
 
     #[test]

@@ -42,6 +42,10 @@ impl Tui {
     }
 
     pub fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
+        if app.approval.is_some() || app.audit_picker.is_some() || app.navigation.selected.is_some()
+        {
+            self.terminal.hide_cursor()?;
+        }
         io::stderr().sync_update(|_| {
             self.terminal
                 .draw(|frame| ui::render(app, frame))

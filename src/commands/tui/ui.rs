@@ -8,8 +8,10 @@ use ratatui::{
 };
 
 use super::app::{App, AppMessage, AppMessageRole, Status, ToolState};
+use crate::agent::command_audit::CommandAuditMode;
 
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const USER_TEXT_COLOR: Color = Color::Reset;
 pub const VIEWPORT_HEIGHT: u16 = 7;
 const LOGO: [&str; 6] = [
     "██                        ██            ██  ██        ",
@@ -63,7 +65,7 @@ pub fn message_height(message: &AppMessage, paragraph: &Paragraph<'_>, width: u1
 pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut Buffer) {
     let area = buf.area;
     let (icon, color, bg) = match message.role {
-        AppMessageRole::User => (">", Color::White, Color::Rgb(54, 58, 79)),
+        AppMessageRole::User => (">", USER_TEXT_COLOR, Color::Rgb(54, 58, 79)),
         AppMessageRole::Plan => ("☷", Color::Cyan, Color::default()),
         AppMessageRole::Approval => ("!", Color::Yellow, Color::default()),
         AppMessageRole::Kodrik => ("●", Color::White, Color::default()),
@@ -92,14 +94,9 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
-    let full_area = frame.area();
-    let area = Rect::new(
-        full_area.x,
-        full_area.y.saturating_add(u16::from(full_area.height > 0)),
-        full_area.width,
-        full_area.height.saturating_sub(1),
-    );
+    let area = frame.area();
     let language = app.language;
+    let has_picker = app.approval.is_some() || app.audit_picker.is_some();
     if let Some(sessions) = &app.sessions {
         app.view
             .prepare(&app.messages, area, 0, &mut app.scroll, true);
@@ -133,13 +130,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }
         app.view.restore_footer(frame.buffer_mut());
         app.view.finish_frame(frame.buffer_mut(), None);
-        render_modes(app, frame);
         return;
     }
     app.input_width = usize::from(area.width.saturating_sub(3).max(1));
     let (input_rows, (cursor_x, cursor_y)) = app.input_layout(app.input_width);
-    let input_lines = if app.approval.is_some() {
+    let input_lines = if app.audit_picker.is_some() {
+        5
+    } else if has_picker {
         3
+    } else if app.navigation.selected.is_some() {
+        1
     } else {
         input_rows.len().min(6) as u16
     };
@@ -149,7 +149,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .saturating_sub(VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3);
     app.view
         .prepare(&app.messages, area, history_height, &mut app.scroll, false);
-    app.view.render_history(frame.buffer_mut());
+    if let Some(index) = app.navigation.focus.take() {
+        app.view.focus_message(index, &mut app.scroll);
+    }
+    app.view
+        .render_history(frame.buffer_mut(), app.navigation.selected);
     let footer = Rect::new(
         area.x,
         area.y + history_height,
@@ -165,13 +169,21 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         ])
         .split(footer);
 
-    let (input, input_color) = if app.input.is_empty() {
+    let (input, input_color) = if app.navigation.selected.is_some() {
+        (
+            vec![Line::raw(language.pick(
+                "Press Enter to edit the selected message",
+                "Нажмите Enter для редактирования сообщения",
+            ))],
+            Color::DarkGray,
+        )
+    } else if app.input.is_empty() {
         (
             vec![Line::raw(language.pick(
                 "Ask Kodrik to do anything",
                 "Попросите Kodrik о чём угодно",
             ))],
-            Color::Gray,
+            Color::DarkGray,
         )
     } else {
         (
@@ -179,16 +191,53 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 .iter()
                 .map(|row| Line::raw(&app.input[row.clone()]))
                 .collect(),
-            Color::White,
+            USER_TEXT_COLOR,
         )
     };
 
-    let (animation_frame, state, done_at) = if app.approval.is_some() {
+    let (animation_frame, state, done_at) = if app.audit_picker.is_some() {
+        (
+            "◇",
+            language.pick(
+                "Tool mode · ↑/↓ or j/k select · Enter apply · Esc close",
+                "Режим проверок · ↑/↓ или j/k выбор · Enter применить · Esc закрыть",
+            ),
+            String::new(),
+        )
+    } else if app.approval.is_some() {
         (
             "!",
             language.pick(
-                "Approve command · ↑/↓ select · Enter confirm · Esc reject",
-                "Подтверждение · ↑/↓ выбор · Enter подтвердить · Esc отклонить",
+                "Approve command · ↑/↓ or j/k select · Enter confirm · Esc reject",
+                "Подтверждение · ↑/↓ или j/k выбор · Enter подтвердить · Esc отклонить",
+            ),
+            String::new(),
+        )
+    } else if app.navigation.selected.is_some() {
+        (
+            "↶",
+            if app.selected_versions().is_some() {
+                language.pick(
+                    "Message · ↑/↓ j/k · ←/→ h/l versions · Enter edit · Esc close",
+                    "Сообщение · ↑/↓ j/k · ←/→ h/l версии · Enter изменить · Esc закрыть",
+                )
+            } else {
+                language.pick(
+                    "Message · ↑/↓ or j/k select · Enter edit · Esc close",
+                    "Сообщение · ↑/↓ или j/k выбор · Enter изменить · Esc закрыть",
+                )
+            },
+            app.selected_versions()
+                .map_or_else(String::new, |versions| {
+                    format!(" · {}/{}", versions.current + 1, versions.ids.len())
+                }),
+        )
+    } else if app.navigation.editing.is_some() {
+        (
+            "✎",
+            language.pick(
+                "Editing message · Enter create branch · Esc cancel",
+                "Редактирование · Enter создать ветвь · Esc отменить",
             ),
             String::new(),
         )
@@ -220,8 +269,18 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
 
     frame.render_widget(
-        Paragraph::new(format!(" {animation_frame} {state}{done_at}"))
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(Line::from(vec![
+            Span::raw(format!(" {animation_frame} {state}")),
+            Span::styled(
+                done_at,
+                Style::default().fg(if app.selected_versions().is_some() {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+        ]))
+        .style(Style::default().fg(Color::DarkGray)),
         Rect::new(layout[0].x, layout[0].y + 1, layout[0].width, 1),
     );
 
@@ -263,7 +322,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         );
     }
 
-    if app.approval.is_none() {
+    if !has_picker {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::default(),
@@ -283,24 +342,93 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let cursor_x = cursor_x.min(u16::MAX as usize) as u16;
     let cursor_y = cursor_y.min(u16::MAX as usize) as u16;
     let scroll_y = cursor_y.saturating_sub(input_area.height.saturating_sub(1));
-    if app.approval.is_some() {
+    if has_picker {
         frame.render_widget(
             Block::new().style(Style::default().bg(Color::Rgb(54, 58, 79))),
             layout[1],
         );
-        frame.render_stateful_widget(
-            List::new([
-                language.pick("Allow once", "Разрешить один раз"),
-                language.pick("Reject", "Отклонить"),
-                language.pick(
-                    "No checks for this session",
-                    "Без проверок для этого сеанса",
+        if app.audit_picker.is_some() {
+            frame.render_widget(
+                Paragraph::new(language.pick("Command review mode", "Режим проверки команд"))
+                    .style(Style::default().fg(Color::White).bold()),
+                Rect::new(
+                    layout[1].x.saturating_add(1),
+                    layout[1].y.saturating_add(1),
+                    layout[1].width.saturating_sub(1),
+                    1,
                 ),
-            ])
-            .highlight_symbol("> ")
-            .highlight_style(Style::default().fg(Color::Yellow).bold()),
-            input_area,
-            &mut ListState::default().with_selected(app.approval_choice),
+            );
+        }
+        let selection_style = Style::default().fg(Color::Yellow).bold();
+        let (items, selected, highlight_style) = if let Some(picker) = &app.audit_picker {
+            let label_width = super::approvals::AUDIT_MODES
+                .iter()
+                .map(|mode| Span::raw(mode.label(language)).width())
+                .max()
+                .unwrap_or(0);
+            let items = super::approvals::AUDIT_MODES
+                .iter()
+                .enumerate()
+                .map(|(index, mode)| {
+                    let description = match mode {
+                        CommandAuditMode::Trusted => language.pick(
+                            "Run tool calls without review",
+                            "Выполнять действия без проверок",
+                        ),
+                        CommandAuditMode::Review => language.pick(
+                            "Ask before risky or unclear actions",
+                            "Подтверждать рискованные или неясные действия",
+                        ),
+                        CommandAuditMode::Ask => {
+                            language.pick("Approve every tool call", "Подтверждать каждое действие")
+                        }
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<label_width$}  ", mode.label(language)),
+                            if index == picker.choice {
+                                selection_style
+                            } else {
+                                Style::default().fg(Color::White)
+                            },
+                        ),
+                        Span::styled(description, Style::default().fg(Color::Gray).dim()),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            (items, Some(picker.choice), Style::default())
+        } else {
+            (
+                [
+                    language.pick("Allow once", "Разрешить один раз"),
+                    language.pick("Reject", "Отклонить"),
+                    language.pick(
+                        "No checks for this session",
+                        "Без проверок для этого сеанса",
+                    ),
+                ]
+                .into_iter()
+                .map(ListItem::new)
+                .collect(),
+                app.approval_choice,
+                selection_style,
+            )
+        };
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_symbol(Span::styled("> ", selection_style))
+                .highlight_style(highlight_style),
+            Rect::new(
+                layout[1].x.saturating_add(1),
+                layout[1]
+                    .y
+                    .saturating_add(if app.audit_picker.is_some() { 3 } else { 1 }),
+                layout[1].width.saturating_sub(1),
+                layout[1]
+                    .height
+                    .saturating_sub(if app.audit_picker.is_some() { 4 } else { 2 }),
+            ),
+            &mut ListState::default().with_selected(selected),
         );
     } else {
         frame.render_widget(
@@ -312,9 +440,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
 
     let footer = Rect::new(
-        layout[2].x.saturating_add(3),
+        layout[2].x.saturating_add(1),
         layout[2].y,
-        layout[2].width.saturating_sub(3),
+        layout[2].width.saturating_sub(1),
         layout[2].height,
     );
     let notice_width = app.copy_notice.as_ref().map_or(0, |(notice, _)| {
@@ -330,17 +458,19 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
         None => app.model.clone(),
     };
-    let model = if app.audit_disabled_sessions.is_empty() {
-        model
-    } else {
-        format!(
-            "{}: {} · {model}",
-            language.pick("No checks", "Без проверок"),
-            app.audit_disabled_sessions.join(", ")
-        )
+    let (mode_icon, mode_color) = match app.audit_mode {
+        CommandAuditMode::Trusted => ("◈", Color::Yellow),
+        CommandAuditMode::Review => ("◇", Color::Cyan),
+        CommandAuditMode::Ask => ("◆", Color::Green),
     };
     frame.render_widget(
-        Paragraph::new(model).style(Style::default().fg(Color::Yellow)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{mode_icon} {}", app.audit_mode.label(language)),
+                Style::default().fg(mode_color),
+            ),
+            Span::styled(format!(" · {model}"), Style::default().fg(Color::Yellow)),
+        ])),
         Rect::new(footer.x, footer.y, model_width, footer.height),
     );
     if let Some((notice, _)) = &app.copy_notice {
@@ -360,7 +490,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.view.restore_footer(frame.buffer_mut());
     app.view.finish_frame(
         frame.buffer_mut(),
-        app.approval.is_none().then_some(super::view::InputRows {
+        (!has_picker && app.navigation.selected.is_none()).then_some(super::view::InputRows {
             text: &app.input,
             rows: &input_rows,
             area: input_area,
@@ -368,8 +498,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }),
     );
 
-    if app.approval.is_none()
-        && app.mode_picker.is_none()
+    if !has_picker
+        && app.navigation.selected.is_none()
         && input_area.width > 0
         && input_area.height > 0
     {
@@ -378,60 +508,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             input_area.y + cursor_y.saturating_sub(scroll_y),
         ));
     }
-    render_modes(app, frame);
-}
-
-fn render_modes(app: &mut App, frame: &mut Frame) {
-    let full = frame.area();
-    let label = format!(" ◈ {}  ▾ F2 ", app.audit_mode.label(app.language));
-    app.mode_button = Rect::new(
-        full.x,
-        full.y,
-        (Span::raw(&label).width() as u16).min(full.width),
-        u16::from(full.height > 0),
-    );
-    frame.render_widget(
-        Paragraph::new(label).style(Style::default().fg(Color::Cyan)),
-        app.mode_button,
-    );
-    let Some(picker) = &mut app.mode_picker else {
-        app.mode_popup = Rect::default();
-        return;
-    };
-    app.mode_popup = Rect::new(
-        full.x,
-        full.y.saturating_add(1),
-        full.width.min(62),
-        full.height.saturating_sub(1).min(5),
-    );
-    frame.render_widget(ratatui::widgets::Clear, app.mode_popup);
-    let items = super::approvals::MODES
-        .iter()
-        .map(|mode| {
-            ListItem::new(format!(
-                "{}{}",
-                mode.label(app.language),
-                if *mode == picker.current {
-                    app.language.pick(" · current", " · текущий")
-                } else {
-                    ""
-                }
-            ))
-        })
-        .collect::<Vec<_>>();
-    let mut state = ListState::default().with_selected(picker.choice);
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(Block::bordered().title(app.language.pick(
-                " Command mode · Enter select · Esc close ",
-                " Режим команд · Enter выбрать · Esc закрыть ",
-            )))
-            .highlight_symbol("> ")
-            .highlight_style(Style::default().fg(Color::Yellow).bold()),
-        app.mode_popup,
-        &mut state,
-    );
-    picker.offset = state.offset();
 }
 
 pub fn message_text(message: &AppMessage) -> Text<'static> {
@@ -464,10 +540,24 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
             }
         }));
         ratatui::text::Text::from(text)
-    } else if matches!(
-        message.role,
-        AppMessageRole::Plan | AppMessageRole::Approval
-    ) {
+    } else if matches!(message.role, AppMessageRole::Approval) {
+        Text::from(
+            source
+                .lines()
+                .enumerate()
+                .map(|(index, line)| {
+                    let style = if index == 0 {
+                        Style::default().fg(Color::Yellow).bold()
+                    } else if line.starts_with("  ") {
+                        Style::default().fg(Color::White)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    Line::styled(line.to_owned(), style)
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else if matches!(message.role, AppMessageRole::Plan) {
         ratatui::text::Text::from(source)
     } else {
         let text = tui_markdown::from_str(&source);
@@ -479,7 +569,14 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
                     spans: line
                         .spans
                         .into_iter()
-                        .map(|span| Span::styled(span.content.into_owned(), span.style))
+                        .map(|span| {
+                            let style = if matches!(message.role, AppMessageRole::User) {
+                                span.style.fg(USER_TEXT_COLOR)
+                            } else {
+                                span.style
+                            };
+                            Span::styled(span.content.into_owned(), style)
+                        })
                         .collect(),
                     style: line.style,
                     alignment: line.alignment,
@@ -497,10 +594,68 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn message_selection_does_not_highlight_the_separator_above_the_bubble() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        app.push_user_message("selected message".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        for _ in 0..2 {
+            app.update(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = (0..24)
+            .find(|y| {
+                (0..80)
+                    .map(|x| buffer[(x, *y)].symbol())
+                    .collect::<String>()
+                    .contains("selected message")
+            })
+            .unwrap();
+        assert_eq!(buffer[(0, y - 2)].bg, Color::Reset);
+        assert_eq!(buffer[(0, y - 1)].bg, Color::Rgb(69, 71, 90));
+        assert_eq!(buffer[(3, y)].bg, Color::Rgb(69, 71, 90));
+    }
+
+    #[test]
+    fn message_navigation_focuses_the_selected_turn_and_hides_the_cursor() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::default();
+        for index in 0..30 {
+            app.push_user_message(format!("question {index:02}"));
+            app.push_kodrik_message(format!("answer {index:02}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        for code in [KeyCode::Esc, KeyCode::Esc]
+            .into_iter()
+            .chain(std::iter::repeat_n(KeyCode::Char('k'), 29))
+        {
+            app.update(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let y = rows
+            .iter()
+            .position(|row| row.contains("question 00"))
+            .unwrap();
+        assert_eq!(buffer[(3, y as u16)].bg, Color::Rgb(69, 71, 90));
+        assert!(!terminal.backend().cursor_visible());
+        app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(terminal.backend().cursor_visible());
+    }
+
+    #[test]
     fn copy_notice_is_at_the_bottom_right_with_model_and_tokens_on_the_left() {
         let mut app = App {
             model: "test-model".into(),
             context_tokens: Some(12_000),
+            audit_mode: crate::agent::command_audit::CommandAuditMode::Trusted,
+            audit_session: Some(crate::agent::session::SessionId::new("current-session")),
             ..Default::default()
         };
         app.set_copy_notice("Copied".into());
@@ -508,12 +663,33 @@ mod tests {
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         let buffer = terminal.backend().buffer();
         let row = |y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-        assert!(row(23).starts_with("   test-model · 12K"));
+        assert!(row(23).starts_with(" ◈ No checks · test-model · 12K"));
+        assert_eq!(buffer[(1, 23)].fg, Color::Yellow);
+        assert!(row(0).trim().is_empty());
         let notice = (74..80)
             .map(|x| buffer[(x, 23)].symbol())
             .collect::<String>();
         assert_eq!(notice, "Copied");
         assert!(!row(22).contains("Copied"));
+        for (mode, label, color) in [
+            (
+                crate::agent::command_audit::CommandAuditMode::Review,
+                " ◇ AI review · test-model · 12K",
+                Color::Cyan,
+            ),
+            (
+                crate::agent::command_audit::CommandAuditMode::Ask,
+                " ◆ Always ask · test-model · 12K",
+                Color::Green,
+            ),
+        ] {
+            app.audit_mode = mode;
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
+            assert!(row.starts_with(label));
+            assert_eq!(buffer[(1, 23)].fg, color);
+        }
         for width in [1, 3, 6, 12] {
             let mut small = Terminal::new(TestBackend::new(width, 8)).unwrap();
             small.draw(|frame| render(&mut app, frame)).unwrap();

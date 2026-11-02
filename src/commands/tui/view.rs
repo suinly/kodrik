@@ -333,7 +333,35 @@ impl View {
         self.last_scroll = *scroll;
     }
 
-    pub fn render_history(&self, buffer: &mut Buffer) {
+    pub fn focus_message(&mut self, index: usize, scroll: &mut usize) {
+        let Some((&start, &end)) = self
+            .document
+            .ends
+            .get(index)
+            .zip(self.document.ends.get(index + 1))
+        else {
+            return;
+        };
+        let start = start.saturating_add(1);
+        let height = usize::from(self.history_height);
+        let len = self.document.history_len();
+        if end - start > height || start < self.top {
+            *scroll = len.saturating_sub(start + height);
+        } else if end > self.top + height {
+            *scroll = len.saturating_sub(end);
+        }
+        self.position(scroll);
+    }
+
+    pub fn render_history(&self, buffer: &mut Buffer, selected: Option<usize>) {
+        let selected = selected
+            .and_then(|index| {
+                self.document
+                    .ends
+                    .get(index)
+                    .zip(self.document.ends.get(index + 1))
+            })
+            .map(|(&start, &end)| start.saturating_add(1)..end);
         for y in self.padding..self.history_height {
             if let Some(row) = self
                 .active_document()
@@ -343,6 +371,14 @@ impl View {
                     Rect::new(self.area.x, self.area.y + y, self.area.width, 1),
                     buffer,
                 );
+                if selected.as_ref().is_some_and(|range| {
+                    range.contains(&(self.top + usize::from(y - self.padding)))
+                }) {
+                    buffer.set_style(
+                        Rect::new(self.area.x, self.area.y + y, self.area.width, 1),
+                        Style::default().bg(Color::Rgb(69, 71, 90)),
+                    );
+                }
             }
         }
     }
@@ -931,12 +967,12 @@ mod tests {
                 .map(|x| terminal.backend().buffer()[(x, 19)].symbol())
                 .collect::<String>()
         };
-        assert!(row(&terminal).starts_with("   test-model · 1K"));
+        assert!(row(&terminal).starts_with(" ◇ AI review · test-model · 1K"));
         assert!(row(&terminal).ends_with("Copied"));
         assert_eq!(app.view.selected_text().as_deref(), Some("1K"));
         app.view.clear_selection();
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
-        assert_eq!(row(&terminal).trim(), "test-model · 2K");
+        assert_eq!(row(&terminal).trim(), "◇ AI review · test-model · 2K");
     }
 
     #[test]

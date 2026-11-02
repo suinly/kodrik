@@ -2,6 +2,34 @@ use super::*;
 
 struct WaitingModel(std::path::PathBuf);
 
+struct EchoModel;
+
+#[async_trait::async_trait]
+impl crate::agent::llm::LlmProvider for EchoModel {
+    async fn generate(
+        &self,
+        context: &crate::agent::LlmContext<'_>,
+        _: &[&dyn crate::agent::tools::Tool],
+        _: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        let user = context
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Message::User(user) => Some(user),
+                _ => None,
+            })
+            .unwrap();
+        Ok((
+            vec![Message::Assistant(crate::agent::AssistantMessage {
+                content: format!("edited reply: {}", user.content),
+            })],
+            None,
+        ))
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::agent::llm::LlmProvider for WaitingModel {
     async fn generate(
@@ -28,6 +56,31 @@ async fn terminal_recovery_fixture() {
         return;
     };
     let directory = std::path::PathBuf::from(directory);
+    let case = std::env::var("KODRIK_TUI_CASE").unwrap_or_default();
+    if case == "approval-cursor" {
+        let mut app = App::default();
+        let mut tui = Tui::enter().unwrap();
+        tui.draw(&mut app).unwrap();
+        event::read().unwrap();
+        app.approval = Some(crate::agent::command_audit::CommandApproval {
+            id: "request".into(),
+            run_id: "run".into(),
+            call_id: "call".into(),
+            tool_name: "exec_command".into(),
+            arguments_json: None,
+            cmd: "rm file".into(),
+            workdir: None,
+            reason: "Destructive".into(),
+            reason_code: "destructive".into(),
+        });
+        app.approval_choice = Some(0);
+        tui.draw(&mut app).unwrap();
+        event::read().unwrap();
+        app.approval = None;
+        tui.draw(&mut app).unwrap();
+        tui.exit().unwrap();
+        return;
+    }
     let store = SqliteSessionStore::open_async(directory.join("sessions"))
         .await
         .unwrap();
@@ -44,8 +97,12 @@ async fn terminal_recovery_fixture() {
         files: vec![],
         images: vec![],
     }));
-    let case = std::env::var("KODRIK_TUI_CASE").unwrap_or_default();
-    if case == "queued-only" || case == "queued-before-scan" {
+    if case == "edit-message" {
+        session.push(Message::Assistant(crate::agent::AssistantMessage {
+            content: "original answer".into(),
+        }));
+    }
+    if case == "queued-only" || case == "queued-before-scan" || case == "edit-message" {
         store.save(&session).await.unwrap();
     } else {
         let mut checkpoint = Checkpoint::new(&store, &id, &session);
@@ -68,11 +125,12 @@ async fn terminal_recovery_fixture() {
             .await
             .unwrap();
     }
-    let agent = Agent::new(
-        Arc::new(WaitingModel(directory.clone())),
-        ToolRegistry::default(),
-        ContextBuilder::new("test"),
-    );
+    let model: Arc<dyn crate::agent::llm::LlmProvider> = if case == "edit-message" {
+        Arc::new(EchoModel)
+    } else {
+        Arc::new(WaitingModel(directory.clone()))
+    };
+    let agent = Agent::new(model, ToolRegistry::default(), ContextBuilder::new("test"));
     let runner = Arc::new(AgentRunner::new(Arc::new(agent), Arc::new(store.clone())));
     if case == "queued-before-scan" {
         let scan = store.execution_lock("recovery", "scan").await.unwrap();
@@ -105,6 +163,27 @@ async fn terminal_recovery_fixture() {
         );
     }
     let session = store.load(&id).await.unwrap().unwrap();
+    if case == "edit-message" {
+        assert!(
+            session.messages().iter().any(
+                |message| matches!(message, Message::User(user) if user.content == "resume-me")
+            )
+        );
+        let active = store.active_id(&id).await.unwrap();
+        assert_ne!(active, id);
+        let branch = store.load(&active).await.unwrap().unwrap();
+        assert!(
+            branch
+                .messages()
+                .iter()
+                .any(|message| matches!(message, Message::User(user) if user.content == "/new"))
+        );
+        assert!(
+            !branch.messages().iter().any(
+                |message| matches!(message, Message::User(user) if user.content == "resume-me")
+            )
+        );
+    }
     assert_eq!(
         session
             .messages()
@@ -296,6 +375,228 @@ impl PrivateTerminal {
     fn send(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).unwrap();
     }
+}
+
+#[test]
+fn double_escape_edit_runs_a_durable_branch_and_treats_slash_text_as_a_message() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut terminal = PrivateTerminal::start_case(directory.path(), "edit-message");
+    terminal.wait_for(b"Ready", 0);
+    terminal.send(b"draft\x1b[27u\x1b[27u\r");
+    terminal.wait_for(b"Editing message", 0);
+    let since = terminal.output.len();
+    terminal.send(b"\x03/new\r");
+    terminal.wait_for(b"edited reply: /new", since);
+    terminal.wait_for(b"Done", since);
+    let since = terminal.output.len();
+    terminal.send(b"\x1b[27u\x1b[27u");
+    terminal.wait_for(b"2/2", since);
+    let since = terminal.output.len();
+    terminal.send(b"h");
+    terminal.wait_for(b"1/2", since);
+    assert!(screen_text(&terminal.output).contains("original answer"));
+    let since = terminal.output.len();
+    terminal.send(b"l");
+    terminal.wait_for(b"2/2", since);
+    assert!(screen_text(&terminal.output).contains("edited reply: /new"));
+    terminal.send(b"\x1b[27u");
+    terminal.send(b"\x03");
+    terminal.wait_for(b"test result: ok", since);
+    assert!(directory.path().join("clean-exit").exists());
+}
+
+#[tokio::test]
+async fn switching_to_an_unwritten_canceled_version_keeps_the_current_message() {
+    use crate::agent::{
+        Agent, AgentRunner, ContextBuilder, UserMessage,
+        session::{SessionStore, SqliteSessionStore},
+        tools::ToolRegistry,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteSessionStore::open(directory.path().into()).unwrap());
+    let id = SessionId::new("cli:main");
+    let mut source = Session::new(id.clone());
+    source.push(Message::User(UserMessage {
+        content: "original".into(),
+        files: vec![],
+        images: vec![],
+    }));
+    store.save(&source).await.unwrap();
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(EchoModel),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    );
+    let (prefix, replacement) = runner
+        .edit_message(&id, &id, 0, "canceled edit".into())
+        .await
+        .unwrap();
+    runner
+        .cancel_queued_input(&id, &replacement.request_id)
+        .await
+        .unwrap();
+    runner.select_session(&id, &id).await.unwrap();
+    let mut app = App::default();
+    restore_history(&mut app, &source);
+    app.insert_input("draft");
+    app.select_user_turn(0);
+    assert!(
+        select_message_version(&mut app, &runner, &id, prefix.id(), 0)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.active_id(&id).await.unwrap(), id);
+    assert!(app.navigation.selected.is_some());
+    assert_eq!(app.messages[0].content, "original");
+    app.cancel_message_navigation();
+    assert_eq!(app.input, "draft");
+}
+
+#[tokio::test]
+async fn switching_message_versions_preserves_the_draft_and_groups_the_conversation() {
+    use crate::agent::{
+        Agent, AgentRunner, ContextBuilder, UserMessage,
+        session::{SessionStore, SqliteSessionStore},
+        tools::ToolRegistry,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteSessionStore::open(directory.path().into()).unwrap());
+    let id = SessionId::new("cli:main");
+    let mut source = Session::new(id.clone());
+    source.push(Message::User(UserMessage {
+        content: "original".into(),
+        files: vec![],
+        images: vec![],
+    }));
+    source.push(Message::Assistant(crate::agent::AssistantMessage {
+        content: "original answer".into(),
+    }));
+    store.save(&source).await.unwrap();
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(EchoModel),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    );
+    let (_, replacement) = runner
+        .edit_message(&id, &id, 0, "edited".into())
+        .await
+        .unwrap();
+    runner.run(id.clone(), replacement, None).await.unwrap();
+    let edited = runner.load_session(id.clone()).await.unwrap();
+    let mut app = App::default();
+    restore_history(&mut app, &edited);
+    refresh_versions(&mut app, &runner, &edited).await.unwrap();
+    app.insert_input("unfinished draft");
+    app.input_cursor = 2;
+    app.select_user_turn(0);
+    assert_eq!(app.selected_versions().unwrap().current, 1);
+    select_message_version(&mut app, &runner, &id, &id, 0)
+        .await
+        .unwrap();
+    assert_eq!(app.selected_versions().unwrap().current, 0);
+    assert!(
+        app.messages
+            .iter()
+            .any(|message| message.content == "original answer")
+    );
+    app.update(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.input, "unfinished draft");
+    assert_eq!(app.input_cursor, 2);
+    let listed = runner.list_conversations().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id(), &id);
+}
+
+#[tokio::test]
+async fn rejected_edit_preserves_the_editor_and_the_original_draft() {
+    use crate::agent::{
+        Agent, AgentRunner, ContextBuilder, UserMessage,
+        session::{SessionStore, SqliteSessionStore},
+        tools::ToolRegistry,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteSessionStore::open(directory.path().into()).unwrap());
+    let id = SessionId::new("cli:main");
+    let mut session = Session::new(id.clone());
+    session.push(Message::User(UserMessage {
+        content: "original".into(),
+        files: vec![],
+        images: vec![],
+    }));
+    store.save(&session).await.unwrap();
+    let runner = AgentRunner::new(
+        Arc::new(Agent::new(
+            Arc::new(WaitingModel(directory.path().into())),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    );
+    let mut app = App::default();
+    restore_history(&mut app, &session);
+    app.insert_input("draft");
+    for code in [KeyCode::Esc, KeyCode::Esc, KeyCode::Enter] {
+        app.update(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    app.input = "/audit ask".into();
+    app.input_cursor = app.input.len();
+    let replacement = app
+        .update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    store
+        .submit(crate::agent::inbox::SubmissionRequest::new(
+            &id,
+            IncomingMessage::new(InterfaceId("cli".into()), "main", "queued"),
+            crate::agent::inbox::BusyMode::FollowUp,
+        ))
+        .await
+        .unwrap();
+    assert!(
+        submit_edit(&mut app, &runner, &id, replacement)
+            .await
+            .is_err()
+    );
+    assert_eq!(app.input, "/audit ask");
+    assert!(app.navigation.editing.is_some());
+    assert_eq!(app.messages.len(), 1);
+    app.update(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.input, "draft");
+    assert_eq!(store.active_id(&id).await.unwrap(), id);
+}
+
+#[test]
+fn approval_hides_cursor_before_redrawing_and_restores_it_afterward() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut terminal = PrivateTerminal::start_case(directory.path(), "approval-cursor");
+    terminal.wait_for(b"\x1b[?2026l", 0);
+    assert!(
+        terminal
+            .output
+            .windows(6)
+            .any(|bytes| bytes == b"\x1b[?25h")
+    );
+    let since = terminal.output.len();
+    terminal.send(b"\r");
+    terminal.wait_for(b"\x1b[?2026l", since);
+    assert!(
+        terminal.output[since..].starts_with(b"\x1b[?25l\x1b[?2026h"),
+        "hide the old cursor before starting the synchronized redraw"
+    );
+    let since = terminal.output.len();
+    terminal.send(b"\r");
+    terminal.wait_for(b"\x1b[?2026l", since);
+    assert!(
+        terminal.output[since..]
+            .windows(6)
+            .any(|bytes| bytes == b"\x1b[?25h")
+    );
+    terminal.wait_for(b"test result: ok", since);
 }
 
 #[test]

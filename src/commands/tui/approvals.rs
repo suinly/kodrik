@@ -4,99 +4,49 @@ use crate::agent::{
     command_audit::{CommandApproval, CommandAuditMode},
     session::{SessionId, SessionStore},
 };
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-pub(super) const MODES: [CommandAuditMode; 3] = [
+pub(super) const AUDIT_MODES: [CommandAuditMode; 3] = [
     CommandAuditMode::Trusted,
     CommandAuditMode::Review,
     CommandAuditMode::Ask,
 ];
 
-pub(super) struct ModePicker {
+pub(super) struct AuditPicker {
     pub session: Option<SessionId>,
-    pub current: CommandAuditMode,
-    pub choice: Option<usize>,
-    pub offset: usize,
+    pub choice: usize,
 }
 
-pub(super) fn toggle_modes(app: &mut App) {
-    app.mode_picker = if app.mode_picker.is_some() {
-        None
-    } else {
-        Some(ModePicker {
-            session: app.audit_session.clone(),
-            current: app.audit_mode,
-            choice: None,
-            offset: 0,
-        })
-    };
-}
-
-pub(super) fn update_modes(app: &mut App, key: KeyEvent) -> Option<String> {
-    let picker = app.mode_picker.as_mut()?;
+pub(super) fn update_audit_picker(app: &mut App, key: KeyEvent) -> Option<String> {
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('c' | 'C' | 'с' | 'С'))
+    {
+        app.should_quit = true;
+        return None;
+    }
     if !key.modifiers.is_empty() {
         return None;
     }
+    let picker = app.audit_picker.as_mut()?;
     match key.code {
-        KeyCode::Up => {
-            picker.choice = Some(picker.choice.map_or(0, |index| index.saturating_sub(1)))
+        KeyCode::Up | KeyCode::Char('k') => picker.choice = picker.choice.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            picker.choice = (picker.choice + 1).min(AUDIT_MODES.len() - 1)
         }
-        KeyCode::Down => picker.choice = Some(picker.choice.map_or(0, |index| (index + 1).min(2))),
-        KeyCode::Esc if key.kind == KeyEventKind::Press => app.mode_picker = None,
+        KeyCode::Esc if key.kind == KeyEventKind::Press => app.audit_picker = None,
         KeyCode::Enter if key.kind == KeyEventKind::Press => {
-            let mode = MODES[picker.choice?];
-            let command = format!(
+            let picker = app.audit_picker.take()?;
+            return Some(format!(
                 "/audit {}{}",
-                mode.code(),
+                AUDIT_MODES[picker.choice].code(),
                 picker
                     .session
-                    .as_ref()
                     .map_or_else(String::new, |id| format!(" {}", id.as_str()))
-            );
-            app.mode_picker = None;
-            return Some(command);
+            ));
         }
         _ => {}
     }
     None
-}
-
-pub(super) fn modes_mouse(app: &mut App, event: MouseEvent) -> (bool, Option<String>) {
-    let point = ratatui::layout::Position::new(event.column, event.row);
-    if event.kind == MouseEventKind::Down(MouseButton::Left) && app.mode_button.contains(point) {
-        toggle_modes(app);
-        return (true, None);
-    }
-    if app.mode_picker.is_none() {
-        return (false, None);
-    }
-    if event.kind == MouseEventKind::Down(MouseButton::Left) {
-        let row = event.row.saturating_sub(app.mode_popup.y);
-        if app.mode_popup.contains(point)
-            && event.column > app.mode_popup.x
-            && event.column.saturating_add(1) < app.mode_popup.right()
-            && row > 0
-            && row <= 3
-            && row + 1 < app.mode_popup.height
-        {
-            let picker = app.mode_picker.as_mut().unwrap();
-            let index = picker.offset + usize::from(row - 1);
-            if index >= MODES.len() {
-                return (true, None);
-            }
-            picker.choice = Some(index);
-            return (
-                true,
-                update_modes(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            );
-        }
-        if !app.mode_popup.contains(point) {
-            app.mode_picker = None;
-        }
-    }
-    (true, None)
 }
 
 pub(super) fn is_command(input: &str) -> bool {
@@ -106,23 +56,69 @@ pub(super) fn is_command(input: &str) -> bool {
     )
 }
 
+fn literal_line(text: &str) -> String {
+    let mut visible = String::new();
+    for ch in text.chars() {
+        if matches!(ch, '\'' | '"' | '\\') {
+            visible.push(ch);
+        } else {
+            visible.extend(ch.escape_debug());
+        }
+    }
+    visible
+}
+
+fn literal_block(text: &str) -> String {
+    text.split('\n')
+        .map(|line| format!("  {}", literal_line(line)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn show(app: &mut App, session: &SessionId, approval: &CommandApproval) {
-    // Debug quoting makes control characters visible without interpreting shell text as Markdown.
+    let language = app.language;
+    let arguments = approval.arguments_text();
+    let invocation = if approval.tool_name == "exec_command"
+        && let Ok(args) =
+            serde_json::from_str::<crate::agent::tools::exec_command::ExecCommandArgs>(&arguments)
+    {
+        let mut text = format!(
+            "{}:\n{}\n\n{}: {}",
+            language.pick("Command", "Команда"),
+            literal_block(&args.cmd),
+            language.pick("Working directory", "Рабочий каталог"),
+            literal_line(
+                args.workdir
+                    .as_deref()
+                    .unwrap_or(language.pick("current directory", "текущий каталог"))
+            ),
+        );
+        if let Some(timeout) = args.timeout_ms {
+            text.push_str(&format!(
+                "\n{}: {timeout} ms",
+                language.pick("Timeout", "Тайм-аут")
+            ));
+        }
+        text
+    } else {
+        format!(
+            "{}:\n{}",
+            language.pick("Arguments", "Аргументы"),
+            literal_block(&arguments)
+        )
+    };
     app.messages.push(AppMessage {
         role: AppMessageRole::Approval,
         content: format!(
-            "{}\n{}: {}\nID: {}\n{}: {:?}\n{}: {:?}\n{}: {}",
-            app.language
-                .pick("Tool approval required", "Требуется подтверждение действия"),
-            app.language.pick("Session", "Сеанс"),
-            session.as_str(),
-            approval.id,
-            app.language.pick("Tool", "Инструмент"),
-            approval.tool_name,
-            app.language.pick("Arguments", "Аргументы"),
-            approval.arguments_text(),
-            app.language.pick("Reason", "Причина"),
-            approval.reason_text(app.language),
+            "{} · {}\n\n{}\n\n{}: {}\n{}: {}\nID: {}",
+            language.pick("Tool approval required", "Требуется подтверждение действия"),
+            literal_line(&approval.tool_name),
+            invocation,
+            language.pick("Reason", "Причина"),
+            literal_line(&approval.reason_text(language)),
+            language.pick("Session", "Сеанс"),
+            literal_line(session.as_str()),
+            literal_line(&approval.id),
         ),
     });
     app.shown_approvals
@@ -137,13 +133,13 @@ pub(super) fn update(app: &mut App, key: KeyEvent) -> Option<String> {
         app.should_quit = true;
     } else if key.modifiers.is_empty() {
         match key.code {
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 app.approval_choice = Some(
                     app.approval_choice
                         .map_or(0, |choice| choice.saturating_sub(1)),
                 )
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 app.approval_choice =
                     Some(app.approval_choice.map_or(1, |choice| (choice + 1).min(2)))
             }
@@ -184,15 +180,11 @@ pub(super) async fn refresh(
         sessions.push(session.clone());
     }
     let mut changed = false;
-    let mut disabled = Vec::new();
     let mut modes = std::collections::HashMap::new();
     let mut next = None;
     for session in sessions {
         let mode = store.command_audit_mode(session.as_str()).await?;
         modes.insert(session.as_str().to_owned(), mode);
-        if mode == CommandAuditMode::Trusted {
-            disabled.push(session.as_str().to_owned());
-        }
         let pending = store.pending_command_approvals(session.as_str()).await?;
         app.shown_approvals.retain(|id, owner| {
             owner != session.as_str() || pending.iter().any(|approval| &approval.id == id)
@@ -220,14 +212,11 @@ pub(super) async fn refresh(
         app.audit_mode = mode;
         changed = true;
     }
-    if app.audit_disabled_sessions != disabled {
-        app.audit_disabled_sessions = disabled;
-        changed = true;
-    }
     if app.approval.as_ref().map(|a| &a.id) != next.as_ref().map(|a| &a.id) {
-        app.approval_choice = None;
+        app.approval_choice = next.as_ref().map(|_| 0);
         app.view.clear_selection();
         if next.is_some() {
+            app.audit_picker = None;
             app.sessions = None;
             app.scroll = 0;
         }
@@ -353,7 +342,7 @@ async fn audit_command(
     anyhow::ensure!(
         matches!(
             args,
-            ["trusted" | "review" | "ask" | "on" | "off" | "status"]
+            [] | ["trusted" | "review" | "ask" | "on" | "off" | "status"]
                 | ["trusted" | "review" | "ask" | "on" | "off" | "status", _]
                 | ["trusted" | "off", _, _]
         ),
@@ -367,6 +356,20 @@ async fn audit_command(
         .sqlite_store()
         .context("Command approval store unavailable")?;
     let active = store.active_id(conversation).await?;
+    if args.is_empty() {
+        let mode = store.command_audit_mode(active.as_str()).await?;
+        app.audit_picker = Some(AuditPicker {
+            session: store.load(&active).await?.map(|_| active),
+            choice: match mode {
+                CommandAuditMode::Trusted => 0,
+                CommandAuditMode::Review => 1,
+                CommandAuditMode::Ask => 2,
+            },
+        });
+        app.sessions = None;
+        app.view.clear_selection();
+        return Ok(());
+    }
     let mut session = args
         .get(1)
         .map_or_else(|| active.clone(), |id| SessionId::new(*id));
@@ -448,114 +451,44 @@ mod tests {
     }
 
     #[test]
-    fn mode_header_mouse_and_escape_preserve_pending_request_and_draft() {
-        use ratatui::{Terminal, backend::TestBackend};
-        for language in [crate::i18n::Language::En, crate::i18n::Language::Ru] {
-            let approval = CommandApproval {
-                id: "request".into(),
-                run_id: "run".into(),
-                call_id: "call".into(),
-                tool_name: "exec_command".into(),
-                arguments_json: None,
-                cmd: "rm important.txt".into(),
-                workdir: Some("/workspace".into()),
-                reason: "English fallback must not appear".into(),
-                reason_code: "destructive".into(),
-            };
-            let mut app = App {
-                language,
-                input: "draft".into(),
-                input_cursor: 2,
-                audit_mode: CommandAuditMode::Review,
-                audit_session: Some(SessionId::new("owner")),
-                approval: Some(approval.clone()),
-                approval_choice: Some(1),
-                ..Default::default()
-            };
-            for i in 0..30 {
-                app.push_kodrik_message(format!("message {i}"));
-            }
-            show(&mut app, &SessionId::new("owner"), &approval);
-            assert!(
-                !app.messages
-                    .last()
-                    .unwrap()
-                    .content
-                    .contains("English fallback")
-            );
-            app.scroll = 10;
-            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-            terminal
-                .draw(|frame| super::super::ui::render(&mut app, frame))
-                .unwrap();
-            let before = app.scroll;
-            let click = |column, row| MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column,
-                row,
-                modifiers: KeyModifiers::NONE,
-            };
-            assert_eq!(modes_mouse(&mut app, click(1, 0)), (true, None));
-            terminal
-                .draw(|frame| super::super::ui::render(&mut app, frame))
-                .unwrap();
-            let rendered: String = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            for label in [
-                CommandAuditMode::Trusted.label(language),
-                CommandAuditMode::Review.label(language),
-                CommandAuditMode::Ask.label(language),
-            ] {
-                assert!(rendered.contains(label), "{rendered}");
-            }
-            assert_eq!(
-                app.update(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-                None
-            );
-            assert_eq!(app.approval.as_ref().unwrap().id, "request");
-            assert_eq!(app.approval_choice, Some(1));
-            assert_eq!(app.input, "draft");
-            assert_eq!(app.input_cursor, 2);
-            assert_eq!(app.scroll, before);
-            modes_mouse(&mut app, click(1, 0));
-            terminal
-                .draw(|frame| super::super::ui::render(&mut app, frame))
-                .unwrap();
-            let row = app.mode_popup.y + 3;
-            assert_eq!(
-                modes_mouse(&mut app, click(2, row)),
-                (true, Some("/audit ask owner".into()))
-            );
-            assert_eq!(
-                app.audit_mode,
-                CommandAuditMode::Review,
-                "opening and choosing only dispatch explicit commands"
-            );
-            app.update(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
-            for (width, height) in [(1, 1), (3, 3), (8, 5)] {
-                let mut small = Terminal::new(TestBackend::new(width, height)).unwrap();
-                small
-                    .draw(|frame| super::super::ui::render(&mut app, frame))
-                    .unwrap();
-            }
-            for _ in 0..3 {
-                app.update(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-            }
-            let mut short = Terminal::new(TestBackend::new(80, 5)).unwrap();
-            short
-                .draw(|frame| super::super::ui::render(&mut app, frame))
-                .unwrap();
-            assert_eq!(
-                modes_mouse(&mut app, click(2, 3)),
-                (true, Some("/audit ask owner".into())),
-                "clicks must match visible options after the short menu scrolls"
-            );
-        }
+    fn approval_display_shows_readable_shell_and_escapes_terminal_controls() {
+        let mut app = App::default();
+        let mut approval = CommandApproval {
+            id: "request".into(),
+            run_id: "run".into(),
+            call_id: "call".into(),
+            tool_name: "exec_command".into(),
+            arguments_json: Some(
+                serde_json::json!({
+                    "cmd": "printf 'hello\\n'\necho \"world\"\u{1b}[2J\u{202e}",
+                    "workdir": "/workspace/a b",
+                    "timeout_ms": 1500,
+                })
+                .to_string(),
+            ),
+            cmd: String::new(),
+            workdir: None,
+            reason: "Destructive".into(),
+            reason_code: "destructive".into(),
+        };
+        show(&mut app, &SessionId::new("owner"), &approval);
+        let content = &app.messages.last().unwrap().content;
+        assert!(
+            content.contains("Command:\n  printf 'hello\\n'\n  echo \"world\"\\u{1b}[2J\\u{202e}")
+        );
+        assert!(content.contains("Working directory: /workspace/a b"));
+        assert!(content.contains("Timeout: 1500 ms"));
+        assert!(!content.contains('\u{1b}'));
+        assert!(!content.contains('\u{202e}'));
+        approval.tool_name = "apply_patch".into();
+        approval.arguments_json =
+            Some("{\n  \"patch\": \"*** Begin Patch\\n*** End Patch\"\n}".into());
+        show(&mut app, &SessionId::new("owner"), &approval);
+        assert!(
+            app.messages.last().unwrap().content.contains(
+                "Arguments:\n  {\n    \"patch\": \"*** Begin Patch\\n*** End Patch\"\n  }"
+            )
+        );
     }
 
     #[test]
@@ -580,9 +513,16 @@ mod tests {
         };
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         assert_eq!(app.update(key(KeyCode::Enter)), None);
-        app.update(key(KeyCode::Up));
-        app.update(key(KeyCode::Down));
-        app.update(key(KeyCode::Down));
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(app.approval_choice, Some(0));
+        app.update(key(KeyCode::Char('j')));
+        assert_eq!(app.approval_choice, Some(1));
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(app.approval_choice, Some(0));
+        for _ in 0..3 {
+            app.update(key(KeyCode::Char('j')));
+        }
+        assert_eq!(app.approval_choice, Some(2));
         assert_eq!(
             app.update(key(KeyCode::Enter)).as_deref(),
             Some("/audit trusted cli:once:owner request")
@@ -591,6 +531,140 @@ mod tests {
         assert_eq!(
             app.update(key(KeyCode::Esc)).as_deref(),
             Some("/deny request")
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_menu_selects_modes_locally_and_preserves_the_draft_on_cancel() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(SqliteSessionStore::open(directory.path().into()).unwrap());
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(NoModel),
+                ToolRegistry::default(),
+                ContextBuilder::new(""),
+            )),
+            store.clone(),
+        );
+        let conversation = SessionId::new("cli:main");
+        let mut app = App::default();
+        app.insert_input("draft");
+        app.input_cursor = 2;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        decide(&mut app, &runner, &conversation, "/audit")
+            .await
+            .unwrap();
+        app.insert_input("paste");
+        terminal
+            .draw(|frame| super::super::ui::render(&mut app, frame))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("> AI review"));
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..24)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let title_y = rows
+            .iter()
+            .position(|row| row.contains("Command review mode"))
+            .unwrap();
+        assert!(rows[title_y - 1].trim().is_empty());
+        assert!(rows[title_y + 1].trim().is_empty());
+        let (description_y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains("Ask before risky or unclear actions"))
+            .unwrap();
+        let description_x = row.find("Ask before risky or unclear actions").unwrap();
+        let description = &buffer[(description_x as u16, description_y as u16)];
+        assert_eq!(description.fg, ratatui::style::Color::Gray);
+        assert!(description.modifier.contains(ratatui::style::Modifier::DIM));
+        assert!(
+            !description
+                .modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert!(!terminal.backend().cursor_visible());
+        assert!(app.messages.is_empty());
+        assert!(store.load(&conversation).await.unwrap().is_none());
+        assert_eq!(app.input, "draft");
+        for (width, height) in [(1, 1), (8, 1), (8, 5), (40, 10)] {
+            let mut small = Terminal::new(TestBackend::new(width, height)).unwrap();
+            small
+                .draw(|frame| super::super::ui::render(&mut app, frame))
+                .unwrap();
+        }
+        app.update(key(KeyCode::Char('j')));
+        let command = app.update(key(KeyCode::Enter)).unwrap();
+        assert_eq!(command, "/audit ask");
+        decide(&mut app, &runner, &conversation, &command)
+            .await
+            .unwrap();
+        let active = store.active_id(&conversation).await.unwrap();
+        assert_eq!(
+            store.command_audit_mode(active.as_str()).await.unwrap(),
+            CommandAuditMode::Ask
+        );
+        app.language = crate::i18n::Language::Ru;
+        app.status = super::super::app::Status::Working;
+        decide(&mut app, &runner, &conversation, "/audit")
+            .await
+            .unwrap();
+        terminal
+            .draw(|frame| super::super::ui::render(&mut app, frame))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("> Спрашивать всегда"));
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Up));
+        app.update(key(KeyCode::Down));
+        assert_eq!(app.update(key(KeyCode::Esc)), None);
+        assert!(matches!(app.status, super::super::app::Status::Working));
+        assert_eq!(
+            store.command_audit_mode(active.as_str()).await.unwrap(),
+            CommandAuditMode::Ask
+        );
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.input_cursor, 2);
+        terminal
+            .draw(|frame| super::super::ui::render(&mut app, frame))
+            .unwrap();
+        assert!(terminal.backend().cursor_visible());
+        decide(&mut app, &runner, &conversation, "/audit")
+            .await
+            .unwrap();
+        app.update(key(KeyCode::Char('k')));
+        app.update(key(KeyCode::Char('k')));
+        assert_eq!(
+            app.update(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat
+            )),
+            None
+        );
+        let command = app.update(key(KeyCode::Enter)).unwrap();
+        assert_eq!(command, format!("/audit trusted {}", active.as_str()));
+        decide(&mut app, &runner, &conversation, &command)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.command_audit_mode(active.as_str()).await.unwrap(),
+            CommandAuditMode::Trusted
         );
     }
 
@@ -664,7 +738,7 @@ mod tests {
         let active = store.active_id(&conversation).await.unwrap();
         assert!(store.load(&active).await.unwrap().is_some());
         assert!(!store.command_audit_enabled(active.as_str()).await.unwrap());
-        assert_eq!(app.audit_disabled_sessions, [active.as_str()]);
+        assert_eq!(app.audit_mode, CommandAuditMode::Trusted);
         let reopened = SqliteSessionStore::open(dir.path().into()).unwrap();
         assert!(
             !reopened
@@ -693,7 +767,7 @@ mod tests {
         decide(&mut app, &runner, &conversation, "/audit on")
             .await
             .unwrap();
-        assert!(app.audit_disabled_sessions.is_empty());
+        assert_eq!(app.audit_mode, CommandAuditMode::Review);
         let owner = SessionId::new("cli:once:owner");
         let mut session = Session::new(owner.clone());
         let call = ToolCall {
@@ -755,12 +829,12 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(rendered.contains("No checks: cli:once:owner"));
+        assert!(rendered.contains("◇ AI review ·"));
         decide(&mut app, &runner, &conversation, "/audit on cli:once:owner")
             .await
             .unwrap();
         assert!(store.command_audit_enabled(owner.as_str()).await.unwrap());
-        assert!(app.audit_disabled_sessions.is_empty());
+        assert_eq!(app.audit_mode, CommandAuditMode::Review);
         let pending = app.approval.as_ref().unwrap().id.clone();
         app.update(key(KeyCode::Up));
         app.update(key(KeyCode::Down));
@@ -790,7 +864,7 @@ mod tests {
         assert_eq!(
             app.audit_mode,
             CommandAuditMode::Review,
-            "the header continues to describe the active session after an inspected request is gone"
+            "the status line continues to describe the active session after an inspected request is gone"
         );
         assert_eq!(
             store.command_audit_mode(owner.as_str()).await.unwrap(),
@@ -1096,11 +1170,7 @@ mod tests {
         );
         assert!(refresh(&mut app, &runner, &session_id).await.unwrap());
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        assert_eq!(
-            app.update(key(KeyCode::Enter)),
-            None,
-            "a choice must be selected first"
-        );
+        assert_eq!(app.approval_choice, Some(0));
         app.update(key(KeyCode::Char('x')));
         app.insert_input("pasted text");
         assert_eq!(app.input, "draft message");
@@ -1113,7 +1183,7 @@ mod tests {
             .map(|point| terminal.backend().buffer()[point].symbol())
             .collect();
         assert!(
-            footer.contains("Allow once")
+            footer.contains("> Allow once")
                 && footer.contains("Reject")
                 && footer.contains("No checks for this session")
         );
@@ -1130,7 +1200,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(
-            text.contains("Разрешить один раз")
+            text.contains("> Разрешить один раз")
                 && text.contains("Отклонить")
                 && text.contains("Без проверок для этого сеанса")
         );
@@ -1143,9 +1213,7 @@ mod tests {
         app.language = crate::i18n::Language::En;
         let displayed = app.messages.last().unwrap();
         assert!(
-            displayed.content.contains(
-                format!("{:?}", serde_json::to_string(&command).unwrap()).trim_matches('"')
-            ),
+            displayed.content.contains(&command.replace('\n', "\n  ")),
             "even long commands must be shown completely"
         );
         assert!(displayed.content.contains("/workspace/a b"));
@@ -1169,9 +1237,11 @@ mod tests {
         assert!(super::super::refresh_history(&mut app, &session));
         assert!(refresh(&mut app, &runner, &session_id).await.unwrap());
         assert!(
-            app.messages.last().unwrap().content.contains(
-                format!("{:?}", serde_json::to_string(&command).unwrap()).trim_matches('"')
-            )
+            app.messages
+                .last()
+                .unwrap()
+                .content
+                .contains(&command.replace('\n', "\n  "))
         );
         assert!(!handle_command(&mut app, &runner, &session_id, "yes, approve that").await);
         assert!(
@@ -1187,13 +1257,17 @@ mod tests {
                 .len(),
             3
         );
-        app.update(key(KeyCode::Up));
         assert_eq!(app.update(key(KeyCode::Enter)), Some(allow.clone()));
         assert!(handle_command(&mut app, &runner, &session_id, &allow).await);
+        assert_eq!(app.approval_choice, Some(0));
         assert_eq!(
-            app.update(key(KeyCode::Enter)),
+            app.update(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat
+            )),
             None,
-            "the next request requires a new selection"
+            "holding Enter must not approve the next request"
         );
         assert!(
             decide(&mut app, &runner, &session_id, &allow)
