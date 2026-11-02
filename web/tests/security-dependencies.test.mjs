@@ -4,10 +4,65 @@ import { constants, createHash, generateKeyPairSync, privateEncrypt, sign } from
 import { createRequire } from 'node:module';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import braces from 'braces';
 import forge from 'node-forge';
+import deepmerge from 'deepmerge';
+import { Minimatch } from 'minimatch';
 import { applySecurityPatches } from '../scripts/security-patch.mjs';
+
+test('deepmerge rejects prototype keys in targets, sources, and nested values', () => {
+  const payload = JSON.parse('{"__proto__":{"isAdmin":true},"safe":1}');
+  for (const merged of [
+    deepmerge(Object.create(null), payload),
+    deepmerge(payload, {}),
+    deepmerge({}, payload),
+    deepmerge({ session: null }, { session: payload }).session,
+    deepmerge({ session: 0 }, { session: payload }).session,
+    deepmerge(payload, payload),
+  ]) {
+    assert.equal(Object.getPrototypeOf(merged), Object.prototype);
+    assert.equal(merged.isAdmin, undefined);
+    assert.equal(Object.hasOwn(merged, '__proto__'), false);
+    assert.equal(merged.safe, 1);
+  }
+  assert.equal({}.isAdmin, undefined);
+  for (const key of ['constructor', 'prototype']) {
+    const input = { [key]: { isAdmin: true }, safe: 1 };
+    for (const merged of [deepmerge(input, {}), deepmerge(Object.create(null), input)]) {
+      assert.equal(Object.hasOwn(merged, key), false);
+      assert.equal(merged.safe, 1);
+    }
+  }
+  assert.deepEqual(deepmerge({ nested: { a: 1 }, list: [1] }, { nested: { b: 2 }, list: [2] }), {
+    nested: { a: 1, b: 2 }, list: [1, 2],
+  });
+});
+
+test('minimatch bounds globstar preprocessing', () => {
+  const matcher = new Minimatch(Array(12).fill('**/../a/b').join('/'), {
+    optimizationLevel: 2, braceExpandMax: 64,
+  });
+  assert.equal(matcher.set.length, 64);
+  assert.equal(new Minimatch('**/*.txt').match('nested/example.txt'), true);
+});
+
+test('archiver consumers keep glob matching and exclusions after dependency overrides', async () => {
+  const require = createRequire(import.meta.url);
+  const root = mkdtempSync(join(tmpdir(), 'kodrik-glob-'));
+  try {
+    mkdirSync(join(root, 'nested'));
+    for (const file of ['top.txt', 'nested/keep.txt', 'nested/skip.txt', 'nested/other.js']) {
+      writeFileSync(join(root, file), 'test');
+    }
+    const patterns = ['**/*.txt', '!**/skip.txt'];
+    assert.deepEqual(require('archiver-utils').file.expand({ cwd: root }, patterns).sort(), ['nested/keep.txt', 'top.txt']);
+    const matches = await new Promise((resolve, reject) => require('readdir-glob')(root, {
+      pattern: '**/*.txt', ignore: '**/skip.txt', nodir: true,
+    }, (error, files) => error ? reject(error) : resolve(files)));
+    assert.deepEqual(matches.sort(), ['nested/keep.txt', 'top.txt']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('braces bounds nesting through every string and AST entrypoint', () => {
   for (const [open, close] of [['{', '}'], ['(', ')']]) {
@@ -76,7 +131,7 @@ test('security backports are idempotent and reject changed sources and versions 
     for (const patch of manifest) {
       const path = `node_modules/${patch.package}`;
       lock.packages[path] = { version: patch.version };
-      mkdirSync(join(root, path, 'lib'), { recursive: true });
+      mkdirSync(dirname(join(root, path, patch.file)), { recursive: true });
       writeFileSync(join(root, path, 'package.json'), JSON.stringify({ version: patch.version }));
       let source = readFileSync(new URL(`../${path}/${patch.file}`, import.meta.url), 'utf8');
       const diff = readFileSync(new URL(`../scripts/security-patches/${patch.patch}`, import.meta.url), 'utf8');
@@ -101,7 +156,7 @@ test('security backports are idempotent and reject changed sources and versions 
     assert.throws(() => applySecurityPatches(root), /unexpected source/);
     assert.equal(readFileSync(file, 'utf8'), 'changed');
     assert.equal(readFileSync(originals[0][0], 'utf8'), originals[0][1]);
-    lock.packages['node_modules/node-forge'].version = '1.4.1';
+    lock.packages['node_modules/deepmerge'].version = '4.3.2';
     writeFileSync(lockFile, JSON.stringify(lock));
     assert.throws(() => applySecurityPatches(root), /lock version/);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -111,6 +166,8 @@ test('Nuxt consumers resolve the verified dependency implementations', () => {
   const require = createRequire(import.meta.url);
   const listhen = createRequire(require.resolve('listhen'));
   const micromatch = createRequire(require.resolve('micromatch'));
+  const rollup = createRequire(require.resolve('@rollup/plugin-node-resolve'));
   assert.equal(listhen.resolve('node-forge'), require.resolve('node-forge'));
   assert.equal(micromatch.resolve('braces'), require.resolve('braces'));
+  assert.equal(rollup.resolve('deepmerge'), require.resolve('deepmerge'));
 });

@@ -1,11 +1,11 @@
 [
   {
-    "package": "node-forge",
-    "version": "1.4.0",
-    "file": "lib/rsa.js",
-    "patch": "node-forge.patch",
-    "original": "fd4740238145ec26470eb3f06a627c72039538ce1307dbdce40521f94dfd0a50",
-    "patched": "c7b72e7ef41f4fc0e5228dce3e37851e9ca064c789365d5e392c25d1c5f6e710"
+    "package": "deepmerge",
+    "version": "4.3.1",
+    "file": "dist/cjs.js",
+    "patch": "deepmerge.patch",
+    "original": "2e5160f84a1141bd927264afe4d15766f1e6cf07daef182b37ff53fea121de7d",
+    "patched": "35a4ff77ffa6765f701ce3aacae04f5b19dddc2883c539419fd9dfa2f410650e"
   },
   {
     "package": "braces",
