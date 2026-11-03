@@ -108,6 +108,7 @@ kodrik ask "What should we explore today?"
 ```
 
 Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
+Multiple terminal UI instances keep independent session selections.
 Launch from the directory where you want shell and file tools to work.
 
 The web, TUI and Telegram interfaces support English and Russian. See

@@ -213,7 +213,11 @@ impl AgentRunner {
             .context("Editing messages requires SQLite")?;
         let mut request = SubmissionRequest::new(
             conversation,
-            IncomingMessage::new(InterfaceId("cli".into()), "main", text),
+            IncomingMessage::new(
+                InterfaceId("cli".into()),
+                conversation.as_str().strip_prefix("cli:").unwrap_or("main"),
+                text,
+            ),
             BusyMode::RejectIfBusy,
         );
         self.prepare_submission(&mut request);

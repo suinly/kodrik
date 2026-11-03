@@ -32,6 +32,12 @@ choice. See [Interface languages](languages.md) for detection and saved preferen
 
 ## Terminal UI
 
+Each running TUI reserves its own conversation slot, so `/sessions`, `/new` and
+message-version switches do not change another instance's selection. Saved
+conversations remain shared. Slots are reused after exit, preserving their last
+selected session and interrupted requests for recovery. The first available slot
+is used on launch; a slot is not tied to a particular terminal window or directory.
+
 An interrupted request resumes with history already visible and a “Recovering
 session” status. Scrolling, selection and draft editing remain available while
 recovery waits for the model. Enter leaves the draft unsent until recovery finishes;

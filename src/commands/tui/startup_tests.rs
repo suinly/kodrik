@@ -144,6 +144,7 @@ async fn terminal_recovery_fixture() {
     }
     run_session(
         runner,
+        id.clone(),
         "test-model".into(),
         Language::En,
         &directory.join("language"),

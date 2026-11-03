@@ -58,7 +58,10 @@ mapping. Fresh sessions reload personality, memory, interests and skills. TUI
 and Telegram show a brief switch notification. The TUI clears the previous
 history while preserving the new message, queued corrections and the input draft.
 Personal sessions are shared per user across Telegram and web; CLI/TUI always uses
-the configured owner. Each interface keeps its own active-session selection.
+the configured owner. Each interface and each running TUI instance keeps its own
+active-session selection. TUI instances reserve separate reusable slots for their
+lifetime; a later launch reuses the first free slot and its saved selection/recovery
+state, rather than identifying a particular terminal window.
 Previous sessions remain available through `/sessions` in TUI, `/sessions` and
 `/session <id>` in private Telegram chats, the web sidebar and history search.
 `/new` continues to work manually.

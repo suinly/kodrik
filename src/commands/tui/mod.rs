@@ -1,6 +1,7 @@
 mod app;
 mod approvals;
 mod clipboard;
+mod instance;
 mod markdown;
 mod navigation;
 #[cfg(all(test, unix))]
@@ -49,9 +50,11 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         )
     );
     let context = build_app(config).await?;
+    let instance = instance::Instance::claim(&context.agent_runner).await?;
     let ProviderConfig::OpenAi { model, .. } = &config.provider["primary"];
     run_session(
         context.agent_runner,
+        instance.conversation.clone(),
         model.clone(),
         language,
         &language_path,
@@ -61,11 +64,11 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
 
 async fn run_session(
     runner: Arc<crate::agent::AgentRunner>,
+    session_id: SessionId,
     model: String,
     language: Language,
     language_path: &Path,
 ) -> anyhow::Result<()> {
-    let session_id = SessionId::new("cli:main");
     let recovery = runner.recover(crate::agent::recovery::RecoveryTarget::Conversation(
         session_id.clone(),
     ));
@@ -313,7 +316,7 @@ async fn run_session(
                                 redraw = true;
                                 continue;
                             }
-                            let message=IncomingMessage::new(InterfaceId("cli".into()),"main",input);
+                            let message=IncomingMessage::new(InterfaceId("cli".into()),session_id.as_str().strip_prefix("cli:").unwrap(),input);
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
                                 Ok(_)=>{input_tx.send(message)?;},
                                 Err(error)=>{app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
