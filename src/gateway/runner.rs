@@ -92,6 +92,9 @@ fn service_progress(language: Language, message: &str) -> String {
         match message {
             "Compacting conversation context…" => return "Сжимаю контекст диалога…".into(),
             "Context compacted; continuing…" => return "Контекст сжат; продолжаю…".into(),
+            "Context compaction failed; history was preserved" => {
+                return "Не удалось сжать контекст; история сохранена".into();
+            }
             _ => {}
         }
         if let Some(retry) = message.strip_prefix("Request failed. Retry ")
@@ -2463,6 +2466,13 @@ mod tests {
         assert_eq!(
             service_progress(Language::En, "Context compacted; continuing…"),
             "Context compacted; continuing…"
+        );
+        assert_eq!(
+            service_progress(
+                Language::Ru,
+                "Context compaction failed; history was preserved"
+            ),
+            "Не удалось сжать контекст; история сохранена"
         );
     }
 

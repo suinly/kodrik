@@ -356,6 +356,7 @@ async fn durable_process_worker() {
                 &ContextBuilder::new("fixture rules"),
                 &[],
                 &mut cp,
+                None,
             )
             .await
             .unwrap();
@@ -815,6 +816,7 @@ async fn durable_process_ready_compaction_preserves_new_suffix() {
             &ContextBuilder::new("fixture rules"),
             &[],
             &mut cp,
+            None,
         )
         .await
         .unwrap();

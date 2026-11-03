@@ -127,8 +127,11 @@ summarized in chunks targeting half the configured threshold, carrying the
 previous summary forward. A single complete message/tool
 group can exceed that target and is still attempted after tool-output truncation.
 This adds model calls, cost and latency.
-TUI and Telegram display compaction progress. Bounded background/wakeup runs do
-not acquire extra compaction calls.
+TUI shows an animated compaction status without interrupting the streamed reply.
+Telegram displays compaction in its progress message, one-shot CLI writes progress
+to stderr, and web chat shows an animated preparation indicator with the saved job
+status. This includes SQLite background and overflow-triggered compaction.
+Bounded background/wakeup runs do not acquire extra compaction calls.
 
 New summary state is applied only after every chunk succeeds and the result is
 nonempty, bounded text that reduces the active history. Explicit incomplete/failed

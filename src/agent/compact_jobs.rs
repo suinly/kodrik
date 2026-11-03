@@ -1,10 +1,11 @@
 use super::{
     CompactionCandidate, CompactionSnapshot, Compactor, ContextBuilder, Session, Tool, hash,
 };
-use crate::agent::{run_state::Checkpoint, session::SqliteSessionStore};
+use crate::agent::{AgentEvent, run_state::Checkpoint, session::SqliteSessionStore};
 use anyhow::{Context, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Job {
@@ -343,8 +344,9 @@ impl Compactor {
         tools: &[&dyn Tool],
         cp: &mut Checkpoint,
         margin: u64,
+        progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<()> {
-        self.boundary(session, builder, tools, cp, margin, false)
+        self.boundary(session, builder, tools, cp, margin, false, progress)
             .await
     }
 
@@ -354,12 +356,14 @@ impl Compactor {
         builder: &ContextBuilder,
         tools: &[&dyn Tool],
         cp: &mut Checkpoint,
+        progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<()> {
         ensure!(
             self.threshold != 0,
             "Context overflow: compaction disabled; reduce input or start a new session"
         );
-        self.boundary(session, builder, tools, cp, 0, true).await
+        self.boundary(session, builder, tools, cp, 0, true, progress)
+            .await
     }
 
     async fn boundary(
@@ -370,10 +374,12 @@ impl Compactor {
         cp: &mut Checkpoint,
         margin: u64,
         force: bool,
+        progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<()> {
         if self.threshold == 0 {
             return Ok(());
         }
+        let mut announced = false;
         loop {
             let required = force
                 || self
@@ -434,6 +440,12 @@ impl Compactor {
                             .await?
                         {
                             *session = saved;
+                            if let Some(tx) = progress {
+                                let _ = tx.try_send(AgentEvent::Compaction(
+                                    "Context compacted; continuing…".into(),
+                                ));
+                                let _ = tx.try_send(AgentEvent::ContextTokens(None));
+                            }
                             if force
                                 || self
                                     .prepare(session, builder, tools, self.threshold)?
@@ -444,6 +456,12 @@ impl Compactor {
                         }
                         continue;
                     }
+                    if !announced && let Some(tx) = progress {
+                        let _ = tx.try_send(AgentEvent::Compaction(
+                            "Compacting conversation context…".into(),
+                        ));
+                        announced = true;
+                    }
                     self.spawn_job(cp.store.clone(), job);
                     if !required {
                         return Ok(());
@@ -452,6 +470,11 @@ impl Compactor {
                     continue;
                 }
                 if job.status == "failed" && job.run_id == cp.record.id {
+                    if let Some(tx) = progress {
+                        let _ = tx.try_send(AgentEvent::Compaction(
+                            "Context compaction failed; history was preserved".into(),
+                        ));
+                    }
                     if required {
                         anyhow::bail!(
                             "Context compaction failed; history was preserved: {}",
@@ -491,6 +514,12 @@ impl Compactor {
                 unknown_calls: 0,
             };
             cp.store.put_compaction(job.clone()).await?;
+            if let Some(tx) = progress {
+                let _ = tx.try_send(AgentEvent::Compaction(
+                    "Compacting conversation context…".into(),
+                ));
+                announced = true;
+            }
             self.spawn_job(cp.store.clone(), job);
             if !required {
                 return Ok(());
@@ -644,6 +673,7 @@ mod tests {
                     &[],
                     &mut cp,
                     30000,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -656,6 +686,7 @@ mod tests {
                         &[],
                         &mut cp,
                         30000,
+                        None,
                     )
                     .await
                     .unwrap();
@@ -696,6 +727,7 @@ mod tests {
                 &[],
                 &mut cp,
                 30000,
+                None,
             )
             .await
             .unwrap();
@@ -707,6 +739,7 @@ mod tests {
                 &[],
                 &mut cp,
                 30000,
+                None,
             )
             .await
             .unwrap();
@@ -719,7 +752,8 @@ mod tests {
                     &ContextBuilder::new("rules"),
                     &[],
                     &mut cp,
-                    30000
+                    30000,
+                    None
                 )
                 .await
                 .is_err()
@@ -869,14 +903,14 @@ mod tests {
         };
         let builder = ContextBuilder::new("rules");
         compactor
-            .durable_boundary(&mut session, &builder, &[], &mut cp, 0)
+            .durable_boundary(&mut session, &builder, &[], &mut cp, 0, None)
             .await
             .unwrap();
         Compactor {
             llm: model.clone(),
             threshold: 0,
         }
-        .durable_boundary(&mut session, &builder, &[], &mut cp, 16000)
+        .durable_boundary(&mut session, &builder, &[], &mut cp, 16000, None)
         .await
         .unwrap();
         assert!(
@@ -1025,6 +1059,7 @@ mod tests {
                 &[],
                 &mut cp,
                 30000,
+                None,
             )
             .await
             .unwrap();
@@ -1039,6 +1074,7 @@ mod tests {
                 &[],
                 &mut cp,
                 30000,
+                None,
             )
             .await
             .unwrap();
@@ -1191,6 +1227,7 @@ mod tests {
                 &[],
                 &mut cp,
                 30000,
+                None,
             )
             .await
             .unwrap();
@@ -1211,7 +1248,8 @@ mod tests {
                     &ContextBuilder::new("rules"),
                     &[],
                     &mut cp,
-                    30000
+                    30000,
+                    None
                 )
                 .await
                 .unwrap_err()

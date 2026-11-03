@@ -10,6 +10,7 @@ pub struct App {
     pub should_quit: bool,
     pub model: String,
     pub context_tokens: Option<u64>,
+    pub compacting: bool,
     pub input: String,
     pub input_cursor: usize,
     pub input_width: usize,

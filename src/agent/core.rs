@@ -437,10 +437,17 @@ impl Agent {
                     if session.compaction().map_or(0, |(through, _)| through) <= from {
                         if let Some(cp) = checkpoint.as_deref_mut() {
                             cp.save(session, RunPhase::NeedModel, None).await?;
-                            Box::pin(compactor.force_durable(session, &self.context, &tools, cp))
-                                .await?;
+                            Box::pin(compactor.force_durable(
+                                session,
+                                &self.context,
+                                &tools,
+                                cp,
+                                progress,
+                            ))
+                            .await?;
                         } else {
-                            Box::pin(compactor.force(session, &self.context, &tools)).await?;
+                            Box::pin(compactor.force(session, &self.context, &tools, progress))
+                                .await?;
                         }
                     }
                     overflow_compaction_from = None;
@@ -465,6 +472,7 @@ impl Agent {
                             &tools,
                             cp,
                             self.compact_background_margin,
+                            progress,
                         ))
                         .await?;
                     } else {
@@ -1460,7 +1468,7 @@ mod tests {
                 .compactor
                 .as_ref()
                 .unwrap()
-                .force_durable(&mut session, &agent.context, &[], &mut cp)
+                .force_durable(&mut session, &agent.context, &[], &mut cp, None)
                 .await
                 .unwrap();
             if !pending {
@@ -1552,45 +1560,51 @@ mod tests {
                 Ok(serde_json::json!("output ".repeat(900)).into())
             }
         }
-        let llm = Arc::new(FlowLlm(Mutex::new(vec![])));
-        let agent = Agent::new(
-            llm.clone(),
-            ToolRegistry::default().register(Arc::new(LargeOutput)),
-            ContextBuilder::new("rules"),
-        )
-        .with_compaction(llm.clone(), 8000);
-        let mut session = Session::new(SessionId::new("flow"));
-        let (tx, mut rx) = mpsc::channel(32);
-        let answer = agent
-            .run(
-                &mut session,
-                UserMessage {
-                    content: "user goal ".repeat(600),
-                    images: vec![],
-                    files: vec![],
-                },
-                Some(&tx),
-                None,
+        for durable in [false, true] {
+            let llm = Arc::new(FlowLlm(Mutex::new(vec![])));
+            let agent = Agent::new(
+                llm.clone(),
+                ToolRegistry::default().register(Arc::new(LargeOutput)),
+                ContextBuilder::new("rules"),
             )
-            .await
-            .unwrap();
-        assert_eq!(answer.content, "done");
-        assert_eq!(session.messages().len(), 4);
-        assert!(matches!(&session.messages()[0], Message::User(m) if m.content.len() == 6000));
-        let seen = llm.0.lock().unwrap();
-        assert_eq!(seen.len(), 2);
-        assert!(
-            matches!(&seen[1][0], Message::Assistant(m) if m.content.contains("Preserved user goal"))
-        );
-        assert!(matches!(&seen[1][1], Message::ToolCall(c) if c.call_id == "work"));
-        assert!(matches!(&seen[1][2], Message::ToolResult(r) if r.call_id == "work"));
-        let mut notices = 0;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(event, AgentEvent::Compaction(_)) {
-                notices += 1;
+            .with_compaction(llm.clone(), 8000);
+            let mut session = Session::new(SessionId::new("flow"));
+            let dir = tempfile::tempdir().unwrap();
+            let store = crate::agent::session::SqliteSessionStore::open(dir.path().into()).unwrap();
+            let mut checkpoint = Checkpoint::new(&store, session.id(), &session);
+            let (tx, mut rx) = mpsc::channel(32);
+            let answer = agent
+                .run_durable(
+                    &mut session,
+                    UserMessage {
+                        content: "user goal ".repeat(600),
+                        images: vec![],
+                        files: vec![],
+                    },
+                    Some(&tx),
+                    None,
+                    durable.then_some(&mut checkpoint),
+                )
+                .await
+                .unwrap();
+            assert_eq!(answer.content, "done");
+            assert_eq!(session.messages().len(), 4);
+            assert!(matches!(&session.messages()[0], Message::User(m) if m.content.len() == 6000));
+            let seen = llm.0.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(
+                matches!(&seen[1][0], Message::Assistant(m) if m.content.contains("Preserved user goal"))
+            );
+            assert!(matches!(&seen[1][1], Message::ToolCall(c) if c.call_id == "work"));
+            assert!(matches!(&seen[1][2], Message::ToolResult(r) if r.call_id == "work"));
+            let mut notices = 0;
+            while let Ok(event) = rx.try_recv() {
+                if matches!(event, AgentEvent::Compaction(_)) {
+                    notices += 1;
+                }
             }
+            assert_eq!(notices, 2);
         }
-        assert_eq!(notices, 2);
     }
 
     struct AuditLlm {

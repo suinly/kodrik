@@ -594,7 +594,10 @@ const compactionLabels = {
         </template>
       </UChatPrompt>
       <div v-if="snapshot?.compaction || connection || stopping || hint" class="min-h-0 space-y-1 overflow-y-auto text-xs text-muted">
-        <p v-if="snapshot?.compaction" role="status">{{ t(compactionLabels[snapshot.compaction.status]) }}</p>
+        <p v-if="snapshot?.compaction" role="status" :aria-busy="snapshot.compaction.status === 'preparing'" class="flex items-center gap-1.5">
+          <UIcon v-if="snapshot.compaction.status === 'preparing'" name="i-lucide-loader-circle" class="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          {{ t(compactionLabels[snapshot.compaction.status]) }}
+        </p>
         <p v-if="connection" role="status">{{ t(connection) }}</p>
         <p v-if="stopping || hint" role="status" aria-live="polite">{{ stopping ? t("Останавливаю и сохраняю историю…") : t(hint) }}</p>
       </div>

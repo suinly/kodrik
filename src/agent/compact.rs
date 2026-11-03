@@ -276,15 +276,27 @@ impl Compactor {
         session: &mut Session,
         builder: &ContextBuilder,
         tools: &[&dyn Tool],
+        progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<()> {
         let snapshot = self.prepare(session, builder, tools, 0)?.context(
             "Context overflow: no compactable history; reduce input or start a new session",
         )?;
+        if let Some(tx) = progress {
+            let _ = tx.try_send(AgentEvent::Compaction(
+                "Compacting conversation context…".into(),
+            ));
+        }
         let candidate = self.generate(&snapshot, None).await?;
         ensure!(
             candidate.apply(session)?,
             "Context overflow: compaction became stale"
         );
+        if let Some(tx) = progress {
+            let _ = tx.try_send(AgentEvent::Compaction(
+                "Context compacted; continuing…".into(),
+            ));
+            let _ = tx.try_send(AgentEvent::ContextTokens(None));
+        }
         Ok(())
     }
 
@@ -410,7 +422,7 @@ mod tests {
             let original = serde_json::to_value(&session).unwrap();
             assert!(
                 compactor
-                    .force(&mut session, &ContextBuilder::new("rules"), &[])
+                    .force(&mut session, &ContextBuilder::new("rules"), &[], None)
                     .await
                     .is_err()
             );
@@ -441,7 +453,7 @@ mod tests {
         };
         let builder = ContextBuilder::new("rules");
         let id = cp.record.id.clone();
-        let force = compactor.force_durable(&mut session, &builder, &[], &mut cp);
+        let force = compactor.force_durable(&mut session, &builder, &[], &mut cp, None);
         let cancel = async {
             llm.started.notified().await;
             store.cancel_run(&id).await.unwrap();
@@ -532,13 +544,25 @@ mod tests {
             threshold: 40000,
         };
         let builder = ContextBuilder::new("rules");
+        let (progress, mut events) = mpsc::channel(8);
         tokio::time::timeout(
             Duration::from_secs(1),
-            compactor.durable_boundary(&mut session, &builder, &[], &mut cp, 30000),
+            compactor.durable_boundary(
+                &mut session,
+                &builder,
+                &[],
+                &mut cp,
+                30000,
+                Some(&progress),
+            ),
         )
         .await
         .expect("background blocked foreground")
         .unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            AgentEvent::Compaction(message) if message == "Compacting conversation context…"
+        ));
         llm.started.notified().await;
         session.push(user("suffix during summary".into()));
         cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
@@ -561,9 +585,18 @@ mod tests {
         .await
         .unwrap();
         compactor
-            .durable_boundary(&mut session, &builder, &[], &mut cp, 30000)
+            .durable_boundary(&mut session, &builder, &[], &mut cp, 30000, Some(&progress))
             .await
             .unwrap();
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            AgentEvent::Compaction(message) if message == "Context compacted; continuing…"
+        ));
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            AgentEvent::ContextTokens(None)
+        ));
+        assert!(events.try_recv().is_err());
         assert!(session.compaction().is_some());
         assert!(
             matches!(session.messages().last(),Some(Message::User(u)) if u.content=="suffix during summary")
@@ -602,13 +635,13 @@ mod tests {
             };
             let builder = ContextBuilder::new("rules");
             compactor
-                .durable_boundary(&mut session, &builder, &[], &mut cp, 30000)
+                .durable_boundary(&mut session, &builder, &[], &mut cp, 30000, None)
                 .await
                 .unwrap();
             llm.started.notified().await;
             for _ in 0..3 {
                 compactor
-                    .durable_boundary(&mut session, &builder, &[], &mut cp, 30000)
+                    .durable_boundary(&mut session, &builder, &[], &mut cp, 30000, None)
                     .await
                     .unwrap();
             }
@@ -642,7 +675,8 @@ mod tests {
             } else {
                 session.input_tokens = Some(50000);
                 cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
-                let work = compactor.durable_boundary(&mut session, &builder, &[], &mut cp, 30000);
+                let work =
+                    compactor.durable_boundary(&mut session, &builder, &[], &mut cp, 30000, None);
                 tokio::pin!(work);
                 assert!(
                     tokio::time::timeout(Duration::from_millis(50), &mut work)
@@ -1039,7 +1073,7 @@ mod tests {
         session.push(user("latest".into()));
         let original = serde_json::to_value(&session).unwrap();
         let error = compactor
-            .force(&mut session, &ContextBuilder::new("rules"), &[])
+            .force(&mut session, &ContextBuilder::new("rules"), &[], None)
             .await
             .unwrap_err();
         assert!(error.is::<crate::agent::llm::ContextOverflow>());

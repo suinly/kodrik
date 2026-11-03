@@ -377,6 +377,7 @@ async fn run_session(
                 while let Ok(event) = progress_rx.try_recv() {
                     show_progress(&mut app, event);
                 }
+                app.compacting = false;
                 if matches!(app.status, Status::Stopping)
                     && let Ok(Err(error)) = &result
                     && error.to_string() == "Stopped by user"
@@ -872,6 +873,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         AgentEvent::SessionChanged {
             previous_user_messages,
         } => {
+            app.compacting = false;
             app.view = Default::default();
             let boundary = app
                 .messages
@@ -927,24 +929,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.finish_stream(message)
         }
         AgentEvent::Compaction(message) => {
-            let message = match message.as_str() {
-                "Compacting conversation context…" => app
-                    .language
-                    .pick(
-                        "Compacting conversation context…",
-                        "Сжимаю контекст беседы…",
-                    )
-                    .into(),
-                "Context compacted; continuing…" => app
-                    .language
-                    .pick(
-                        "Context compacted; continuing…",
-                        "Контекст сжат; продолжаю…",
-                    )
-                    .into(),
-                _ => message,
-            };
-            app.finish_stream(message)
+            app.compacting = message == "Compacting conversation context…";
         }
         AgentEvent::ContextTokens(tokens) => app.context_tokens = tokens,
         AgentEvent::ToolStarted {
@@ -1275,6 +1260,28 @@ mod tests {
     }
 
     #[test]
+    fn compaction_progress_preserves_streaming_reply() {
+        let mut app = App::default();
+        show_progress(&mut app, AgentEvent::TextDelta("partial reply".into()));
+        let streaming = app.streaming_message;
+        show_progress(
+            &mut app,
+            AgentEvent::Compaction("Compacting conversation context…".into()),
+        );
+        assert!(app.compacting);
+        assert_eq!(app.streaming_message, streaming);
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].content, "partial reply");
+        show_progress(
+            &mut app,
+            AgentEvent::Compaction("Context compacted; continuing…".into()),
+        );
+        assert!(!app.compacting);
+        show_progress(&mut app, AgentEvent::TextDelta(" continues".into()));
+        assert_eq!(app.messages[0].content, "partial reply continues");
+    }
+
+    #[test]
     fn russian_progress_translates_labels_and_preserves_details() {
         let mut app = App {
             language: Language::Ru,
@@ -1292,7 +1299,7 @@ mod tests {
             &mut app,
             AgentEvent::Compaction("Compacting conversation context…".into()),
         );
-        assert_eq!(app.messages[1].content, "Сжимаю контекст беседы…");
+        assert!(app.compacting);
         show_progress(
             &mut app,
             AgentEvent::ToolFinished {
@@ -1302,7 +1309,7 @@ mod tests {
             },
         );
         assert_eq!(
-            app.messages[2].content,
+            app.messages[1].content,
             "код выхода 1\n  stderr │ unchanged error detail"
         );
         app.update_plan(
@@ -1311,7 +1318,7 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(app.messages[3].content, "План · 0/1\n○ Original model text");
+        assert_eq!(app.messages[2].content, "План · 0/1\n○ Original model text");
     }
 
     #[test]

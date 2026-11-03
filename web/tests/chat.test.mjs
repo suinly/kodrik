@@ -63,6 +63,32 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('chat shows compaction progress and terminal states', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[],compaction:{status:'preparing'}};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const progress=page.getByRole('status').filter({hasText:'Готовлю краткий контекст…'});
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute('aria-busy','true');
+    for(const [status,label] of [
+      ['applied','Контекст сокращён; полная история сохранена'],
+      ['failed','Не удалось подготовить краткий контекст'],
+      ['cancelled','Подготовка контекста отменена'],
+    ]) {
+      snapshot.compaction.status=status;snapshot.revision++;
+      await page.reload();
+      const state=page.getByRole('status').filter({hasText:label});
+      await expect(state).toBeVisible();
+      await expect(state).toHaveAttribute('aria-busy','false');
+    }
+  } finally {await browser.close();}
+});
+
 test('profile offers device notifications and registers a worker under the configured prefix', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {

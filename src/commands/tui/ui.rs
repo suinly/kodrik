@@ -266,7 +266,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Status::Stopped => ("■", language.pick("Stopped", "Остановлено"), String::new()),
             Status::Working => (
                 FRAMES[app.animation_frame % FRAMES.len()],
-                language.pick("Working · Esc to stop", "Работаю · Esc для остановки"),
+                if app.compacting {
+                    language.pick(
+                        "Compacting context · Esc to stop",
+                        "Сжимаю контекст · Esc для остановки",
+                    )
+                } else {
+                    language.pick("Working · Esc to stop", "Работаю · Esc для остановки")
+                },
                 String::new(),
             ),
             Status::Done(time) => ("✓", language.pick("Done", "Готово"), format!(" {time}")),
@@ -873,6 +880,15 @@ mod tests {
         app.status = Status::Working;
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         assert!(text(&terminal).contains("Работаю · Esc для остановки"));
+        app.compacting = true;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("Сжимаю контекст · Esc для остановки"));
+        app.status = Status::Stopping;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("Остановка"));
+        assert!(!text(&terminal).contains("Сжимаю контекст"));
+        app.status = Status::Working;
+        app.compacting = false;
         app.insert_input("/");
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         let rendered = text(&terminal);

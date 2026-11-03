@@ -260,8 +260,10 @@ impl AgentRunner {
         let (tx, mut rx) = mpsc::channel(32);
         let display = async {
             while let Some(event) = rx.recv().await {
-                if let AgentEvent::PlanUpdated(plan) = event {
-                    eprintln!("{}", plan.render());
+                match event {
+                    AgentEvent::PlanUpdated(plan) => eprintln!("{}", plan.render()),
+                    AgentEvent::Compaction(message) => eprintln!("{message}"),
+                    _ => {}
                 }
             }
         };
