@@ -143,8 +143,8 @@ impl Default for SessionsConfig {
         Self {
             auto_switch: true,
             idle_minutes: 30,
-            compact_threshold_tokens: 80_000,
-            compact_background_margin_tokens: 16_000,
+            compact_threshold_tokens: 250_000,
+            compact_background_margin_tokens: 50_000,
             restart_limit: 5,
         }
     }
@@ -432,10 +432,9 @@ mod tests {
 
     #[test]
     fn compaction_background_margin_validates_with_threshold() {
-        assert_eq!(
-            super::SessionsConfig::default().compact_background_margin_tokens,
-            16000
-        );
+        let defaults = toml::from_str::<super::SessionsConfig>("").unwrap();
+        assert_eq!(defaults.compact_threshold_tokens, 250_000);
+        assert_eq!(defaults.compact_background_margin_tokens, 50_000);
         for config in [
             "compact_threshold_tokens=0",
             "compact_background_margin_tokens=0",
@@ -444,9 +443,9 @@ mod tests {
             assert!(toml::from_str::<super::SessionsConfig>(config).is_ok());
         }
         for config in [
-            "compact_threshold_tokens=16000",
+            "compact_threshold_tokens=50000",
             "compact_threshold_tokens=8000",
-            "compact_background_margin_tokens=80000",
+            "compact_background_margin_tokens=250000",
         ] {
             assert!(toml::from_str::<super::SessionsConfig>(config).is_err());
         }

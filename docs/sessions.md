@@ -87,8 +87,8 @@ See also: [Manual session commands](usage.md), [Storage and backups](storage.md)
 
 Before each ordinary agent request (including steps after tool execution), Kodrik
 checks the active context against `sessions.compact_threshold_tokens`, default
-80,000. Durable sessions start background preparation at threshold minus
-`sessions.compact_background_margin_tokens` (default 16,000: trigger 64,000).
+250,000. Durable sessions start background preparation at threshold minus
+`sessions.compact_background_margin_tokens` (default 50,000: trigger 200,000).
 A margin of 0 keeps blocking compaction only. A threshold of 0 disables future
 automatic compaction; existing summaries
 remain active. The last provider-reported

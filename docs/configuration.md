@@ -159,8 +159,8 @@ implemented.
 [sessions]
 auto_switch = true
 idle_minutes = 30
-compact_threshold_tokens = 80000
-compact_background_margin_tokens = 16000
+compact_threshold_tokens = 250000
+compact_background_margin_tokens = 50000
 restart_limit = 5
 ```
 
@@ -169,14 +169,14 @@ restart_limit = 5
 | `auto_switch` | `true` | Check whether an eligible message starts a new topic |
 | `idle_minutes` | `30` | Minimum pause since the last user/assistant message; nonnegative integer |
 | `restart_limit` | `5` | Consecutive crashed attempts in one semantic phase before parking; `0` disables automatic recovery |
-| `compact_background_margin_tokens` | `16000` | Start preparing a summary this many tokens before the blocking threshold; `0` disables background only |
-| `compact_threshold_tokens` | `80000` | Automatically summarize old context at this estimated input size; `0` disables, otherwise at least `4096` |
+| `compact_background_margin_tokens` | `50000` | Start preparing a summary this many tokens before the blocking threshold; `0` disables background only |
+| `compact_threshold_tokens` | `250000` | Automatically summarize old context at this estimated input size; `0` disables, otherwise at least `4096` |
 
 `idle_minutes = 0` checks every eligible turn. A pause only permits the check; it does not force
 a new session. See [Sessions](sessions.md) for context, timeouts and fallbacks.
 
 For a nonzero threshold, the background margin must be smaller than the threshold.
-If an existing configuration uses a threshold of 16,000 or less, explicitly set
+If an existing configuration uses a threshold of 50,000 or less, explicitly set
 a smaller margin (or `0`); the default margin would fail validation.
 
 Choose a compaction threshold below your model's context window, leaving room for
