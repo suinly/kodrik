@@ -208,7 +208,7 @@ impl Compactor {
                 }
                 calls += 1;
                 let result = tokio::time::timeout(
-                    Duration::from_secs(60),
+                    Duration::from_secs(300),
                     self.llm.generate(&request, &[], None),
                 )
                 .await
@@ -330,6 +330,7 @@ mod tests {
         fail_at: Option<usize>,
         overflow_until: usize,
         answer: Option<String>,
+        delay: Duration,
     }
 
     #[async_trait::async_trait]
@@ -345,6 +346,7 @@ mod tests {
                 progress.is_none(),
                 "summaries must not stream into the user reply"
             );
+            tokio::time::sleep(self.delay).await;
             let mut seen = self.seen.lock().unwrap();
             seen.push(context.messages.to_vec());
             self.instructions
@@ -871,6 +873,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn compact_accepts_slow_summary_without_losing_history() {
+        let compactor = Compactor {
+            llm: Arc::new(SummaryLlm {
+                delay: Duration::from_secs(90),
+                ..Default::default()
+            }),
+            threshold: 8000,
+        };
+        let mut session = history();
+        let original = serde_json::to_value(session.messages()).unwrap();
+        assert!(
+            compactor
+                .compact_if_needed(&mut session, &ContextBuilder::new("rules"), &[], None)
+                .await
+                .unwrap()
+        );
+        assert!(session.compaction().is_some());
+        assert_eq!(serde_json::to_value(session.messages()).unwrap(), original);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn compact_cancellation_and_timeout_preserve_previous_state() {
         struct PendingLlm;
         #[async_trait::async_trait]
@@ -902,12 +925,15 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&session).unwrap(), before);
         assert!(
-            compactor
-                .compact_if_needed(&mut session, &builder, &[], None)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("timed out")
+            tokio::time::timeout(
+                Duration::from_secs(301),
+                compactor.compact_if_needed(&mut session, &builder, &[], None)
+            )
+            .await
+            .expect("compaction must time out within five minutes")
+            .unwrap_err()
+            .to_string()
+            .contains("timed out")
         );
         assert_eq!(serde_json::to_value(&session).unwrap(), before);
     }

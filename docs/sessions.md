@@ -122,9 +122,9 @@ unchanged. Full command output remains available through `stdout_path`/`stderr_p
 when the command's own capture limit was exceeded.
 
 Compaction uses the primary model without tools or streamed summary output, with
-at most 2,048 output tokens and a 60-second deadline per call, without transient
-retries. Large histories are summarized in chunks targeting half the configured
-threshold, carrying the previous summary forward. A single complete message/tool
+a 300-second deadline per call and no transient retries. Large histories are
+summarized in chunks targeting half the configured threshold, carrying the
+previous summary forward. A single complete message/tool
 group can exceed that target and is still attempted after tool-output truncation.
 This adds model calls, cost and latency.
 TUI and Telegram display compaction progress. Bounded background/wakeup runs do
