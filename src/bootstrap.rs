@@ -308,7 +308,9 @@ pub(crate) async fn build_app_with_access(
     .with_soul(&data.join("SOUL.md"))
     .with_companion(data);
     if !isolated {
-        context = context.with_skills(&data.join("skills"));
+        context = context
+            .with_agents(&std::env::current_dir()?.join("AGENTS.md"))
+            .with_skills(&data.join("skills"));
     }
     let decision_provider = config.provider.get("system_one").unwrap_or(provider);
     let tool_auditor = || {

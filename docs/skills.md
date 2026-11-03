@@ -1,5 +1,10 @@
 # Skills
 
+For rules that should apply throughout a session, put `AGENTS.md` in the directory
+where you launch Kodrik. It is loaded into the main agent's system instructions;
+start `/new` to pick up changes. See [Project instructions](configuration.md#project-instructions-personality-and-system-prompt)
+for scope and limits. Skills below remain available on demand.
+
 Kodrik combines built-in skills with `skills/*/SKILL.md` in the current
 [space directory](storage.md#chat-spaces) at the first
 message of each new session. This works in CLI, TUI and Telegram. Use `/new`

@@ -268,7 +268,24 @@ Unknown `[web]` settings are rejected. Set the password using
 `kodrik web set-password`; it is not stored in configuration. See
 [Web pages](web-pages.md) for publication, access modes and proxy setup.
 
-## Personality and system prompt
+## Project instructions, personality and system prompt
+
+Kodrik reads an optional `AGENTS.md` from the directory it was launched from
+and includes its contents in the main agent's system instructions. This applies
+to CLI/TUI and the owner's private Telegram/web chats. Isolated users and groups
+never receive the host's project instructions. Parent directories and nested
+directories are not searched; tool calls with a different `workdir` do not change
+the instruction source. Relative paths in the file refer to its directory.
+
+The file must be UTF-8 and at most 32768 bytes. Missing or blank files add no
+instructions and are not created automatically. Read errors, invalid UTF-8 and
+oversized files fail session initialization rather than silently omitting rules.
+
+Project instructions are saved with the session's system prompt, survive
+compaction and restarts, and are inherited by delegated agents. Existing sessions
+keep their saved instructions, including sessions created before `AGENTS.md`
+support. Use `/new` after adding, editing or removing the file to load the current
+version. Project instructions do not grant extra tool permissions.
 
 Edit `SOUL.md` in the current [space directory](storage.md#chat-spaces) to change personality, then start a fresh session.
 The file is created once and preserved on later starts.

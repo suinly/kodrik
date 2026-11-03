@@ -20,6 +20,7 @@ pub struct LlmContext<'a> {
 #[derive(Clone)]
 pub struct ContextBuilder {
     system_prompt: String,
+    agents_path: Option<PathBuf>,
     skills_directory: Option<PathBuf>,
     memory: Option<MemoryStore>,
     soul_path: Option<PathBuf>,
@@ -31,12 +32,18 @@ impl ContextBuilder {
     pub fn new(system_prompt: impl Into<String>) -> Self {
         Self {
             system_prompt: system_prompt.into(),
+            agents_path: None,
             skills_directory: None,
             memory: None,
             soul_path: None,
             companion: None,
             timezone: chrono_tz::UTC,
         }
+    }
+
+    pub fn with_agents(mut self, path: &Path) -> Self {
+        self.agents_path = Some(path.to_path_buf());
+        self
     }
 
     pub fn with_skills(mut self, directory: &Path) -> Self {
@@ -70,7 +77,13 @@ impl ContextBuilder {
         {
             session.initialize_companion_snapshot(companion.snapshot()?);
         }
-        session.initialize_system_prompt(&self.system_prompt);
+        if session.system_prompt().is_none() {
+            let mut prompt = self.system_prompt.clone();
+            if let Some(path) = &self.agents_path {
+                prompt.push_str(&load_agents(path)?);
+            }
+            session.initialize_system_prompt(&prompt);
+        }
         Ok(())
     }
 
@@ -135,6 +148,32 @@ impl ContextBuilder {
             messages: truncate_tool_outputs(session.context_messages()),
         }
     }
+}
+
+fn load_agents(path: &Path) -> anyhow::Result<String> {
+    use anyhow::Context;
+    const MAX_BYTES: u64 = 32_768;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error).with_context(|| format!("Cannot read {}", path.display())),
+    };
+    let mut text = String::new();
+    file.take(MAX_BYTES + 1)
+        .read_to_string(&mut text)
+        .with_context(|| format!("Cannot read {} as UTF-8", path.display()))?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_BYTES,
+        "AGENTS.md exceeds {MAX_BYTES} bytes"
+    );
+    if text.trim().is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(
+        "\n\n## Project instructions (AGENTS.md)\nSource: {}\n\n{}\n",
+        path.display(),
+        text.trim()
+    ))
 }
 
 fn load_soul(path: &Path) -> anyhow::Result<String> {
@@ -289,6 +328,120 @@ mod tests {
     }
     use super::*;
     use crate::agent::session::SessionId;
+
+    #[test]
+    fn agents_instructions_are_frozen_restored_and_inherited() {
+        let project = tempfile::tempdir().unwrap();
+        let path = project.path().join("AGENTS.md");
+        std::fs::write(&path, "Use the existing project helpers.").unwrap();
+        let builder = ContextBuilder::new("base rules").with_agents(&path);
+        let mut session = Session::new(SessionId::new("project"));
+        builder.initialize_session(&mut session).unwrap();
+        assert!(
+            builder
+                .build(&session)
+                .instructions
+                .contains("Use the existing project helpers.")
+        );
+
+        session.push(Message::User(crate::agent::UserMessage {
+            content: "old request".into(),
+            images: vec![],
+            files: vec![],
+        }));
+        session.set_compaction(1, "old task summary".into());
+        let mut restored: Session =
+            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        std::fs::write(&path, "Use the updated project rules.").unwrap();
+        builder.initialize_session(&mut restored).unwrap();
+        let context = builder.build(&restored);
+        assert!(
+            context
+                .instructions
+                .contains("Use the existing project helpers.")
+        );
+        assert!(
+            !context
+                .instructions
+                .contains("Use the updated project rules.")
+        );
+        let mut child = restored.child(SessionId::new("child"));
+        builder.initialize_session(&mut child).unwrap();
+        assert!(
+            builder
+                .build(&child)
+                .instructions
+                .contains("Use the existing project helpers.")
+        );
+
+        let mut fresh = Session::new(SessionId::new("fresh"));
+        builder.initialize_session(&mut fresh).unwrap();
+        let context = builder.build(&fresh);
+        assert!(context.instructions.starts_with("base rules"));
+        assert!(
+            context
+                .instructions
+                .contains("Use the updated project rules.")
+        );
+        assert!(
+            !context
+                .instructions
+                .contains("Use the existing project helpers.")
+        );
+    }
+
+    #[test]
+    fn agents_file_is_optional_and_does_not_replace_legacy_prompts() {
+        let project = tempfile::tempdir().unwrap();
+        let path = project.path().join("AGENTS.md");
+        let builder = ContextBuilder::new("base rules").with_agents(&path);
+        let mut session = Session::new(SessionId::new("missing"));
+        builder.initialize_session(&mut session).unwrap();
+        assert_eq!(session.system_prompt(), Some("base rules"));
+        assert!(!path.exists());
+
+        for content in ["", "  \n\t"] {
+            std::fs::write(&path, content).unwrap();
+            let mut session = Session::new(SessionId::new("empty"));
+            builder.initialize_session(&mut session).unwrap();
+            assert_eq!(session.system_prompt(), Some("base rules"));
+        }
+
+        std::fs::write(&path, "New project instructions").unwrap();
+        let mut legacy: Session = serde_json::from_value(serde_json::json!({
+            "id":"legacy", "system_prompt":"saved rules", "messages":[]
+        }))
+        .unwrap();
+        builder.initialize_session(&mut legacy).unwrap();
+        assert_eq!(legacy.system_prompt(), Some("saved rules"));
+        builder.initialize_session(&mut session).unwrap();
+        assert_eq!(session.system_prompt(), Some("base rules"));
+    }
+
+    #[test]
+    fn agents_read_errors_leave_session_initialization_retryable() {
+        let project = tempfile::tempdir().unwrap();
+        let path = project.path().join("AGENTS.md");
+        let builder = ContextBuilder::new("base rules").with_agents(&path);
+        let mut session = Session::new(SessionId::new("retry"));
+        for bytes in [vec![0xff], vec![b'x'; 32_769]] {
+            std::fs::write(&path, &bytes).unwrap();
+            let error = builder.initialize_session(&mut session).unwrap_err();
+            assert!(format!("{error:#}").contains("AGENTS.md"));
+            assert!(session.system_prompt().is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(builder.initialize_session(&mut session).is_err());
+        assert!(session.system_prompt().is_none());
+        std::fs::remove_dir(&path).unwrap();
+
+        let rules = "x".repeat(32_768);
+        std::fs::write(&path, &rules).unwrap();
+        builder.initialize_session(&mut session).unwrap();
+        assert!(builder.build(&session).instructions.contains(&rules));
+    }
 
     #[test]
     fn restored_prompts_receive_current_group_observation_guidance() {
