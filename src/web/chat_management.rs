@@ -82,13 +82,13 @@ impl Chat {
 #[derive(Deserialize)]
 pub(super) struct Search {
     #[serde(default)]
-    q: String,
+    pub(super) q: String,
     #[serde(default = "page_size")]
-    limit: usize,
+    pub(super) limit: usize,
     #[serde(default)]
-    offset: usize,
+    pub(super) offset: usize,
     #[serde(default)]
-    webhooks: bool,
+    pub(super) webhooks: bool,
 }
 fn page_size() -> usize {
     30
@@ -139,13 +139,17 @@ pub(super) async fn list(
     Extension(state): Extension<WebState>,
     Query(search): Query<Search>,
 ) -> Result<Json<Value>, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    list_sessions(chat, search).await.map(Json)
+}
+
+pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, Response> {
     if search.q.len() > 32768 {
         return Err(error(StatusCode::BAD_REQUEST, "Search is too long"));
     }
     if !(1..=100).contains(&search.limit) || search.offset > i64::MAX as usize {
         return Err(error(StatusCode::BAD_REQUEST, "Invalid conversation page"));
     }
-    let chat = state.chat().map_err(IntoResponse::into_response)?;
     let query = search.q.trim().to_lowercase();
     let (sessions, page_roots) = if query.is_empty() {
         let (sessions, roots) = page_sessions(chat, search.limit, search.offset, search.webhooks)
@@ -273,7 +277,7 @@ pub(super) async fn list(
             .take(search.limit)
             .collect();
     }
-    Ok(Json(json!(result)))
+    Ok(json!(result))
 }
 
 #[derive(Deserialize)]
@@ -357,17 +361,27 @@ pub(super) async fn select(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Edit {
-    request_id: String,
-    text: String,
+    pub(super) request_id: String,
+    pub(super) text: String,
 }
 pub(super) async fn edit(
     Extension(state): Extension<WebState>,
     Path((id, index)): Path<(String, usize)>,
     Json(input): Json<Edit>,
 ) -> Result<Json<Value>, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
+    edit_message(chat, id, index, input, true).await.map(Json)
+}
+
+pub(super) async fn edit_message(
+    chat: Chat,
+    id: String,
+    index: usize,
+    input: Edit,
+    select_in_browser: bool,
+) -> Result<Value, Response> {
     // Keep durable admission and worker startup alive if the browser disconnects.
     tokio::spawn(async move {
-        let chat = state.chat().map_err(IntoResponse::into_response)?;
         if !uuid::Uuid::parse_str(&input.request_id)
             .is_ok_and(|uuid| uuid.to_string() == input.request_id)
         {
@@ -463,7 +477,9 @@ pub(super) async fn edit(
                     )?;
                 }
                 let record = admit_submission(&tx, request, hash, None)?;
-                select_branch(&tx, &root, &saved_id)?;
+                if select_in_browser {
+                    select_branch(&tx, &root, &saved_id)?;
+                }
                 tx.commit()?;
                 Ok(record)
             })
@@ -485,7 +501,7 @@ pub(super) async fn edit(
                 worker.work(id, false).await;
             });
         }
-        Ok(Json(json!({"id":branch_id})))
+        Ok(json!({"id":branch_id}))
     })
     .await
     .map_err(|e| internal(e.into()))?

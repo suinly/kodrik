@@ -39,6 +39,13 @@ mod forms;
 mod management;
 #[path = "chat_push.rs"]
 mod push;
+#[path = "remote_chat.rs"]
+mod remote;
+#[cfg(test)]
+#[path = "remote_chat_tests.rs"]
+mod remote_chat_tests;
+#[path = "chat_service.rs"]
+mod service;
 #[path = "chat_subagents.rs"]
 mod subagents;
 #[path = "chat_titles.rs"]
@@ -466,6 +473,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     Router::new()
         .merge(api)
+        .merge(remote::routes(state.clone()))
         .merge(webhooks::routes(state.clone()))
         .route("/push-sw.js", get(push::worker))
         .route("/chat", get(chat_redirect))
@@ -614,14 +622,7 @@ async fn create(
     Extension(state): Extension<WebState>,
 ) -> Result<(StatusCode, Json<Value>), Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
-    chat.sessions.save(&session).await.map_err(internal)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            json!({"id":session.id().as_str(), "title":"Новый диалог", "title_default":true, "busy":false, "updated_at":null}),
-        ),
-    ))
+    Ok((StatusCode::CREATED, Json(chat.create_conversation().await?)))
 }
 
 async fn read(
@@ -651,15 +652,9 @@ async fn stop(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, Response> {
-    tokio::spawn(async move {
-        let chat = state.chat().map_err(IntoResponse::into_response)?;
-        let _runs = chat.runs.lock().await;
-        chat.session(&id).await?;
-        chat.stop(&id).await.map_err(internal)?;
-        Ok(StatusCode::ACCEPTED)
-    })
-    .await
-    .map_err(|e| internal(e.into()))?
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    chat.stop_conversation(id).await?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn resume(
@@ -779,6 +774,16 @@ async fn admit(
     uploads: Vec<super::chat_upload::Upload>,
 ) -> Result<Response, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
+    admit_message(chat, input, uploads)
+        .await
+        .map(|value| Json(value).into_response())
+}
+
+async fn admit_message(
+    chat: Chat,
+    input: Input,
+    uploads: Vec<super::chat_upload::Upload>,
+) -> Result<Value, Response> {
     if (input.text.trim().is_empty() && uploads.is_empty()) || input.text.len() > 32 * 1024 {
         return Err(error(
             StatusCode::BAD_REQUEST,
@@ -878,11 +883,10 @@ async fn admit(
             worker.work(id, false).await;
         });
     }
-    Ok(Json(
+    Ok(
         json!({"request_id":record.request.request_id,"submission_id":record.id,
         "run_id":record.run_id,"status":record.status}),
     )
-    .into_response())
 }
 
 async fn attachment(
@@ -893,11 +897,14 @@ async fn attachment(
     use base64::{Engine, engine::general_purpose::STANDARD};
     let chat = state.chat().map_err(IntoResponse::into_response)?;
     let session = chat.session(&id).await?;
-    let Some(crate::agent::message::Message::User(user)) = session.messages().get(message) else {
-        return Err(error(StatusCode::NOT_FOUND, "Attachment not found"));
+    let stored = session.messages().get(message);
+    let user = match stored {
+        Some(crate::agent::message::Message::User(user)) => Some(user),
+        _ => None,
     };
     let (mime, filename, bytes) = match kind.as_str() {
         "files" => {
+            let user = user.ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?;
             let file = user
                 .files
                 .get(index)
@@ -908,9 +915,17 @@ async fn attachment(
                 file.bytes().await.map_err(internal)?,
             )
         }
-        "images" => {
-            let image = user
-                .images
+        "images" | "tool_images" => {
+            let images = if kind == "images" {
+                &user
+                    .ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?
+                    .images
+            } else if let Some(crate::agent::message::Message::ToolResult(result)) = stored {
+                &result.content.images
+            } else {
+                return Err(error(StatusCode::NOT_FOUND, "Attachment not found"));
+            };
+            let image = images
                 .get(index)
                 .ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?;
             let (prefix, data) = image

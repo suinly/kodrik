@@ -19,14 +19,26 @@ pub(super) async fn set_mode(
     Json(input): Json<AuditSetting>,
 ) -> Result<StatusCode, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.session(&id).await?;
-    let sessions = chat.sessions.clone();
-    // Persist the explicit setting even if its browser disconnects.
-    tokio::spawn(async move { sessions.set_command_audit_mode(&id, input.mode).await })
-        .await
-        .map_err(|e| internal(e.into()))?
-        .map_err(internal)?;
+    chat.set_audit_mode(id, input.mode).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+impl Chat {
+    pub(super) async fn set_audit_mode(
+        &self,
+        id: String,
+        mode: CommandAuditMode,
+    ) -> Result<(), Response> {
+        let chat = self;
+        chat.session(&id).await?;
+        let sessions = chat.sessions.clone();
+        // Persist the explicit setting even if its browser disconnects.
+        tokio::spawn(async move { sessions.set_command_audit_mode(&id, mode).await })
+            .await
+            .map_err(|e| internal(e.into()))?
+            .map_err(internal)?;
+        Ok(())
+    }
 }
 
 pub(super) async fn default_mode(
@@ -63,25 +75,38 @@ pub(super) async fn decide(
     Json(input): Json<Decision>,
 ) -> Result<StatusCode, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.session(&id).await?;
-    let sessions = chat.sessions.clone();
-    // Persist an explicit decision even if its browser disconnects.
-    tokio::spawn(async move {
-        sessions
-            .decide_command_approval(&id, &approval, input.approve)
-            .await
-    })
-    .await
-    .map_err(|e| internal(e.into()))?
-    .map_err(|reason| {
-        if reason.is::<crate::agent::command_audit::CommandApprovalUnavailable>() {
-            error(
-                StatusCode::CONFLICT,
-                "Command approval is no longer pending",
-            )
-        } else {
-            internal(reason)
-        }
-    })?;
+    chat.decide_approval(id, approval, input.approve).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+impl Chat {
+    pub(super) async fn decide_approval(
+        &self,
+        id: String,
+        approval: String,
+        approve: bool,
+    ) -> Result<(), Response> {
+        let chat = self;
+        chat.session(&id).await?;
+        let sessions = chat.sessions.clone();
+        // Persist an explicit decision even if its browser disconnects.
+        tokio::spawn(async move {
+            sessions
+                .decide_command_approval(&id, &approval, approve)
+                .await
+        })
+        .await
+        .map_err(|e| internal(e.into()))?
+        .map_err(|reason| {
+            if reason.is::<crate::agent::command_audit::CommandApprovalUnavailable>() {
+                error(
+                    StatusCode::CONFLICT,
+                    "Command approval is no longer pending",
+                )
+            } else {
+                internal(reason)
+            }
+        })?;
+        Ok(())
+    }
 }

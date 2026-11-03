@@ -1,7 +1,4 @@
-use crate::agent::{
-    message::{Message, ToolOutput},
-    session::SessionId,
-};
+use crate::agent::{message::ToolOutput, session::SessionId};
 use anyhow::ensure;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -178,7 +175,7 @@ pub(crate) enum ServerFrame {
 pub(crate) struct RemoteChatSnapshot {
     pub session_id: SessionId,
     pub revision: i64,
-    pub messages: Vec<Message>,
+    pub messages: Vec<Value>,
     pub previous_cursor: Option<String>,
     pub run: Option<Value>,
     pub versions: Value,
@@ -198,6 +195,7 @@ pub(crate) enum ChatCommand {
         session_id: SessionId,
     },
     Edit {
+        request_id: Uuid,
         user_turn: usize,
         text: String,
     },

@@ -2,8 +2,12 @@ use crate::agent::{message::Message, session::Session};
 use serde_json::{Value, json};
 
 pub(super) fn history(session: &Session) -> Vec<Value> {
+    history_range(session, 0, session.messages().len())
+}
+
+pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<Value> {
     let mut messages: Vec<Value> = vec![];
-    for (index, message) in session.messages().iter().enumerate() {
+    for (index, message) in session.messages().iter().enumerate().take(end).skip(start) {
         if let Message::User(user) = message {
             let mut text = json!({"type":"text", "text":user.content});
             if session.is_webhook_message(index) {
