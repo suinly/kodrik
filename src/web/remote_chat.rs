@@ -175,9 +175,10 @@ async fn events(
                     return None;
                 }
                 let current = chat.sessions.view_revision().await.ok()?;
+                let current = (current, chat.environment_revision());
                 if revision != Some(current) {
                     let snapshot = chat.remote_snapshot(&SessionId::new(&id)).await.ok()?;
-                    revision = Some(snapshot.revision);
+                    revision = Some((snapshot.revision, snapshot.environment_revision));
                     let data = serde_json::to_string(&snapshot).ok()?;
                     return Some((
                         Ok::<_, Infallible>(Event::default().data(data)),

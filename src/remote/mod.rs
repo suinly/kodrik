@@ -2,6 +2,10 @@
 #![allow(dead_code)]
 
 pub(crate) mod protocol;
+pub(crate) mod service;
+
+#[cfg(test)]
+mod service_tests;
 
 #[cfg(test)]
 mod protocol_tests;

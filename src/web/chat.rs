@@ -75,6 +75,11 @@ pub(crate) struct Chat {
 }
 
 impl Chat {
+    fn environment_revision(&self) -> u64 {
+        self.runner
+            .environments()
+            .map_or(0, |service| *service.revisions().borrow())
+    }
     pub(crate) async fn new(owner: &AgentRunner, data: &FsPath) -> anyhow::Result<Self> {
         let sessions =
             Arc::new(owner.sqlite_store().ok_or_else(|| {
@@ -289,6 +294,11 @@ impl Chat {
             snapshot["messages"] = json!(history(&view.session));
         }
         snapshot["revision"] = json!(view.revision);
+        snapshot["environment"] = json!(match self.runner.environments() {
+            Some(service) => service.status(&SessionId::new(id)).await,
+            None => None,
+        });
+        snapshot["environment_revision"] = json!(self.environment_revision());
         snapshot["busy"] = json!(view.busy);
         snapshot["blocked_reason"] = json!(view.blocked_reason);
         snapshot["queued"] = json!(view.queued);
@@ -585,7 +595,7 @@ pub(super) fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error":message}))).into_response()
 }
 
-pub(super) fn personal_session(session: &Session) -> bool {
+pub(crate) fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
 
@@ -1005,8 +1015,9 @@ async fn events(
                     Ok(true) => {}
                     _ => return None,
                 }
+                let environment_revision = chat.environment_revision();
                 match chat.sessions.view_revision().await {
-                    Ok(current) if revision == Some(current) => {
+                    Ok(current) if revision == Some((current, environment_revision)) => {
                         tokio::time::sleep(Duration::from_millis(250)).await;
                         continue;
                     }
@@ -1018,9 +1029,14 @@ async fn events(
                 }
                 match chat.snapshot(&id).await {
                     Ok(snapshot) => {
-                        let next = snapshot["revision"].as_i64();
-                        if revision != next {
-                            revision = next;
+                        let next = (
+                            snapshot["revision"].as_i64().unwrap_or_default(),
+                            snapshot["environment_revision"]
+                                .as_u64()
+                                .unwrap_or_default(),
+                        );
+                        if revision != Some(next) {
+                            revision = Some(next);
                             let event = Event::default().data(snapshot.to_string());
                             return Some((
                                 Ok::<_, Infallible>(event),

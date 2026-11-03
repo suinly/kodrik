@@ -33,10 +33,33 @@ pub struct AgentRunner {
     group_decider: Option<super::system_one::SystemOne>,
     pub(super) restart_limit: u32,
     pub(super) shutdown: tokio::sync::watch::Sender<bool>,
+    environments: std::sync::OnceLock<Arc<crate::remote::service::EnvironmentService>>,
     conversations: tokio::sync::Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AgentRunner {
+    pub(crate) fn environments(&self) -> Option<&Arc<crate::remote::service::EnvironmentService>> {
+        self.environments.get()
+    }
+
+    pub(crate) fn enable_environments(
+        &self,
+        auth: crate::web::auth::AuthStore,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!*self.shutdown.borrow(), "Gateway is stopping");
+        let store = self
+            .sqlite_store()
+            .ok_or_else(|| anyhow::anyhow!("Environments require durable owner storage"))?;
+        self.environments.get_or_init(|| {
+            let service = Arc::new(crate::remote::service::EnvironmentService::new(
+                store, auth, true,
+            ));
+            service.monitor(self.shutdown_receiver());
+            service
+        });
+        Ok(())
+    }
+
     pub(crate) fn subagents(&self) -> Option<&Arc<super::subagents::Subagents>> {
         self.agent.subagents()
     }
@@ -50,6 +73,9 @@ impl AgentRunner {
         runner.restart_limit = self.restart_limit;
         runner.learning = self.learning.clone();
         runner.shutdown = self.shutdown.clone();
+        if let Some(environments) = self.environments.get() {
+            let _ = runner.environments.set(environments.clone());
+        }
         runner
     }
 
@@ -63,6 +89,7 @@ impl AgentRunner {
             group_decider: None,
             conversations: Default::default(),
             shutdown: tokio::sync::watch::channel(false).0,
+            environments: Default::default(),
         }
     }
 

@@ -13,6 +13,10 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         log::warn!("Telegram web login unavailable: {error:#}");
     }
     let app = build_app(config).await?;
+    if config.owner.is_some() {
+        app.agent_runner
+            .enable_environments(crate::web::auth::AuthStore::new(&data))?;
+    }
     let users = std::sync::Arc::new(crate::users::UserSpaces::new(config, &data, app.clone()));
     let web_server = match crate::web::Settings::from_config(&config.web)? {
         Some(settings) => {

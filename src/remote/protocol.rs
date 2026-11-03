@@ -175,6 +175,7 @@ pub(crate) enum ServerFrame {
 pub(crate) struct RemoteChatSnapshot {
     pub session_id: SessionId,
     pub revision: i64,
+    pub environment_revision: u64,
     pub messages: Vec<Value>,
     pub previous_cursor: Option<String>,
     pub run: Option<Value>,

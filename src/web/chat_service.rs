@@ -204,14 +204,19 @@ impl Chat {
             "command_approvals":self.sessions.pending_command_approvals(id.as_str()).await.map_err(internal)?,
             "command_audit_mode":self.sessions.command_audit_mode(id.as_str()).await.map_err(internal)?});
         bound_value(&mut run, 32 * 1024);
+        let environment = match self.runner.environments() {
+            Some(service) => service.status(id).await,
+            None => None,
+        };
         Ok(RemoteChatSnapshot {
             session_id: id.clone(),
             revision: view.revision,
+            environment_revision: self.environment_revision(),
             messages,
             previous_cursor: (start > 0).then(|| format!("{}:{start}", id.as_str())),
             run: Some(run),
             versions,
-            environment: None,
+            environment,
         })
     }
 

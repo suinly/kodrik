@@ -400,6 +400,8 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
     let (dir, chat, state, id) = fixture().await;
+    chat.runner.enable_environments(state.auth.clone()).unwrap();
+    let environments = chat.runner.environments().unwrap().clone();
     let now = chrono::Utc::now().timestamp();
     let pairing = state.auth.start_device_pairing("Laptop", now).unwrap();
     state
@@ -437,6 +439,41 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     let initial = std::str::from_utf8(&initial).unwrap();
     assert!(initial.contains("from telegram"));
     assert!(initial.contains("revision"));
+    let key = environments
+        .attach(
+            crate::web::auth::devices::DeviceIdentity { device_id },
+            id.clone(),
+            crate::remote::protocol::EnvironmentManifest {
+                label: "Connected laptop".into(),
+                project_root: "/project".into(),
+                tools: vec![],
+                skills: vec![],
+                project_instructions: None,
+            },
+        )
+        .await
+        .unwrap();
+    let updated = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::str::from_utf8(&updated)
+            .unwrap()
+            .contains("Connected laptop")
+    );
+    environments.revoke(&key, "closed").await.unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::str::from_utf8(&closed)
+            .unwrap()
+            .contains("\"environment\":null")
+    );
     state.auth.revoke_device(device_id).unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(2), stream.next())
