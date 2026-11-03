@@ -12,6 +12,7 @@ test('catalog comes from the installed package and excludes application-only com
   for(const name of ['u-chart','u-form','u-calendar','u-tabs','u-table','u-modal','u-select','u-input']) assert.ok(catalog.components[name],name);
   for(const name of ['u-editor','u-editor-toolbar','u-chat-prompt','u-container','u-page-grid','u-dashboard-panel','u-sidebar','u-auth-form','u-file-upload','u-theme','u-pricing-table','u-app']) assert.equal(catalog.components[name],undefined,name);
   assert.ok(catalog.components['u-chart'].props.includes('data'));
+  assert.ok(catalog.components['u-chart'].props.includes('yDomain'));
   assert.match(catalog.components['u-chart'].api,/tooltip/);
   assert.match(catalog.components['u-card'].api,/header/);
   assert.ok(catalog.components['u-select'].models.includes('modelValue'));

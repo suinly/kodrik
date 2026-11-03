@@ -47,3 +47,12 @@ test('range chart rejects malformed bounds and incompatible modes',()=>{
     assert.throws(()=>prepareRangeChart({...props,...extra}));
   }
 });
+
+test('range chart uses exact fixed Y bounds including reference lines',()=>{
+  for(const rows of [data,[],[{date:'A',low:null,high:null,target:45}]]) {
+    const chart=prepareRangeChart({...props,data:rows,yDomain:[11,99]});
+    const scene=createChartScene(chart.definition,{width:640,height:300});
+    assert.deepEqual(scene.scales.y.domain,[11,99]);
+    assert.doesNotMatch(renderChartSvg(scene,{ariaLabel:'Fixed range'}),/NaN|Infinity/);
+  }
+});

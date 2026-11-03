@@ -379,6 +379,7 @@
         "xAxis",
         "xLabel",
         "yAxis",
+        "yDomain",
         "yLabel"
       ],
       "booleans": [

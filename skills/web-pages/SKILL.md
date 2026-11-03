@@ -129,6 +129,14 @@ max; explicit null creates a gap. Use unique index values, straight line charts,
 and no stacked/smoothing/custom definition. Read `ui_components("u-chart")` for
 the exact adapter contract. Tooltips show the corridor and midpoint.
 
+For an exact fixed Y-axis scale, add `:y-domain="[1000, 3500]"` to UChart.
+Both bounds must be finite numbers with lower < upper. This works with
+line/area/bar and range charts, not donut or custom definition. Bounds are not
+rounded or padded; values outside them are clipped without changing the data.
+Numerically unrepresentable spans (overflowing or too close to zero) are rejected.
+Omit the property to keep automatic scaling. Read `ui_components("u-chart")`
+before using it; `y-domain` is not supported by the legacy `line-chart` alias.
+
 ### Table headers and dates
 
 `data-table` accepts `:columns='[{"accessorKey":"date","header":"Дата","dateFormat":"short"}]'`

@@ -4,6 +4,7 @@ import manifest from './ui-components.json' with {type:'json'}
 import {createUiDateFormatter} from './ui-date.ts'
 import {prepareUiTableColumns} from './ui-table.ts'
 import {prepareRangeChart} from './ui-range-chart.ts'
+import {checkChartYDomain} from './ui-chart.ts'
 
 export type Row=Record<string,string|number|boolean|null>
 export type UiSource={id:string;data:unknown;url?:string}
@@ -94,6 +95,7 @@ export function resolveUiProps(node:UiNode,scope:Record<string,unknown>,allowSlo
     const format=createUiDateFormatter(props.dateFormat)
     if(!(allowSlot && node.bindings?.value?.startsWith('slot.'))) format(props.value)
   }
+  if(node.tag==='u-chart') checkChartYDomain(props)
   if(node.tag==='u-chart' && props.range!==undefined){
     if(props.data!=null && !Array.isArray(props.data)) fail(t("Данным UChart нужен массив плоских строк."))
     prepareRangeChart({...props,data:props.data==null?[]:sourceRows(props.data)})

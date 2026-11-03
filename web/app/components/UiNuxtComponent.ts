@@ -9,6 +9,7 @@ import {uiComponents} from '../utils/ui-registry'
 import {uiCatalog,type UiAction} from '../utils/ui-document'
 import {prepareUiTableColumns} from '../utils/ui-table'
 import {prepareRangeChart} from '../utils/ui-range-chart'
+import {prepareScaledChart} from '../utils/ui-chart'
 import type {ChartSlots} from '@nuxt/ui'
 
 type FormState=Record<string,unknown>
@@ -31,6 +32,10 @@ export default defineComponent({
   setup(props,{slots,emit}){
     const {forwardRef}=useForwardExpose()
     const rangeChart=computed(()=>props.tag==='u-chart' && props.values.range!==undefined?prepareRangeChart(props.values):undefined)
+    const scaledChart=computed(()=>props.tag==='u-chart' && props.values.range===undefined?prepareScaledChart(props.values):undefined)
+    type TooltipScope=Parameters<NonNullable<ChartSlots['tooltip']>>[0]
+    const scaledFocus=shallowRef<TooltipScope['primaryPoint']|null>(null)
+    const scaledGroup=shallowRef<TooltipScope['points']>([])
     const rangeFocus=shallowRef<ReturnType<typeof prepareRangeChart>['rows'][number]|null>(null)
     const models=reactive<Record<string,unknown>>({}),ownForm=reactive<FormState>(Object.create(null))
     const inheritedForm=inject(formKey,null),field=inject(fieldKey,undefined)
@@ -172,6 +177,26 @@ export default defineComponent({
       const attrs={...props.values,...models}
       if(attrs.to || attrs.href){attrs.target=linkTarget(attrs.to??attrs.href);attrs.external=true;attrs.rel='noopener noreferrer'}
       let componentSlots=slots
+      if(scaledChart.value){
+        const chart=scaledChart.value
+        attrs.definition=chart.definition
+        attrs.onFocusChange=(point:TooltipScope['primaryPoint']|null)=>{scaledFocus.value=point}
+        attrs.onFocusGroupChange=(points:TooltipScope['points'])=>{scaledGroup.value=points}
+        if(attrs.tooltip!==false){
+          const tooltip=typeof attrs.tooltip==='object' && attrs.tooltip?attrs.tooltip as Record<string,unknown>:{}
+          const point=scaledFocus.value
+          const rows=point?chart.tooltipScope({primaryPoint:point,points:scaledGroup.value.includes(point)?scaledGroup.value:[point],rows:[]}).rows:[]
+          attrs.tooltip={...tooltip,content:{ariaLabel:point?[point.datum.x,...rows.map(row=>`${row.label} ${row.value}`)].join(', '):t("Нет данных"),...tooltip.content as object}}
+        }
+        componentSlots={...slots,tooltip:(scope:TooltipScope)=>{
+          const normalized=chart.tooltipScope(scope)
+          return slots.tooltip?slots.tooltip(normalized):[
+            h('p',{class:'font-medium'},normalized.title),...normalized.rows.map(row=>h('div',{class:'flex items-center gap-2'},[
+              h('span',{class:'size-2 shrink-0 rounded-full','aria-hidden':true,style:{backgroundColor:row.color}}),h('span',{},`${row.label}: ${row.value}`),
+            ])),
+          ]
+        }}
+      }
       if(rangeChart.value){
         const chart=rangeChart.value
         Object.assign(attrs,{definition:chart.definition,categories:chart.categories})
@@ -196,7 +221,7 @@ export default defineComponent({
       }
       if(props.tag==='u-table' && attrs.columns!=null) attrs.columns=prepareUiTableColumns(attrs.columns)
       if(inheritedDisabled() && meta.props.includes('disabled')) attrs.disabled=true
-      delete attrs.submitAction;delete attrs.saveOn;delete attrs.prompt
+      delete attrs.submitAction;delete attrs.saveOn;delete attrs.prompt;delete attrs.yDomain
       for(const model of meta.models){
         const name=typeof attrs.name==='string'?attrs.name:field
         if(model==='modelValue' && inheritedForm && name && !['u-form','u-form-field'].includes(props.tag)){

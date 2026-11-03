@@ -1753,6 +1753,42 @@ test('computed views render three live series and refresh progress without repub
   }finally{await browser.close();}
 });
 
+test('fixed Y domains render on ordinary and range charts with keyboard tooltips',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();await request('send',{id,text:'rangeui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.route('**/pages/range-chart/document.json',async route=>{
+      const response=await route.fetch(),document=await response.json();
+      document.body=document.body.replace('type="line"','type="line" :y-domain="[11, 299]"');
+      document.body+='\n\n::u-chart{:data=\'[{"day":"A","kcal":1500,"target":2000},{"day":"B","kcal":2500,"target":2000}]\' index="day" :categories=\'[{"key":"kcal","label":"Калории","color":"primary"},{"key":"target","label":"Цель","color":"warning"}]\' :y-domain="[1001, 3499]" aria-label="Фиксированная шкала" points}\n::';
+      await route.fulfill({response,json:document});
+    });
+    await page.goto(new URL('pages/range-chart/',base).href);
+    const range=page.getByRole('img',{name:'Коридор калорий',exact:true});
+    await expect(range).toBeVisible();
+    await expect(range.getByText('200',{exact:true})).toBeVisible();
+    const chart=page.getByRole('img',{name:'Фиксированная шкала',exact:true});
+    await expect(chart).toBeVisible();
+    await expect(chart.getByText('3 000',{exact:true})).toBeVisible();
+    assert.ok(await chart.locator('clipPath').count()>0);
+    await chart.focus();await page.keyboard.press('Home');
+    await expect(page.getByRole('tooltip')).toContainText('Калории');
+    await expect(page.getByRole('tooltip')).toContainText('Цель');
+    await expect(page.getByRole('tooltip')).toHaveText(/A, Калории.*Цель/);
+    await expect(page.getByRole('tooltip')).not.toContainText('kcal');
+    await page.keyboard.press('Escape');
+    const tick=range.getByText('200',{exact:true}),before=await tick.getAttribute('y');
+    await page.getByLabel('Верхняя оценка',{exact:true}).fill('210');
+    await page.getByRole('button',{name:'Сохранить оценку',exact:true}).click();
+    await expect(page.getByTestId('ui-document').getByRole('status').filter({hasText:'Запись сохранена.'})).toBeVisible();
+    assert.equal(await tick.getAttribute('y'),before);
+    await page.screenshot({path:'/tmp/kodrik-fixed-y-domain.png',fullPage:true});
+    assert.deepEqual(errors,[]);
+  }finally{await browser.close();}
+});
+
 test('range chart shades min/max and updates the midpoint with keyboard tooltips',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();await request('send',{id,text:'rangeui'});
   await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);

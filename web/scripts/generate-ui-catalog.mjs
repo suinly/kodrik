@@ -52,9 +52,10 @@ export async function buildCatalog(){
   components['u-progress'].props.sort();
   components['u-progress'].api+='\n\n/** MDC adapter: segments?: {value: number; color: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral"; label?: string}[] (max 32). Numeric max defaults to 100. Sum must not exceed max; remaining space is empty. Do not combine with modelValue. Bind with :segments="views.portions". */';
   components['u-table'].api+='\n\n/** MDC adapter: column definitions may add dateFormat: "short" | "medium" | "long" | "full" | {locale?: string, timeZone?: string, dateStyle?: string, timeStyle?: string, year?: string, month?: string, day?: string, weekday?: string, hour?: string, minute?: string, second?: string, hour12?: boolean}. These are Intl.DateTimeFormat options; defaults ru-RU/UTC. Only cells are formatted, raw accessor values remain unchanged for sorting. A named cell slot takes precedence. Use :date-value{:value="slot.row.original.date" date-format="long"} inside slots or other document text. */';
-  components['u-chart'].props.push('range');
+  components['u-chart'].props.push('range','yDomain');
   components['u-chart'].props.sort();
   components['u-chart'].api+='\n\n/** MDC range adapter: range?: {min: string; max: string}. Draws a flat translucent band between the two bound fields and a line at (min + max) / 2 for each row. Optional categories add reference lines; categories matching min/max are omitted. Requires unique index values, finite numeric bounds (min <= max), or explicit null for gaps. Only type line/linear curve, no stacked/definition. Native charts are unchanged without range. */';
+  components['u-chart'].api+='\n\n/** MDC scale adapter: yDomain?: [number, number]. Use :y-domain="[1000, 3500]" for exact finite Y bounds, lower < upper, with no nicening or percentage padding. Supports line/area/bar and range charts, not donut or custom definition. Out-of-domain values are clipped, never clamped or removed from the data. Omit to retain automatic scaling. */';
   return {version:pkg.version,components};
 }
 

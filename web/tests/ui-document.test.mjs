@@ -5,6 +5,16 @@ import assert from 'node:assert/strict';
 import {parseUiDocument,sourceRows,readUiPath,resolveUiProps} from '../app/utils/ui-document.ts';
 
 const doc=body=>({version:1,title:'Nutrition',body,sources:[{id:'meals',data:[{meal:'Breakfast',kcal:350}]}]});
+test('UChart fixed Y domain accepts literal and bound tuples and validates before render',async()=>{
+  const body='::u-chart{:data="sources.meals" index="meal" :categories=\'["kcal"]\' :y-domain="[100, 400]"}\n::';
+  assert.deepEqual((await parseUiDocument(doc(body))).nodes[0].props.yDomain,[100,400]);
+  const raw={...doc(body.replace('[100, 400]','views.scale')),views:{scale:[-100,500]}};
+  const parsed=await parseUiDocument(raw);
+  assert.deepEqual(resolveUiProps(parsed.nodes[0],{sources:{meals:raw.sources[0].data},views:raw.views}).yDomain,[-100,500]);
+  for(const scale of [null,[100,100],[400,100],['100',400],[0],{}]) await assert.rejects(()=>parseUiDocument({...raw,views:{scale}}));
+  await assert.rejects(()=>parseUiDocument(doc(body.replace('index="meal"','type="donut" index="meal"'))));
+  await parseUiDocument({...raw,sources:[{id:'meals',data:[]}]});
+});
 test('MDC parses native blocks and code without resolving arbitrary Vue components',async()=>{
   const parsed=await parseUiDocument(doc('# Nutrition\n\n::card{title="Today"}\n:::metric{label="Calories" value="350"}\n:::\n::\n\n::data-table{source="meals"}\n::\n\n```js\nalert(1)\n```'));
   assert.equal(parsed.nodes[1].tag,'card');

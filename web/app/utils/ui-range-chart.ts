@@ -1,6 +1,6 @@
 import {locale,t} from './i18n.ts'
 import {areaY,lineY,defineChart,colorLegend,colorLegendItems} from '@tanstack/charts'
-import {scaleLinear} from '@tanstack/charts/scales/linear'
+import {chartYScale} from './ui-chart.ts'
 import {scalePoint} from '@tanstack/charts/scales/point'
 import {scaleOrdinal} from '@tanstack/charts/scales/ordinal'
 import {crosshair} from '@tanstack/charts/crosshair'
@@ -49,6 +49,7 @@ export function prepareRangeChart(props:Record<string,unknown>){
   const lines=rows.flatMap(row=>categories.map(category=>({...row,category:category.key,value:category.key===midpointKey?row.mid:row.references[category.key]})))
   const format=(value:number)=>new Intl.NumberFormat(locale.value,{maximumFractionDigits:6}).format(value)
   const definition=defineChart({
+    clip:props.yDomain!==undefined?true:undefined,
     marks:[
       decorative(areaY(rows,{id:'range-band',x:'x',y1:'min',y2:'max',fill:'var(--ts-chart-1)',fillOpacity:0.2})),
       lineY(lines,{id:'range-lines',x:'x',y:'value',z:'category',color:'category',strokeWidth:2,points:props.points===true||rows.length===1||lines.some(row=>row.value===undefined)}),
@@ -56,7 +57,7 @@ export function prepareRangeChart(props:Record<string,unknown>){
     ],
     scales:{
       x:{scale:()=>scalePoint().padding(0),axis:props.xAxis===false?false:{label:props.xLabel as string|undefined}},
-      y:{scale:scaleLinear,nice:true,grid:props.grid!==false,axis:props.yAxis===false?false:{label:props.yLabel as string|undefined,ticks:{format}}},
+      y:{...chartYScale(props),grid:props.grid!==false,axis:props.yAxis===false?false:{label:props.yLabel as string|undefined,ticks:{format}}},
     },
     color:{
       scale:scaleOrdinal().domain(categories.map(category=>category.key)).range(categories.map((_,i)=>`var(--ts-chart-${i+1})`)),
