@@ -198,7 +198,7 @@ async fn terminal_recovery_fixture() {
 
 struct PrivateTerminal {
     child: std::process::Child,
-    master: std::fs::File,
+    master: Option<std::fs::File>,
     output: Vec<u8>,
 }
 
@@ -263,6 +263,8 @@ fn screen_text(output: &[u8]) -> String {
 
 impl Drop for PrivateTerminal {
     fn drop(&mut self) {
+        // macOS can block child exit while its PTY master is still open.
+        drop(self.master.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -302,6 +304,12 @@ impl PrivateTerminal {
         );
         let master = unsafe { std::fs::File::from_raw_fd(master) };
         let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+        for file in [&master, &slave] {
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+        }
         assert_eq!(
             unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) },
             0
@@ -336,7 +344,7 @@ impl PrivateTerminal {
         let child = command.spawn().unwrap();
         Self {
             child,
-            master,
+            master: Some(master),
             output: Vec::new(),
         }
     }
@@ -354,7 +362,7 @@ impl PrivateTerminal {
                 return;
             }
             let mut bytes = [0; 8192];
-            match self.master.read(&mut bytes) {
+            match self.master.as_mut().unwrap().read(&mut bytes) {
                 Ok(count) if count > 0 => self.output.extend_from_slice(&bytes[..count]),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 other => panic!(
@@ -373,7 +381,7 @@ impl PrivateTerminal {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        self.master.write_all(bytes).unwrap();
+        self.master.as_mut().unwrap().write_all(bytes).unwrap();
     }
 }
 
