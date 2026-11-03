@@ -99,6 +99,8 @@ impl AuthStore {
                 journal.revoke_user_sessions(previous);
             }
             journal.owner_id = owner_id;
+            journal.devices.clear();
+            journal.device_pairings.clear();
             self.save(&journal)?;
         }
         Ok(())

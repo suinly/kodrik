@@ -22,6 +22,8 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+#[path = "device_routes.rs"]
+mod devices;
 #[path = "profile.rs"]
 mod profile;
 #[path = "telegram_login.rs"]
@@ -33,6 +35,7 @@ struct ServerState {
     pages: PageStore,
     auth: AuthStore,
     limiter: Arc<Mutex<LoginLimiter>>,
+    device_limiter: Arc<Mutex<LoginLimiter>>,
     datasets: Option<crate::agent::datasets::DatasetStore>,
 }
 
@@ -120,6 +123,7 @@ pub(crate) fn router_with_resources(
         pages: PageStore::new(data),
         auth: AuthStore::new(data),
         limiter: Arc::new(Mutex::new(LoginLimiter::new())),
+        device_limiter: Arc::new(Mutex::new(LoginLimiter::new())),
         datasets,
     };
     let routes = Router::new()
@@ -130,6 +134,7 @@ pub(crate) fn router_with_resources(
         .route("/auth/telegram/start", post(telegram_login::start))
         .route("/auth/telegram/poll", post(telegram_login::poll))
         .route("/auth/telegram/cancel", post(telegram_login::cancel))
+        .merge(devices::routes())
         .route("/pages/{slug}", get(page_root_redirect))
         .route("/pages/{slug}/", get(page_index))
         .route("/pages/{slug}/{*path}", get(page))

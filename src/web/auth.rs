@@ -26,6 +26,8 @@ pub(crate) use telegram::{LoginPoll, browser_login_cookie, browser_login_token};
 #[path = "auth_profile.rs"]
 mod profile;
 pub(crate) use profile::ProfileError;
+#[path = "device_auth.rs"]
+pub(crate) mod devices;
 
 const COOKIE: &str = "kodrik_web_session";
 const SESSION_SECONDS: i64 = 7 * 86400;
@@ -94,6 +96,12 @@ struct Journal {
     members: BTreeMap<u64, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     profiles: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    devices: BTreeMap<Uuid, devices::StoredDevice>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    device_pairings: BTreeMap<Uuid, devices::StoredPairing>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    device_approval_attempts: VecDeque<i64>,
 }
 
 impl Journal {
@@ -260,6 +268,7 @@ impl AuthStore {
             journal.password_hash.is_some() == journal.generation.is_some()
                 && journal.valid_membership()
                 && journal.valid_profiles()
+                && journal.valid_devices()
                 && journal.sessions.len() <= MAX_SESSIONS
                 && journal.telegram_bots.len() <= 64
                 && journal.telegram_requests.len() <= 64

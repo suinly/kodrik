@@ -71,6 +71,8 @@ impl Journal {
         self.generation = Some(Uuid::new_v4());
         self.sessions.clear();
         self.telegram_requests.clear();
+        self.devices.clear();
+        self.device_pairings.clear();
     }
 }
 
