@@ -6,6 +6,7 @@ pub mod config;
 mod gateway;
 pub mod i18n;
 mod interfaces;
+mod remote;
 mod spaces;
 mod users;
 mod web;
