@@ -470,6 +470,7 @@ impl AgentRunner {
                     session.merge_telegram_group(group.as_ref());
                     if let Some(permit) = notification {
                         permit.send(AgentEvent::SessionChanged {
+                            session_id: session.id().clone(),
                             previous_user_messages,
                         });
                     }
@@ -991,7 +992,7 @@ mod tests {
                 );
                 assert!(matches!(
                     events.recv().await,
-                    Some(AgentEvent::SessionChanged { .. })
+                    Some(AgentEvent::SessionChanged { session_id, .. }) if &session_id == active.id()
                 ));
             }
             assert_eq!(store.active_id(&conversation).await.unwrap(), *active.id());

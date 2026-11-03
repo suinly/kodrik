@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{num::NonZeroU64, sync::Arc};
 
 use anyhow::Context;
 
@@ -11,6 +11,7 @@ use crate::agent::{
 /// Unlike execution locks, this also protects an idle instance's selection.
 pub(super) struct Instance {
     pub conversation: SessionId,
+    pub slot: u64,
     _ownership: Arc<ExecutionOwnership>,
 }
 
@@ -76,7 +77,7 @@ mod tests {
     async fn instance_process_fixture() {
         let path = std::path::PathBuf::from(std::env::var_os("KODRIK_TUI_SLOT_FIXTURE").unwrap());
         let runner = runner(&path.join("sessions")).await;
-        let instance = Instance::claim(&runner).await.unwrap();
+        let instance = Instance::claim(&runner, None).await.unwrap();
         assert_eq!(instance.conversation.as_str(), "cli:main");
         std::fs::write(path.join("ready"), "ready").unwrap();
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -119,11 +120,37 @@ mod tests {
         .await
         .unwrap();
         let runner = runner(&dir.path().join("sessions")).await;
-        let second = Instance::claim(&runner).await.unwrap();
+        let second = Instance::claim(&runner, None).await.unwrap();
         assert_eq!(second.conversation.as_str(), "cli:tui:2");
         drop(child);
-        let replacement = Instance::claim(&runner).await.unwrap();
+        let replacement = Instance::claim(&runner, None).await.unwrap();
         assert_eq!(replacement.conversation.as_str(), "cli:main");
+    }
+
+    #[tokio::test]
+    async fn explicit_slot_restores_its_selection_and_rejects_an_existing_owner() {
+        use std::num::NonZeroU64;
+
+        let dir = tempfile::tempdir().unwrap();
+        let runner = runner(dir.path()).await;
+        let slot = NonZeroU64::new(2);
+        let instance = Instance::claim(&runner, slot).await.unwrap();
+        assert_eq!(instance.conversation.as_str(), "cli:tui:2");
+        let selected = runner.new_session(&instance.conversation).await.unwrap();
+        assert!(Instance::claim(&runner, slot).await.is_err());
+        drop(instance);
+        let resumed = Instance::claim(&runner, slot).await.unwrap();
+        assert_eq!(resumed.conversation.as_str(), "cli:tui:2");
+        assert_eq!(
+            runner
+                .load_session(resumed.conversation)
+                .await
+                .unwrap()
+                .id(),
+            selected.id()
+        );
+        let automatic = Instance::claim(&runner, None).await.unwrap();
+        assert_eq!(automatic.conversation.as_str(), "cli:main");
     }
 
     #[tokio::test]
@@ -131,7 +158,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runner = runner(dir.path()).await;
         std::fs::write(dir.path().join("execution-locks"), "not a directory").unwrap();
-        let error = Instance::claim(&runner).await.err().unwrap();
+        let error = Instance::claim(&runner, None).await.err().unwrap();
         assert!(
             error
                 .to_string()
@@ -145,16 +172,16 @@ mod tests {
         let first_runner = runner(dir.path()).await;
         let second_runner = runner(dir.path()).await;
         let (first, second) = tokio::join!(
-            Instance::claim(&first_runner),
-            Instance::claim(&second_runner)
+            Instance::claim(&first_runner, None),
+            Instance::claim(&second_runner, None)
         );
         let (first, second) = (first.unwrap(), second.unwrap());
         assert_ne!(first.conversation, second.conversation);
-        let third = Instance::claim(&first_runner).await.unwrap();
+        let third = Instance::claim(&first_runner, None).await.unwrap();
         assert_eq!(third.conversation.as_str(), "cli:tui:3");
         let released = first.conversation.clone();
         drop(first);
-        let replacement = Instance::claim(&second_runner).await.unwrap();
+        let replacement = Instance::claim(&second_runner, None).await.unwrap();
         assert_eq!(replacement.conversation, released);
         assert_ne!(replacement.conversation, second.conversation);
     }
@@ -164,8 +191,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = runner(dir.path()).await;
         let b = runner(dir.path()).await;
-        let first = Instance::claim(&a).await.unwrap();
-        let second = Instance::claim(&b).await.unwrap();
+        let first = Instance::claim(&a, None).await.unwrap();
+        let second = Instance::claim(&b, None).await.unwrap();
         let mut original = Session::new(SessionId::new("saved"));
         original.push(Message::User(UserMessage {
             content: "original".into(),
@@ -242,9 +269,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = runner(dir.path()).await;
         let b = runner(dir.path()).await;
-        let first = Instance::claim(&a).await.unwrap();
+        let first = Instance::claim(&a, None).await.unwrap();
         assert_eq!(first.conversation.as_str(), "cli:main");
-        let second = Instance::claim(&b).await.unwrap();
+        let second = Instance::claim(&b, None).await.unwrap();
         let selected = b.new_session(&second.conversation).await.unwrap();
         a.submit(request(&first.conversation)).await.unwrap();
         b.submit(request(&second.conversation)).await.unwrap();
@@ -252,7 +279,7 @@ mod tests {
         drop(second);
         drop(b);
         let restarted = runner(dir.path()).await;
-        let resumed = Instance::claim(&restarted).await.unwrap();
+        let resumed = Instance::claim(&restarted, None).await.unwrap();
         assert_eq!(resumed.conversation, id);
         assert_eq!(
             restarted.load_session(id.clone()).await.unwrap().id(),
@@ -287,8 +314,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = runner(dir.path()).await;
         let b = runner(dir.path()).await;
-        let first = Instance::claim(&a).await.unwrap();
-        let second = Instance::claim(&b).await.unwrap();
+        let first = Instance::claim(&a, None).await.unwrap();
+        let second = Instance::claim(&b, None).await.unwrap();
         let session = a.new_session(&first.conversation).await.unwrap();
         b.select_session(&second.conversation, session.id())
             .await
@@ -306,9 +333,12 @@ mod tests {
 }
 
 impl Instance {
-    pub async fn claim(runner: &AgentRunner) -> anyhow::Result<Self> {
+    pub async fn claim(
+        runner: &AgentRunner,
+        preferred: Option<NonZeroU64>,
+    ) -> anyhow::Result<Self> {
         let store = runner.sqlite_store().context("TUI requires SQLite")?;
-        for slot in 1u64.. {
+        for slot in preferred.map_or(1, NonZeroU64::get).. {
             // Preserve the existing default conversation and its recovery state.
             let conversation = SessionId::new(if slot == 1 {
                 "cli:main".into()
@@ -322,14 +352,16 @@ impl Instance {
                 Ok(ownership) => {
                     return Ok(Self {
                         conversation,
+                        slot,
                         _ownership: ownership,
                     });
                 }
                 Err(error)
-                    if matches!(
-                        error.downcast_ref::<std::fs::TryLockError>(),
-                        Some(std::fs::TryLockError::WouldBlock)
-                    ) =>
+                    if preferred.is_none()
+                        && matches!(
+                            error.downcast_ref::<std::fs::TryLockError>(),
+                            Some(std::fs::TryLockError::WouldBlock)
+                        ) =>
                 {
                     continue;
                 }

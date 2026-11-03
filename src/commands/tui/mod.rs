@@ -1,6 +1,7 @@
 mod app;
 mod approvals;
 mod clipboard;
+mod herdr;
 mod instance;
 mod markdown;
 mod navigation;
@@ -12,6 +13,7 @@ mod view;
 
 use std::{
     io::{self, IsTerminal, Write},
+    num::NonZeroU64,
     path::Path,
     sync::Arc,
     time::Duration,
@@ -39,7 +41,7 @@ use crate::{
 use app::{App, AppMessageRole, Status, ToolState};
 use terminal::Tui;
 
-pub async fn run(config: &Config) -> anyhow::Result<()> {
+pub async fn run(config: &Config, slot: Option<NonZeroU64>) -> anyhow::Result<()> {
     let language_path = crate::config::data_dir()?.join("tui-language");
     let language = load_language(&language_path, Language::from_environment())?;
     anyhow::ensure!(
@@ -50,11 +52,12 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         )
     );
     let context = build_app(config).await?;
-    let instance = instance::Instance::claim(&context.agent_runner).await?;
+    let instance = instance::Instance::claim(&context.agent_runner, slot).await?;
     let ProviderConfig::OpenAi { model, .. } = &config.provider["primary"];
     run_session(
         context.agent_runner,
         instance.conversation.clone(),
+        instance.slot,
         model.clone(),
         language,
         &language_path,
@@ -65,9 +68,35 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
 async fn run_session(
     runner: Arc<crate::agent::AgentRunner>,
     session_id: SessionId,
+    slot: u64,
     model: String,
     language: Language,
     language_path: &Path,
+) -> anyhow::Result<()> {
+    let mut reporter = herdr::Reporter::start(slot);
+    let result = run_session_inner(
+        runner.clone(),
+        session_id,
+        model,
+        language,
+        language_path,
+        &mut reporter,
+    )
+    .await;
+    reporter.finish().await;
+    if result.is_ok() {
+        runner.finish_learning().await;
+    }
+    result
+}
+
+async fn run_session_inner(
+    runner: Arc<crate::agent::AgentRunner>,
+    session_id: SessionId,
+    model: String,
+    language: Language,
+    language_path: &Path,
+    reporter: &mut herdr::Reporter,
 ) -> anyhow::Result<()> {
     let recovery = runner.recover(crate::agent::recovery::RecoveryTarget::Conversation(
         session_id.clone(),
@@ -138,6 +167,7 @@ async fn run_session(
                 (result, inputs)
             });
         }
+        reporter.update(&app);
         if redraw {
             drawn_size = Some(crossterm::terminal::size()?);
             tui.draw(&mut app)?;
@@ -302,8 +332,9 @@ async fn run_session(
                             }
                             if input == "/new" {
                                 match runner.new_session(&session_id).await {
-                                    Ok(_) => {
+                                    Ok(session) => {
                                         reset_session(&mut app);
+                                        restore_history(&mut app, &session);
                                         app.push_kodrik_message(app.language.pick("New session created.", "Создан новый сеанс.").into());
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
@@ -454,7 +485,6 @@ async fn run_session(
         tokio::select! {_=requests.join_next()=>{},_=progress_rx.recv()=>{}}
     }
     tui.exit()?;
-    runner.finish_learning().await;
     Ok(())
 }
 
@@ -871,8 +901,12 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             return false;
         }
         AgentEvent::SessionChanged {
+            session_id,
             previous_user_messages,
         } => {
+            app.cancel_message_navigation();
+            app.session = Some(session_id);
+            app.versions.clear();
             app.compacting = false;
             app.view = Default::default();
             let boundary = app
@@ -1323,16 +1357,21 @@ mod tests {
 
     #[test]
     fn session_change_keeps_current_and_queued_input_but_clears_old_history() {
-        let mut app = App::default();
+        let mut app = App {
+            session: Some(SessionId::new("old-session")),
+            ..Default::default()
+        };
         app.push_user_message("old".into());
         app.push_kodrik_message("old answer".into());
         app.push_user_message("new topic".into());
         app.push_user_message("queued correction".into());
         app.input = "unfinished draft".into();
         app.context_tokens = Some(900);
+        app.navigation.selected = Some(0);
         show_progress(
             &mut app,
             AgentEvent::SessionChanged {
+                session_id: SessionId::new("new-session"),
                 previous_user_messages: 1,
             },
         );
@@ -1341,6 +1380,8 @@ mod tests {
         assert_eq!(app.messages.len(), 3);
         assert_eq!(app.input, "unfinished draft");
         assert_eq!(app.context_tokens, None);
+        assert_eq!(app.session.as_ref().unwrap().as_str(), "new-session");
+        assert!(app.navigation.selected.is_none());
     }
 
     #[test]

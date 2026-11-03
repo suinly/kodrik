@@ -2,8 +2,11 @@ use clap::{Parser, Subcommand};
 use kodrik::{commands, config::Config};
 
 #[derive(Parser)]
-#[command(version, about = "Launch Kodrik TUI by default", long_about = None)]
+#[command(version, about = "Launch Kodrik TUI by default", long_about = None, args_conflicts_with_subcommands = true)]
 struct Cli {
+    /// Restore a specific TUI conversation slot
+    #[arg(long)]
+    tui_slot: Option<std::num::NonZeroU64>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -61,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Runs(args)) => commands::runs::run(&config, args).await?,
         Some(Commands::Invites(_)) => unreachable!("Invitations handled before provider config"),
-        None => commands::tui::run(&config).await?,
+        None => commands::tui::run(&config, cli.tui_slot).await?,
         Some(Commands::Ask { prompt }) => commands::ask::run(&config, prompt).await?,
         Some(Commands::Gateway) => commands::gateway::run(&config).await?,
         Some(Commands::RequestRestart { pid }) => commands::request_restart::run(pid)?,
@@ -79,6 +82,15 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tui_slot_is_positive_and_only_used_without_a_subcommand() {
+        assert!(Cli::try_parse_from(["kodrik", "--tui-slot", "2"]).is_ok());
+        for slot in ["0", "-1", "not-a-slot"] {
+            assert!(Cli::try_parse_from(["kodrik", "--tui-slot", slot]).is_err());
+        }
+        assert!(Cli::try_parse_from(["kodrik", "--tui-slot", "2", "gateway"]).is_err());
+    }
 
     #[test]
     fn parses_runs_with_required_store() {

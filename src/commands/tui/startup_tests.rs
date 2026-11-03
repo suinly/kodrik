@@ -102,7 +102,10 @@ async fn terminal_recovery_fixture() {
             content: "original answer".into(),
         }));
     }
-    if case == "queued-only" || case == "queued-before-scan" || case == "edit-message" {
+    if matches!(
+        case.as_str(),
+        "queued-only" | "queued-before-scan" | "edit-message" | "herdr"
+    ) {
         store.save(&session).await.unwrap();
     } else {
         let mut checkpoint = Checkpoint::new(&store, &id, &session);
@@ -145,6 +148,7 @@ async fn terminal_recovery_fixture() {
     run_session(
         runner,
         id.clone(),
+        1,
         "test-model".into(),
         Language::En,
         &directory.join("language"),
@@ -164,6 +168,18 @@ async fn terminal_recovery_fixture() {
         );
     }
     let session = store.load(&id).await.unwrap().unwrap();
+    if case == "herdr" {
+        let active = store.active_id(&id).await.unwrap();
+        assert_ne!(active, id);
+        std::fs::write(directory.join("active-session"), active.as_str()).unwrap();
+        let selected = store.load(&active).await.unwrap().unwrap();
+        assert!(
+            selected
+                .messages()
+                .iter()
+                .any(|message| matches!(message, Message::User(user) if user.content == "hello"))
+        );
+    }
     if case == "edit-message" {
         assert!(
             session.messages().iter().any(
@@ -192,7 +208,7 @@ async fn terminal_recovery_fixture() {
             .filter(|message| matches!(message, Message::User(_)))
             .count(),
         if case == "queued-only" { 2 } else { 1 },
-        "Enter during recovery must leave the draft unsent"
+        "Only submitted messages should be saved"
     );
     std::fs::write(directory.join("clean-exit"), b"1").unwrap();
 }
@@ -328,11 +344,20 @@ impl PrivateTerminal {
             .env("KODRIK_TUI_CASE", case)
             // Capture OSC 52 in this private PTY; never modify the real clipboard.
             .env("HERDR_ENV", "1")
+            .env_remove("HERDR_BIN_PATH")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_SOCKET_PATH")
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
+        if case == "herdr" {
+            command
+                .env("HERDR_BIN_PATH", directory.join("herdr"))
+                .env("HERDR_PANE_ID", "private-pane")
+                .env("HERDR_SOCKET_PATH", directory.join("private.sock"));
+        }
         // Give the child its own controlling terminal, isolated from the test runner.
         unsafe {
             command.pre_exec(|| {
@@ -364,7 +389,17 @@ impl PrivateTerminal {
             }
             let mut bytes = [0; 8192];
             match self.master.as_mut().unwrap().read(&mut bytes) {
-                Ok(count) if count > 0 => self.output.extend_from_slice(&bytes[..count]),
+                Ok(count) if count > 0 => {
+                    let start = self.output.len().saturating_sub(3);
+                    self.output.extend_from_slice(&bytes[..count]);
+                    // Terminal::clear queries the cursor when a session is replaced.
+                    if self.output[start..]
+                        .windows(4)
+                        .any(|bytes| bytes == b"\x1b[6n")
+                    {
+                        self.send(b"\x1b[1;1R");
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 other => panic!(
                     "terminal read {other:?}: {:?}",
@@ -384,6 +419,70 @@ impl PrivateTerminal {
     fn send(&mut self, bytes: &[u8]) {
         self.master.as_mut().unwrap().write_all(bytes).unwrap();
     }
+}
+
+#[test]
+fn herdr_follows_real_tui_work_cancellation_and_exit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("herdr");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$0.log\"\nprintf '\\n' >> \"$0.log\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut terminal = PrivateTerminal::start_case(directory.path(), "herdr");
+    let log = || std::fs::read_to_string(directory.path().join("herdr.log")).unwrap_or_default();
+    let wait_report = |needle: &str, since: usize| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !log().get(since..).unwrap_or_default().contains(needle) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {needle:?}: {}",
+                log()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    terminal.wait_for(b"Ready", 0);
+    wait_report("--state\nidle\n", 0);
+    terminal.send(b"/new\r");
+    terminal.wait_for(b"New session created.", 0);
+    let before_work = log().len();
+    terminal.send(b"hello\r");
+    terminal.wait_for(b"Working", 0);
+    wait_for_model(directory.path());
+    wait_report("--state\nworking\n", before_work);
+    terminal.send(b"\x1b[27u");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"\x03");
+    terminal.wait_for(b"test result: ok", 0);
+    let calls = log();
+    let calls: Vec<_> = calls.trim_end().split("\n\n").collect();
+    assert!(
+        calls
+            .last()
+            .unwrap()
+            .starts_with("pane\nrelease-agent\nprivate-pane\n")
+    );
+    let working = calls
+        .iter()
+        .rposition(|call| call.contains("--state\nworking\n"))
+        .unwrap();
+    let active = std::fs::read_to_string(directory.path().join("active-session")).unwrap();
+    assert!(calls[working].contains(&format!("--agent-session-id\n{active}\n")));
+    assert!(
+        calls[working + 1..]
+            .iter()
+            .any(|call| call.contains("--state\nidle\n"))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("--\nkodrik\n--tui-slot\n1"))
+    );
 }
 
 #[test]

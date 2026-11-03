@@ -7,7 +7,7 @@ use crate::agent::{
     AssistantMessage, ContextBuilder, UserMessage,
     llm::LlmProvider,
     message::{Message, ToolResult},
-    session::Session,
+    session::{Session, SessionId},
     tools::{TaskPlan, ToolRegistry},
 };
 
@@ -29,6 +29,7 @@ pub struct Agent {
 pub enum AgentEvent {
     InputConsumed,
     SessionChanged {
+        session_id: SessionId,
         previous_user_messages: usize,
     },
     TextDelta(String),

@@ -38,6 +38,15 @@ conversations remain shared. Slots are reused after exit, preserving their last
 selected session and interrupted requests for recovery. The first available slot
 is used on launch; a slot is not tied to a particular terminal window or directory.
 
+Inside [Herdr](https://herdr.dev/tui/docs/add-herdr-support/), Kodrik automatically
+reports its name and state: working during execution or recovery, blocked while
+waiting for tool approval, and idle when ready for input. Reports run in the
+background; an unavailable Herdr does not interrupt the TUI. Exiting releases the
+pane. Herdr 0.9.2 or later can restore the same conversation slot after its server
+restarts, including that slot's selected session and interrupted requests.
+`kodrik --tui-slot N` opens a specific positive slot (1 is the default slot);
+it fails if another TUI already owns that slot.
+
 An interrupted request resumes with history already visible and a “Recovering
 session” status. Scrolling, selection and draft editing remain available while
 recovery waits for the model. Enter leaves the draft unsent until recovery finishes;
