@@ -73,7 +73,189 @@ fn terminal(state: OperationState) -> bool {
     )
 }
 
+// Runs inside the same checkpoint transaction as history, terminal status and inbox updates.
+pub(crate) fn prepare_environment_pause(
+    db: &Connection,
+    run: &mut RunRecord,
+    session: &mut crate::agent::session::Session,
+) -> anyhow::Result<()> {
+    use crate::agent::{
+        inbox::{SubmissionRecord, SubmissionStatus},
+        message::{Message, ToolResult},
+        run_state::ToolExecution,
+        tools::ReplayPolicy,
+    };
+    ensure!(
+        run.session_id == session.id().as_str(),
+        "Pause session changed"
+    );
+    let receipts = db
+        .prepare("SELECT payload FROM remote_operations WHERE run_id=?1")?
+        .query_map([&run.id], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for bytes in receipts {
+        let mut receipt: OperationReceipt = serde_json::from_slice(&bytes)?;
+        if matches!(
+            receipt.state,
+            OperationState::Accepted | OperationState::Running
+        ) {
+            receipt.state = OperationState::Unknown;
+            save(db, &receipt)?;
+        }
+    }
+    for call in std::mem::take(&mut run.pending_calls) {
+        let intent = db
+            .query_row(
+                "SELECT payload FROM tool_executions WHERE run_id=?1 AND call_id=?2",
+                params![run.id, call.call_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(|bytes| serde_json::from_slice::<ToolExecution>(&bytes))
+            .transpose()?;
+        let existing = session.messages().iter().find_map(|message| match message {
+            Message::ToolResult(result) if result.call_id == call.call_id => {
+                Some(result.content.clone())
+            }
+            _ => None,
+        });
+        let output = if let Some(output) = existing {
+            output
+        } else {
+            let saved = operation(db, &run.id, &call.call_id)?.map(|(_, receipt)| receipt);
+            let result = saved.as_ref().and_then(|receipt| receipt.result.clone());
+            result.unwrap_or_else(|| json_unavailable(saved.as_ref(), intent.is_some()))
+        };
+        if !session.messages().iter().any(
+            |message| matches!(message,Message::ToolResult(result) if result.call_id==call.call_id),
+        ) {
+            session.push(Message::ToolResult(ToolResult {
+                call_id: call.call_id.clone(),
+                content: output.clone(),
+            }));
+        }
+        let execution = ToolExecution {
+            call: call.clone(),
+            replay: intent
+                .map(|execution| execution.replay)
+                .unwrap_or(ReplayPolicy::Never),
+            result: Some(output),
+        };
+        db.execute("INSERT INTO tool_executions VALUES(?1,?2,?3) ON CONFLICT(run_id,call_id) DO UPDATE SET payload=excluded.payload",params![run.id,call.call_id,serde_json::to_vec(&execution)?])?;
+    }
+    let queued=db.prepare("SELECT s.payload FROM submissions s LEFT JOIN active_sessions a ON a.conversation_id=s.conversation_id WHERE coalesce(s.session_id,a.session_id,s.conversation_id)=?1 AND s.status='Queued' AND json_extract(s.payload,'$.request.control')=0 ORDER BY s.rowid")?.query_map([&run.session_id],|row|row.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
+    for bytes in queued {
+        let mut record: SubmissionRecord = serde_json::from_slice(&bytes)?;
+        if record
+            .session_id
+            .as_deref()
+            .is_some_and(|id| id != run.session_id)
+        {
+            continue;
+        }
+        if run.submission_ids.contains(&record.id) {
+            continue;
+        }
+        let message = record.request.message.clone();
+        session.push(Message::User(crate::agent::UserMessage {
+            content: message.text,
+            files: message.files,
+            images: message.images,
+        }));
+        record.status = SubmissionStatus::Unanswered;
+        record.session_id = Some(run.session_id.clone());
+        record.run_id = Some(run.id.clone());
+        crate::agent::inbox::write_record(db, &record)?;
+    }
+    run.attempt_active = false;
+    run.history_len = Some(session.messages().len());
+    Ok(())
+}
+
+fn json_unavailable(
+    saved: Option<&OperationReceipt>,
+    has_intent: bool,
+) -> crate::agent::tools::ToolOutput {
+    // A server tool can have executed without ever creating a remote operation row.
+    let uncertain = saved.map_or(has_intent, |receipt| {
+        receipt.state != OperationState::NotSent
+    });
+    serde_json::json!({"error":"Environment unavailable; old invocation will not resume. Do not repeat uncertain effects","outcome":if uncertain {"unknown"} else {"unavailable"},"environment":saved.map(|receipt|&receipt.invocation.environment)}).into()
+}
+
+pub(crate) fn reconciliation(
+    db: &Connection,
+    session: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut stmt = db.prepare("SELECT json_object('run_id',o.run_id,'call_id',o.call_id,'connection_id',o.connection_id,'generation',o.generation,'tool_id',json_extract(o.payload,'$.invocation.tool_id'),'state',json_extract(o.payload,'$.state'),'arguments_hash',json_extract(o.payload,'$.arguments_hash')) FROM remote_operations o JOIN runs r ON r.id=o.run_id WHERE r.session_id=?1 ORDER BY o.rowid DESC LIMIT 256")?;
+    stmt.query_map([session], |row| row.get::<_, String>(0))?
+        .map(|row| Ok(serde_json::from_str(&row?)?))
+        .collect()
+}
+
 impl SqliteSessionStore {
+    pub(crate) async fn remote_reconciliation(
+        &self,
+        session: &SessionId,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let session = session.as_str().to_owned();
+        self.with_connection(move |db| reconciliation(db, &session))
+            .await
+    }
+    pub(crate) async fn yield_environment_run(
+        &self,
+        run_id: &str,
+        session: &crate::agent::session::Session,
+    ) -> anyhow::Result<()> {
+        let (mut run, _) = self.load_run(run_id).await?.context("Run missing")?;
+        if matches!(
+            run.phase,
+            crate::agent::run_state::RunPhase::EnvironmentPaused { .. }
+        ) {
+            return Ok(());
+        }
+        ensure!(!run.phase.terminal(), "Cannot pause terminal run");
+        let revision = run.revision;
+        run.revision += 1;
+        run.phase = crate::agent::run_state::RunPhase::EnvironmentPaused {
+            reason: "Laptop environment unavailable; explicit new input required".into(),
+        };
+        run.attempt_active = false;
+        self.commit_owned_step(revision, session, &run, None, None)
+            .await
+    }
+
+    pub(crate) async fn pending_remote_target(
+        &self,
+        run: &RunRecord,
+    ) -> anyhow::Result<Option<super::tools::AuditTarget>> {
+        let run = run.clone();
+        self.with_connection(move |db| {
+            let owner = if run.session_id.starts_with(crate::agent::subagents::PREFIX) {
+                db.query_row(
+                    "SELECT parent FROM subagent_sessions WHERE id=?1",
+                    [&run.session_id],
+                    |r| r.get::<_, String>(0),
+                )?
+            } else {
+                run.session_id.clone()
+            };
+            let mut calls = run.pending_calls;
+            let mut stmt = db.prepare("SELECT payload FROM tool_executions WHERE run_id=?1")?;
+            for bytes in stmt.query_map([&run.id], |row| row.get::<_, Vec<u8>>(0))? {
+                calls.push(
+                    serde_json::from_slice::<crate::agent::run_state::ToolExecution>(&bytes?)?.call,
+                );
+            }
+            for call in calls {
+                if let Some(target) = super::tools::saved_target(db, &owner, &call.name)? {
+                    return Ok(Some(target));
+                }
+            }
+            Ok(None)
+        })
+        .await
+    }
     pub(crate) async fn revoke_remote_approvals(&self, key: EnvironmentKey) -> anyhow::Result<()> {
         self.with_connection(move |db| {
             db.execute("UPDATE command_audits SET payload=CAST(json_set(CAST(payload AS TEXT),'$.decision','Revoked') AS BLOB) WHERE json_extract(payload,'$.approval.target.environment.connection_id')=?1 AND json_extract(payload,'$.approval.target.environment.generation')=?2",params![key.connection_id.to_string(),key.generation.to_string()])?;

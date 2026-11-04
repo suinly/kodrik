@@ -177,10 +177,16 @@ impl ToolRegistry {
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Unknown tool: {name}"))?;
 
-        anyhow::ensure!(
-            tool.available(),
-            "Tool {name} is unavailable in this conversation"
-        );
+        if !tool.available() {
+            if let Some(target) = tool.audit_target() {
+                return Err(crate::remote::tools::EnvironmentUnavailable {
+                    key: target.environment,
+                    reason: "Lease revoked before dispatch".into(),
+                }
+                .into());
+            }
+            anyhow::bail!("Tool {name} is unavailable in this conversation");
+        }
 
         tool.execute(arguments).await
     }

@@ -231,6 +231,7 @@ impl SqliteSessionStore {
                     RunPhase::NeedModel=>("NeedModel",None),RunPhase::NeedTool{..}=>("NeedTool",None),RunPhase::ExecutingTool{..}=>("ExecutingTool",None),
                     RunPhase::Completed=>("Completed",None),RunPhase::Cancelled=>("Cancelled",None),RunPhase::Failed{..}=>("Failed",Some("execution_failed")),
                     RunPhase::Parked{reason}=>("Parked",Some(if reason=="automatic_recovery_disabled"{"automatic_recovery_disabled"}else{"crash_limit"})),
+                    RunPhase::EnvironmentPaused{..}=>("EnvironmentPaused",Some("environment_unavailable")),
                 };
                 let cancelled:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM run_controls WHERE run_id=?1)",[&id],|r|r.get(0))?;
                 let confirmed:Option<String>=db.query_row("SELECT call_id FROM tool_executions WHERE run_id=?1 AND json_extract(payload,'$.result') IS NOT NULL ORDER BY rowid DESC LIMIT 1",[&id],|r|r.get(0)).optional()?;

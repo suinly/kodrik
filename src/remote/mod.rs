@@ -23,6 +23,8 @@ mod service_tests;
 pub(crate) mod client;
 #[cfg(test)]
 mod protocol_tests;
+#[cfg(test)]
+mod recovery_tests;
 pub(crate) mod tools;
 #[cfg(test)]
 mod tools_tests;

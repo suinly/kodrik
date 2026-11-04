@@ -352,7 +352,7 @@ pub(super) fn read_record(db: &Connection, id: &str) -> anyhow::Result<Option<Su
         .optional()?;
     payload.map(|p| Ok(serde_json::from_slice(&p)?)).transpose()
 }
-pub(super) fn write_record(db: &Connection, record: &SubmissionRecord) -> anyhow::Result<()> {
+pub(crate) fn write_record(db: &Connection, record: &SubmissionRecord) -> anyhow::Result<()> {
     db.execute(
         "UPDATE submissions SET payload=?2,status=?3,run_id=?4,session_id=?5 WHERE id=?1",
         params![
@@ -633,7 +633,9 @@ pub(super) fn checkpoint_submissions(
         record.status = match &run.phase {
             RunPhase::Completed => SubmissionStatus::Done,
             RunPhase::Cancelled => SubmissionStatus::Cancelled,
-            RunPhase::Failed { .. } => SubmissionStatus::Unanswered,
+            RunPhase::Failed { .. } | RunPhase::EnvironmentPaused { .. } => {
+                SubmissionStatus::Unanswered
+            }
             _ => SubmissionStatus::Running,
         };
         if matches!(run.phase, RunPhase::Completed) {

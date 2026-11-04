@@ -19,6 +19,9 @@ pub(crate) enum RunPhase {
     Parked {
         reason: String,
     },
+    EnvironmentPaused {
+        reason: String,
+    },
     Completed,
     Cancelled,
     Failed {
@@ -33,6 +36,7 @@ impl RunPhase {
             }
             Self::NeedModel => "model".into(),
             Self::Parked { .. } => "parked".into(),
+            Self::EnvironmentPaused { .. } => "environment_paused".into(),
             Self::Completed => "completed".into(),
             Self::Cancelled => "cancelled".into(),
             Self::Failed { .. } => "failed".into(),
@@ -42,7 +46,10 @@ impl RunPhase {
     pub(crate) fn terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::Cancelled | Self::Failed { .. }
+            Self::Completed
+                | Self::Cancelled
+                | Self::Failed { .. }
+                | Self::EnvironmentPaused { .. }
         )
     }
 }
@@ -253,7 +260,10 @@ impl Checkpoint {
         );
         if !matches!(
             self.record.phase,
-            RunPhase::Cancelled | RunPhase::Failed { .. } | RunPhase::Parked { .. }
+            RunPhase::Cancelled
+                | RunPhase::Failed { .. }
+                | RunPhase::Parked { .. }
+                | RunPhase::EnvironmentPaused { .. }
         ) {
             self.store.guard_compaction_storage(&self.record.id).await?;
         }

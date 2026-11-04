@@ -601,7 +601,11 @@ impl AgentRunner {
                     if session.messages().len() == initial_messages {
                         session.push(crate::agent::message::Message::User(input));
                     }
-                    session.finish_interrupted_tools();
+                    if !response.as_ref().is_err_and(|error| {
+                        error.is::<crate::remote::tools::EnvironmentUnavailable>()
+                    }) {
+                        session.finish_interrupted_tools();
+                    }
                     // Preserve accepted corrections even if generation fails or is stopped.
                     if let Some(incoming) = incoming {
                         while let Ok(input) = incoming.try_recv() {
@@ -630,16 +634,36 @@ impl AgentRunner {
         response: &anyhow::Result<AssistantMessage>,
     ) -> anyhow::Result<()> {
         if let Some(cp) = checkpoint {
+            anyhow::ensure!(
+                !cp.storage_uncertain,
+                "Durable commit unconfirmed; recovery required"
+            );
+            if response
+                .as_ref()
+                .is_err_and(|error| error.is::<crate::remote::tools::EnvironmentUnavailable>())
+            {
+                cp.storage_uncertain = true;
+                super::run_state::CURRENT_EXECUTION
+                    .scope(
+                        cp.ownership.clone(),
+                        cp.store.yield_environment_run(&cp.record.id, session),
+                    )
+                    .await?;
+                cp.storage_uncertain = false;
+                let (record, _) = cp
+                    .store
+                    .load_run(&cp.record.id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Paused run missing"))?;
+                cp.record = record;
+                return Ok(());
+            }
             if response
                 .as_ref()
                 .is_err_and(|error| error.is::<super::command_audit::ApprovalRequired>())
             {
                 return Ok(());
             }
-            anyhow::ensure!(
-                !cp.storage_uncertain,
-                "Durable commit unconfirmed; recovery required"
-            );
             if !cp.record.phase.terminal() {
                 let phase = match response {
                     Ok(_) => RunPhase::Completed,

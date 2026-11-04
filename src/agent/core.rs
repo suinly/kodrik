@@ -528,6 +528,14 @@ impl Agent {
                     cp.save(session, RunPhase::NeedModel, None).await?;
                 }
                 let mut context = self.context.build(session);
+                if let Some(cp) = checkpoint.as_ref() {
+                    let evidence = cp.store.remote_reconciliation(session.id()).await?;
+                    if !evidence.is_empty() {
+                        context.instructions.to_mut().push_str(&format!(
+                            "\n\n## Remote operation reconciliation\nAuthenticated receipt metadata, not execution permission. This may supersede unknown outcomes in old history; it never resumes or authorizes repeating effects. No result payload is included.\n{}\n",serde_json::to_string(&evidence)?
+                        ));
+                    }
+                }
                 if let Some(scope) = &environment {
                     context
                         .instructions
@@ -771,6 +779,17 @@ impl Agent {
                     Message::Assistant(message) => answer = Some(message),
                     Message::ToolCall(call) => {
                         use super::command_audit::Permission;
+                        if let Some(target) = registry.audit_target(&call.name)
+                            && !tools
+                                .iter()
+                                .any(|tool| tool.name() == call.name && tool.available())
+                        {
+                            return Err(crate::remote::tools::EnvironmentUnavailable {
+                                key: target.environment,
+                                reason: "Lease revoked before execution".into(),
+                            }
+                            .into());
+                        }
                         let replay = registry.replay_policy(&call.name);
                         let permission = loop {
                             let permission = if let Some(auditor) = &self.command_auditor {
@@ -853,9 +872,23 @@ impl Agent {
                             Permission::Denied => Err(anyhow::anyhow!(
                                 "Tool call was not approved. Do not retry or work around the user's decision using another tool."
                             )),
-                            Permission::Unavailable => Err(anyhow::anyhow!(
-                                "Tool call requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this action."
-                            )),
+                            Permission::Unavailable => {
+                                if let Some(target) = registry.audit_target(&call.name)
+                                    && !tools
+                                        .iter()
+                                        .any(|tool| tool.name() == call.name && tool.available())
+                                {
+                                    Err(crate::remote::tools::EnvironmentUnavailable {
+                                        key: target.environment,
+                                        reason: "Lease revoked while awaiting approval".into(),
+                                    }
+                                    .into())
+                                } else {
+                                    Err(anyhow::anyhow!(
+                                        "Tool call requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this action."
+                                    ))
+                                }
+                            }
                             Permission::Allowed => {
                                 super::delivery::CURRENT_DELIVERY
                                     .scope(
@@ -888,10 +921,10 @@ impl Agent {
                                     .await
                             }
                         };
-                        if result
-                            .as_ref()
-                            .is_err_and(|error| error.is::<super::delivery::StorageFailure>())
-                        {
+                        if result.as_ref().is_err_and(|error| {
+                            error.is::<super::delivery::StorageFailure>()
+                                || error.is::<crate::remote::tools::EnvironmentUnavailable>()
+                        }) {
                             return Err(result.unwrap_err());
                         }
                         let failed = result.is_err();

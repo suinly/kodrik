@@ -227,6 +227,7 @@ export const en = {
   'Остановлено': 'Stopped',
   'Агент не смог завершить ответ. История сохранена.': 'The agent could not finish its reply. History has been saved.',
   'Запуск приостановлен после повторных сбоев.': 'Run paused after repeated failures.',
+  'Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.': 'Laptop connection lost. History is saved; send a new message to continue.',
   'Соединение потеряно, работа продолжается': 'Connection lost; work continues',
   'Можно отправить до 10 вложений, суммарно до 50 MB.': 'Send up to 10 attachments, with a combined size of 50 MB.',
   '«{0}»: файл пустой или слишком большой. Фото — до 10 MiB, документ — до 20 MB.': '“{0}”: file is empty or too large. Photos: up to 10 MiB; documents: up to 20 MB.',

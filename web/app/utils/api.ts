@@ -85,7 +85,7 @@ export type Snapshot = {
   subagents?: Subagent[];
   command_approvals?: CommandApproval[];
   command_audit_mode?: CommandAuditMode;
-  phase: string | { Failed?: { reason: string }; Parked?: { reason: string } } | null;
+  phase: string | { Failed?: { reason: string }; Parked?: { reason: string }; EnvironmentPaused?: { reason: string } } | null;
   blocked_reason: string | null;
   live: { current: Partial | null; interrupted: Partial | null };
   plan: { explanation?: string; plan: { step: string; status: string }[] } | null;

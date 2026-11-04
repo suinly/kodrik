@@ -20,6 +20,22 @@ tokio::task_local! {
     pub(crate) static CURRENT_SCOPE: Option<EnvironmentScope>;
 }
 
+#[derive(Debug)]
+pub(crate) struct EnvironmentUnavailable {
+    pub key: EnvironmentKey,
+    pub reason: String,
+}
+impl std::fmt::Display for EnvironmentUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Laptop environment {} unavailable: {}. Do not repeat uncertain effects",
+            self.key.generation, self.reason
+        )
+    }
+}
+impl std::error::Error for EnvironmentUnavailable {}
+
 pub(crate) struct ScopeLease {
     revoked: AtomicBool,
     clock: Mutex<LeaseClock>,
@@ -115,7 +131,13 @@ impl EnvironmentScope {
             .descriptors
             .get(&call.name)
             .context("Unknown local tool")?;
-        ensure!(self.lease.live(), "Local environment expired");
+        if !self.lease.live() {
+            return Err(EnvironmentUnavailable {
+                key: self.key.clone(),
+                reason: "Lease revoked or expired".into(),
+            }
+            .into());
+        }
         if matches!(descriptor.kind, ToolKind::Exec | ToolKind::Patch) {
             let root = Path::new(&self.manifest.project_root);
             let cwd = match call.arguments.get("workdir") {
@@ -251,9 +273,22 @@ impl Tool for Proxy {
             arguments,
         })?;
         ensure!(invocation.run_id == run, "Remote run changed");
-        let receipt = self.scope.service.invoke(invocation).await?;
-        receipt
-            .result
-            .context("Local operation outcome is unknown; do not repeat the effect")
+        let receipt = match self.scope.service.invoke(invocation).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                return Err(EnvironmentUnavailable {
+                    key: self.scope.key.clone(),
+                    reason: format!("{error:#}"),
+                }
+                .into());
+            }
+        };
+        receipt.result.ok_or_else(|| {
+            EnvironmentUnavailable {
+                key: self.scope.key.clone(),
+                reason: "Local operation outcome is unknown".into(),
+            }
+            .into()
+        })
     }
 }

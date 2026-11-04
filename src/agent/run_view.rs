@@ -77,7 +77,10 @@ pub(crate) fn checkpoint_live(
             || current.attempt != run.model_attempts
             || matches!(
                 run.phase,
-                RunPhase::Cancelled | RunPhase::Failed { .. } | RunPhase::Parked { .. }
+                RunPhase::Cancelled
+                    | RunPhase::Failed { .. }
+                    | RunPhase::Parked { .. }
+                    | RunPhase::EnvironmentPaused { .. }
             ) {
             PartialStatus::Interrupted
         } else if history_advanced && current.status == PartialStatus::Ready {
@@ -156,11 +159,7 @@ fn read_run_view(tx: &Connection, id: &str) -> anyhow::Result<RunView> {
     }
     drop(stmt);
     let compaction = super::compact::view(tx, session.id().as_str())?;
-    let mut remote_operations = Vec::new();
-    let mut stmt = tx.prepare("SELECT json_object('call_id',call_id,'connection_id',connection_id,'generation',generation,'tool_id',json_extract(payload,'$.invocation.tool_id'),'state',json_extract(payload,'$.state'),'arguments_hash',json_extract(payload,'$.arguments_hash')) FROM remote_operations WHERE run_id=?1 ORDER BY rowid LIMIT 256")?;
-    for value in stmt.query_map([id], |r| r.get::<_, String>(0))? {
-        remote_operations.push(serde_json::from_str(&value?)?);
-    }
+    let remote_operations = crate::remote::store::reconciliation(tx, session.id().as_str())?;
     Ok(RunView {
         remote_operations,
         compaction,

@@ -354,6 +354,8 @@ impl LocalEnvironment {
             environment: self,
             id: (call.run_id.clone(), call.call_id.clone()),
         };
+        #[cfg(test)]
+        crate::agent::durable_fixture::boundary("local_accepted")?;
         let timeout = (call.deadline - chrono::Utc::now())
             .to_std()
             .unwrap_or_default();
@@ -410,6 +412,8 @@ impl LocalEnvironment {
             }
         };
         let mut saved = saved;
+        #[cfg(test)]
+        crate::agent::durable_fixture::boundary("local_effect")?;
         saved.state = if stopped {
             OperationState::Unknown
         } else {

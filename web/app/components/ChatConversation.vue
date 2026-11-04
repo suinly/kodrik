@@ -182,6 +182,7 @@ function receive(view: Snapshot) {
     view.cancel_requested && view.busy ? t("Останавливаю и сохраняю историю…") :
     view.phase === 'Cancelled' ? t("Остановлено") :
     typeof view.phase === 'object' && view.phase?.Failed ? t("Агент не смог завершить ответ. История сохранена.") :
+    typeof view.phase === 'object' && view.phase?.EnvironmentPaused ? t("Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.") :
     typeof view.phase === 'object' && view.phase?.Parked ? t("Запуск приостановлен после повторных сбоев.") : ''
   if ((lastBusy && !view.busy) || titleChanged) emit('saved')
   lastBusy = view.busy

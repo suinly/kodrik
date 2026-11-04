@@ -109,6 +109,20 @@ test('chat shows compaction progress and terminal states', {timeout:60000},async
   } finally {await browser.close();}
 });
 
+test('disconnected laptop pause leaves chat writable and explains explicit continuation', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:{EnvironmentPaused:{reason:'lease lost'}},blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[]};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    await expect(page.getByText('Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.',{exact:true})).toBeVisible();
+    await expect(page.locator('[contenteditable="true"]').first()).toBeEditable();
+  } finally {await browser.close();}
+});
+
 test('profile offers device notifications and registers a worker under the configured prefix', {timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
@@ -1659,6 +1673,7 @@ test('native MDC UI persists in chat and uses live paginated sources on its page
     await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveText('Помоги добавить приём пищи');
     assert.equal(await page.getByRole('button',{name:'Далее',exact:true}).count(),0);
     await page.getByRole('textbox',{name:'Фильтр таблицы',exact:true}).fill('Breakfast');
+    await expect(page.getByRole('textbox',{name:'Фильтр таблицы',exact:true})).toHaveValue('Breakfast');
     await expect(page.getByRole('table')).toContainText('Breakfast');
     await expect(page.getByRole('table')).not.toContainText('Lunch');
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));

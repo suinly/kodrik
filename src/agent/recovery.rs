@@ -201,7 +201,10 @@ impl AgentRunner {
             if !target.matches(&run.conversation_id) {
                 continue;
             }
-            if !run.cancel_requested && run.isolated != Some(self.agent.isolated()) {
+            if !run.cancel_requested
+                && run.isolated != Some(self.agent.isolated())
+                && store.pending_remote_target(&run).await?.is_none()
+            {
                 report.blocked.push((
                     run.id,
                     "Execution permissions changed or legacy run has no isolation provenance"
@@ -233,6 +236,19 @@ impl AgentRunner {
                 self.finish_cancelled(store, &mut cp, &mut session, None)
                     .await?;
                 report.cancelled.push(id);
+                continue;
+            }
+            if store.pending_remote_target(&cp.record).await?.is_some() {
+                super::run_state::CURRENT_EXECUTION
+                    .scope(
+                        cp.ownership.clone(),
+                        store.yield_environment_run(&id, &session),
+                    )
+                    .await?;
+                report.blocked.push((
+                    id,
+                    "Laptop attempt paused; new explicit input required".into(),
+                ));
                 continue;
             }
             // Referenced files must still exist; never degrade a recovered attachment into text only.

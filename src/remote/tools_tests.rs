@@ -91,7 +91,21 @@ async fn search_merges_origins_and_transcript_cannot_resurrect_revoked_tools() {
             .count(),
         2
     );
+    let name = scoped
+        .list()
+        .iter()
+        .find(|tool| tool.audit_target().is_some())
+        .unwrap()
+        .name();
     service.revoke(&key, "test").await.unwrap();
+    let revoked = scoped
+        .execute(&name, json!({"cmd":"must not execute"}))
+        .await
+        .unwrap_err();
+    assert!(
+        revoked.is::<super::tools::EnvironmentUnavailable>(),
+        "revoked call lost its typed pause: {revoked:#}"
+    );
     let names = scoped
         .for_model(&history)
         .unwrap()
@@ -298,6 +312,17 @@ async fn local_scope_preserves_server_names_and_normalizes_only_to_laptop_root()
     assert_eq!(invocation.environment, key);
     assert_eq!(invocation.arguments["workdir"], "/laptop/project");
     assert_eq!(invocation.tool_id, "exec_command");
+    let unavailable = crate::agent::run_state::CURRENT_TOOL
+        .scope(
+            Some(("no-transport-run".into(), "no-transport-call".into())),
+            scoped.execute(&name, json!({"cmd":"must not execute"})),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        unavailable.is::<super::tools::EnvironmentUnavailable>(),
+        "missing transport did not yield typed pause: {unavailable:#}"
+    );
     assert!(
         scope
             .validate_call(&ToolCall {

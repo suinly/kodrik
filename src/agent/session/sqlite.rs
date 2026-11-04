@@ -629,7 +629,7 @@ impl SqliteSessionStore {
         tool: Option<&crate::agent::run_state::ToolExecution>,
         ownership: Option<Arc<super::ExecutionOwnership>>,
     ) -> anyhow::Result<()> {
-        let (session, mut run, tool) = (session.clone(), run.clone(), tool.cloned());
+        let (mut session, mut run, tool) = (session.clone(), run.clone(), tool.cloned());
         self.with_connection(move |db| {
             let _ownership = ownership;
             ensure!(run.schema_version == 1 && run.revision == expected_revision + 1, "Invalid run revision");
@@ -641,6 +641,9 @@ impl SqliteSessionStore {
             let previous: Option<(i64, Vec<u8>)> = tx.query_row(
                 "SELECT revision,payload FROM runs WHERE id=?1", [&run.id], |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional()?;
+            if matches!(run.phase,crate::agent::run_state::RunPhase::EnvironmentPaused{..}) {
+                crate::remote::store::prepare_environment_pause(&tx,&mut run,&mut session)?;
+            }
             let payload = serde_json::to_vec(&run)?;
             let mut history_advanced=false;
             let mut interrupted_attempt=!run.attempt_active && !run.phase.terminal();
@@ -682,7 +685,7 @@ impl SqliteSessionStore {
 
 
             }
-            if matches!(run.phase,crate::agent::run_state::RunPhase::Cancelled|crate::agent::run_state::RunPhase::Failed{..}) {
+            if matches!(run.phase,crate::agent::run_state::RunPhase::Cancelled|crate::agent::run_state::RunPhase::Failed{..}|crate::agent::run_state::RunPhase::EnvironmentPaused{..}) {
                 tx.execute("UPDATE compaction_jobs SET status='cancelled',payload=CAST(json_set(payload,'$.status','cancelled') AS BLOB) WHERE run_id=?1 AND status IN ('preparing','ready')",[&run.id])?;
             }
             if run.command_audit && let Some(tool) = &tool
