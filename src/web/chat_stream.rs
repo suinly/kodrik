@@ -117,7 +117,7 @@ impl SnapshotProjection {
             json!({"type":"snapshot","run_id":view.run.id,"session_id":view.run.session_id,
             "revision":view.revision,"phase":view.run.phase,"cancel_requested":view.run.cancel_requested,
             "messages":history(&view.session),"plan":view.plan,"live":live,
-            "queued":view.queued,"deliveries":view.deliveries,"compaction":view.compaction}),
+            "queued":view.queued,"deliveries":view.deliveries,"compaction":view.compaction,"remote_operations":view.remote_operations}),
         )
     }
 }

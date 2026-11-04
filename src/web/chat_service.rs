@@ -201,6 +201,7 @@ impl Chat {
         let mut run = json!({"busy":view.busy,"blocked_reason":view.blocked_reason,
             "phase":view.run.as_ref().map(|r| &r.run.phase),
             "live":view.run.as_ref().map(|r| &r.live),
+            "remote_operations":view.run.as_ref().map(|r| &r.remote_operations),
             "command_approvals":self.sessions.pending_command_approvals(id.as_str()).await.map_err(internal)?,
             "command_audit_mode":self.sessions.command_audit_mode(id.as_str()).await.map_err(internal)?});
         bound_value(&mut run, 32 * 1024);

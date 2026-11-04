@@ -81,6 +81,7 @@ pub(crate) struct Invocation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OperationState {
+    NotSent,
     Accepted,
     Running,
     Completed,

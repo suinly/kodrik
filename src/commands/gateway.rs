@@ -15,6 +15,11 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
     let app = build_app(config).await?;
     if config.owner.is_some() {
         app.agent_runner
+            .sqlite_store()
+            .ok_or_else(|| anyhow::anyhow!("Environments require durable owner storage"))?
+            .remote_recover()
+            .await?;
+        app.agent_runner
             .enable_environments(crate::web::auth::AuthStore::new(&data))?;
     }
     let users = std::sync::Arc::new(crate::users::UserSpaces::new(config, &data, app.clone()));

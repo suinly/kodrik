@@ -446,6 +446,8 @@ async fn push_presence_v7_upgrade_preserves_durable_delivery_state() {
             INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru');
             INSERT INTO web_push_queue VALUES('event','device','personal',2,110,100);
             DROP TABLE command_audits;
+            DROP TABLE remote_operations;
+            DROP TABLE remote_bindings;
             DROP TABLE command_audit_modes;
             DROP TABLE command_audit_profile;
             DROP TABLE web_push_presence;

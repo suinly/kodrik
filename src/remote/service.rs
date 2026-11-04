@@ -156,6 +156,14 @@ impl EnvironmentService {
             connection_id: Uuid::new_v4(),
             generation: Uuid::new_v4(),
         };
+        self.store
+            .remote_binding(
+                device.device_id,
+                key.clone(),
+                session.clone(),
+                manifest.clone(),
+            )
+            .await?;
         bindings.insert(
             session,
             Binding {

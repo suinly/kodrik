@@ -1277,7 +1277,7 @@ async fn schema_upgrade_preserves_existing_modes_and_defaults_new_sessions_to_re
         store.save(&second).await.unwrap();
         drop(store);
         let db = Connection::open(dir.path().join("state.sqlite3")).unwrap();
-        db.execute_batch("DROP TABLE command_audit_modes; DROP TABLE command_audit_profile;")
+        db.execute_batch("DROP TABLE remote_operations; DROP TABLE remote_bindings; DROP TABLE command_audit_modes; DROP TABLE command_audit_profile;")
             .unwrap();
         if version == 8 {
             db.execute_batch("DROP TABLE command_audits;").unwrap();

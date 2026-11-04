@@ -29,6 +29,7 @@ pub(crate) struct Live {
     pub interrupted: Option<Partial>,
 }
 pub(crate) struct RunView {
+    pub remote_operations: Vec<serde_json::Value>,
     pub revision: i64,
     pub run: RunRecord,
     pub session: Session,
@@ -155,7 +156,13 @@ fn read_run_view(tx: &Connection, id: &str) -> anyhow::Result<RunView> {
     }
     drop(stmt);
     let compaction = super::compact::view(tx, session.id().as_str())?;
+    let mut remote_operations = Vec::new();
+    let mut stmt = tx.prepare("SELECT json_object('call_id',call_id,'connection_id',connection_id,'generation',generation,'tool_id',json_extract(payload,'$.invocation.tool_id'),'state',json_extract(payload,'$.state'),'arguments_hash',json_extract(payload,'$.arguments_hash')) FROM remote_operations WHERE run_id=?1 ORDER BY rowid LIMIT 256")?;
+    for value in stmt.query_map([id], |r| r.get::<_, String>(0))? {
+        remote_operations.push(serde_json::from_str(&value?)?);
+    }
     Ok(RunView {
+        remote_operations,
         compaction,
         revision,
         run,

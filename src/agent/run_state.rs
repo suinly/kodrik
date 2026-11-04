@@ -97,6 +97,21 @@ pub(crate) struct ToolExecution {
     pub replay: ReplayPolicy,
     pub result: Option<ToolOutput>,
 }
+impl ToolExecution {
+    pub(crate) fn validate_remote(
+        &self,
+        invocation: &crate::remote::protocol::Invocation,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.replay == ReplayPolicy::Never
+                && self.result.is_none()
+                && self.call.call_id == invocation.call_id
+                && self.call.arguments == invocation.arguments,
+            "Remote execution requires an unreplayable pending checkpoint"
+        );
+        Ok(())
+    }
+}
 
 pub(crate) struct Checkpoint {
     pub(super) store: SqliteSessionStore,
