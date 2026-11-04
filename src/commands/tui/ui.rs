@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, List, ListItem, ListState, Paragraph, Widget, Wrap},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Widget},
 };
 
 use super::app::{App, AppMessage, AppMessageRole, Status, ToolState};
@@ -149,14 +149,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     } else {
         input_rows.len().min(6) as u16
     };
-    let show_compaction = app.command_suggestions().is_empty()
-        && matches!(
-            app.status,
-            Status::Working | Status::Done(_) | Status::Ready
-        )
-        && app.compaction_progress.is_some();
-    let command_height =
-        (app.command_suggestions().len() as u16 + 1).max(if show_compaction { 5 } else { 3 });
+    let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
     let history_height = area
         .height
         .saturating_sub(VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3);
@@ -207,6 +200,27 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             USER_TEXT_COLOR,
         )
     };
+
+    let mut working_state = language.pick("Working", "Работаю").to_owned();
+    if app.compacting {
+        working_state = language
+            .pick("Compacting context", "Сжимаю контекст")
+            .to_owned();
+        if let Some(progress) = &app.compaction_progress {
+            let elapsed = (chrono::Utc::now() - progress.started_at)
+                .num_seconds()
+                .max(0);
+            working_state.push_str(&format!(
+                " · {}% · {}/{} · {}:{:02}",
+                progress.percent(),
+                progress.completed_chunks,
+                progress.total_chunks,
+                elapsed / 60,
+                elapsed % 60,
+            ));
+        }
+    }
+    working_state.push_str(language.pick(" · Esc to stop", " · Esc для остановки"));
 
     let (animation_frame, state, done_at) = if app.audit_picker.is_some() {
         (
@@ -273,14 +287,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Status::Stopped => ("■", language.pick("Stopped", "Остановлено"), String::new()),
             Status::Working => (
                 FRAMES[app.animation_frame % FRAMES.len()],
-                if app.compacting && app.compaction_progress.is_none() {
-                    language.pick(
-                        "Compacting context · Esc to stop",
-                        "Сжимаю контекст · Esc для остановки",
-                    )
-                } else {
-                    language.pick("Working · Esc to stop", "Работаю · Esc для остановки")
-                },
+                working_state.as_str(),
                 String::new(),
             ),
             Status::Done(time) => ("✓", language.pick("Done", "Готово"), format!(" {time}")),
@@ -305,22 +312,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     let commands = app.command_suggestions();
-    if show_compaction && let Some(progress) = &app.compaction_progress {
-        frame.render_widget(
-            Paragraph::new(format!(
-                " {}",
-                progress.render(language == crate::i18n::Language::Ru)
-            ))
-            .wrap(Wrap { trim: true })
-            .style(Style::default().fg(Color::DarkGray)),
-            Rect::new(
-                layout[0].x,
-                layout[0].y + 2,
-                layout[0].width,
-                layout[0].height.saturating_sub(2),
-            ),
-        );
-    }
     if !commands.is_empty() {
         let selected = app.command_suggestion().unwrap().0;
         let mut lines = commands
@@ -878,6 +869,80 @@ mod tests {
         app.push_kodrik_message("new answer".into());
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         assert_eq!(&terminal.backend().buffer().content[..40 * 13], before);
+    }
+
+    #[test]
+    fn compaction_replaces_working_without_moving_the_input() {
+        for language in [crate::i18n::Language::En, crate::i18n::Language::Ru] {
+            let mut app = App {
+                language,
+                status: Status::Working,
+                ..Default::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+            let lines = |terminal: &Terminal<TestBackend>| {
+                terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(90)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                    .collect::<Vec<_>>()
+            };
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let before = lines(&terminal);
+            let working = language.pick("Working", "Работаю");
+            let status_row = before
+                .iter()
+                .position(|line| line.contains(working))
+                .unwrap();
+            let input_row = before.iter().position(|line| line.contains(" > ")).unwrap();
+            app.compacting = true;
+            app.compaction_progress = Some(crate::agent::CompactionProgress {
+                completed_tokens: 400,
+                total_tokens: 1000,
+                completed_chunks: 2,
+                total_chunks: 5,
+                model_calls: 3,
+                started_at: chrono::Utc::now() - chrono::Duration::seconds(75),
+                request_started_at: Some(chrono::Utc::now()),
+                finished_at: None,
+                background: false,
+                before_tokens: 1200,
+                after_tokens: None,
+            });
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let after = lines(&terminal);
+            let status = &after[status_row];
+            assert!(
+                status.contains(language.pick("Compacting context", "Сжимаю контекст")),
+                "{status}"
+            );
+            assert!(status.contains("40%"), "{status}");
+            assert!(status.contains("2/5"), "{status}");
+            assert!(
+                status.contains(language.pick("Esc to stop", "Esc для остановки")),
+                "{status}"
+            );
+            assert!(status.contains(FRAMES[0]));
+            assert!(!after.join("\n").contains(working));
+            assert!(
+                !after
+                    .join("\n")
+                    .contains(language.pick("model response", "ответ модели"))
+            );
+            assert_eq!(
+                after.iter().position(|line| line.contains(" > ")),
+                Some(input_row)
+            );
+            app.animation_frame = 1;
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            assert!(lines(&terminal)[status_row].contains(FRAMES[1]));
+            app.compacting = false;
+            app.compaction_progress.as_mut().unwrap().finished_at = Some(chrono::Utc::now());
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            assert!(lines(&terminal)[status_row].contains(working));
+        }
     }
 
     #[test]
