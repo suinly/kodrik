@@ -17,7 +17,7 @@ mod runner;
 pub(crate) mod sandbox;
 pub mod session;
 pub(crate) mod session_router;
-mod skills;
+pub(crate) mod skills;
 pub(crate) mod subagents;
 pub(crate) mod system_one;
 pub(crate) mod telegram_group;

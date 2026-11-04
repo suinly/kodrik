@@ -45,111 +45,139 @@ impl Tool for ExecCommandTool {
     }
 
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput> {
-        let args: ExecCommandArgs = serde_json::from_value(properties)?;
-        anyhow::ensure!(!args.cmd.trim().is_empty(), "cmd must not be empty");
-        let timeout_ms = args.timeout_ms.unwrap_or(30_000);
-        anyhow::ensure!(timeout_ms > 0, "timeout_ms must be positive");
-        let deadline = tokio::time::Instant::now()
-            .checked_add(Duration::from_millis(timeout_ms))
-            .context("timeout_ms is too large")?;
+        execute(properties, None).await
+    }
+}
 
+pub(crate) async fn execute(
+    properties: serde_json::Value,
+    supervisor: Option<std::sync::Arc<crate::remote::supervisor::Supervisor>>,
+) -> anyhow::Result<ToolOutput> {
+    let args: ExecCommandArgs = serde_json::from_value(properties)?;
+    anyhow::ensure!(!args.cmd.trim().is_empty(), "cmd must not be empty");
+    let timeout_ms = args.timeout_ms.unwrap_or(30_000);
+    anyhow::ensure!(timeout_ms > 0, "timeout_ms must be positive");
+    let deadline = tokio::time::Instant::now()
+        .checked_add(Duration::from_millis(timeout_ms))
+        .context("timeout_ms is too large")?;
+
+    let mut command = if supervisor.is_some() {
+        Command::from(crate::remote::supervisor::prepared_command(
+            &args.cmd,
+            std::path::Path::new(args.workdir.as_deref().unwrap_or(".")),
+        ))
+    } else {
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", &args.cmd])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
-        if let Some(home) = std::env::var_os("HOME") {
-            let local_bin = std::path::PathBuf::from(home).join(".local/bin");
-            if local_bin.is_dir() {
-                let mut paths = vec![local_bin];
-                paths.extend(std::env::split_paths(
-                    &std::env::var_os("PATH").unwrap_or_default(),
-                ));
-                command.env("PATH", std::env::join_paths(paths)?);
-            }
+            .process_group(0);
+        command
+    };
+    command.kill_on_drop(true);
+    if let Some(home) = std::env::var_os("HOME") {
+        let local_bin = std::path::PathBuf::from(home).join(".local/bin");
+        if local_bin.is_dir() {
+            let mut paths = vec![local_bin];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            command.env("PATH", std::env::join_paths(paths)?);
         }
-        if let Some(workdir) = args.workdir {
-            command.current_dir(workdir);
-        }
-        let mut stdout_output = CommandOutput::new()?;
-        let mut stderr_output = CommandOutput::new()?;
-        let mut child = command.spawn().context("Failed to start shell command")?;
-        let pid = child.id().context("Shell has no process ID")?;
-        let mut group = ProcessGroup(Some(
-            pid.try_into().context("Shell process ID is too large")?,
-        ));
-        let mut stdout = child.stdout.take().context("Shell stdout is unavailable")?;
-        let mut stderr = child.stderr.take().context("Shell stderr is unavailable")?;
-
-        let result = tokio::time::timeout_at(deadline, async {
-            tokio::try_join!(
-                child.wait(),
-                read_limited(&mut stdout, &mut stdout_output),
-                read_limited(&mut stderr, &mut stderr_output),
-            )
-        })
-        .await;
-        let (status, timed_out) = match result {
-            Ok(result) => (result.context("Failed to collect shell output")?.0, false),
-            Err(_) => {
-                group.stop().context("Failed to stop timed-out command")?;
-                let status = child
-                    .wait()
-                    .await
-                    .context("Failed to reap timed-out shell")?;
-                // ponytail: detached descendants can hold pipes; cap draining at 1s,
-                // use OS isolation if commands must not escape their process group.
-                if let Ok(result) = tokio::time::timeout(Duration::from_secs(1), async {
-                    tokio::try_join!(
-                        read_limited(&mut stdout, &mut stdout_output),
-                        read_limited(&mut stderr, &mut stderr_output),
-                    )
-                })
-                .await
-                {
-                    result.context("Failed to collect timed-out shell output")?;
-                }
-                (status, true)
-            }
-        };
-        group
-            .stop()
-            .context("Failed to clean up command process group")?;
-
-        let stdout_path = stdout_output.persist_if_truncated()?;
-        let stderr_path = stderr_output.persist_if_truncated()?;
-
-        Ok(serde_json::json!({
-            "stdout": stdout_output.text(),
-            "stdout_path": stdout_path,
-            "stderr_path": stderr_path,
-            "stderr": stderr_output.text(),
-            "exit_code": status.code(),
-            "timed_out": timed_out,
-            "stdout_truncated": stdout_output.truncated,
-            "stderr_truncated": stderr_output.truncated,
-        })
-        .into())
     }
+    if let Some(workdir) = &args.workdir {
+        command.current_dir(workdir);
+    }
+    let mut stdout_output = CommandOutput::new()?;
+    let mut stderr_output = CommandOutput::new()?;
+    let mut child = command.spawn().context("Failed to start shell command")?;
+    let pid = child.id().context("Shell has no process ID")?;
+    let mut group = ProcessGroup {
+        pid: Some(pid.try_into().context("Shell process ID is too large")?),
+        supervisor: supervisor.clone(),
+    };
+    if let Some(supervisor) = &supervisor {
+        supervisor.register_group(pid)?;
+        use tokio::io::AsyncWriteExt;
+        child
+            .stdin
+            .take()
+            .context("Missing launch gate")?
+            .write_all(b"GO\n")
+            .await?;
+    }
+    let mut stdout = child.stdout.take().context("Shell stdout is unavailable")?;
+    let mut stderr = child.stderr.take().context("Shell stderr is unavailable")?;
+
+    let result = tokio::time::timeout_at(deadline, async {
+        tokio::try_join!(
+            child.wait(),
+            read_limited(&mut stdout, &mut stdout_output),
+            read_limited(&mut stderr, &mut stderr_output),
+        )
+    })
+    .await;
+    let (status, timed_out) = match result {
+        Ok(result) => (result.context("Failed to collect shell output")?.0, false),
+        Err(_) => {
+            group.stop().context("Failed to stop timed-out command")?;
+            let status = child
+                .wait()
+                .await
+                .context("Failed to reap timed-out shell")?;
+            // ponytail: detached descendants can hold pipes; cap draining at 1s,
+            // use OS isolation if commands must not escape their process group.
+            if let Ok(result) = tokio::time::timeout(Duration::from_secs(1), async {
+                tokio::try_join!(
+                    read_limited(&mut stdout, &mut stdout_output),
+                    read_limited(&mut stderr, &mut stderr_output),
+                )
+            })
+            .await
+            {
+                result.context("Failed to collect timed-out shell output")?;
+            }
+            (status, true)
+        }
+    };
+    group
+        .stop()
+        .context("Failed to clean up command process group")?;
+
+    let stdout_path = stdout_output.persist_if_truncated()?;
+    let stderr_path = stderr_output.persist_if_truncated()?;
+
+    Ok(serde_json::json!({
+        "stdout": stdout_output.text(),
+        "stdout_path": stdout_path,
+        "stderr_path": stderr_path,
+        "stderr": stderr_output.text(),
+        "exit_code": status.code(),
+        "timed_out": timed_out,
+        "stdout_truncated": stdout_output.truncated,
+        "stderr_truncated": stderr_output.truncated,
+    })
+    .into())
 }
 
 // /bin/sh is Unix-only; kill its group so cancellation also stops descendants.
-struct ProcessGroup(Option<libc::pid_t>);
+struct ProcessGroup {
+    pid: Option<libc::pid_t>,
+    supervisor: Option<std::sync::Arc<crate::remote::supervisor::Supervisor>>,
+}
 
 impl ProcessGroup {
     fn stop(&mut self) -> std::io::Result<()> {
-        if let Some(pid) = self.0 {
-            // SAFETY: pid is a positive child PID; its negation targets our process group.
-            if unsafe { libc::kill(-pid, libc::SIGKILL) } == -1 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
-                }
+        if let Some(pid) = self.pid {
+            crate::remote::supervisor::signal_group(pid as u32, libc::SIGKILL)?;
+            self.pid = None;
+            if let Some(supervisor) = &self.supervisor {
+                supervisor
+                    .unregister_group(pid as u32)
+                    .map_err(std::io::Error::other)?;
             }
-            self.0 = None;
         }
         Ok(())
     }

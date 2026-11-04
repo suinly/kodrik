@@ -90,7 +90,7 @@ fn load_skills(root: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
     Ok(skills)
 }
 
-fn metadata(path: &Path, content: &str) -> anyhow::Result<serde_json::Value> {
+pub(crate) fn metadata(path: &Path, content: &str) -> anyhow::Result<serde_json::Value> {
     let mut lines = content.trim_start_matches('\u{feff}').lines();
     anyhow::ensure!(lines.next() == Some("---"), "Missing YAML frontmatter");
     let mut header = String::new();

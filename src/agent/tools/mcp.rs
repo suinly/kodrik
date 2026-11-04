@@ -34,6 +34,13 @@ struct McpTool {
 pub(crate) async fn connect(
     servers: &HashMap<String, McpServerConfig>,
 ) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
+    connect_scoped(servers, &mut Vec::new()).await
+}
+
+pub(crate) async fn connect_scoped(
+    servers: &HashMap<String, McpServerConfig>,
+    connections: &mut Vec<rmcp::service::RunningServiceCancellationToken>,
+) -> anyhow::Result<Vec<Arc<dyn Tool>>> {
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     let mut names = HashSet::new();
     for (server, config) in servers {
@@ -93,6 +100,7 @@ pub(crate) async fn connect(
         })?
         .with_context(|| format!("MCP server {server}"))?;
         let (client, definitions) = connected;
+        connections.push(client.cancellation_token());
         for definition in definitions {
             let name = format!("mcp__{server}__{}", definition.name);
             ensure!(

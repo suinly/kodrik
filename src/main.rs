@@ -14,6 +14,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     #[command(hide = true)]
+    RemoteSupervisorWorker,
+    #[command(hide = true)]
     UiViewWorker {
         input: std::path::PathBuf,
         output: std::path::PathBuf,
@@ -44,6 +46,9 @@ enum WebCommands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if let Some(Commands::RemoteSupervisorWorker) = &cli.command {
+        return commands::remote_supervisor_worker();
+    }
     if let Some(Commands::UiViewWorker { input, output }) = &cli.command {
         return commands::web::evaluate_views(input, output).await;
     }
@@ -62,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load()?;
 
     match cli.command {
+        Some(Commands::RemoteSupervisorWorker) => unreachable!("Worker handled before config"),
         Some(Commands::Runs(args)) => commands::runs::run(&config, args).await?,
         Some(Commands::Invites(_)) => unreachable!("Invitations handled before provider config"),
         None => commands::tui::run(&config, cli.tui_slot).await?,

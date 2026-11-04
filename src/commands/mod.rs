@@ -5,6 +5,11 @@ pub mod request_restart;
 pub mod tui;
 pub mod web;
 
+#[doc(hidden)]
+pub fn remote_supervisor_worker() -> anyhow::Result<()> {
+    crate::remote::supervisor::worker()
+}
+
 pub(crate) async fn shutdown_signal() -> &'static str {
     #[cfg(unix)]
     {
