@@ -63,15 +63,51 @@ async fn skills_are_read_on_laptop_and_changed_catalog_requires_explicit_refresh
         "laptop resource"
     );
     std::fs::write(skill.join("SKILL.md"), "changed catalog").unwrap();
+    let saved = env.execute(call.clone()).await;
     let mut changed = call;
     changed.call_id = "changed-skill".into();
     changed.arguments = json!({"path":skill.join("SKILL.md")});
     let result = env.execute(changed).await;
     env.close().await.unwrap();
+    assert_eq!(
+        saved.unwrap().result.unwrap().output["text"],
+        "laptop resource"
+    );
     assert!(
         result.is_err(),
         "changed skill was silently served under the previous manifest"
     );
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: updated local review\n---\nUpdated instructions",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "New laptop instructions").unwrap();
+    let refreshed = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    assert_ne!(
+        env.manifest().unwrap().skills[0].content_hash,
+        refreshed.manifest().unwrap().skills[0].content_hash
+    );
+    let fresh_call = invocation("read_file", json!({"path":"AGENTS.md"}));
+    refreshed
+        .attach(
+            Uuid::new_v4(),
+            fresh_call.environment.clone(),
+            fresh_call.session_id.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed
+            .execute(fresh_call)
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .output["text"],
+        "New laptop instructions"
+    );
+    refreshed.close().await.unwrap();
 }
 
 #[tokio::test]

@@ -448,6 +448,24 @@ async fn real_client_reconciles_old_result_on_fresh_lease_without_replaying_effe
 }
 
 struct ProxyModel;
+struct SlowProxyModel;
+#[async_trait::async_trait]
+impl crate::agent::llm::LlmProvider for SlowProxyModel {
+    async fn generate(
+        &self,
+        context: &crate::agent::LlmContext<'_>,
+        tools: &[&dyn crate::agent::tools::Tool],
+        progress: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    ) -> anyhow::Result<(Vec<crate::agent::message::Message>, Option<u64>)> {
+        let (mut messages, usage) = ProxyModel.generate(context, tools, progress).await?;
+        for message in &mut messages {
+            if let crate::agent::message::Message::ToolCall(call) = message {
+                call.arguments = serde_json::json!({"cmd":"printf '%s' $$ > started; sleep 30; printf escaped >> effect"});
+            }
+        }
+        Ok((messages, usage))
+    }
+}
 #[async_trait::async_trait]
 impl crate::agent::llm::LlmProvider for ProxyModel {
     async fn generate(
@@ -627,6 +645,91 @@ async fn child_agent_executes_only_with_parent_lease() {
     assert_eq!(
         std::fs::read_to_string(fixture._dir.path().join("effect")).unwrap(),
         "proxy"
+    );
+}
+
+#[tokio::test]
+async fn revoking_parent_lease_stops_child_laptop_process_before_later_effect() {
+    use crate::{
+        agent::{
+            Agent, ContextBuilder,
+            subagents::{ParentContext, Subagents},
+            tools::ToolRegistry,
+        },
+        remote::{client::RemoteClient, local::LocalEnvironment, tools::CURRENT_SCOPE},
+    };
+    let fixture = fixture().await;
+    fixture.service.disconnect(&fixture.key).await.unwrap();
+    let env = LocalEnvironment::open(&fixture.config, fixture._dir.path())
+        .await
+        .unwrap();
+    let mut client = RemoteClient::connect(&fixture.config).await.unwrap();
+    let key = client
+        .attach(fixture.session.clone(), env.manifest().unwrap())
+        .await
+        .unwrap();
+    let serving = tokio::spawn(async move { client.serve_local(env).await });
+    let store = SqliteSessionStore::open(fixture._dir.path().join("sessions")).unwrap();
+    let manager = Subagents::new(
+        Arc::new(Agent::new(
+            Arc::new(SlowProxyModel),
+            ToolRegistry::default(),
+            ContextBuilder::new("fixture"),
+        )),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let (_life, finished) = tokio::sync::watch::channel(false);
+    let parent = ParentContext {
+        session: store.load(&fixture.session).await.unwrap().unwrap(),
+        finished,
+    };
+    let scope = fixture
+        .service
+        .step_scope(&fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    let child = CURRENT_SCOPE
+        .scope(
+            Some(scope),
+            manager.spawn(&parent, "run laptop effect".into()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !fixture._dir.path().join("started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.service.revoke(&key, "test").await.unwrap();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(8), serving)
+        .await
+        .unwrap()
+        .unwrap();
+    // Revocation closes the socket; serve_local reports that loss after owned cleanup.
+    assert!(outcome.is_err());
+    let _ = manager
+        .wait(&parent.session, &child.id, 5000)
+        .await
+        .unwrap();
+    assert!(!fixture._dir.path().join("effect").exists());
+    let pid: i32 = std::fs::read_to_string(fixture._dir.path().join("started"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    // SAFETY: signal zero observes the fixture shell, without signalling it.
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "child shell survived revoke"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
     );
 }
 

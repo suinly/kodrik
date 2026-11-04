@@ -115,15 +115,26 @@ pub(super) async fn prepare(
     if calls.is_empty() {
         return Ok(Default::default());
     }
-    let verdicts = if mode == CommandAuditMode::Ask {
+    let mut verdicts: Vec<_> = if mode == CommandAuditMode::Ask {
         calls.into_iter().map(|call| (call, "ask".into())).collect()
     } else {
         review(auditor, session, &calls, isolated, tools).await
     };
+    verdicts.retain(|(call, _)| {
+        !tools.iter().any(|tool| {
+            tool.name() == call.name && tool.audit_target().is_some() && !tool.available()
+        })
+    });
     if let Some(cp) = checkpoint {
         cp.store
             .record_command_audits(&cp.record, &verdicts)
             .await?;
+        // Revoke may have run before this row existed while the independent reviewer waited.
+        for tool in tools.iter().filter(|tool| !tool.available()) {
+            if let Some(target) = tool.audit_target() {
+                cp.store.revoke_remote_approvals(target.environment).await?;
+            }
+        }
     }
     Ok(verdicts
         .into_iter()
@@ -146,11 +157,19 @@ pub(super) async fn wait_for_decision(
     tools: &[&dyn super::tools::Tool],
 ) -> anyhow::Result<Permission> {
     loop {
+        if tools.iter().any(|tool| {
+            tool.name() == call.name && tool.audit_target().is_some() && !tool.available()
+        }) {
+            return Ok(Permission::Unavailable);
+        }
         ensure!(
             !cp.store.cancellation_requested(&cp.record.id).await?,
             "Stopped by user"
         );
         let decision = cp.store.command_decision(&cp.record.id, call).await?;
+        if decision == Some(Decision::Revoked) {
+            return Ok(Permission::Unavailable);
+        }
         // A session bypass must not reverse an explicit rejection of this invocation.
         if decision == Some(Decision::Denied) {
             return Ok(Permission::Denied);
@@ -163,7 +182,7 @@ pub(super) async fn wait_for_decision(
             return Ok(Permission::Allowed);
         }
         match decision {
-            Some(Decision::Denied | Decision::Approved) => unreachable!(),
+            Some(Decision::Denied | Decision::Approved | Decision::Revoked) => unreachable!(),
             None | Some(Decision::Ask)
                 if decision.is_none() || mode == CommandAuditMode::Review =>
             {
@@ -311,6 +330,7 @@ pub(super) enum Decision {
     Ask,
     Approved,
     Denied,
+    Revoked,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -589,7 +609,7 @@ pub(super) fn check_execution(
 ) -> anyhow::Result<()> {
     let decision = command_decision(db, &run.id, call)?;
     ensure!(
-        decision != Some(Decision::Denied)
+        !matches!(decision, Some(Decision::Denied | Decision::Revoked))
             && match audit_mode(db, &run.session_id)? {
                 CommandAuditMode::Trusted => true,
                 CommandAuditMode::Review =>
@@ -687,9 +707,10 @@ fn pending_record(db: &Connection, session_id: &str, id: &str) -> anyhow::Result
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
     ensure!(
-        execution
-            .as_ref()
-            .is_none_or(|execution| awaiting_replay(&run, execution))
+        record.decision != Decision::Revoked
+            && execution
+                .as_ref()
+                .is_none_or(|execution| awaiting_replay(&run, execution))
             && audit_owner(db, &run.session_id)
                 .ok()
                 .flatten()

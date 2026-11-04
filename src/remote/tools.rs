@@ -61,6 +61,10 @@ pub(crate) struct EnvironmentScope {
     descriptors: HashMap<String, ToolDescriptor>,
 }
 impl EnvironmentScope {
+    pub(crate) fn belongs_to(&self, session: &SessionId) -> bool {
+        &self.session == session && self.lease.live()
+    }
+
     pub(crate) fn new(
         service: Arc<EnvironmentService>,
         session: SessionId,

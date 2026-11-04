@@ -217,10 +217,6 @@ impl LocalEnvironment {
         self: &Arc<Self>,
         call: Invocation,
     ) -> anyhow::Result<OperationReceipt> {
-        if !self.manifest.skills.is_empty() || self.manifest.project_instructions.is_some() {
-            let environment = self.clone();
-            tokio::task::spawn_blocking(move || environment.validate_catalog()).await??;
-        }
         if call.tool_id == "apply_patch" {
             let environment = self.clone();
             tokio::spawn(async move { environment.execute_inner(call).await }).await?
@@ -251,92 +247,108 @@ impl LocalEnvironment {
         Ok(())
     }
 
-    async fn execute_inner(&self, call: Invocation) -> anyhow::Result<OperationReceipt> {
+    async fn execute_inner(self: &Arc<Self>, call: Invocation) -> anyhow::Result<OperationReceipt> {
         encode_frame(&ServerFrame::Invoke {
             invocation: call.clone(),
         })?;
         let arguments = self.validate_arguments(&call)?;
-        let (device, mut cancel, saved) = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Local state poisoned"))?;
-            ensure!(
-                !self.closed.load(Ordering::SeqCst),
-                "Local environment closed"
-            );
-            let binding = state
-                .binding
-                .as_ref()
-                .context("Local environment is not attached")?;
-            ensure!(
-                binding.key == call.environment && binding.session == call.session_id,
-                "Stale local generation or session"
-            );
-            ensure!(call.deadline > chrono::Utc::now(), "Invocation expired");
-            let device = binding.device.to_string();
-            ensure!(state.active.len() < 4, "Too many local operations");
-            let transaction = state
-                .db
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let old: Option<(String, Vec<u8>)> = transaction
+        let mut catalog_validated =
+            self.manifest.skills.is_empty() && self.manifest.project_instructions.is_none();
+        let (device, mut cancel, saved) = loop {
+            let admitted = {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("Local state poisoned"))?;
+                ensure!(
+                    !self.closed.load(Ordering::SeqCst),
+                    "Local environment closed"
+                );
+                let binding = state
+                    .binding
+                    .as_ref()
+                    .context("Local environment is not attached")?;
+                ensure!(
+                    binding.key == call.environment && binding.session == call.session_id,
+                    "Stale local generation or session"
+                );
+                ensure!(call.deadline > chrono::Utc::now(), "Invocation expired");
+                let device = binding.device.to_string();
+                ensure!(state.active.len() < 4, "Too many local operations");
+                let transaction = state
+                    .db
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let old: Option<(String, Vec<u8>)> = transaction
                 .query_row(
                     "SELECT device,payload FROM receipts WHERE server=?1 AND run=?2 AND call=?3",
                     params![self.server, call.run_id, call.call_id],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            if let Some((owner, bytes)) = old {
-                ensure!(
-                    owner == device,
-                    "Local credential changed for existing call"
-                );
-                let mut saved: OperationReceipt = serde_json::from_slice(&bytes)?;
-                ensure!(
-                    serde_json::to_value(&saved.invocation)? == serde_json::to_value(&call)?
-                        && saved.arguments_hash == arguments_hash(&call.arguments)?,
-                    "Local call identity changed"
-                );
-                if matches!(
-                    saved.state,
-                    OperationState::Accepted | OperationState::Running
-                ) {
-                    saved.state = OperationState::Unknown;
+                if let Some((owner, bytes)) = old {
+                    ensure!(
+                        owner == device,
+                        "Local credential changed for existing call"
+                    );
+                    let mut saved: OperationReceipt = serde_json::from_slice(&bytes)?;
+                    ensure!(
+                        serde_json::to_value(&saved.invocation)? == serde_json::to_value(&call)?
+                            && saved.arguments_hash == arguments_hash(&call.arguments)?,
+                        "Local call identity changed"
+                    );
+                    if matches!(
+                        saved.state,
+                        OperationState::Accepted | OperationState::Running
+                    ) {
+                        saved.state = OperationState::Unknown;
+                    }
+                    return Ok(saved);
                 }
-                return Ok(saved);
-            }
-            let used: i64 = transaction.query_row(
-                "SELECT coalesce(sum(length(payload)+reserved),0) FROM receipts",
-                [],
-                |r| r.get(0),
-            )?;
-            ensure!(
-                (used as u64 + MAX_OUTPUT_BYTES as u64 + MAX_FRAME_BYTES as u64) < JOURNAL_BYTES,
-                "Local receipt quota exhausted"
-            );
-            let saved = OperationReceipt {
-                invocation: call.clone(),
-                arguments_hash: arguments_hash(&call.arguments)?,
-                state: OperationState::Accepted,
-                result: None,
+                // Recheck admission after validating files outside the lock and transaction.
+                if !catalog_validated {
+                    None
+                } else {
+                    let used: i64 = transaction.query_row(
+                        "SELECT coalesce(sum(length(payload)+reserved),0) FROM receipts",
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    ensure!(
+                        (used as u64 + MAX_OUTPUT_BYTES as u64 + MAX_FRAME_BYTES as u64)
+                            < JOURNAL_BYTES,
+                        "Local receipt quota exhausted"
+                    );
+                    let saved = OperationReceipt {
+                        invocation: call.clone(),
+                        arguments_hash: arguments_hash(&call.arguments)?,
+                        state: OperationState::Accepted,
+                        result: None,
+                    };
+                    transaction.execute(
+                        "INSERT INTO receipts VALUES(?1,?2,?3,?4,?5,?6,NULL)",
+                        params![
+                            self.server,
+                            device,
+                            call.run_id,
+                            call.call_id,
+                            serde_json::to_vec(&saved)?,
+                            MAX_OUTPUT_BYTES as i64
+                        ],
+                    )?;
+                    transaction.commit()?;
+                    let (sender, receiver) = watch::channel(false);
+                    state
+                        .active
+                        .insert((call.run_id.clone(), call.call_id.clone()), sender);
+                    Some((device, receiver, saved))
+                }
             };
-            transaction.execute(
-                "INSERT INTO receipts VALUES(?1,?2,?3,?4,?5,?6,NULL)",
-                params![
-                    self.server,
-                    device,
-                    call.run_id,
-                    call.call_id,
-                    serde_json::to_vec(&saved)?,
-                    MAX_OUTPUT_BYTES as i64
-                ],
-            )?;
-            transaction.commit()?;
-            let (sender, receiver) = watch::channel(false);
-            state
-                .active
-                .insert((call.run_id.clone(), call.call_id.clone()), sender);
-            (device, receiver, saved)
+            if let Some(admitted) = admitted {
+                break admitted;
+            }
+            let environment = self.clone();
+            tokio::task::spawn_blocking(move || environment.validate_catalog()).await??;
+            catalog_validated = true;
         };
         let _active = ActiveCall {
             environment: self,

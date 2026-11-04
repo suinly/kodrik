@@ -502,7 +502,7 @@ async fn local_approval_shows_structured_target_and_binds_generation() {
     .await
     .unwrap();
     store
-        .record_command_audits(&cp.record, &[(call, "ask".into())])
+        .record_command_audits(&cp.record, &[(call.clone(), "ask".into())])
         .await
         .unwrap();
     store
@@ -524,6 +524,60 @@ async fn local_approval_shows_structured_target_and_binds_generation() {
         pending[0]
             .arguments_text()
             .contains(&key.generation.to_string())
+    );
+    service.revoke(&key, "test").await.unwrap();
+    assert!(
+        store
+            .pending_command_approvals(id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .decide_command_approval(id.as_str(), &pending[0].id, true)
+            .await
+            .is_err()
+    );
+    let auth = AuthStore::new(dir.path());
+    let device = auth
+        .list_devices(&Identity::Owner, chrono::Utc::now().timestamp())
+        .unwrap()[0]
+        .id;
+    let mut manifest: EnvironmentManifest = store
+        .with_connection(move |db| {
+            let bytes: Vec<u8> =
+                db.query_row("SELECT manifest FROM remote_bindings LIMIT 1", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(serde_json::from_slice(&bytes)?)
+        })
+        .await
+        .unwrap();
+    manifest.skills[0].description = "Refreshed laptop skill".into();
+    let fresh = service
+        .attach(DeviceIdentity { device_id: device }, id.clone(), manifest)
+        .await
+        .unwrap();
+    assert_ne!(fresh.generation, key.generation);
+    let refreshed = service.step_scope(&id).await.unwrap().unwrap();
+    assert!(
+        refreshed
+            .context_overlay()
+            .contains("Refreshed laptop skill")
+    );
+    assert!(
+        !refreshed
+            .tools(&ToolRegistry::default())
+            .unwrap()
+            .contains(&call.name)
+    );
+    assert!(scope.normalize(&mut call).is_err());
+    assert!(
+        store
+            .decide_command_approval(id.as_str(), &pending[0].id, true)
+            .await
+            .is_err()
     );
 }
 
@@ -566,6 +620,28 @@ async fn child_receives_only_explicit_parent_scope_and_loses_it_after_revoke() {
         .wait(&parent.session, &child.id, 2000)
         .await
         .unwrap();
+    let other_session = Session::new(SessionId::new("unrelated-parent"));
+    store.save(&other_session).await.unwrap();
+    let other = ParentContext {
+        session: other_session,
+        finished: parent.finished.clone(),
+    };
+    let other_child = super::tools::CURRENT_SCOPE
+        .scope(
+            service.step_scope(&id).await.unwrap(),
+            manager.spawn(&other, "inspect unrelated".into()),
+        )
+        .await
+        .unwrap();
+    let (_, names) = received.recv().await.unwrap();
+    manager
+        .wait(&other.session, &other_child.id, 2000)
+        .await
+        .unwrap();
+    assert!(
+        !names.iter().any(|name| name.starts_with("local__")),
+        "another parent's scope leaked into child"
+    );
     service.revoke(&key, "test").await.unwrap();
     manager
         .send(&parent, &child.id, "inspect again".into())

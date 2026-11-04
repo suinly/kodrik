@@ -97,6 +97,14 @@ impl EnvironmentService {
                 if let Some(peer) = &binding.peer {
                     peer.close();
                 }
+                binding.scope_lease.revoke();
+                if let Err(error) = self
+                    .store
+                    .revoke_remote_approvals(binding.key.clone())
+                    .await
+                {
+                    log::warn!("Cannot invalidate remote approvals: {error:#}");
+                }
             }
             bindings.clear();
             self.changed();
@@ -119,6 +127,7 @@ impl EnvironmentService {
         let mut bindings = self.bindings.lock().await;
         let before = bindings.len();
         let now = Instant::now();
+        let mut revoked = Vec::new();
         bindings.retain(|_, binding| {
             let live = binding.scope_lease.live()
                 && binding.expires > now
@@ -126,8 +135,14 @@ impl EnvironmentService {
             if !live && let Some(peer) = &binding.peer {
                 peer.close();
             }
+            if !live {
+                revoked.push(binding.key.clone());
+            }
             live
         });
+        for key in revoked {
+            self.store.revoke_remote_approvals(key).await?;
+        }
         if before != bindings.len() {
             self.changed();
         }
@@ -235,14 +250,17 @@ impl EnvironmentService {
         if before != bindings.len() {
             self.changed();
         }
+        self.store.revoke_remote_approvals(key.clone()).await?;
         Ok(())
     }
 
     pub(crate) async fn revoke_device(&self, device: Uuid) {
         let mut bindings = self.bindings.lock().await;
         let before = bindings.len();
+        let mut revoked = Vec::new();
         bindings.retain(|_, b| {
             if b.device == device {
+                revoked.push(b.key.clone());
                 if let Some(peer) = &b.peer {
                     peer.close();
                 }
@@ -253,6 +271,11 @@ impl EnvironmentService {
         });
         if before != bindings.len() {
             self.changed();
+        }
+        for key in revoked {
+            if let Err(error) = self.store.revoke_remote_approvals(key).await {
+                log::warn!("Cannot invalidate remote approvals: {error:#}");
+            }
         }
     }
 

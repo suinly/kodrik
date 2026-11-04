@@ -1821,7 +1821,7 @@ test('fixed Y domains render on ordinary and range charts with keyboard tooltips
     const tick=range.getByText('200',{exact:true}),before=await tick.getAttribute('y');
     await page.getByLabel('Верхняя оценка',{exact:true}).fill('210');
     await page.getByRole('button',{name:'Сохранить оценку',exact:true}).click();
-    await expect(page.getByTestId('ui-document').getByRole('status').filter({hasText:'Запись сохранена.'})).toBeVisible();
+    await expect(page.getByRole('status').filter({hasText:'Запись сохранена.'}).first()).toBeVisible();
     assert.equal(await tick.getAttribute('y'),before);
     await page.screenshot({path:'/tmp/kodrik-fixed-y-domain.png',fullPage:true});
     assert.deepEqual(errors,[]);

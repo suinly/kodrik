@@ -1593,6 +1593,108 @@ async fn disabled_session_skips_auditor_and_reenabling_checks_unreviewed_calls()
 }
 
 #[tokio::test]
+async fn revoked_environment_approval_stops_waiting_even_in_trusted_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    let (mut cp, session, call) = pending_run(&store).await;
+    store
+        .record_command_audits(&cp.record, &[(call.clone(), "ask".into())])
+        .await
+        .unwrap();
+    let key = crate::remote::protocol::EnvironmentKey {
+        connection_id: uuid::Uuid::new_v4(),
+        generation: uuid::Uuid::new_v4(),
+    };
+    let target = crate::remote::tools::AuditTarget {
+        tool_kind: crate::remote::protocol::ToolKind::Exec,
+        environment: key.clone(),
+        project_root: "/laptop".into(),
+    };
+    store.with_connection(move |db| {
+        db.execute("UPDATE command_audits SET payload=CAST(json_set(CAST(payload AS TEXT),'$.approval.target',json(?1)) AS BLOB)",[serde_json::to_string(&target)?])?;
+        Ok(())
+    }).await.unwrap();
+    store.revoke_remote_approvals(key).await.unwrap();
+    store
+        .set_command_audit_enabled(session.id().as_str(), false)
+        .await
+        .unwrap();
+    let auditor = SystemOne::new(Arc::new(Auditor {
+        calls: AtomicUsize::new(0),
+        malformed: true,
+    }));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        wait_for_decision(&auditor, &mut cp, &session, &call, false, &[]),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(result, Permission::Unavailable));
+}
+
+#[tokio::test]
+async fn unavailable_local_tool_does_not_create_a_late_approval() {
+    struct RevokedTool;
+    #[async_trait::async_trait]
+    impl Tool for RevokedTool {
+        fn name(&self) -> String {
+            "exec_command".into()
+        }
+        fn description(&self) -> String {
+            "fixture".into()
+        }
+        fn parameters(&self) -> Value {
+            json!({"type":"object"})
+        }
+        fn available(&self) -> bool {
+            false
+        }
+        fn audit_target(&self) -> Option<crate::remote::tools::AuditTarget> {
+            Some(crate::remote::tools::AuditTarget {
+                tool_kind: crate::remote::protocol::ToolKind::Exec,
+                environment: crate::remote::protocol::EnvironmentKey {
+                    connection_id: uuid::Uuid::new_v4(),
+                    generation: uuid::Uuid::new_v4(),
+                },
+                project_root: "/laptop".into(),
+            })
+        }
+        async fn execute(&self, _: Value) -> anyhow::Result<crate::agent::tools::ToolOutput> {
+            panic!("revoked tool executed")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    let (cp, session, call) = pending_run(&store).await;
+    store
+        .set_command_audit_mode(session.id().as_str(), CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    let auditor = SystemOne::new(Arc::new(Auditor {
+        calls: AtomicUsize::new(0),
+        malformed: true,
+    }));
+    prepare(
+        &auditor,
+        &session,
+        &[Message::ToolCall(call)],
+        Some(&cp),
+        false,
+        &[&RevokedTool],
+    )
+    .await
+    .unwrap();
+    assert!(
+        store
+            .pending_command_approvals(session.id().as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn bypassed_execution_cannot_receive_a_stale_rejection_after_reenable() {
     use crate::agent::run_state::ToolExecution;
     let dir = tempfile::tempdir().unwrap();

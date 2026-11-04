@@ -138,6 +138,41 @@ async fn intent_requires_provenance_and_claims_dispatch_only_once() {
 }
 
 #[tokio::test]
+async fn child_intent_rejects_wrong_parent_and_stale_parent_generation() {
+    use crate::agent::session::SessionStore;
+    for stale in [false, true] {
+        let (_dir, store, device, mut call) = fixture().await;
+        let (_, child) = store.load_run(&call.run_id).await.unwrap().unwrap();
+        let parent = Session::new(SessionId::new("parent"));
+        store.save(&parent).await.unwrap();
+        let parent_generation = if stale {
+            "old-generation".into()
+        } else {
+            parent.generation().to_owned()
+        };
+        let parent_id = if stale { "parent" } else { "another-parent" };
+        let child_id = format!("{}fixture", crate::agent::subagents::PREFIX);
+        let mut value = serde_json::to_value(child).unwrap();
+        value["id"] = json!(child_id);
+        let child: Session = serde_json::from_value(value).unwrap();
+        store.save(&child).await.unwrap();
+        let id = call.run_id.clone();
+        store.with_connection(move |db| {
+            db.execute_batch("CREATE TABLE subagent_sessions(id TEXT PRIMARY KEY,parent TEXT,generation TEXT,payload BLOB)")?;
+            db.execute("INSERT INTO subagent_sessions VALUES(?1,?2,?3,'{}')", rusqlite::params![child_id,parent_id,parent_generation])?;
+            let bytes:Vec<u8> = db.query_row("SELECT payload FROM runs WHERE id=?1", [&id], |r|r.get(0))?;
+            let mut value:serde_json::Value=serde_json::from_slice(&bytes)?;
+            value["session_id"]=json!(child_id);
+            db.execute("UPDATE runs SET session_id=?2,payload=?3 WHERE id=?1",rusqlite::params![id,child_id,serde_json::to_vec(&value)?])?;
+            Ok(())
+        }).await.unwrap();
+        call.session_id = parent.id().clone();
+        bind(&store, device, &call).await;
+        assert!(store.remote_intent(device, call).await.is_err());
+    }
+}
+
+#[tokio::test]
 async fn unknown_survives_restart_and_late_result_never_resumes_run() {
     let (dir, store, device, call) = fixture().await;
     bind(&store, device, &call).await;

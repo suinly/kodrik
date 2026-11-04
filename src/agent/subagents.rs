@@ -311,7 +311,8 @@ impl Subagents {
         let scope = crate::remote::tools::CURRENT_SCOPE
             .try_with(Clone::clone)
             .ok()
-            .flatten();
+            .flatten()
+            .filter(|scope| scope.belongs_to(parent.session.id()));
         tokio::spawn(super::run_state::CURRENT_EXECUTION.scope(
             Some(ownership),
             crate::remote::tools::CURRENT_SCOPE.scope(scope, async move {

@@ -74,6 +74,13 @@ fn terminal(state: OperationState) -> bool {
 }
 
 impl SqliteSessionStore {
+    pub(crate) async fn revoke_remote_approvals(&self, key: EnvironmentKey) -> anyhow::Result<()> {
+        self.with_connection(move |db| {
+            db.execute("UPDATE command_audits SET payload=CAST(json_set(CAST(payload AS TEXT),'$.decision','Revoked') AS BLOB) WHERE json_extract(payload,'$.approval.target.environment.connection_id')=?1 AND json_extract(payload,'$.approval.target.environment.generation')=?2",params![key.connection_id.to_string(),key.generation.to_string()])?;
+            Ok(())
+        }).await
+    }
+
     // Provenance only: this row never grants live authority after restart.
     pub(crate) async fn remote_binding(
         &self,
@@ -293,6 +300,7 @@ impl SqliteSessionStore {
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute("UPDATE remote_operations SET payload=CAST(json_set(CAST(payload AS TEXT),'$.state','unknown') AS BLOB) WHERE json_extract(payload,'$.state') IN ('accepted','running')",[])?;
+            tx.execute("UPDATE command_audits SET payload=CAST(json_set(CAST(payload AS TEXT),'$.decision','Revoked') AS BLOB) WHERE json_type(payload,'$.approval.target.environment')='object'",[])?;
             tx.commit()?;
             Ok(())
         }).await
