@@ -517,6 +517,7 @@ mod tests {
             call_id: "call".into(),
             tool_name: "exec_command".into(),
             arguments_json: None,
+            target: None,
             cmd: "rm -rf /tmp/test\necho `done`".into(),
             workdir: Some("/tmp/a b".into()),
             reason: "Destructive action".into(),

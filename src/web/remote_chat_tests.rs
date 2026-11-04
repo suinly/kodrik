@@ -449,6 +449,7 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
                 tools: vec![],
                 skills: vec![],
                 project_instructions: None,
+                warnings: vec![],
             },
         )
         .await

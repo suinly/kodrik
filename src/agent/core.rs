@@ -412,7 +412,31 @@ impl Agent {
             if input_consumed && let Some(tx) = progress {
                 let _ = tx.send(AgentEvent::InputConsumed).await;
             }
-            let tools = self.tools.for_model(session.messages())?;
+            let environment = if self.isolated()
+                || session.id().as_str().starts_with("companion:")
+                    && !session.id().as_str().starts_with(super::subagents::PREFIX)
+            {
+                None
+            } else if let Some(scope) = crate::remote::tools::CURRENT_SCOPE
+                .try_with(Clone::clone)
+                .ok()
+                .flatten()
+            {
+                Some(scope)
+            } else if let Some(service) = crate::remote::tools::CURRENT_ENVIRONMENTS
+                .try_with(Clone::clone)
+                .ok()
+                .flatten()
+            {
+                service.step_scope(session.id()).await?
+            } else {
+                None
+            };
+            let registry = match &environment {
+                Some(scope) => scope.tools(&self.tools)?,
+                None => self.tools.clone(),
+            };
+            let tools = registry.for_model(session.messages())?;
             let messages = if let Some(cp) = checkpoint
                 .as_ref()
                 .filter(|cp| !cp.record.pending_calls.is_empty())
@@ -503,7 +527,13 @@ impl Agent {
                     cp.record.model_attempts += 1;
                     cp.save(session, RunPhase::NeedModel, None).await?;
                 }
-                let context = self.context.build(session);
+                let mut context = self.context.build(session);
+                if let Some(scope) = &environment {
+                    context
+                        .instructions
+                        .to_mut()
+                        .push_str(&scope.context_overlay());
+                }
                 if let Some(budget) = call_budget {
                     anyhow::ensure!(requests < budget, "Wakeup request budget exhausted");
                 }
@@ -647,9 +677,14 @@ impl Agent {
                         return Err(error);
                     }
                 };
-                if self.command_auditor.is_some() {
-                    for message in &mut messages {
-                        if let Message::ToolCall(call) = message {
+                for message in &mut messages {
+                    if let Message::ToolCall(call) = message {
+                        if registry.audit_target(&call.name).is_some() {
+                            environment
+                                .as_ref()
+                                .ok_or_else(|| anyhow::anyhow!("Local scope missing"))?
+                                .normalize(call)?;
+                        } else if self.command_auditor.is_some() {
                             super::command_audit::normalize(call, self.isolated())?;
                         }
                     }
@@ -736,7 +771,7 @@ impl Agent {
                     Message::Assistant(message) => answer = Some(message),
                     Message::ToolCall(call) => {
                         use super::command_audit::Permission;
-                        let replay = self.tools.replay_policy(&call.name);
+                        let replay = registry.replay_policy(&call.name);
                         let permission = loop {
                             let permission = if let Some(auditor) = &self.command_auditor {
                                 if let Some(cp) = checkpoint.as_deref_mut() {
@@ -840,8 +875,13 @@ impl Agent {
                                                     session: session.clone(),
                                                     finished: child_lifetime.clone(),
                                                 }),
-                                                self.tools
-                                                    .execute(&call.name, call.arguments.clone()),
+                                                crate::remote::tools::CURRENT_SCOPE.scope(
+                                                    environment.clone(),
+                                                    registry.execute(
+                                                        &call.name,
+                                                        call.arguments.clone(),
+                                                    ),
+                                                ),
                                             ),
                                         ),
                                     )

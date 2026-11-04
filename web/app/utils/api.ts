@@ -20,7 +20,7 @@ export type MessagePart =
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };
 export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
 export type CommandAuditMode = 'trusted'|'review'|'ask';
-export type CommandApproval = {id:string;run_id:string;call_id:string;tool_name?:string;arguments_json?:string;cmd:string;workdir:string|null;reason:string;reason_code?:string};
+export type CommandApproval = {id:string;run_id:string;call_id:string;tool_name?:string;arguments_json?:string;target?:{tool_kind:string;environment:{connection_id:string;generation:string};project_root:string};cmd:string;workdir:string|null;reason:string;reason_code?:string};
 
 export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit) {
   const headers=new Headers(init?.headers);

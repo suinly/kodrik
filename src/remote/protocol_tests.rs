@@ -16,6 +16,7 @@ fn manifest() -> EnvironmentManifest {
         }],
         skills: vec![],
         project_instructions: None,
+        warnings: vec![],
     }
 }
 

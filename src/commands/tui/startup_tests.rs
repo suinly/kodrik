@@ -68,6 +68,7 @@ async fn terminal_recovery_fixture() {
             call_id: "call".into(),
             tool_name: "exec_command".into(),
             arguments_json: None,
+            target: None,
             cmd: "rm file".into(),
             workdir: None,
             reason: "Destructive".into(),

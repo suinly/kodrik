@@ -117,7 +117,14 @@ impl SqliteSessionStore {
             let manifest: EnvironmentManifest = serde_json::from_slice(&manifest)?;
             ensure!(manifest.tools.iter().any(|tool|tool.id == invocation.tool_id), "Unknown local tool");
             let (session,done,payload): (String,bool,Vec<u8>) = tx.query_row("SELECT session_id,terminal,payload FROM runs WHERE id=?1",[&invocation.run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-            ensure!(session == invocation.session_id.as_str() && !done, "Run is not bound or is terminal");
+            let inherited=if session!=invocation.session_id.as_str() && session.starts_with(crate::agent::subagents::PREFIX) {
+                let relation:Option<(String,String)>=tx.query_row("SELECT parent,generation FROM subagent_sessions WHERE id=?1",[&session],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                if let Some((parent,generation))=relation.filter(|(parent,_)|parent==invocation.session_id.as_str()) {
+                    let bytes:Vec<u8>=tx.query_row("SELECT payload FROM sessions WHERE id=?1",[parent],|r|r.get(0))?;
+                    serde_json::from_slice::<crate::agent::session::Session>(&bytes)?.generation()==generation
+                } else {false}
+            } else {false};
+            ensure!((session == invocation.session_id.as_str() || inherited) && !done, "Run is not bound or is terminal");
             let run: RunRecord = serde_json::from_slice(&payload)?;
             ensure!(run.pending_calls.iter().any(|call|call.call_id == invocation.call_id && call.arguments == invocation.arguments), "Call is not pending in run");
             let tool: Vec<u8> = tx.query_row("SELECT payload FROM tool_executions WHERE run_id=?1 AND call_id=?2",params![invocation.run_id,invocation.call_id],|r|r.get(0))?;

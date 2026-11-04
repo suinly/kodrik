@@ -2,10 +2,11 @@ import type {CommandApproval} from './api'
 import {t} from './i18n.ts'
 import {en} from './translations.ts'
 
-export function commandApprovalDetails(approval:Pick<CommandApproval,'tool_name'|'arguments_json'|'cmd'|'workdir'>) {
+export function commandApprovalDetails(approval:Pick<CommandApproval,'tool_name'|'arguments_json'|'cmd'|'workdir'|'target'>) {
   // Keep server JSON as text so large MCP IDs are never rounded by JavaScript.
   const args=approval.arguments_json ?? JSON.stringify({cmd:approval.cmd,workdir:approval.workdir},null,2)
-  return `{\n  "tool": ${JSON.stringify(approval.tool_name ?? 'exec_command')},\n  "arguments": ${args.replaceAll('\n','\n  ')}\n}`
+  const target=approval.target ? `\n  "target": ${JSON.stringify(approval.target)},` : ''
+  return `{\n  "tool": ${JSON.stringify(approval.tool_name ?? 'exec_command')},${target}\n  "arguments": ${args.replaceAll('\n','\n  ')}\n}`
     .replace(/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,char=>'\\u'+char.charCodeAt(0).toString(16).padStart(4,'0'))
 }
 

@@ -308,11 +308,16 @@ impl Subagents {
         active.insert(child.id.clone(), cancel);
         let manager = self.clone();
         let finished = parent.finished.clone();
-        tokio::spawn(
-            super::run_state::CURRENT_EXECUTION.scope(Some(ownership), async move {
+        let scope = crate::remote::tools::CURRENT_SCOPE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten();
+        tokio::spawn(super::run_state::CURRENT_EXECUTION.scope(
+            Some(ownership),
+            crate::remote::tools::CURRENT_SCOPE.scope(scope, async move {
                 manager.drive(child, finished, receiver).await;
             }),
-        );
+        ));
     }
 
     pub(crate) async fn send(

@@ -31,6 +31,71 @@ fn invocation(tool: &str, args: serde_json::Value) -> Invocation {
 }
 
 #[tokio::test]
+async fn skills_are_read_on_laptop_and_changed_catalog_requires_explicit_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let skills = dir.path().join("skills");
+    let skill = skills.join("review");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: review\ndescription: local review\n---\nRead resource.txt",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("resource.txt"), "laptop resource").unwrap();
+    let mut cfg = config(dir.path(), true);
+    cfg.skill_roots = vec![skills];
+    let env = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    let call = invocation("read_file", json!({"path":"resource.txt"}));
+    env.attach(
+        Uuid::new_v4(),
+        call.environment.clone(),
+        call.session_id.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        env.execute(call.clone())
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .output["text"],
+        "laptop resource"
+    );
+    std::fs::write(skill.join("SKILL.md"), "changed catalog").unwrap();
+    let mut changed = call;
+    changed.call_id = "changed-skill".into();
+    changed.arguments = json!({"path":skill.join("SKILL.md")});
+    let result = env.execute(changed).await;
+    env.close().await.unwrap();
+    assert!(
+        result.is_err(),
+        "changed skill was silently served under the previous manifest"
+    );
+}
+
+#[tokio::test]
+async fn optional_mcp_failure_is_visible_without_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path(), false);
+    cfg.mcp.insert(
+        "notes".into(),
+        crate::config::McpServerConfig::Http {
+            url: "http://127.0.0.1:1/secret-url".into(),
+            headers: HashMap::from([("Authorization".into(), "secret-header".into())]),
+        },
+    );
+    cfg.optional_mcp = vec!["notes".into()];
+    let env = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    let manifest = serde_json::to_string(&env.manifest().unwrap()).unwrap();
+    env.close().await.unwrap();
+    assert!(manifest.contains("notes"));
+    assert!(manifest.contains("unavailable"));
+    assert!(!manifest.contains("secret-url"));
+    assert!(!manifest.contains("secret-header"));
+}
+
+#[tokio::test]
 async fn local_effect_is_once_across_retry_restart_and_changed_arguments() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = config(dir.path(), true);

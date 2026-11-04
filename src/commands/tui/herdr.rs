@@ -210,6 +210,7 @@ mod tests {
             call_id: "call".into(),
             tool_name: "exec_command".into(),
             arguments_json: None,
+            target: None,
             cmd: "command".into(),
             workdir: None,
             reason: "approval required".into(),

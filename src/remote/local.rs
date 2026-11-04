@@ -64,6 +64,7 @@ impl LocalEnvironment {
         ensure!(root.is_dir(), "Project root is not a directory");
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         let mut connections = Vec::new();
+        let mut warnings = Vec::new();
         tools.insert("apply_patch".into(), Arc::new(ApplyPatchTool));
         tools.insert("view_image".into(), Arc::new(ViewImageTool));
         if config.allow_shell {
@@ -86,7 +87,9 @@ impl LocalEnvironment {
                         }
                     }
                 }
-                Err(_) if config.optional_mcp.contains(name) => {}
+                Err(_) if config.optional_mcp.contains(name) => {
+                    warnings.push(format!("Optional MCP {name} unavailable"));
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -154,6 +157,7 @@ impl LocalEnvironment {
             tools: descriptors,
             skills,
             project_instructions,
+            warnings,
         };
         validate_manifest(&manifest)?;
         #[cfg(not(test))]
@@ -213,12 +217,38 @@ impl LocalEnvironment {
         self: &Arc<Self>,
         call: Invocation,
     ) -> anyhow::Result<OperationReceipt> {
+        if !self.manifest.skills.is_empty() || self.manifest.project_instructions.is_some() {
+            let environment = self.clone();
+            tokio::task::spawn_blocking(move || environment.validate_catalog()).await??;
+        }
         if call.tool_id == "apply_patch" {
             let environment = self.clone();
             tokio::spawn(async move { environment.execute_inner(call).await }).await?
         } else {
             self.execute_inner(call).await
         }
+    }
+
+    fn validate_catalog(&self) -> anyhow::Result<()> {
+        for skill in &self.manifest.skills {
+            let bytes = read_scoped(&self.skill_roots, Path::new(&skill.path), 1024 * 1024)?;
+            ensure!(
+                hash_bytes(&bytes) == skill.content_hash,
+                "Local skill changed; explicitly refresh the environment"
+            );
+        }
+        if let Some(project) = &self.manifest.project_instructions {
+            let bytes = read_scoped(
+                std::slice::from_ref(&self.root),
+                Path::new(&project.path),
+                64 * 1024,
+            )?;
+            ensure!(
+                hash_bytes(&bytes) == project.content_hash,
+                "Local instructions changed; explicitly refresh the environment"
+            );
+        }
+        Ok(())
     }
 
     async fn execute_inner(&self, call: Invocation) -> anyhow::Result<OperationReceipt> {

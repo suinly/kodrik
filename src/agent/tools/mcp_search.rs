@@ -23,15 +23,23 @@ struct Entry {
 
 pub(super) struct McpSearchTool {
     catalog: Vec<Entry>,
+    live: Vec<std::sync::Arc<dyn Tool>>,
 }
 
 impl McpSearchTool {
     pub(super) fn new(catalog: Vec<(String, String)>) -> Self {
         Self {
+            live: vec![],
             catalog: catalog
                 .into_iter()
                 .map(|(name, description)| Entry { name, description })
                 .collect(),
+        }
+    }
+    pub(super) fn live(tools: Vec<std::sync::Arc<dyn Tool>>) -> Self {
+        Self {
+            catalog: vec![],
+            live: tools,
         }
     }
 }
@@ -80,7 +88,24 @@ impl Tool for McpSearchTool {
         terms.dedup();
         ensure!(!terms.is_empty(), "query must contain letters or digits");
         let mut matches = Vec::new();
-        for entry in &self.catalog {
+        let mut catalog = self
+            .catalog
+            .iter()
+            .map(|entry| Entry {
+                name: entry.name.clone(),
+                description: entry.description.clone(),
+            })
+            .collect::<Vec<_>>();
+        catalog.extend(
+            self.live
+                .iter()
+                .filter(|tool| tool.available())
+                .map(|tool| Entry {
+                    name: tool.name(),
+                    description: tool.description(),
+                }),
+        );
+        for entry in &catalog {
             let name = words(&entry.name);
             let description = words(&entry.description);
             let mut hits = 0;

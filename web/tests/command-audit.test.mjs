@@ -1,6 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {commandAuditReason,commandApprovalDetails} from '../app/utils/command-audit.ts';
+
+test('remote approval shows laptop generation and root without modifying arguments',()=>{
+  const details=commandApprovalDetails({tool_name:'local__exec__fixture',arguments_json:'{"cmd":"pwd"}',cmd:'pwd',workdir:'/laptop',target:{tool_kind:'exec',environment:{connection_id:'connection',generation:'generation'},project_root:'/laptop'}});
+  const parsed=JSON.parse(details);
+  assert.equal(parsed.target.project_root,'/laptop');
+  assert.equal(parsed.target.environment.generation,'generation');
+  assert.equal(parsed.arguments.cmd,'pwd');
+});
 import {setLanguage} from '../app/utils/i18n.ts';
 
 test('approval reasons localize known codes and legacy text while unknown text stays literal',()=>{

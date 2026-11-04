@@ -32,6 +32,10 @@ pub trait Tool: Send + Sync {
     fn deferred(&self) -> bool {
         false
     }
+    #[allow(private_interfaces)] // Internal provenance hook; public tools need not implement it.
+    fn audit_target(&self) -> Option<crate::remote::tools::AuditTarget> {
+        None
+    }
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput>;
 }
 
@@ -41,6 +45,28 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    pub(crate) fn audit_target(&self, name: &str) -> Option<crate::remote::tools::AuditTarget> {
+        self.tools.get(name).and_then(|tool| tool.audit_target())
+    }
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    pub(crate) fn with_mcp_search(mut self) -> Self {
+        let catalog = self
+            .tools
+            .values()
+            .filter(|tool| tool.deferred())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !catalog.is_empty() {
+            self.tools.insert(
+                super::mcp_search::NAME.into(),
+                Arc::new(super::mcp_search::McpSearchTool::live(catalog)),
+            );
+        }
+        self
+    }
     pub(crate) fn without(&self, names: &[&str]) -> Self {
         Self {
             tools: self

@@ -458,6 +458,7 @@ mod tests {
             run_id: "run".into(),
             call_id: "call".into(),
             tool_name: "exec_command".into(),
+            target: None,
             arguments_json: Some(
                 serde_json::json!({
                     "cmd": "printf 'hello\\n'\necho \"world\"\u{1b}[2J\u{202e}",
@@ -500,6 +501,7 @@ mod tests {
                 call_id: "call".into(),
                 tool_name: "exec_command".into(),
                 arguments_json: None,
+                target: None,
                 cmd: "rm file".into(),
                 workdir: Some("/workspace".into()),
                 reason: "Destructive".into(),
@@ -677,6 +679,7 @@ mod tests {
                 call_id: "call".into(),
                 tool_name: "exec_command".into(),
                 arguments_json: None,
+                target: None,
                 cmd: "rm file".into(),
                 workdir: Some("/workspace".into()),
                 reason: "Destructive".into(),

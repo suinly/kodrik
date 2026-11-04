@@ -26,6 +26,8 @@ pub(crate) struct EnvironmentManifest {
     pub tools: Vec<ToolDescriptor>,
     pub skills: Vec<SkillDescriptor>,
     pub project_instructions: Option<ProjectInstructions>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

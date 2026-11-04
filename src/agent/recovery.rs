@@ -157,8 +157,11 @@ impl AgentRunner {
             };
             let work = super::run_state::CURRENT_EXECUTION.scope(
                 cp.ownership.clone(),
-                self.agent
-                    .run_durable(session, input, progress, incoming, Some(cp)),
+                crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
+                    self.environments().cloned(),
+                    self.agent
+                        .run_durable(session, input, progress, incoming, Some(cp)),
+                ),
             );
             tokio::pin!(work);
             tokio::select! {biased;stopped=stopping=>{stopped?;Err(anyhow::anyhow!("Stopped by user"))},result=&mut work=>result}
@@ -315,8 +318,11 @@ impl AgentRunner {
                     });
                 let work = super::run_state::CURRENT_EXECUTION.scope(
                     cp.ownership.clone(),
-                    super::reminders::WAKEUP_CONTEXT
-                        .scope(wakeup, self.agent.resume_durable(&mut session, &mut cp)),
+                    crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
+                        self.environments().cloned(),
+                        super::reminders::WAKEUP_CONTEXT
+                            .scope(wakeup, self.agent.resume_durable(&mut session, &mut cp)),
+                    ),
                 );
                 tokio::pin!(work);
                 tokio::select! {result=&mut work=>result, stopped=self.wait_cancel(store,&id)=>match stopped {Ok(())=>Err(anyhow::anyhow!("Stopped by user")),Err(e)=>Err(e)}}

@@ -27,7 +27,13 @@ struct Binding {
     manifest: EnvironmentManifest,
     expires: Instant,
     peer: Option<Arc<super::transport::Peer>>,
-    clock: super::transport::LeaseClock,
+    scope_lease: Arc<super::tools::ScopeLease>,
+}
+
+impl Drop for Binding {
+    fn drop(&mut self) {
+        self.scope_lease.revoke();
+    }
 }
 
 pub(crate) struct EnvironmentService {
@@ -114,8 +120,9 @@ impl EnvironmentService {
         let before = bindings.len();
         let now = Instant::now();
         bindings.retain(|_, binding| {
-            let live =
-                binding.clock.live() && binding.expires > now && allowed.contains(&binding.device);
+            let live = binding.scope_lease.live()
+                && binding.expires > now
+                && allowed.contains(&binding.device);
             if !live && let Some(peer) = &binding.peer {
                 peer.close();
             }
@@ -186,7 +193,7 @@ impl EnvironmentService {
                 manifest,
                 expires: Instant::now() + LEASE,
                 peer: None,
-                clock: super::transport::LeaseClock::new(),
+                scope_lease: Arc::new(super::tools::ScopeLease::new()),
             },
         );
         self.changed();
@@ -205,7 +212,10 @@ impl EnvironmentService {
             "Environment expired"
         );
         binding.expires = Instant::now() + LEASE;
-        ensure!(binding.clock.renew(), "Environment expired after suspend");
+        ensure!(
+            binding.scope_lease.renew(),
+            "Environment expired after suspend"
+        );
         Ok(())
     }
 
@@ -295,6 +305,26 @@ impl EnvironmentService {
             "Tool unavailable"
         );
         Ok(())
+    }
+
+    pub(crate) async fn step_scope(
+        self: &Arc<Self>,
+        session: &SessionId,
+    ) -> anyhow::Result<Option<super::tools::EnvironmentScope>> {
+        self.prune().await?;
+        let bindings = self.bindings.lock().await;
+        Ok(bindings
+            .get(session)
+            .filter(|_| !self.closed.load(Ordering::SeqCst))
+            .map(|binding| {
+                super::tools::EnvironmentScope::new(
+                    self.clone(),
+                    session.clone(),
+                    binding.key.clone(),
+                    binding.manifest.clone(),
+                    binding.scope_lease.clone(),
+                )
+            }))
     }
 
     pub(crate) async fn bind_peer(

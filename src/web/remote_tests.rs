@@ -77,6 +77,7 @@ async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
                     }],
                     skills: vec![],
                     project_instructions: None,
+                    warnings: vec![],
                 },
             })
             .unwrap()
@@ -288,6 +289,7 @@ async fn fixture() -> Fixture {
                     }],
                     skills: vec![],
                     project_instructions: None,
+                    warnings: vec![],
                 },
             })
             .unwrap()
@@ -442,6 +444,189 @@ async fn real_client_reconciles_old_result_on_fresh_lease_without_replaying_effe
     assert_eq!(
         std::fs::read_to_string(fixture._dir.path().join("effect")).unwrap(),
         "once\nfresh\n"
+    );
+}
+
+struct ProxyModel;
+#[async_trait::async_trait]
+impl crate::agent::llm::LlmProvider for ProxyModel {
+    async fn generate(
+        &self,
+        context: &crate::agent::LlmContext<'_>,
+        tools: &[&dyn crate::agent::tools::Tool],
+        _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+    ) -> anyhow::Result<(Vec<crate::agent::message::Message>, Option<u64>)> {
+        use crate::agent::message::{Message, ToolCall};
+        if context
+            .messages
+            .iter()
+            .any(|message| matches!(message, Message::ToolResult(_)))
+        {
+            return Ok((
+                vec![Message::Assistant(crate::agent::AssistantMessage {
+                    content: "done".into(),
+                })],
+                None,
+            ));
+        }
+        let name = tools
+            .iter()
+            .find(|tool| {
+                tool.audit_target()
+                    .is_some_and(|target| target.tool_kind == ToolKind::Exec)
+            })
+            .expect("no scoped proxy")
+            .name();
+        Ok((
+            vec![Message::ToolCall(ToolCall {
+                call_id: "proxy-effect".into(),
+                name,
+                arguments: serde_json::json!({"cmd":"printf proxy >> effect; printf result"}),
+            })],
+            None,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn durable_agent_proxy_executes_on_laptop_and_preserves_normalized_provenance() {
+    use crate::{
+        agent::{
+            Agent, ContextBuilder,
+            message::Message,
+            run_state::{Checkpoint, RunPhase},
+            tools::ToolRegistry,
+        },
+        remote::{client::RemoteClient, local::LocalEnvironment, tools::CURRENT_ENVIRONMENTS},
+    };
+    let fixture = fixture().await;
+    fixture.service.disconnect(&fixture.key).await.unwrap();
+    let env = LocalEnvironment::open(&fixture.config, fixture._dir.path())
+        .await
+        .unwrap();
+    let mut client = RemoteClient::connect(&fixture.config).await.unwrap();
+    let key = client
+        .attach(fixture.session.clone(), env.manifest().unwrap())
+        .await
+        .unwrap();
+    let serving = tokio::spawn(async move { client.serve_local(env).await });
+    let store = SqliteSessionStore::open(fixture._dir.path().join("sessions")).unwrap();
+    let mut session = store.load(&fixture.session).await.unwrap().unwrap();
+    let mut cp = Checkpoint::new(&store, &fixture.session, &session);
+    cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+    let agent = Agent::new(
+        Arc::new(ProxyModel),
+        ToolRegistry::default(),
+        ContextBuilder::new("fixture"),
+    );
+    let result = CURRENT_ENVIRONMENTS
+        .scope(
+            Some(fixture.service.clone()),
+            agent.run_durable(
+                &mut session,
+                crate::agent::UserMessage {
+                    content: "run once on laptop".into(),
+                    images: vec![],
+                    files: vec![],
+                },
+                None,
+                None,
+                Some(&mut cp),
+            ),
+        )
+        .await;
+    fixture.service.close().await;
+    let _ = serving.await.unwrap();
+    result.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture._dir.path().join("effect")).unwrap(),
+        "proxy"
+    );
+    let evidence = store
+        .remote_operation(&cp.record.id, "proxy-effect")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(evidence.invocation.environment, key);
+    assert_eq!(
+        evidence.invocation.arguments["workdir"],
+        fixture
+            ._dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert_eq!(evidence.state, OperationState::Completed);
+    assert!(session.messages().iter().any(|message|matches!(message,Message::ToolResult(result) if result.content.output["stdout"]=="result")));
+}
+
+#[tokio::test]
+async fn child_agent_executes_only_with_parent_lease() {
+    use crate::{
+        agent::{
+            Agent, ContextBuilder,
+            subagents::{ParentContext, Subagents},
+            tools::ToolRegistry,
+        },
+        remote::{client::RemoteClient, local::LocalEnvironment, tools::CURRENT_SCOPE},
+    };
+    let fixture = fixture().await;
+    fixture.service.disconnect(&fixture.key).await.unwrap();
+    let env = LocalEnvironment::open(&fixture.config, fixture._dir.path())
+        .await
+        .unwrap();
+    let mut client = RemoteClient::connect(&fixture.config).await.unwrap();
+    client
+        .attach(fixture.session.clone(), env.manifest().unwrap())
+        .await
+        .unwrap();
+    let serving = tokio::spawn(async move { client.serve_local(env).await });
+    let store = SqliteSessionStore::open(fixture._dir.path().join("sessions")).unwrap();
+    let manager = Subagents::new(
+        Arc::new(Agent::new(
+            Arc::new(ProxyModel),
+            ToolRegistry::default(),
+            ContextBuilder::new("fixture"),
+        )),
+        store.clone(),
+    )
+    .await
+    .unwrap();
+    let (_life, finished) = tokio::sync::watch::channel(false);
+    let parent = ParentContext {
+        session: store.load(&fixture.session).await.unwrap().unwrap(),
+        finished,
+    };
+    let scope = fixture
+        .service
+        .step_scope(&fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    let child = CURRENT_SCOPE
+        .scope(
+            Some(scope),
+            manager.spawn(&parent, "run laptop effect".into()),
+        )
+        .await
+        .unwrap();
+    let done = manager
+        .wait(&parent.session, &child.id, 5000)
+        .await
+        .unwrap();
+    fixture.service.close().await;
+    let _ = serving.await.unwrap();
+    assert_eq!(
+        format!("{:?}", done.status),
+        "Completed",
+        "{:?}",
+        done.error
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture._dir.path().join("effect")).unwrap(),
+        "proxy"
     );
 }
 
