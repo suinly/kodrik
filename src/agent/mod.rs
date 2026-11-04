@@ -23,6 +23,7 @@ pub(crate) mod system_one;
 pub(crate) mod telegram_group;
 pub mod tools;
 
+pub use compact::CompactionProgress;
 pub use context::{ContextBuilder, LlmContext};
 pub use core::{Agent, AgentEvent};
 pub use file::FileAttachment;

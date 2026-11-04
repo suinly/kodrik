@@ -75,16 +75,36 @@ test('chat shows compaction progress and terminal states', {timeout:60000},async
     const progress=page.getByRole('status').filter({hasText:'Готовлю краткий контекст…'});
     await expect(progress).toBeVisible();
     await expect(progress).toHaveAttribute('aria-busy','true');
+    snapshot.busy=true;snapshot.phase='Running';
+    snapshot.live.current={attempt:1,text:'Streaming reply survives background compaction',status:'Active'};
+    snapshot.compaction.progress={completed_tokens:250,total_tokens:1000,completed_chunks:1,total_chunks:4,model_calls:2,started_at:new Date(Date.now()-20000).toISOString(),request_started_at:new Date(Date.now()-10000).toISOString(),finished_at:null,background:true,before_tokens:12000,after_tokens:null};
+    snapshot.revision++;
+    await page.reload();
+    const typed=page.getByRole('status').filter({hasText:'25%'});
+    await expect(typed).toContainText('1/4');
+    await expect(typed).toContainText('в фоне');
+    await expect(typed).toContainText('ожидание ответа');
+    await expect(page.getByText('Streaming reply survives background compaction',{exact:true})).toBeVisible();
+    const first=await typed.innerText();
+    await expect.poll(()=>typed.innerText()).not.toBe(first);
+    await expect(typed).toContainText('25%');
     for(const [status,label] of [
       ['applied','Контекст сокращён; полная история сохранена'],
       ['failed','Не удалось подготовить краткий контекст'],
       ['cancelled','Подготовка контекста отменена'],
+      ['stale','Подготовленный контекст устарел'],
     ]) {
       snapshot.compaction.status=status;snapshot.revision++;
+      snapshot.compaction.progress.finished_at=new Date().toISOString();
+      snapshot.compaction.progress.after_tokens=status==='applied'?3000:null;
       await page.reload();
       const state=page.getByRole('status').filter({hasText:label});
       await expect(state).toBeVisible();
       await expect(state).toHaveAttribute('aria-busy','false');
+      if(status==='applied') await expect(state).toContainText('12000 → 3000');
+      const finished=await state.innerText();
+      await page.waitForTimeout(1100);
+      assert.equal(await state.innerText(),finished);
     }
   } finally {await browser.close();}
 });

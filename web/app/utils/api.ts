@@ -65,6 +65,16 @@ export async function requestStatus(conversation: string, request: string): Prom
 }
 
 
+export type CompactionProgress = {
+  completed_tokens: number; total_tokens: number;
+  completed_chunks: number; total_chunks: number; model_calls: number;
+  started_at: string; request_started_at: string | null; finished_at: string | null;
+  background: boolean; before_tokens: number; after_tokens: number | null;
+};
+export type Compaction = {
+  status: 'preparing' | 'ready' | 'applied' | 'stale' | 'failed' | 'cancelled';
+  progress?: CompactionProgress | null;
+};
 export type Snapshot = {
   type: 'snapshot'; session_id: string; run_id: string | null; revision: number;
   title?: string;
@@ -80,7 +90,7 @@ export type Snapshot = {
   live: { current: Partial | null; interrupted: Partial | null };
   plan: { explanation?: string; plan: { step: string; status: string }[] } | null;
   queued: { id: string; text: string; files?: string[]; photos?: number; webhook?: boolean }[];
-  compaction?: { status: 'preparing' | 'ready' | 'applied' | 'stale' | 'failed' | 'cancelled' } | null;
+  compaction?: Compaction | null;
 };
 type Partial = { attempt: number; text: string; status: 'Active' | 'Ready' | 'Interrupted' | 'Committed' };
 

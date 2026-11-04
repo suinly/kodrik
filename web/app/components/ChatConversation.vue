@@ -2,6 +2,7 @@
 import {t} from '../utils/i18n'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage, type CommandAuditMode } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
+import {compactionActive,formatCompaction} from '../utils/compaction'
 import { TableKit } from '@tiptap/extension-table'
 import { TaskList, TaskItem } from '@tiptap/extension-list'
 import { CharacterCount } from '@tiptap/extensions/character-count'
@@ -485,11 +486,24 @@ async function resumeQueue() {
   finally {resuming.value=false}
 }
 
-const compactionLabels = {
-  preparing: t("Готовлю краткий контекст…"), ready: t("Краткий контекст подготовлен"),
-  applied: t("Контекст сокращён; полная история сохранена"), stale: t("Подготовленный контекст устарел"),
-  failed: t("Не удалось подготовить краткий контекст"), cancelled: t("Подготовка контекста отменена"),
-}
+const compactionNow=ref(Date.now())
+const compactionState=computed(()=>{
+  const state=snapshot.value?.compaction
+  if(!state || !compactionActive(state)) return state
+  if(snapshot.value?.cancel_requested || snapshot.value?.phase==='Cancelled') return {...state,status:'cancelled' as const}
+  if(snapshot.value?.phase==='Failed' || (typeof snapshot.value?.phase==='object' && snapshot.value.phase && 'Failed' in snapshot.value.phase)) return {...state,status:'failed' as const}
+  return state
+})
+const compacting=computed(()=>compactionActive(compactionState.value))
+const compactionText=computed(()=>compactionState.value ? formatCompaction(compactionState.value,compactionNow.value) : '')
+let compactionTimer:ReturnType<typeof setInterval> | undefined
+watch([compacting,()=>snapshot.value?.compaction?.progress?.started_at],([active])=>{
+  clearInterval(compactionTimer)
+  compactionTimer=undefined
+  compactionNow.value=Date.now()
+  if(active && snapshot.value?.compaction?.progress) compactionTimer=setInterval(()=>{compactionNow.value=Date.now()},1000)
+},{immediate:true})
+onBeforeUnmount(()=>clearInterval(compactionTimer))
 </script>
 
 <template>
@@ -594,9 +608,9 @@ const compactionLabels = {
         </template>
       </UChatPrompt>
       <div v-if="snapshot?.compaction || connection || stopping || hint" class="min-h-0 space-y-1 overflow-y-auto text-xs text-muted">
-        <p v-if="snapshot?.compaction" role="status" :aria-busy="snapshot.compaction.status === 'preparing'" class="flex items-center gap-1.5">
-          <UIcon v-if="snapshot.compaction.status === 'preparing'" name="i-lucide-loader-circle" class="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-          {{ t(compactionLabels[snapshot.compaction.status]) }}
+        <p v-if="snapshot?.compaction" role="status" :aria-busy="compacting" class="flex items-center gap-1.5">
+          <UIcon v-if="compacting" name="i-lucide-loader-circle" class="size-3 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          {{ compactionText }}
         </p>
         <p v-if="connection" role="status">{{ t(connection) }}</p>
         <p v-if="stopping || hint" role="status" aria-live="polite">{{ stopping ? t("Останавливаю и сохраняю историю…") : t(hint) }}</p>

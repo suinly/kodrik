@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, List, ListItem, ListState, Paragraph, Widget},
+    widgets::{Block, List, ListItem, ListState, Paragraph, Widget, Wrap},
 };
 
 use super::app::{App, AppMessage, AppMessageRole, Status, ToolState};
@@ -149,7 +149,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     } else {
         input_rows.len().min(6) as u16
     };
-    let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
+    let show_compaction = app.command_suggestions().is_empty()
+        && matches!(
+            app.status,
+            Status::Working | Status::Done(_) | Status::Ready
+        )
+        && app.compaction_progress.is_some();
+    let command_height =
+        (app.command_suggestions().len() as u16 + 1).max(if show_compaction { 5 } else { 3 });
     let history_height = area
         .height
         .saturating_sub(VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3);
@@ -266,7 +273,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Status::Stopped => ("■", language.pick("Stopped", "Остановлено"), String::new()),
             Status::Working => (
                 FRAMES[app.animation_frame % FRAMES.len()],
-                if app.compacting {
+                if app.compacting && app.compaction_progress.is_none() {
                     language.pick(
                         "Compacting context · Esc to stop",
                         "Сжимаю контекст · Esc для остановки",
@@ -298,6 +305,22 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     let commands = app.command_suggestions();
+    if show_compaction && let Some(progress) = &app.compaction_progress {
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {}",
+                progress.render(language == crate::i18n::Language::Ru)
+            ))
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(Color::DarkGray)),
+            Rect::new(
+                layout[0].x,
+                layout[0].y + 2,
+                layout[0].width,
+                layout[0].height.saturating_sub(2),
+            ),
+        );
+    }
     if !commands.is_empty() {
         let selected = app.command_suggestion().unwrap().0;
         let mut lines = commands

@@ -36,6 +36,7 @@ pub enum AgentEvent {
     PlanUpdated(TaskPlan),
     Retrying(String),
     Compaction(String),
+    CompactionProgress(super::CompactionProgress),
     Message(AssistantMessage),
     ContextTokens(Option<u64>),
     ToolStarted {

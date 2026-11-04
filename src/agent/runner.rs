@@ -259,10 +259,33 @@ impl AgentRunner {
         let id = SessionId::new(format!("cli:once:{}", uuid::Uuid::new_v4()));
         let (tx, mut rx) = mpsc::channel(32);
         let display = async {
-            while let Some(event) = rx.recv().await {
+            let russian = crate::i18n::Language::from_environment() == crate::i18n::Language::Ru;
+            let mut compaction: Option<crate::agent::CompactionProgress> = None;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(4));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let event = tokio::select! {
+                    event = rx.recv() => match event { Some(event) => event, None => break },
+                    _ = tick.tick(), if compaction.as_ref().is_some_and(|progress| progress.finished_at.is_none()) => {
+                        if let Some(progress) = &compaction { eprintln!("{}", progress.render(russian)); }
+                        continue;
+                    }
+                };
                 match event {
                     AgentEvent::PlanUpdated(plan) => eprintln!("{}", plan.render()),
-                    AgentEvent::Compaction(message) => eprintln!("{message}"),
+                    AgentEvent::Compaction(message) => {
+                        if message != "Context compacted; continuing…" {
+                            compaction = None;
+                        }
+                        eprintln!("{message}");
+                    }
+                    AgentEvent::CompactionProgress(progress) => {
+                        eprintln!("{}", progress.render(russian));
+                        compaction = Some(progress);
+                    }
+                    AgentEvent::InputConsumed | AgentEvent::SessionChanged { .. } => {
+                        compaction = None
+                    }
                     _ => {}
                 }
             }

@@ -11,6 +11,7 @@ pub struct App {
     pub model: String,
     pub context_tokens: Option<u64>,
     pub compacting: bool,
+    pub compaction_progress: Option<crate::agent::CompactionProgress>,
     pub input: String,
     pub input_cursor: usize,
     pub input_width: usize,

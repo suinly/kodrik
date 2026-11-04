@@ -128,6 +128,17 @@ previous summary forward. A single complete message/tool
 group can exceed that target and is still attempted after tool-output truncation.
 This adds model calls, cost and latency.
 TUI shows an animated compaction status without interrupting the streamed reply.
+TUI, Web Chat, Telegram and one-shot CLI also report estimated history-token
+progress, completed/total chunks, model attempt count, elapsed time and the wait
+for the current model response. Background work is distinguished from blocking
+compaction. Percentages advance only after complete successful chunks: they do
+not predict time remaining or progress inside a provider request. Overflow
+retries count as attempts, not completed chunks. Successful generation shows the
+estimated context size before and after; the full history is still preserved.
+Progress is saved with durable jobs, while each interface updates its elapsed
+clock locally. Old jobs without progress retain their existing status labels.
+Restarted generation resets work counters because partial summaries are not
+resumable; it never presents discarded work as completed.
 Telegram displays compaction in its progress message, one-shot CLI writes progress
 to stderr, and web chat shows an animated preparation indicator with the saved job
 status. This includes SQLite background and overflow-triggered compaction.

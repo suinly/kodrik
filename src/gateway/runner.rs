@@ -1149,6 +1149,9 @@ impl GatewayRunner {
         let mut status_text = String::new();
         let mut status_state = None;
         let mut status_needed = false;
+        let mut compaction: Option<crate::agent::CompactionProgress> = None;
+        let mut compaction_message = None;
+        let mut compaction_sent: Option<tokio::time::Instant> = None;
         let mut message_since_tool = false;
         let started = tokio::time::Instant::now();
         let mut typing = tokio::time::interval(Duration::from_secs(4));
@@ -1165,6 +1168,9 @@ impl GatewayRunner {
                 event = rx.recv() => {
                     match event {
                         Some(AgentEvent::InputConsumed) => {
+                            compaction = None;
+                            compaction_message = None;
+                            compaction_sent = None;
                             if progress_disabled {
                                 continue;
                             }
@@ -1181,6 +1187,9 @@ impl GatewayRunner {
                         // A reply belongs in its own message; previewing it in the status
                         // makes the chat jump when that status is removed or shortened.
                         Some(AgentEvent::SessionChanged { .. }) => {
+                            compaction = None;
+                            compaction_message = None;
+                            compaction_sent = None;
                             if let Err(error) = interface.send(conversation_id, language.pick("New topic — started a new session.", "Новая тема — начат новый диалог.")).await {
                                 log::warn!("Failed to announce session change: {error}");
                             }
@@ -1200,7 +1209,27 @@ impl GatewayRunner {
                             status_needed = true;
                             false
                         }
-                        Some(AgentEvent::Retrying(message) | AgentEvent::Compaction(message)) => {
+                        Some(AgentEvent::CompactionProgress(progress)) => {
+                            let finished = progress.finished_at.is_some();
+                            compaction = Some(progress);
+                            compaction_message = None;
+                            status_needed = true;
+                            if !finished && compaction_sent.is_some_and(|sent| sent.elapsed() < Duration::from_secs(2)) {
+                                continue;
+                            }
+                            false
+                        }
+                        Some(AgentEvent::Compaction(message)) => {
+                            if message != "Context compacted; continuing…" {
+                                compaction = None;
+                            }
+                            if compaction.is_none() {
+                                compaction_message = Some(service_progress(language, &message));
+                            }
+                            status_needed = true;
+                            false
+                        }
+                        Some(AgentEvent::Retrying(message)) => {
                             description = service_progress(language, &message);
                             status_needed = true;
                             message_since_tool = false;
@@ -1240,14 +1269,22 @@ impl GatewayRunner {
                             info!("Tool finished ({call_id}), failed={failed}");
                             continue;
                         }
-                        None => true,
+                        None => {
+                            if compaction.as_ref().is_some_and(|progress| progress.finished_at.is_none()) {
+                                compaction = None;
+                            }
+                            true
+                        },
                     }
                 }
                 _ = typing.tick() => {
                     if !progress_disabled && let Err(error) = interface.typing(conversation_id).await {
                         warn!("Failed to send typing status: {error}");
                     }
-                    continue;
+                    if compaction.as_ref().is_none_or(|progress| progress.finished_at.is_some()) {
+                        continue;
+                    }
+                    false
                 }
                 _ = previews.tick(), if interface.stream_replies() && !progress_disabled && !preview.trim().is_empty() && preview != preview_sent => false,
             };
@@ -1310,8 +1347,20 @@ impl GatewayRunner {
             {
                 status.push_str(&format!("<br><br>{}", inline_code(language, tool)));
             }
+            let compaction_text = compaction
+                .as_ref()
+                .map(|progress| progress.render(language == Language::Ru))
+                .or_else(|| compaction_message.clone());
+            if let Some(text) = &compaction_text {
+                status.push_str(&format!("<br><br>{}", inline_code(language, text)));
+            }
             let text = with_plan(plan.as_deref(), &status);
-            let state = (plan.clone(), description.clone(), current_tool.clone());
+            let state = (
+                plan.clone(),
+                description.clone(),
+                current_tool.clone(),
+                compaction_text,
+            );
             if status_state.as_ref() == Some(&state) {
                 if finished {
                     break;
@@ -1342,6 +1391,7 @@ impl GatewayRunner {
             }
             status_text = text;
             status_state = Some(state);
+            compaction_sent = Some(tokio::time::Instant::now());
             if finished {
                 break;
             }
@@ -2947,6 +2997,59 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn typed_compaction_preserves_tool_status_and_completed_result() {
+        let (updates, mut messages) = mpsc::unbounded_channel();
+        let sends = Arc::new(AtomicUsize::new(0));
+        let interface = RecordingInterface {
+            updates,
+            sends: sends.clone(),
+            incoming: None,
+        };
+        let (tx, rx) = mpsc::channel(32);
+        let started_at = chrono::Utc::now();
+        tx.send(AgentEvent::ToolStarted {
+            name: "exec_command".into(),
+            call_id: "cmd".into(),
+            arguments: serde_json::json!({"cmd":"cargo test"}),
+        })
+        .await
+        .unwrap();
+        tx.send(AgentEvent::CompactionProgress(
+            crate::agent::CompactionProgress {
+                completed_tokens: 1000,
+                total_tokens: 1000,
+                completed_chunks: 4,
+                total_chunks: 4,
+                model_calls: 4,
+                started_at,
+                request_started_at: None,
+                finished_at: Some(started_at),
+                background: true,
+                before_tokens: 12000,
+                after_tokens: Some(3000),
+            },
+        ))
+        .await
+        .unwrap();
+        tx.send(AgentEvent::Compaction(
+            "Context compacted; continuing…".into(),
+        ))
+        .await
+        .unwrap();
+        drop(tx);
+        GatewayRunner::show_progress(&interface, "chat", rx).await;
+        let mut texts = Vec::new();
+        while let Ok(text) = messages.try_recv() {
+            texts.push(text);
+        }
+        let last = texts.last().unwrap();
+        assert!(last.contains("cargo test"));
+        assert!(last.contains("12000"));
+        assert!(last.contains("3000"));
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

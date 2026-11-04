@@ -20,6 +20,9 @@ pub(crate) struct Compactor {
 #[path = "compact_jobs.rs"]
 mod jobs;
 pub(crate) use jobs::{migrate, view};
+#[path = "compact_progress.rs"]
+mod progress;
+pub use progress::CompactionProgress;
 
 // shortcut: model-independent estimates; use provider tokenization when endpoints expose it.
 fn text_tokens(text: &str) -> u64 {
@@ -94,6 +97,96 @@ impl CompactionCandidate {
     }
 }
 impl Compactor {
+    fn initial_progress(
+        &self,
+        snapshot: &CompactionSnapshot,
+        background: bool,
+    ) -> CompactionProgress {
+        let messages = truncate_tool_outputs(Cow::Borrowed(snapshot.session.messages()));
+        let boundaries = tool_boundaries(&messages);
+        let start = snapshot
+            .session
+            .compaction()
+            .map_or(0, |(through, _)| through);
+        let mut cursor = start;
+        let mut chunks = 0;
+        while cursor < snapshot.through {
+            cursor = Self::next_chunk(
+                &messages,
+                &boundaries,
+                cursor,
+                snapshot.through,
+                snapshot.threshold,
+            );
+            chunks += 1;
+        }
+        CompactionProgress {
+            completed_tokens: 0,
+            total_tokens: messages[start..snapshot.through]
+                .iter()
+                .map(message_tokens)
+                .sum(),
+            completed_chunks: 0,
+            total_chunks: chunks,
+            model_calls: 0,
+            started_at: chrono::Utc::now(),
+            request_started_at: None,
+            finished_at: None,
+            background,
+            before_tokens: snapshot.history_tokens,
+            after_tokens: None,
+        }
+    }
+
+    fn next_chunk(
+        messages: &[Message],
+        boundaries: &[usize],
+        start: usize,
+        end: usize,
+        threshold: u64,
+    ) -> usize {
+        let mut tokens = 0;
+        let mut next = None;
+        for boundary in boundaries
+            .iter()
+            .copied()
+            .filter(|&n| n > start && n <= end)
+        {
+            let from = next.unwrap_or(start);
+            tokens += messages[from..boundary]
+                .iter()
+                .map(message_tokens)
+                .sum::<u64>();
+            if tokens > threshold / 2 {
+                return next.unwrap_or(boundary);
+            }
+            next = Some(boundary);
+        }
+        next.expect("prepared snapshot has a complete message group")
+    }
+
+    async fn report_progress(
+        state: &CompactionProgress,
+        job: Option<(&super::session::SqliteSessionStore, &str, &str)>,
+        events: &Option<mpsc::WeakSender<AgentEvent>>,
+    ) -> anyhow::Result<()> {
+        let state = if let Some((store, session, id)) = job {
+            let Some(saved) = store
+                .compaction_progress(session, id, state.clone())
+                .await?
+            else {
+                return Ok(());
+            };
+            saved
+        } else {
+            state.clone()
+        };
+        if let Some(tx) = events.as_ref().and_then(mpsc::WeakSender::upgrade) {
+            let _ = tx.try_send(AgentEvent::CompactionProgress(state));
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare(
         &self,
         session: &Session,
@@ -151,7 +244,11 @@ impl Compactor {
         &self,
         snapshot: &CompactionSnapshot,
         job: Option<(&super::session::SqliteSessionStore, &str, &str)>,
+        events: Option<mpsc::WeakSender<AgentEvent>>,
+        background: bool,
     ) -> anyhow::Result<CompactionCandidate> {
+        let mut state = self.initial_progress(snapshot, background);
+        Self::report_progress(&state, job, &events).await?;
         let session = &snapshot.session;
         let (mut start, previous) = session.compaction().unwrap_or((0, ""));
         let previous_through = start;
@@ -176,17 +273,7 @@ impl Compactor {
             );
         }
         while start < end {
-            let eligible = || {
-                boundaries
-                    .iter()
-                    .copied()
-                    .filter(|&next| next > start && next <= end)
-            };
-            let next = eligible()
-                .take_while(|&next| sizes[next] - sizes[start] <= snapshot.threshold / 2)
-                .last()
-                .or_else(|| eligible().next())
-                .context("Missing complete message/tool group for compaction")?;
+            let next = Self::next_chunk(&messages, &boundaries, start, end, snapshot.threshold);
             let mut input = Vec::new();
             if !summary.is_empty() {
                 input.push(Message::Assistant(AssistantMessage {
@@ -207,6 +294,9 @@ impl Compactor {
                     store.compaction_usage(session, id, None).await?;
                 }
                 calls += 1;
+                state.model_calls = calls;
+                state.request_started_at = Some(chrono::Utc::now());
+                Self::report_progress(&state, job, &events).await?;
                 let result = tokio::time::timeout(
                     Duration::from_secs(300),
                     self.llm.generate(&request, &[], None),
@@ -252,12 +342,22 @@ impl Compactor {
                 .zip(usage)
                 .map(|(total, tokens)| total + tokens);
             summary = answer.content.clone();
+            state.completed_chunks += 1;
+            state.completed_tokens += sizes[next] - sizes[start];
+            state.request_started_at = None;
+            Self::report_progress(&state, job, &events).await?;
             start = next;
         }
         ensure!(
             text_tokens(&summary) + 64 + sizes[messages.len()] - sizes[end] < history_tokens,
             "Context compaction did not reduce the context; history was preserved"
         );
+        state.finished_at = Some(chrono::Utc::now());
+        if job.is_none() {
+            state.after_tokens =
+                Some(text_tokens(&summary) + 64 + sizes[messages.len()] - sizes[end]);
+        }
+        Self::report_progress(&state, job, &events).await?;
         Ok(CompactionCandidate {
             session_id: session.id().as_str().into(),
             source_generation: session.generation().into(),
@@ -286,7 +386,14 @@ impl Compactor {
                 "Compacting conversation context…".into(),
             ));
         }
-        let candidate = self.generate(&snapshot, None).await?;
+        let candidate = self
+            .generate(
+                &snapshot,
+                None,
+                progress.map(mpsc::Sender::downgrade),
+                false,
+            )
+            .await?;
         ensure!(
             candidate.apply(session)?,
             "Context overflow: compaction became stale"
@@ -315,7 +422,14 @@ impl Compactor {
                 "Compacting conversation context…".into(),
             ));
         }
-        let candidate = self.generate(&snapshot, None).await?;
+        let candidate = self
+            .generate(
+                &snapshot,
+                None,
+                progress.map(mpsc::Sender::downgrade),
+                false,
+            )
+            .await?;
         let applied = candidate.apply(session)?;
         if applied && let Some(tx) = progress {
             let _ = tx.try_send(AgentEvent::Compaction(
@@ -392,6 +506,55 @@ mod tests {
         }
         session.push(user("latest question".into()));
         session
+    }
+
+    #[tokio::test]
+    async fn compact_progress_counts_completed_chunks_not_overflow_attempts() {
+        let llm = Arc::new(SummaryLlm {
+            overflow_until: 1,
+            ..Default::default()
+        });
+        let compactor = Compactor {
+            llm,
+            threshold: 8000,
+        };
+        let original = history();
+        let snapshot = compactor
+            .prepare(&original, &ContextBuilder::new("rules"), &[], 0)
+            .unwrap()
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(100);
+        let candidate = compactor
+            .generate(&snapshot, None, Some(tx.downgrade()), false)
+            .await
+            .unwrap();
+        let mut states = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::CompactionProgress(state) = event {
+                states.push(state);
+            }
+        }
+        assert_eq!(states[0].completed_tokens, 0);
+        assert!(states[0].total_chunks > 1);
+        let retry = states.iter().find(|state| state.model_calls == 2).unwrap();
+        assert_eq!(retry.completed_chunks, 0);
+        assert_eq!(retry.completed_tokens, 0);
+        for pair in states.windows(2) {
+            assert!(pair[0].completed_tokens <= pair[1].completed_tokens);
+            assert!(pair[0].completed_chunks <= pair[1].completed_chunks);
+        }
+        let final_state = states.last().unwrap();
+        assert_eq!(final_state.percent(), 100);
+        assert_eq!(final_state.completed_chunks, final_state.total_chunks);
+        assert_eq!(final_state.model_calls, candidate.model_calls);
+        assert_eq!(final_state.model_calls, final_state.completed_chunks + 1);
+        assert!(final_state.finished_at.is_some());
+        assert!(final_state.request_started_at.is_none());
+        drop(tx);
+        assert!(
+            rx.recv().await.is_none(),
+            "worker must not keep the event channel alive"
+        );
     }
 
     fn user(content: String) -> Message {
@@ -479,7 +642,10 @@ mod tests {
             .prepare(&original, &ContextBuilder::new("rules"), &[], 8000)
             .unwrap()
             .unwrap();
-        let candidate = compactor.generate(&snapshot, None).await.unwrap();
+        let candidate = compactor
+            .generate(&snapshot, None, None, false)
+            .await
+            .unwrap();
         let mut appended = original.clone();
         appended.push(user("appended while generating".into()));
         assert!(candidate.apply(&mut appended).unwrap());
@@ -564,6 +730,15 @@ mod tests {
             AgentEvent::Compaction(message) if message == "Compacting conversation context…"
         ));
         llm.started.notified().await;
+        let state = store
+            .with_connection(|db| super::view(db, "compact-test"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["progress"]["completed_chunks"], 0);
+        assert_eq!(state["progress"]["background"], true);
+        assert!(state["progress"]["total_tokens"].as_u64().unwrap() > 0);
+        assert!(state["progress"]["request_started_at"].is_string());
         session.push(user("suffix during summary".into()));
         cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
         llm.release.notify_one();
@@ -584,19 +759,35 @@ mod tests {
         })
         .await
         .unwrap();
+        let prepared = store
+            .with_connection(|db| super::view(db, "compact-test"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            prepared["progress"]["after_tokens"].is_null(),
+            "prepared is not applied"
+        );
         compactor
             .durable_boundary(&mut session, &builder, &[], &mut cp, 30000, Some(&progress))
             .await
             .unwrap();
+        let mut legacy_events = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if !matches!(event, AgentEvent::CompactionProgress(_)) {
+                legacy_events.push(event);
+            }
+        }
+        let mut legacy_events = legacy_events.into_iter();
         assert!(matches!(
-            events.try_recv().unwrap(),
+            legacy_events.next().unwrap(),
             AgentEvent::Compaction(message) if message == "Context compacted; continuing…"
         ));
         assert!(matches!(
-            events.try_recv().unwrap(),
+            legacy_events.next().unwrap(),
             AgentEvent::ContextTokens(None)
         ));
-        assert!(events.try_recv().is_err());
+        assert!(legacy_events.next().is_none());
         assert!(session.compaction().is_some());
         assert!(
             matches!(session.messages().last(),Some(Message::User(u)) if u.content=="suffix during summary")
@@ -609,6 +800,22 @@ mod tests {
         assert_eq!(job.status, "applied");
         assert_eq!(job.known_input_tokens, 123);
         assert_eq!(job.model_calls, 1);
+        let state = store
+            .with_connection(|db| super::view(db, "compact-test"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["progress"]["completed_chunks"], 1);
+        assert_eq!(
+            state["progress"]["completed_tokens"],
+            state["progress"]["total_tokens"]
+        );
+        assert!(state["progress"]["finished_at"].is_string());
+        assert!(state["progress"]["request_started_at"].is_null());
+        assert!(
+            state["progress"]["after_tokens"].as_u64().unwrap()
+                < state["progress"]["before_tokens"].as_u64().unwrap()
+        );
         assert_eq!(cp.record.model_attempts, 0);
     }
 
@@ -1040,7 +1247,10 @@ mod tests {
             .prepare(&session, &ContextBuilder::new("rules"), &[], 0)
             .unwrap()
             .unwrap();
-        let candidate = compactor.generate(&snapshot, None).await.unwrap();
+        let candidate = compactor
+            .generate(&snapshot, None, None, false)
+            .await
+            .unwrap();
         assert!(candidate.apply(&mut session).unwrap());
         assert_eq!(serde_json::to_value(session.messages()).unwrap(), original);
         let seen = llm.seen.lock().unwrap();

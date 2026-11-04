@@ -1,5 +1,6 @@
 use super::{
-    CompactionCandidate, CompactionSnapshot, Compactor, ContextBuilder, Session, Tool, hash,
+    CompactionCandidate, CompactionProgress, CompactionSnapshot, Compactor, ContextBuilder,
+    Session, Tool, hash,
 };
 use crate::agent::{AgentEvent, run_state::Checkpoint, session::SqliteSessionStore};
 use anyhow::{Context, ensure};
@@ -19,6 +20,8 @@ pub(crate) struct Job {
     pub model_calls: u64,
     pub known_input_tokens: u64,
     unknown_calls: u64,
+    #[serde(default)]
+    progress: Option<CompactionProgress>,
 }
 pub(crate) fn migrate(db: &Connection) -> anyhow::Result<()> {
     db.execute_batch("CREATE TABLE compaction_jobs(session_id TEXT PRIMARY KEY,id TEXT NOT NULL,run_id TEXT NOT NULL,status TEXT NOT NULL,payload BLOB NOT NULL);")?;
@@ -43,7 +46,14 @@ fn write(db: &Connection, job: &Job) -> anyhow::Result<()> {
     Ok(())
 }
 pub(crate) fn view(db: &Connection, session: &str) -> anyhow::Result<Option<serde_json::Value>> {
-    Ok(read(db,session)?.map(|job|serde_json::json!({"id":job.id,"run_id":job.run_id,"status":job.status,"through":job.snapshot.through,"model":job.snapshot.model_identity,"model_calls":job.model_calls,"input_tokens":(job.unknown_calls==0).then_some(job.known_input_tokens),"error":job.error})))
+    Ok(read(db,session)?.map(|mut job| {
+        if !matches!(job.status.as_str(), "preparing" | "ready")
+            && let Some(progress) = &mut job.progress
+        {
+            progress.request_started_at = None;
+        }
+        serde_json::json!({"id":job.id,"run_id":job.run_id,"status":job.status,"through":job.snapshot.through,"model":job.snapshot.model_identity,"model_calls":job.model_calls,"input_tokens":(job.unknown_calls==0).then_some(job.known_input_tokens),"error":job.error,"progress":job.progress})
+    }))
 }
 impl CompactionSnapshot {
     fn compatible(&self, session: &Session) -> anyhow::Result<bool> {
@@ -56,6 +66,62 @@ impl CompactionSnapshot {
     }
 }
 impl SqliteSessionStore {
+    async fn compaction_mode(
+        &self,
+        session: &str,
+        id: &str,
+        background: bool,
+    ) -> anyhow::Result<Job> {
+        let (session, id) = (session.to_owned(), id.to_owned());
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut job = read(&tx, &session)?.context("Compaction missing")?;
+            ensure!(
+                job.id == id,
+                "Compaction replaced while updating progress mode"
+            );
+            if let Some(progress) = &mut job.progress {
+                progress.background = background;
+                write(&tx, &job)?;
+            }
+            tx.commit()?;
+            Ok(job)
+        })
+        .await
+    }
+    pub(super) async fn compaction_progress(
+        &self,
+        session: &str,
+        id: &str,
+        mut progress: CompactionProgress,
+    ) -> anyhow::Result<Option<CompactionProgress>> {
+        let (session, id) = (session.to_owned(), id.to_owned());
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if let Some(mut job) = read(&tx, &session)?
+                && job.id == id
+                && job.status == "preparing"
+            {
+                let cancelled: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM run_controls WHERE run_id=?1)",
+                    [&job.run_id],
+                    |r| r.get(0),
+                )?;
+                if !cancelled {
+                    if let Some(current) = &job.progress {
+                        progress.background = current.background;
+                    }
+                    job.progress = Some(progress.clone());
+                    write(&tx, &job)?;
+                    tx.commit()?;
+                    return Ok(Some(progress));
+                }
+            }
+            tx.commit()?;
+            Ok(None)
+        })
+        .await
+    }
     pub(crate) async fn guard_compaction_storage(&self, run: &str) -> anyhow::Result<()> {
         let errors = self.compaction_errors.lock().unwrap().clone();
         if errors.is_empty() {
@@ -208,6 +274,10 @@ impl SqliteSessionStore {
                         }
                     }
                 }
+                if let Some(progress) = &mut job.progress {
+                    progress.finished_at.get_or_insert_with(chrono::Utc::now);
+                    progress.request_started_at = None;
+                }
                 write(&tx, &job)?;
             }
             tx.commit()?;
@@ -259,6 +329,14 @@ impl SqliteSessionStore {
             }
             .into();
             if applied {
+                if let Some(progress) = &mut job.progress {
+                    progress.after_tokens = Some(
+                        super::truncate_tool_outputs(saved.context_messages())
+                            .iter()
+                            .map(super::message_tokens)
+                            .sum(),
+                    );
+                }
                 tx.execute(
                     "UPDATE sessions SET payload=?2 WHERE id=?1",
                     params![session, serde_json::to_vec(&saved)?],
@@ -285,7 +363,12 @@ impl Drop for WorkerGuard {
     }
 }
 impl Compactor {
-    fn spawn_job(&self, store: SqliteSessionStore, job: Job) {
+    fn spawn_job(
+        &self,
+        store: SqliteSessionStore,
+        job: Job,
+        progress: Option<mpsc::WeakSender<AgentEvent>>,
+    ) {
         if !store
             .compaction_running
             .lock()
@@ -322,10 +405,15 @@ impl Compactor {
                     }
                 };
                 let result=tokio::select! {
-                    result=compactor.generate(&job.snapshot,Some((&store,session,&job.id)))=>result.map_err(|e|format!("{e:#}")),
+                    result=compactor.generate(&job.snapshot,Some((&store,session,&job.id)),progress.clone(),job.progress.as_ref().is_none_or(|p|p.background))=>result.map_err(|e|format!("{e:#}")),
                     result=cancelled=>{result?;return Ok(());},
                 };
-                store.finish_compaction(session,&job.id,result).await
+                let failed = result.is_err();
+                store.finish_compaction(session,&job.id,result).await?;
+                if failed && let Some(tx) = progress.as_ref().and_then(mpsc::WeakSender::upgrade) {
+                    let _ = tx.try_send(AgentEvent::Compaction("Context compaction failed; history was preserved".into()));
+                }
+                Ok(())
             }.await;
             if let Err(error) = result {
                 store
@@ -380,6 +468,7 @@ impl Compactor {
             return Ok(());
         }
         let mut announced = false;
+        let mut last_progress = None;
         loop {
             let required = force
                 || self
@@ -441,6 +530,14 @@ impl Compactor {
                         {
                             *session = saved;
                             if let Some(tx) = progress {
+                                let applied_job =
+                                    cp.store.compaction_job(session.id().as_str()).await?;
+                                if let Some(state) =
+                                    applied_job.as_ref().and_then(|job| job.progress.as_ref())
+                                {
+                                    let _ =
+                                        tx.try_send(AgentEvent::CompactionProgress(state.clone()));
+                                }
                                 let _ = tx.try_send(AgentEvent::Compaction(
                                     "Context compacted; continuing…".into(),
                                 ));
@@ -462,7 +559,22 @@ impl Compactor {
                         ));
                         announced = true;
                     }
-                    self.spawn_job(cp.store.clone(), job);
+                    if let Some(state) = &job.progress
+                        && state.background == required
+                    {
+                        job = cp
+                            .store
+                            .compaction_mode(session.id().as_str(), &job.id, !required)
+                            .await?;
+                    }
+                    if let Some(state) = &job.progress
+                        && last_progress.as_ref() != Some(state)
+                        && let Some(tx) = progress
+                    {
+                        let _ = tx.try_send(AgentEvent::CompactionProgress(state.clone()));
+                        last_progress = Some(state.clone());
+                    }
+                    self.spawn_job(cp.store.clone(), job, progress.map(mpsc::Sender::downgrade));
                     if !required {
                         return Ok(());
                     }
@@ -506,6 +618,7 @@ impl Compactor {
                 run_id: cp.record.id.clone(),
                 conversation_id: cp.record.conversation_id.clone(),
                 status: "preparing".into(),
+                progress: Some(self.initial_progress(&snapshot, !required)),
                 snapshot,
                 candidate: None,
                 error: None,
@@ -520,7 +633,7 @@ impl Compactor {
                 ));
                 announced = true;
             }
-            self.spawn_job(cp.store.clone(), job);
+            self.spawn_job(cp.store.clone(), job, progress.map(mpsc::Sender::downgrade));
             if !required {
                 return Ok(());
             }
@@ -602,6 +715,7 @@ mod tests {
             model_calls: 0,
             known_input_tokens: 0,
             unknown_calls: 0,
+            progress: None,
         }
     }
     async fn status(store: &SqliteSessionStore, id: &str, expected: &str) -> Job {
@@ -617,6 +731,42 @@ mod tests {
         .await
         .unwrap()
     }
+    #[tokio::test]
+    async fn legacy_compaction_job_has_no_progress_and_superseded_progress_is_ignored() {
+        let (_dir, store, session, cp) = seed().await;
+        let compactor = Compactor {
+            llm: Arc::new(Model {
+                calls: AtomicUsize::new(0),
+                fail: false,
+                usage: None,
+            }),
+            threshold: 40000,
+        };
+        let job = job(&compactor, &session, &cp);
+        let mut legacy = serde_json::to_value(&job).unwrap();
+        legacy.as_object_mut().unwrap().remove("progress");
+        let legacy: Job = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.progress.is_none());
+        store.put_compaction(legacy).await.unwrap();
+        store
+            .compaction_progress(
+                session.id().as_str(),
+                "different-job",
+                compactor.initial_progress(&job.snapshot, false),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .compaction_job(session.id().as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .progress
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn superseded_usage_does_not_fail_owner_checkpoint() {
         let (_dir, store, session, mut cp) = seed().await;
@@ -660,7 +810,12 @@ mod tests {
             };
             let mut job = job(&compactor, &session, &cp);
             if ready {
-                job.candidate = Some(compactor.generate(&job.snapshot, None).await.unwrap());
+                job.candidate = Some(
+                    compactor
+                        .generate(&job.snapshot, None, None, false)
+                        .await
+                        .unwrap(),
+                );
                 job.status = "ready".into();
             }
             store.put_compaction(job.clone()).await.unwrap();
@@ -774,7 +929,12 @@ mod tests {
                 threshold: 40000,
             };
             let mut job = job(&compactor, &session, &cp);
-            job.candidate = Some(compactor.generate(&job.snapshot, None).await.unwrap());
+            job.candidate = Some(
+                compactor
+                    .generate(&job.snapshot, None, None, false)
+                    .await
+                    .unwrap(),
+            );
             job.status = "ready".into();
             store.put_compaction(job.clone()).await.unwrap();
             if cancel {
@@ -818,7 +978,12 @@ mod tests {
             threshold: 40000,
         };
         let mut first = job(&compactor, &session, &cp);
-        first.candidate = Some(compactor.generate(&first.snapshot, None).await.unwrap());
+        first.candidate = Some(
+            compactor
+                .generate(&first.snapshot, None, None, false)
+                .await
+                .unwrap(),
+        );
         first.status = "ready".into();
         for _ in 0..4 {
             session.push(Message::User(UserMessage {
@@ -829,7 +994,12 @@ mod tests {
         }
         cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
         let mut newer = job(&compactor, &session, &cp);
-        newer.candidate = Some(compactor.generate(&newer.snapshot, None).await.unwrap());
+        newer.candidate = Some(
+            compactor
+                .generate(&newer.snapshot, None, None, false)
+                .await
+                .unwrap(),
+        );
         newer.status = "ready".into();
         assert!(newer.snapshot.through > first.snapshot.through);
         store.put_compaction(newer.clone()).await.unwrap();
@@ -1015,7 +1185,7 @@ mod tests {
             llm: Arc::new(Pending(path)),
             threshold: 40000,
         }
-        .spawn_job(store, job);
+        .spawn_job(store, job, None);
         std::future::pending::<()>().await;
     }
     #[tokio::test]

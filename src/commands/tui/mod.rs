@@ -157,6 +157,8 @@ async fn run_session_inner(
             let progress = progress_tx.clone();
             let (cancel, cancelled) = oneshot::channel();
             cancel_request = Some(cancel);
+            app.compacting = false;
+            app.compaction_progress = None;
             app.status = Status::Working;
             redraw = true;
             requests.spawn(async move {
@@ -409,6 +411,9 @@ async fn run_session_inner(
                     show_progress(&mut app, event);
                 }
                 app.compacting = false;
+                if app.compaction_progress.as_ref().is_some_and(|progress| progress.finished_at.is_none()) {
+                    app.compaction_progress = None;
+                }
                 if matches!(app.status, Status::Stopping)
                     && let Ok(Err(error)) = &result
                     && error.to_string() == "Stopped by user"
@@ -776,6 +781,10 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     if source_changed && app.navigation.selected.is_some() {
         app.cancel_message_navigation();
     }
+    if source_changed {
+        app.compacting = false;
+        app.compaction_progress = None;
+    }
     app.messages = saved.messages;
     app.session = saved.session;
     if let Some(turn) = selected_turn.filter(|_| !source_changed) {
@@ -908,6 +917,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.session = Some(session_id);
             app.versions.clear();
             app.compacting = false;
+            app.compaction_progress = None;
             app.view = Default::default();
             let boundary = app
                 .messages
@@ -964,6 +974,13 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         }
         AgentEvent::Compaction(message) => {
             app.compacting = message == "Compacting conversation context…";
+            if app.compacting || message != "Context compacted; continuing…" {
+                app.compaction_progress = None;
+            }
+        }
+        AgentEvent::CompactionProgress(progress) => {
+            app.compacting = progress.finished_at.is_none();
+            app.compaction_progress = Some(progress);
         }
         AgentEvent::ContextTokens(tokens) => app.context_tokens = tokens,
         AgentEvent::ToolStarted {
@@ -1291,6 +1308,53 @@ mod tests {
             load_language(&directory.path().join("invalid"), Language::Ru).unwrap(),
             Language::Ru
         );
+    }
+
+    #[test]
+    fn typed_compaction_retains_result_without_polluting_stream() {
+        let mut app = App::default();
+        show_progress(&mut app, AgentEvent::TextDelta("partial reply".into()));
+        let started_at = chrono::Utc::now();
+        let progress = crate::agent::CompactionProgress {
+            completed_tokens: 250,
+            total_tokens: 1000,
+            completed_chunks: 1,
+            total_chunks: 4,
+            model_calls: 2,
+            started_at,
+            request_started_at: Some(started_at),
+            finished_at: None,
+            background: true,
+            before_tokens: 12000,
+            after_tokens: None,
+        };
+        show_progress(&mut app, AgentEvent::CompactionProgress(progress.clone()));
+        assert!(app.compacting);
+        assert_eq!(
+            app.compaction_progress.as_ref().unwrap().completed_chunks,
+            1
+        );
+        let mut completed = progress;
+        completed.finished_at = Some(chrono::Utc::now());
+        completed.after_tokens = Some(3000);
+        show_progress(&mut app, AgentEvent::CompactionProgress(completed));
+        show_progress(
+            &mut app,
+            AgentEvent::Compaction("Context compacted; continuing…".into()),
+        );
+        assert!(!app.compacting);
+        assert_eq!(
+            app.compaction_progress.as_ref().unwrap().after_tokens,
+            Some(3000)
+        );
+        show_progress(&mut app, AgentEvent::TextDelta(" continues".into()));
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].content, "partial reply continues");
+        show_progress(
+            &mut app,
+            AgentEvent::Compaction("Compacting conversation context…".into()),
+        );
+        assert!(app.compaction_progress.is_none());
     }
 
     #[test]
