@@ -11,7 +11,7 @@ use futures::{SinkExt, StreamExt};
 use std::{
     collections::HashMap,
     io::Read,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     sync::Arc,
     time::Duration,
 };
@@ -26,18 +26,13 @@ pub(crate) struct Credential {
     pub device_id: uuid::Uuid,
     pub token: String,
 }
-pub(crate) struct RemoteClient {
-    socket: Option<Socket>,
-    device: uuid::Uuid,
-    binding: Option<(EnvironmentKey, SessionId)>,
-}
-impl RemoteClient {
-    pub(crate) async fn connect(config: &RemoteConfig) -> anyhow::Result<Self> {
-        let url = endpoint(&config.server)?;
+impl Credential {
+    pub(crate) fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&config.credential_file)?;
+            .open(path)
+            .context("Cannot open device credential; run kodrik connect")?;
         let metadata = file.metadata()?;
         ensure!(
             metadata.is_file()
@@ -47,8 +42,58 @@ impl RemoteClient {
         );
         let mut bytes = Vec::new();
         file.take(4097).read_to_end(&mut bytes)?;
-        let credential: Credential = serde_json::from_slice(&bytes)?;
-        ensure!(!credential.token.is_empty(), "Empty device token");
+        let credential: Self = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid device credential"))?;
+        ensure!(
+            !credential.token.is_empty()
+                && credential.token.len() <= 256
+                && credential.token.bytes().all(|b| b.is_ascii_graphic()),
+            "Invalid device token"
+        );
+        Ok(credential)
+    }
+    pub(crate) fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        use std::io::Write;
+        let parent = path.parent().context("Credential directory missing")?;
+        private_directory(parent)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .context("Cannot save credential; existing credentials are never overwritten")?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.sync_all()?;
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+}
+
+pub(crate) fn private_directory(path: &std::path::Path) -> anyhow::Result<()> {
+    // System ancestors may be aliases (macOS /var); reject the actual storage directory.
+    if !path.try_exists()? {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0,
+        "Credential directory must be private and not a symlink"
+    );
+    Ok(())
+}
+pub(crate) struct RemoteClient {
+    socket: Option<Socket>,
+    device: uuid::Uuid,
+    binding: Option<(EnvironmentKey, SessionId)>,
+}
+impl RemoteClient {
+    pub(crate) async fn connect(config: &RemoteConfig) -> anyhow::Result<Self> {
+        let url = endpoint(&config.server)?;
+        let credential = Credential::load(&config.credential_file)?;
         let mut request = url.as_str().into_client_request()?;
         request.headers_mut().insert(
             "Authorization",

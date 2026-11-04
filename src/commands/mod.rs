@@ -1,4 +1,5 @@
 pub mod ask;
+pub mod connect;
 pub mod gateway;
 pub mod invites;
 pub mod request_restart;

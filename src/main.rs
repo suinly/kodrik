@@ -4,6 +4,12 @@ use kodrik::{commands, config::Config};
 #[derive(Parser)]
 #[command(version, about = "Launch Kodrik TUI by default", long_about = None, args_conflicts_with_subcommands = true)]
 struct Cli {
+    /// Connect to the server agent instead of starting a local agent
+    #[arg(long, conflicts_with = "tui_slot")]
+    remote: bool,
+    /// Remote client configuration (default ~/.kodrik/remote.toml)
+    #[arg(long, requires = "remote")]
+    remote_config: Option<std::path::PathBuf>,
     /// Restore a specific TUI conversation slot
     #[arg(long)]
     tui_slot: Option<std::num::NonZeroU64>,
@@ -13,6 +19,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Pair this device with the server through the owner's web profile
+    Connect {
+        #[arg(long)]
+        remote_config: Option<std::path::PathBuf>,
+    },
     #[command(hide = true)]
     RemoteSupervisorWorker,
     #[command(hide = true)]
@@ -64,9 +75,16 @@ async fn main() -> anyhow::Result<()> {
     {
         return commands::web::set_password();
     }
+    if let Some(Commands::Connect { remote_config }) = &cli.command {
+        return commands::connect::run(remote_config.as_deref()).await;
+    }
+    if cli.remote {
+        return commands::connect::remote_tui(cli.remote_config.as_deref()).await;
+    }
     let config = Config::load()?;
 
     match cli.command {
+        Some(Commands::Connect { .. }) => unreachable!("Pairing handled before provider config"),
         Some(Commands::RemoteSupervisorWorker) => unreachable!("Worker handled before config"),
         Some(Commands::Runs(args)) => commands::runs::run(&config, args).await?,
         Some(Commands::Invites(_)) => unreachable!("Invitations handled before provider config"),
@@ -88,6 +106,24 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_cli_is_explicit_and_conflicts_with_standalone_commands() {
+        assert!(
+            Cli::try_parse_from(["kodrik", "--remote", "--remote-config", "client.toml"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["kodrik", "connect", "--remote-config", "client.toml"]).is_ok()
+        );
+        for args in [
+            vec!["kodrik", "--remote", "gateway"],
+            vec!["kodrik", "--remote", "ask", "hello"],
+            vec!["kodrik", "--remote", "--tui-slot", "2"],
+            vec!["kodrik", "--remote-config", "client.toml"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     #[test]
     fn tui_slot_is_positive_and_only_used_without_a_subcommand() {
