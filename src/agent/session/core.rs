@@ -132,7 +132,12 @@ impl Session {
         branch.messages.truncate(index);
         branch.message_times.truncate(index);
         branch.webhook_messages.retain(|key, _| *key < index);
-        branch.compaction = None;
+        if !self
+            .compaction()
+            .is_some_and(|(through, _)| through <= index)
+        {
+            branch.compaction = None;
+        }
         branch.input_tokens = None;
         Ok(branch)
     }
@@ -325,6 +330,55 @@ mod tests {
         assert!(branch.input_tokens.is_none());
         assert_eq!(source.messages().len(), 2);
         assert!(source.fork_before(SessionId::new("bad"), 1).is_err());
+    }
+
+    #[test]
+    fn edited_branch_preserves_only_compaction_before_the_edit() {
+        let source: Session = serde_json::from_value(serde_json::json!({
+            "id":"source",
+            "messages":[
+                {"User":{"content":"first"}}, {"Assistant":{"content":"first answer"}},
+                {"User":{"content":"second"}}, {"Assistant":{"content":"second answer"}},
+                {"User":{"content":"third"}}, {"Assistant":{"content":"third answer"}},
+                {"User":{"content":"fourth"}}
+            ],
+            "compaction":{"through":4,"summary":"First two turns"},
+            "input_tokens":200000
+        }))
+        .unwrap();
+        for (index, retained) in [(0, false), (2, false), (4, true), (6, true)] {
+            let branch = source.fork_before(SessionId::new("edited"), index).unwrap();
+            let mut branch: Session =
+                serde_json::from_slice(&serde_json::to_vec(&branch).unwrap()).unwrap();
+            assert_eq!(branch.messages().len(), index);
+            assert!(branch.input_tokens.is_none());
+            assert_eq!(
+                branch.compaction(),
+                retained.then_some((4, "First two turns")),
+                "edit at message {index}"
+            );
+            branch.push(Message::User(crate::agent::UserMessage {
+                content: "replacement".into(),
+                images: vec![],
+                files: vec![],
+            }));
+            let context = branch.context_messages();
+            assert_eq!(
+                context.len(),
+                if retained { index - 4 + 2 } else { index + 1 }
+            );
+            if retained {
+                assert!(
+                    matches!(&context[0], Message::Assistant(reply) if reply.content.ends_with("First two turns"))
+                );
+            }
+            assert!(
+                matches!(context.last(), Some(Message::User(user)) if user.content == "replacement")
+            );
+        }
+        assert_eq!(source.compaction(), Some((4, "First two turns")));
+        assert_eq!(source.messages().len(), 7);
+        assert_eq!(source.input_tokens, Some(200000));
     }
 
     #[test]

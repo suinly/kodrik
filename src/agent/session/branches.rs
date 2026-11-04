@@ -370,6 +370,7 @@ mod tests {
             content: "answer".into(),
         }));
         original.push(user("second"));
+        original.set_compaction(2, "First turn summary".into());
         store.save(&original).await.unwrap();
         store.select(&conversation, original.id()).await.unwrap();
         let runner = runner(&store);
@@ -377,6 +378,9 @@ mod tests {
             .edit_message(&conversation, original.id(), 1, "second edited".into())
             .await
             .unwrap();
+        assert_eq!(branch.compaction(), Some((2, "First turn summary")));
+        let saved = store.load(branch.id()).await.unwrap().unwrap();
+        assert_eq!(saved.compaction(), Some((2, "First turn summary")));
         let expected = MessageVersions {
             ids: vec!["root".into(), branch.id().as_str().into()],
             current: 1,
