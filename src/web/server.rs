@@ -155,6 +155,11 @@ pub(crate) fn router_with_resources(
         )
         .layer(DefaultBodyLimit::max(4096))
         .with_state(state.clone())
+        .merge(super::remote::routes(
+            settings.clone(),
+            state.auth.clone(),
+            chat.as_ref().and_then(super::chat::Chat::environments),
+        ))
         .merge(super::chat::routes(settings.clone(), data, chat));
     let app = if settings.prefix() == "/" {
         routes

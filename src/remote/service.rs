@@ -26,6 +26,8 @@ struct Binding {
     key: EnvironmentKey,
     manifest: EnvironmentManifest,
     expires: Instant,
+    peer: Option<Arc<super::transport::Peer>>,
+    clock: super::transport::LeaseClock,
 }
 
 pub(crate) struct EnvironmentService {
@@ -85,6 +87,11 @@ impl EnvironmentService {
     async fn clear(&self) {
         let mut bindings = self.bindings.lock().await;
         if !bindings.is_empty() {
+            for binding in bindings.values() {
+                if let Some(peer) = &binding.peer {
+                    peer.close();
+                }
+            }
             bindings.clear();
             self.changed();
         }
@@ -106,7 +113,14 @@ impl EnvironmentService {
         let mut bindings = self.bindings.lock().await;
         let before = bindings.len();
         let now = Instant::now();
-        bindings.retain(|_, binding| binding.expires > now && allowed.contains(&binding.device));
+        bindings.retain(|_, binding| {
+            let live =
+                binding.clock.live() && binding.expires > now && allowed.contains(&binding.device);
+            if !live && let Some(peer) = &binding.peer {
+                peer.close();
+            }
+            live
+        });
         if before != bindings.len() {
             self.changed();
         }
@@ -171,6 +185,8 @@ impl EnvironmentService {
                 key: key.clone(),
                 manifest,
                 expires: Instant::now() + LEASE,
+                peer: None,
+                clock: super::transport::LeaseClock::new(),
             },
         );
         self.changed();
@@ -189,13 +205,23 @@ impl EnvironmentService {
             "Environment expired"
         );
         binding.expires = Instant::now() + LEASE;
+        ensure!(binding.clock.renew(), "Environment expired after suspend");
         Ok(())
     }
 
     pub(crate) async fn revoke(&self, key: &EnvironmentKey, _reason: &str) -> anyhow::Result<()> {
         let mut bindings = self.bindings.lock().await;
         let before = bindings.len();
-        bindings.retain(|_, b| b.key != *key);
+        bindings.retain(|_, b| {
+            if b.key == *key {
+                if let Some(peer) = &b.peer {
+                    peer.close();
+                }
+                false
+            } else {
+                true
+            }
+        });
         if before != bindings.len() {
             self.changed();
         }
@@ -205,7 +231,16 @@ impl EnvironmentService {
     pub(crate) async fn revoke_device(&self, device: Uuid) {
         let mut bindings = self.bindings.lock().await;
         let before = bindings.len();
-        bindings.retain(|_, b| b.device != device);
+        bindings.retain(|_, b| {
+            if b.device == device {
+                if let Some(peer) = &b.peer {
+                    peer.close();
+                }
+                false
+            } else {
+                true
+            }
+        });
         if before != bindings.len() {
             self.changed();
         }
@@ -260,5 +295,115 @@ impl EnvironmentService {
             "Tool unavailable"
         );
         Ok(())
+    }
+
+    pub(crate) async fn bind_peer(
+        &self,
+        key: &EnvironmentKey,
+        peer: Arc<super::transport::Peer>,
+    ) -> anyhow::Result<()> {
+        let mut bindings = self.bindings.lock().await;
+        let binding = bindings
+            .values_mut()
+            .find(|b| b.key == *key)
+            .ok_or_else(|| anyhow::anyhow!("Environment unavailable"))?;
+        ensure!(
+            binding.peer.is_none() && !self.closed.load(Ordering::SeqCst),
+            "Transport already bound or gateway stopping"
+        );
+        binding.peer = Some(peer);
+        Ok(())
+    }
+
+    pub(crate) async fn invoke(&self, invocation: Invocation) -> anyhow::Result<OperationReceipt> {
+        self.authorize(&invocation).await?;
+        let (device, peer) = {
+            let bindings = self.bindings.lock().await;
+            let binding = bindings
+                .get(&invocation.session_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment unavailable"))?;
+            ensure!(binding.key == invocation.environment, "Stale environment");
+            (
+                binding.device,
+                binding
+                    .peer
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("Transport unavailable"))?,
+            )
+        };
+        let mut pending = peer.register(invocation.clone())?;
+        let saved = self.store.remote_intent(device, invocation.clone()).await?;
+        if saved.state != OperationState::NotSent {
+            return Ok(saved);
+        }
+        self.authorize(&invocation).await?;
+        if !self
+            .store
+            .remote_dispatch(device, invocation.clone())
+            .await?
+        {
+            return self
+                .store
+                .remote_operation(&invocation.run_id, &invocation.call_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Remote evidence missing"));
+        }
+        // One-shot durable gate has committed: any delivery uncertainty stays unknown, never retried.
+        if peer
+            .outgoing
+            .try_send(ServerFrame::Invoke {
+                invocation: invocation.clone(),
+            })
+            .is_ok()
+        {
+            let mut closed = peer.closed.subscribe();
+            let timeout = (invocation.deadline - chrono::Utc::now())
+                .to_std()
+                .unwrap_or_default();
+            tokio::select! {
+                result=&mut pending.result=>if let Ok(receipt)=result {return Ok(receipt);},
+                _=async {let _=closed.wait_for(|closed|*closed).await;}=>{},
+                _=tokio::time::sleep(timeout)=>{},
+            }
+        } else {
+            peer.close();
+        }
+        self.store
+            .remote_call_uncertain(device, invocation.clone())
+            .await?;
+        self.store
+            .remote_operation(&invocation.run_id, &invocation.call_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Remote evidence missing"))
+    }
+
+    pub(crate) async fn disconnect(&self, key: &EnvironmentKey) -> anyhow::Result<()> {
+        self.revoke(key, "Transport disconnected").await?;
+        self.store.remote_disconnect(key.clone()).await
+    }
+
+    pub(crate) async fn operation(
+        &self,
+        run: &str,
+        call: &str,
+    ) -> anyhow::Result<Option<OperationReceipt>> {
+        self.store.remote_operation(run, call).await
+    }
+    pub(crate) async fn receipt(
+        &self,
+        device: Uuid,
+        receipt: OperationReceipt,
+    ) -> anyhow::Result<()> {
+        self.store.remote_receipt(device, receipt).await
+    }
+    pub(crate) async fn result_call(
+        &self,
+        device: Uuid,
+        run: &str,
+        call: &str,
+    ) -> anyhow::Result<OperationReceipt> {
+        self.store
+            .remote_result_call(device, run.into(), call.into())
+            .await
     }
 }

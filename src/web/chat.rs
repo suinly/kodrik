@@ -75,6 +75,9 @@ pub(crate) struct Chat {
 }
 
 impl Chat {
+    pub(super) fn environments(&self) -> Option<Arc<crate::remote::service::EnvironmentService>> {
+        self.runner.environments().cloned()
+    }
     fn environment_revision(&self) -> u64 {
         self.runner
             .environments()

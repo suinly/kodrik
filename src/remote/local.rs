@@ -122,7 +122,7 @@ impl LocalEnvironment {
                 if !path.try_exists()? {
                     continue;
                 }
-                let bytes = read_scoped(&[root.clone()], &path, 1024 * 1024)?;
+                let bytes = read_scoped(std::slice::from_ref(&root), &path, 1024 * 1024)?;
                 let metadata = crate::agent::skills::metadata(&path, std::str::from_utf8(&bytes)?)?;
                 skills.push(SkillDescriptor {
                     id: format!("skill_{}", skills.len()),
@@ -136,7 +136,7 @@ impl LocalEnvironment {
         }
         let instructions = root.join("AGENTS.md");
         let project_instructions = if instructions.exists() {
-            let bytes = read_scoped(&[root.clone()], &instructions, 64 * 1024)?;
+            let bytes = read_scoped(std::slice::from_ref(&root), &instructions, 64 * 1024)?;
             Some(ProjectInstructions {
                 path: instructions
                     .to_str()
@@ -449,10 +449,7 @@ impl LocalEnvironment {
             .lock()
             .map_err(|_| anyhow::anyhow!("Local state poisoned"))?;
         let binding = state.binding.as_ref().context("No local binding")?;
-        ensure!(
-            binding.key == call.environment && binding.session == call.session_id,
-            "Stale ACK"
-        );
+        ensure!(binding.session == call.session_id, "Stale ACK");
         let bytes: Vec<u8> = state.db.query_row(
             "SELECT payload FROM receipts WHERE server=?1 AND device=?2 AND run=?3 AND call=?4",
             params![
@@ -473,7 +470,25 @@ impl LocalEnvironment {
         Ok(())
     }
 
-    pub(crate) async fn close(&self) -> anyhow::Result<()> {
+    pub(crate) fn pending_receipts(&self) -> anyhow::Result<Vec<OperationReceipt>> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Local state poisoned"))?;
+        let binding = state.binding.as_ref().context("No local binding")?;
+        let rows=state.db.prepare("SELECT payload FROM receipts WHERE server=?1 AND device=?2 AND acknowledged IS NULL AND json_extract(payload,'$.invocation.session_id')=?3 AND json_extract(payload,'$.invocation.environment.generation')<>?4 ORDER BY run,call LIMIT 4")?.query_map(params![self.server,binding.device.to_string(),binding.session.as_str(),binding.key.generation.to_string()],|row|row.get::<_,Vec<u8>>(0))?.collect::<Result<Vec<_>,_>>()?;
+        rows.into_iter().map(|bytes| {
+            let mut receipt:OperationReceipt=serde_json::from_slice(&bytes)?;
+            if matches!(receipt.state,OperationState::Accepted|OperationState::Running) {
+                receipt.state=OperationState::Unknown;
+                receipt.result=None;
+                state.db.execute("UPDATE receipts SET payload=?5,reserved=0 WHERE server=?1 AND device=?2 AND run=?3 AND call=?4",params![self.server,binding.device.to_string(),receipt.invocation.run_id,receipt.invocation.call_id,serde_json::to_vec(&receipt)?])?;
+            }
+            Ok(receipt)
+        }).collect()
+    }
+
+    pub(crate) fn stop_admission(&self) -> anyhow::Result<()> {
         self.closed.store(true, Ordering::SeqCst);
         for connection in self
             .connections
@@ -492,6 +507,11 @@ impl LocalEnvironment {
                 cancel.send_replace(true);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) async fn close(&self) -> anyhow::Result<()> {
+        self.stop_admission()?;
         let supervisor = self.supervisor.clone();
         let cleanup = tokio::task::spawn_blocking(move || supervisor.stop_all()).await;
         loop {

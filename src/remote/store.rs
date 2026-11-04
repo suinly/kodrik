@@ -224,6 +224,47 @@ impl SqliteSessionStore {
             .await
     }
 
+    pub(crate) async fn remote_result_call(
+        &self,
+        device: Uuid,
+        run: String,
+        call: String,
+    ) -> anyhow::Result<OperationReceipt> {
+        self.with_connection(move |db| {
+            let (owner, saved) = operation(db, &run, &call)?.context("Unsolicited chunk")?;
+            ensure!(
+                owner == device && saved.state != OperationState::NotSent,
+                "Chunk provenance mismatch"
+            );
+            Ok(saved)
+        })
+        .await
+    }
+
+    pub(crate) async fn remote_call_uncertain(
+        &self,
+        device: Uuid,
+        invocation: Invocation,
+    ) -> anyhow::Result<()> {
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let (owner, mut saved) = operation(&tx, &invocation.run_id, &invocation.call_id)?
+                .context("Remote evidence missing")?;
+            ensure!(owner == device, "Device provenance changed");
+            same_call(&saved, &invocation)?;
+            if matches!(
+                saved.state,
+                OperationState::Accepted | OperationState::Running
+            ) {
+                saved.state = OperationState::Unknown;
+                save(&tx, &saved)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) async fn remote_disconnect(&self, key: EnvironmentKey) -> anyhow::Result<()> {
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
