@@ -149,7 +149,7 @@ pub(crate) fn evaluate(
     let bytes = serde_json::to_vec(&jobs)?;
     ensure!(bytes.len() <= MAX_DOCUMENT, "View inputs exceed 512 KiB");
     WORKERS
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
             (count < 4).then_some(count + 1)
         })
         .map_err(|_| anyhow::anyhow!("UI view workers are busy; retry shortly"))?;
