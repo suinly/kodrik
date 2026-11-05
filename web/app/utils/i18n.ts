@@ -1,6 +1,29 @@
 import {computed, ref} from 'vue'
 import {catalogs, type TranslationKey} from './translations.ts'
 
+const deviceTranslations = {
+  'Подключения устройств': 'Device connections',
+  'UUID запроса подключения': 'Pairing request UUID',
+  'Код сравнения': 'Comparison code',
+  'Сверьте UUID и код с терминалом на вашем устройстве. Подтверждайте только запрос, который вы начали сами.': 'Compare the UUID and code with the terminal on your device. Only approve a request you initiated yourself.',
+  'Я сверил UUID и код на своём устройстве': 'I compared the UUID and code on my device',
+  'Подтвердить подключение': 'Approve connection',
+  'Подключение подтверждено.': 'Connection approved.',
+  'Отозвать доступ': 'Revoke access',
+  'Нет зарегистрированных устройств.': 'No registered devices.',
+  'Загружаю устройства…': 'Loading devices…',
+  'Доступ до {0}': 'Access expires {0}',
+  'Закрытие этой страницы не отзывает доступ устройства. Доступ к среде заканчивается при закрытии TUI.': 'Closing this page does not revoke device access. Environment access ends when the TUI closes.',
+  'Среда выполнения': 'Execution environment',
+  'Подключено': 'Connected',
+  'Отключено': 'Disconnected',
+  'Файл остался на отключённом устройстве.': 'The file remains on the disconnected device.',
+  'Локальный файл не сохранён на сервере.': 'The local file is not saved on the server.',
+  'Я просмотрел полный вызов инструмента': 'I reviewed the full invocation',
+}
+Object.assign(catalogs.en, deviceTranslations)
+Object.assign(catalogs.ru, Object.fromEntries(Object.keys(deviceTranslations).map(key=>[key,key])))
+
 export type Language = 'en' | 'ru'
 export type LanguagePreference = Language | 'system'
 export const languageKey = 'kodrik.language'

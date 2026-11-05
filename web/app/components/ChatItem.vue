@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
 import {linkTarget} from '../utils/link-target'
-import {attachmentUrl, type ChatMessage} from '../utils/api'
+import {attachmentUrl, type ChatMessage, type EnvironmentStatus} from '../utils/api'
 import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
-const props=defineProps<{ message: ChatMessage; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
+const props=defineProps<{ message: ChatMessage; environment?:EnvironmentStatus|null; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
 const blocks=computed(()=>groupMessageParts(props.message.parts))
 const editing=ref(false)
@@ -37,10 +37,11 @@ function beginEdit() {
               <UButton :to="attachmentUrl(block.part.url)" :target="linkTarget(attachmentUrl(block.part.url))" :disabled="!block.part.url" external download color="neutral" variant="outline"
                 :icon="block.part.mediaType.startsWith('image/') ? 'i-lucide-image' : 'i-lucide-file'"
                 :label="block.part.filename" class="max-w-full" :ui="{label:'truncate'}" />
+              <p v-if="block.part.origin" class="text-xs text-muted whitespace-pre-wrap break-all">{{ block.part.origin.label }} · {{ block.part.origin.project_root }} · {{ block.part.origin.environment.generation }}</p>
             </div>
           </template>
           <template v-else>
-            <ChatToolSteps :tools="block.tools" />
+            <ChatToolSteps :tools="block.tools" :environment="environment" />
             <template v-for="tool in block.tools" :key="tool.toolCallId">
               <template v-if="tool.toolName==='show_ui' && tool.state==='output-available'">
                 <UCollapsible v-if="superseded?.has(tool.toolCallId)" class="space-y-3">

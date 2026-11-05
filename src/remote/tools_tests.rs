@@ -15,6 +15,24 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 struct ServerTool;
+
+#[tokio::test]
+async fn audit_target_keeps_manifest_label_and_reads_legacy_records() {
+    let (_dir, service, id, _key) = fixture().await;
+    let scope = service.step_scope(&id).await.unwrap().unwrap();
+    let tools = scope.tools(&ToolRegistry::default()).unwrap();
+    let target = tools
+        .for_model(&[])
+        .unwrap()
+        .iter()
+        .find_map(|tool| tool.audit_target())
+        .unwrap();
+    let mut value = serde_json::to_value(target).unwrap();
+    assert_eq!(value["label"], "Laptop");
+    value.as_object_mut().unwrap().remove("label");
+    let legacy: super::tools::AuditTarget = serde_json::from_value(value).unwrap();
+    assert_eq!(serde_json::to_value(legacy).unwrap()["label"], "");
+}
 #[async_trait::async_trait]
 impl Tool for ServerTool {
     fn name(&self) -> String {

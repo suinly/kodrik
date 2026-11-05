@@ -93,7 +93,7 @@ async fn lease_expires_at_fifteen_seconds_and_heartbeat_renews_only_live_generat
             .is_err()
     );
     assert!(service.heartbeat(&key).await.is_err());
-    assert!(service.status(&id).await.is_none());
+    assert_eq!(service.status(&id).await.unwrap().state, "disconnected");
     assert!(revisions.has_changed().unwrap());
     let fresh = service
         .attach(device.clone(), id.clone(), manifest())
@@ -105,7 +105,7 @@ async fn lease_expires_at_fifteen_seconds_and_heartbeat_renews_only_live_generat
     tokio::time::advance(Duration::from_secs(14)).await;
     assert!(service.status(&id).await.is_some());
     tokio::time::advance(Duration::from_secs(1)).await;
-    assert!(service.status(&id).await.is_none());
+    assert_eq!(service.status(&id).await.unwrap().state, "disconnected");
 }
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn credential_revocation_between_approval_and_dispatch_fails_closed_for_al
         .unwrap();
     auth.revoke_device(device.device_id).unwrap();
     assert!(service.authorize(&call).await.is_err());
-    assert!(service.status(&other).await.is_none());
+    assert_eq!(service.status(&other).await.unwrap().state, "disconnected");
     assert!(service.attach(device, id, manifest()).await.is_err());
 }
 
@@ -267,7 +267,13 @@ async fn owner_web_runner_shares_service_while_another_user_runner_has_no_author
     );
     owner.suspend();
     tokio::time::timeout(Duration::from_secs(2), async {
-        while web.environments().unwrap().status(&id).await.is_some() {
+        while web
+            .environments()
+            .unwrap()
+            .status(&id)
+            .await
+            .is_some_and(|status| status.state == "connected")
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -281,4 +287,65 @@ async fn owner_web_runner_shares_service_while_another_user_runner_has_no_author
             .is_err(),
         "stopped gateway accepted a new environment"
     );
+}
+
+#[tokio::test]
+async fn disconnected_status_preserves_origin_reason_but_never_execution_authority() {
+    let (_dir, service, _store, _auth, device, id) = fixture(true).await;
+    let key = service
+        .attach(device.clone(), id.clone(), manifest())
+        .await
+        .unwrap();
+    let mut revisions = service.revisions();
+    revisions.borrow_and_update();
+    service.heartbeat(&key).await.unwrap();
+    assert!(!revisions.has_changed().unwrap());
+    service.revoke(&key, "TUI closed").await.unwrap();
+    let status = service.status(&id).await.unwrap();
+    assert_eq!(status.state, "disconnected");
+    assert_eq!(status.environment, Some(key.clone()));
+    assert_eq!(status.label, "Laptop");
+    assert_eq!(status.project_root, "/project");
+    assert_eq!(status.reason.as_deref(), Some("TUI closed"));
+    assert!(
+        service
+            .authorize(&invocation(key.clone(), id.clone()))
+            .await
+            .is_err()
+    );
+    assert!(service.heartbeat(&key).await.is_err());
+    let fresh = service
+        .attach(device, id.clone(), manifest())
+        .await
+        .unwrap();
+    assert_ne!(key, fresh);
+    assert_eq!(service.status(&id).await.unwrap().state, "connected");
+    // A delayed close of an old generation cannot overwrite the fresh status.
+    service.revoke(&key, "late close").await.unwrap();
+    assert_eq!(service.status(&id).await.unwrap().environment, Some(fresh));
+}
+
+#[tokio::test]
+async fn retired_environment_statuses_are_bounded_and_scoped_to_their_sessions() {
+    let (_dir, service, store, _auth, device, first) = fixture(true).await;
+    for index in 0..65 {
+        let id = if index == 0 {
+            first.clone()
+        } else {
+            SessionId::new(uuid::Uuid::new_v4().to_string())
+        };
+        if index > 0 {
+            store.save(&Session::new(id.clone())).await.unwrap();
+        }
+        let key = service
+            .attach(device.clone(), id, manifest())
+            .await
+            .unwrap();
+        service.revoke(&key, "closed").await.unwrap();
+    }
+    assert!(
+        service.status(&first).await.is_none(),
+        "retired display registry grew without bound"
+    );
+    assert!(service.status(&SessionId::new("unrelated")).await.is_none());
 }

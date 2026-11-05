@@ -29,19 +29,6 @@ pub(super) fn history_group(session: &Session, start: usize, end: usize) -> Valu
         );
     }
     let parts = row["parts"].as_array_mut().unwrap();
-    for (index, message) in session.messages().iter().enumerate().take(end).skip(start) {
-        if let crate::agent::message::Message::ToolResult(result) = message {
-            for (image_index, image) in result.content.images.iter().enumerate() {
-                let mime = image
-                    .data_url
-                    .strip_prefix("data:")
-                    .and_then(|s| s.split(';').next())
-                    .unwrap_or("image/png");
-                parts.push(json!({"type":"file","filename":format!("Tool image {}",image_index+1),"mediaType":mime,
-                    "url":format!("./api/remote/chat/sessions/{}/attachments/{index}/tool_images/{image_index}",session.id().as_str())}));
-            }
-        }
-    }
     for part in parts {
         if let Some(url) = part["url"]
             .as_str()
@@ -67,8 +54,17 @@ pub(super) fn project_group(row: &mut Value, id: &str) {
     let reference = format!("./api/remote/chat/sessions/{id}/history/{index}");
     if let Some(parts) = row["parts"].as_array_mut() {
         for part in parts {
+            if let Some(url) = part["url"]
+                .as_str()
+                .and_then(|url| url.strip_prefix("../api/chat/"))
+            {
+                part["url"] = json!(format!("./api/remote/chat/{url}"));
+            }
             if serde_json::to_vec(part).is_ok_and(|bytes| bytes.len() > 16 * 1024) {
                 let mut projection = json!({"truncated":true,"reference":reference});
+                if part["result_message"].is_u64() {
+                    projection["result_message"] = part["result_message"].clone();
+                }
                 for key in [
                     "type",
                     "toolCallId",
@@ -98,6 +94,91 @@ pub(super) fn project_group(row: &mut Value, id: &str) {
 }
 
 impl Chat {
+    pub(super) async fn decorate_origins(
+        &self,
+        id: &str,
+        session: &Session,
+        snapshot: &mut Value,
+    ) -> anyhow::Result<()> {
+        let calls: Vec<_> = snapshot["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|row| row["parts"].as_array().into_iter().flatten())
+            .filter(|part| {
+                part["type"] == "dynamic-tool"
+                    && part["toolName"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("local__"))
+            })
+            .filter_map(|part| {
+                Some((
+                    part["toolCallId"].as_str()?.to_owned(),
+                    part["toolName"].as_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        let origins = self
+            .sessions
+            .remote_history_origins(&SessionId::new(id), calls)
+            .await?;
+        for row in snapshot["messages"].as_array_mut().into_iter().flatten() {
+            let mut files = Vec::new();
+            for part in row["parts"].as_array_mut().into_iter().flatten() {
+                if let Some(origin) = part["toolCallId"]
+                    .as_str()
+                    .and_then(|call| origins.get(call))
+                {
+                    part["origin"] = origin.clone();
+                    if part["type"] == "dynamic-tool"
+                        && let Some(index) = part["result_message"].as_u64()
+                    {
+                        let saved =
+                            session
+                                .messages()
+                                .get(index as usize)
+                                .and_then(|item| match item {
+                                    crate::agent::message::Message::ToolResult(result) => {
+                                        Some(result)
+                                    }
+                                    _ => None,
+                                });
+                        let call = session
+                            .messages()
+                            .iter()
+                            .take(index as usize)
+                            .rev()
+                            .find_map(|item| match item {
+                                crate::agent::message::Message::ToolCall(call)
+                                    if part["toolCallId"] == call.call_id =>
+                                {
+                                    Some(call.clone())
+                                }
+                                _ => None,
+                            });
+                        if let (Some(result), Some(call)) = (saved, call)
+                            && let Some(file) = self
+                                .sessions
+                                .remote_saved_file(
+                                    &SessionId::new(id),
+                                    call,
+                                    result.content.output.clone(),
+                                )
+                                .await?
+                        {
+                            part["attachment_saved"] = json!(true);
+                            files.push(json!({"type":"file","toolCallId":part["toolCallId"],"origin":origin,"filename":file.filename,"mediaType":file.mime_type,"url":format!("../api/chat/sessions/{id}/attachments/{index}/tool_files/0")}));
+                        }
+                    }
+                }
+            }
+            if let Some(parts) = row["parts"].as_array_mut() {
+                parts.extend(files)
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn create_conversation(&self) -> Result<Value, Response> {
         let session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
         self.sessions.save(&session).await.map_err(internal)?;
@@ -186,6 +267,9 @@ impl Chat {
         messages.reverse();
         let mut decorated = json!({"messages":messages});
         self.decorate_versions(id.as_str(), &mut decorated)
+            .await
+            .map_err(internal)?;
+        self.decorate_origins(id.as_str(), &view.session, &mut decorated)
             .await
             .map_err(internal)?;
         let mut messages: Vec<Value> = decorated["messages"]

@@ -64,6 +64,24 @@ fn environment_pause_keeps_ui_writable_and_explains_new_message() {
 }
 
 #[test]
+fn remote_history_exposes_origin_and_marks_unsaved_file_from_old_generation() {
+    let mut view = snapshot();
+    view.messages[1]["parts"][0]["origin"] = json!({"label":"Laptop\u{1b}[31m","project_root":"/only-on-laptop/project","tool_id":"read_file","environment":{"connection_id":"connection","generation":"old"}});
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    let text = app
+        .messages
+        .iter()
+        .map(|row| row.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("/only-on-laptop/project"));
+    assert!(text.contains("old"));
+    assert!(text.contains("file remains on the disconnected device"));
+    assert!(!text.contains('\u{1b}'));
+}
+
+#[test]
 fn stale_remote_snapshots_cannot_rewind_history_or_cross_sessions() {
     let mut state = remote::Projection::default();
     let mut app = App::default();

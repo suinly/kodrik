@@ -61,6 +61,311 @@ async fn seed_approval_from(
         .remove(0)
 }
 
+async fn telegram_environment_fixture() -> (
+    tempfile::TempDir,
+    GatewayRunner,
+    SqliteSessionStore,
+    Arc<Mutex<Vec<(String, String)>>>,
+    crate::web::auth::devices::DeviceIdentity,
+    SessionId,
+) {
+    use crate::web::auth::{AuthStore, Identity, devices::PairingPoll};
+    let (dir, gateway, _, sent, _, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
+    let config: crate::config::Config = toml::from_str("[owner]\ninterface='test'\nuser_id=42\n[gateway.test]\ntype='telegram'\ntoken='test'\n[companion]\nlearning_enabled=false\nproactive_enabled=false\n[provider.primary]\ntype='openai'\nmodel='test'\napi_key='test'").unwrap();
+    let app = crate::bootstrap::build_app_at(&config, &dir.path().join("owner"), false)
+        .await
+        .unwrap();
+    let auth = AuthStore::new(dir.path());
+    app.agent_runner.enable_environments(auth.clone()).unwrap();
+    let gateway = gateway
+        .with_telegram_spaces(&config, dir.path(), app)
+        .await
+        .unwrap();
+    let runner = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap();
+    let store = runner.sqlite_store().unwrap();
+    let session = store
+        .new_session(&SessionId::new("telegram:test:42"))
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let pairing = auth.start_device_pairing("Laptop", now).unwrap();
+    auth.approve_device_pairing(pairing.request_id, &pairing.code, &Identity::Owner, now)
+        .unwrap();
+    let PairingPoll::Authorized { device_id, .. } = auth
+        .poll_device_pairing(pairing.request_id, &pairing.polling_secret, now)
+        .unwrap()
+    else {
+        panic!()
+    };
+    (
+        dir,
+        gateway,
+        store,
+        sent,
+        crate::web::auth::devices::DeviceIdentity { device_id },
+        session.id().clone(),
+    )
+}
+
+fn telegram_environment_manifest(label: &str) -> crate::remote::protocol::EnvironmentManifest {
+    crate::remote::protocol::EnvironmentManifest {
+        label: label.into(),
+        project_root: "/private/project".into(),
+        tools: vec![],
+        skills: vec![],
+        project_instructions: None,
+        warnings: vec![],
+    }
+}
+
+#[tokio::test]
+async fn telegram_environment_status_uses_real_active_session_and_deduplicates_heartbeats() {
+    let (_dir, gateway, store, sent, device, session) = telegram_environment_fixture().await;
+    let runner = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap();
+    let service = runner.environments().unwrap();
+    let key = service
+        .attach(
+            device.clone(),
+            session.clone(),
+            telegram_environment_manifest("Laptop"),
+        )
+        .await
+        .unwrap();
+    let mut shown = Default::default();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    service.heartbeat(&key).await.unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    {
+        let sent = sent.lock().unwrap();
+        assert_eq!(
+            sent.len(),
+            1,
+            "heartbeat must not create another notification"
+        );
+        assert_eq!(sent[0].0, "42");
+        assert!(sent[0].1.contains(session.as_str()));
+        assert!(sent[0].1.contains("Laptop"));
+    }
+    let next = store
+        .new_session(&SessionId::new("telegram:test:42"))
+        .await
+        .unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        1,
+        "old environment must not migrate to the new session"
+    );
+    service
+        .attach(
+            device,
+            next.id().clone(),
+            telegram_environment_manifest("New laptop"),
+        )
+        .await
+        .unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[1].1.contains(next.id().as_str()));
+    assert!(!sent[1].1.contains(session.as_str()));
+}
+
+#[tokio::test]
+async fn telegram_environment_status_disconnect_and_reconnect_are_new_states_not_authority() {
+    let (_dir, gateway, _, sent, device, session) = telegram_environment_fixture().await;
+    let runner = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap();
+    let service = runner.environments().unwrap();
+    let key = service
+        .attach(
+            device.clone(),
+            session.clone(),
+            telegram_environment_manifest("Laptop"),
+        )
+        .await
+        .unwrap();
+    let mut shown = Default::default();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    service.revoke(&key, "device closed").await.unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    {
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[1].1.contains("Отключено"));
+        assert!(sent[1].1.contains("недоступны"));
+        assert!(sent[1].1.contains("device closed"));
+        assert!(sent[1].1.contains("/private/project"));
+        assert!(sent[1].1.contains(session.as_str()));
+    }
+    assert!(
+        service.heartbeat(&key).await.is_err(),
+        "status must not renew a revoked lease"
+    );
+    let fresh = service
+        .attach(device, session, telegram_environment_manifest("Laptop"))
+        .await
+        .unwrap();
+    assert_ne!(fresh, key);
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    assert_eq!(
+        sent.lock().unwrap().len(),
+        3,
+        "fresh generation must notify again"
+    );
+}
+
+#[tokio::test]
+async fn telegram_environment_status_never_notifies_foreign_group_guest_or_unconfigured_owner() {
+    let (_dir, gateway, store, sent, device, session) = telegram_environment_fixture().await;
+    let owner = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap()
+        .clone();
+    owner
+        .environments()
+        .unwrap()
+        .attach(
+            device,
+            session,
+            telegram_environment_manifest("owner secret"),
+        )
+        .await
+        .unwrap();
+    let mut gateway = gateway.with_chat_runners(HashMap::from([
+        (SessionId::new("telegram:test:7"), owner.clone()),
+        (SessionId::new("telegram:test:-42"), owner.clone()),
+        (SessionId::new("telegram:test:42:guest"), owner.clone()),
+        (SessionId::new("web:42"), owner.clone()),
+    ]));
+    gateway
+        .show_environment_status(&mut Default::default())
+        .await
+        .unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    gateway
+        .chat_runners
+        .as_mut()
+        .unwrap()
+        .insert(SessionId::new("telegram:test:42"), owner);
+    let mut spaces = gateway.telegram_spaces.as_ref().unwrap().config.clone();
+    spaces.owner = None;
+    let original = gateway.telegram_spaces.as_ref().unwrap();
+    gateway.telegram_spaces = Some(Arc::new(super::super::telegram_spaces::TelegramSpaces {
+        config: spaces,
+        root: original.root.clone(),
+        users: original.users.clone(),
+    }));
+    gateway
+        .show_environment_status(&mut Default::default())
+        .await
+        .unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    assert!(!store.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn telegram_environment_status_escapes_and_bounds_untrusted_label() {
+    let (_dir, gateway, _, sent, device, session) = telegram_environment_fixture().await;
+    let label = format!("<b>fake</b>\n\t\u{1b}\u{202e}{}", "🙂".repeat(300));
+    let mut manifest = telegram_environment_manifest(&label);
+    manifest.project_root = format!("/project\n\u{202e}{}", "🙂".repeat(300));
+    let service = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap()
+        .environments()
+        .unwrap();
+    let key = service
+        .attach(device, session.clone(), manifest)
+        .await
+        .unwrap();
+    service
+        .revoke(&key, &format!("closed\n\u{202e}{}", "🙂".repeat(300)))
+        .await
+        .unwrap();
+    gateway
+        .show_environment_status(&mut Default::default())
+        .await
+        .unwrap();
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    let text = &sent[0].1;
+    assert!(text.contains(session.as_str()));
+    assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}') && !text.contains('\t'));
+    assert!(text.contains("/project\\n\\u{202e}"));
+    assert!(text.contains("closed\\n\\u{202e}"));
+    assert!(text.encode_utf16().count() < 2000);
+    assert!(text.contains('…'));
+}
+
+#[tokio::test]
+async fn telegram_environment_status_failure_is_not_retried_and_recipient_denial_is_respected() {
+    struct FailedStatus {
+        allowed: bool,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl Interface for FailedStatus {
+        fn id(&self) -> InterfaceId {
+            InterfaceId("telegram:test".into())
+        }
+        fn allows_recipient(&self, chat: &str) -> bool {
+            self.allowed && chat == "42"
+        }
+        async fn run(&self, _: mpsc::Sender<Event>) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn send(&self, _: &str, _: &str) -> anyhow::Result<MessageId> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::bail!("unknown delivery outcome")
+        }
+    }
+    let (_dir, mut gateway, store, _, device, session) = telegram_environment_fixture().await;
+    let service = gateway
+        .runner_for(&SessionId::new("telegram:test:42"))
+        .unwrap()
+        .environments()
+        .unwrap()
+        .clone();
+    let key = service
+        .attach(
+            device,
+            session.clone(),
+            telegram_environment_manifest("Laptop"),
+        )
+        .await
+        .unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    gateway.interfaces = vec![Arc::new(FailedStatus {
+        allowed: false,
+        calls: calls.clone(),
+    })];
+    let mut shown = Default::default();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    gateway.interfaces = vec![Arc::new(FailedStatus {
+        allowed: true,
+        calls: calls.clone(),
+    })];
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    service.heartbeat(&key).await.unwrap();
+    gateway.show_environment_status(&mut shown).await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        store
+            .pending_command_approvals(session.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn telegram_approvals_ignore_web_and_tui_without_telegram_history() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;

@@ -31,6 +31,38 @@ fn invocation(tool: &str, args: serde_json::Value) -> Invocation {
 }
 
 #[tokio::test]
+async fn selected_text_artifact_requires_scoped_invocation_and_current_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("report.txt"), "selected output").unwrap();
+    let env = LocalEnvironment::open(&config(dir.path(), false), dir.path())
+        .await
+        .unwrap();
+    let call = invocation(
+        "read_file",
+        json!({"path":"report.txt","save_attachment":true}),
+    );
+    env.attach(
+        Uuid::new_v4(),
+        call.environment.clone(),
+        call.session_id.clone(),
+    )
+    .await
+    .unwrap();
+    let result = env.execute(call.clone()).await.unwrap().result.unwrap();
+    assert_eq!(result.output["text"], "selected output");
+    assert_eq!(result.output["attachment_requested"], true);
+    let mut stale = call.clone();
+    stale.call_id = "stale".into();
+    stale.environment.generation = Uuid::new_v4();
+    assert!(env.execute(stale).await.is_err());
+    let mut unknown = call;
+    unknown.call_id = "unknown".into();
+    unknown.arguments["server_path"] = json!("/etc/passwd");
+    assert!(env.execute(unknown).await.is_err());
+    env.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn skills_are_read_on_laptop_and_changed_catalog_requires_explicit_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let skills = dir.path().join("skills");

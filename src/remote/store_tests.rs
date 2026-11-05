@@ -97,6 +97,64 @@ fn receipt(call: &Invocation, state: OperationState) -> OperationReceipt {
 }
 
 #[tokio::test]
+async fn selected_text_attachments_require_original_request_and_read_file_descriptor() {
+    for (kind, requested, client_requested, expected) in [
+        (ToolKind::ReadFile, true, false, 1),
+        (ToolKind::ReadFile, false, true, 0),
+        (ToolKind::Exec, true, true, 0),
+    ] {
+        let (dir, store, device, call) =
+            fixture_with_args(json!({"path":"/laptop/notes.txt","save_attachment":requested}))
+                .await;
+        let mut manifest = manifest();
+        manifest.tools[0].kind = kind;
+        store
+            .remote_binding(
+                device,
+                call.environment.clone(),
+                call.session_id.clone(),
+                manifest,
+            )
+            .await
+            .unwrap();
+        store.remote_intent(device, call.clone()).await.unwrap();
+        store.remote_dispatch(device, call.clone()).await.unwrap();
+        let forged =
+            crate::agent::FileAttachment::save(dir.path(), "secret.txt", None, b"server secret")
+                .unwrap();
+        let mut done = receipt(&call, OperationState::Completed);
+        done.result = Some(json!({"path":forged.path,"text":"selected laptop text","attachment_requested":client_requested,"attachment":forged}).into());
+        store.remote_receipt(device, done.clone()).await.unwrap();
+        store.remote_receipt(device, done).await.unwrap();
+        store
+            .remote_disconnect(call.environment.clone())
+            .await
+            .unwrap();
+        let count = store.with_connection(|db| {
+            let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='remote_tool_attachments')", [], |r| r.get(0))?;
+            assert!(exists, "server attachment registry is missing");
+            Ok(db.query_row("SELECT count(*) FROM remote_tool_attachments", [], |r| r.get::<_,i64>(0))?)
+        }).await.unwrap();
+        assert_eq!(count, expected, "kind={kind:?}, requested={requested}");
+        if expected == 1 {
+            let bytes = store
+                .with_connection(|db| {
+                    Ok(
+                        db.query_row("SELECT payload FROM remote_tool_attachments", [], |r| {
+                            r.get::<_, Vec<u8>>(0)
+                        })?,
+                    )
+                })
+                .await
+                .unwrap();
+            let file: crate::agent::FileAttachment = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(file.bytes().await.unwrap(), b"selected laptop text");
+            assert_ne!(file.path, forged.path);
+        }
+    }
+}
+
+#[tokio::test]
 async fn intent_requires_provenance_and_claims_dispatch_only_once() {
     let (_dir, store, device, call) = fixture().await;
     assert!(store.remote_intent(device, call.clone()).await.is_err());
@@ -517,7 +575,7 @@ async fn v11_migration_is_atomic_and_preserves_run_and_history() {
     drop(store);
     let db = rusqlite::Connection::open(dir.path().join("state.sqlite3")).unwrap();
     db.execute_batch(
-        "DROP TABLE remote_operations; DROP TABLE remote_bindings; PRAGMA user_version=11;",
+        "DROP TABLE remote_tool_attachments; DROP TABLE remote_operations; DROP TABLE remote_bindings; PRAGMA user_version=11;",
     )
     .unwrap();
     drop(db);
@@ -532,7 +590,7 @@ async fn v11_migration_is_atomic_and_preserves_run_and_history() {
         .with_connection(|db| {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-                12
+                13
             );
             assert_eq!(
                 db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))?,
@@ -550,7 +608,7 @@ async fn failed_v12_migration_rolls_back_new_tables_and_version() {
     drop(store);
     let db = rusqlite::Connection::open(dir.path().join("state.sqlite3")).unwrap();
     db.execute_batch(
-        "DROP TABLE remote_operations; DROP TABLE remote_bindings; PRAGMA user_version=11;
+        "DROP TABLE remote_tool_attachments; DROP TABLE remote_operations; DROP TABLE remote_bindings; PRAGMA user_version=11;
         CREATE TRIGGER view_remote_bindings_INSERT AFTER INSERT ON sessions BEGIN SELECT 1; END;",
     )
     .unwrap();

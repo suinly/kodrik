@@ -601,6 +601,44 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                     });
                 }
                 Some("dynamic-tool") => {
+                    if let Some(origin) = part["origin"].as_object() {
+                        let field = |key: &str| {
+                            origin
+                                .get(key)
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .chars()
+                                .flat_map(char::escape_debug)
+                                .collect::<String>()
+                        };
+                        let key = &origin["environment"];
+                        let mut text = format!(
+                            "[Device: {} · {} · {} · {}]",
+                            field("label"),
+                            field("project_root"),
+                            field("tool_id"),
+                            key["generation"]
+                                .as_str()
+                                .unwrap_or("")
+                                .chars()
+                                .flat_map(char::escape_debug)
+                                .collect::<String>()
+                        );
+                        if field("tool_id") == "read_file" && part["attachment_saved"] != true {
+                            let connected = snapshot.environment.as_ref().is_some_and(|status| {
+                                status.state == "connected"
+                                    && status.environment.as_ref().is_some_and(|environment| {
+                                        serde_json::to_value(environment).ok().as_ref() == Some(key)
+                                    })
+                            });
+                            text.push_str(if connected {
+                                "\n[Local file is not saved on the server]"
+                            } else {
+                                "\n[The file remains on the disconnected device]"
+                            });
+                        }
+                        session.push(Message::Assistant(AssistantMessage { content: text }));
+                    }
                     let call_id = part["toolCallId"].as_str().unwrap_or("").to_owned();
                     session.push(Message::ToolCall(ToolCall {
                         call_id: call_id.clone(),

@@ -13,6 +13,8 @@ mod telegram_spaces;
 
 #[path = "command_approvals.rs"]
 mod command_approvals;
+#[path = "environment_status.rs"]
+mod environment_status;
 #[path = "session_commands.rs"]
 mod session_commands;
 #[path = "session_picker.rs"]
@@ -338,6 +340,7 @@ impl GatewayRunner {
         let mut approval_tick = tokio::time::interval(Duration::from_secs(1));
         approval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut shown_approvals = HashMap::new();
+        let mut shown_environments = environment_status::ShownEnvironmentStatus::default();
         let mut approval_tasks = tokio::task::JoinSet::new();
         loop {
             if *shutdown.borrow() {
@@ -348,14 +351,19 @@ impl GatewayRunner {
                 _ = approval_tick.tick(), if approval_tasks.is_empty() => {
                     let gateway = gateway.clone();
                     let mut shown = std::mem::take(&mut shown_approvals);
+                    let mut environments = std::mem::take(&mut shown_environments);
                     approval_tasks.spawn(async move {
                         let result = gateway.show_command_approvals(&mut shown).await;
-                        (shown, result)
+                        if let Err(error) = gateway.show_environment_status(&mut environments).await {
+                            warn!("Could not show environment status: {error:#}");
+                        }
+                        (shown, environments, result)
                     });
                 },
                 Some(result) = approval_tasks.join_next(), if !approval_tasks.is_empty() => {
-                    let (shown, result) = result?;
+                    let (shown, environments, result) = result?;
                     shown_approvals = shown;
+                    shown_environments = environments;
                     if let Err(error) = result {
                         warn!("Could not show command approvals: {error:#}");
                     }

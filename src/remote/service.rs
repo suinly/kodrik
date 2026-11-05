@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::ensure;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -41,6 +41,8 @@ pub(crate) struct EnvironmentService {
     auth: AuthStore,
     owner: bool,
     bindings: Mutex<HashMap<SessionId, Binding>>,
+    // Display evidence only: retired keys never enter authorize/invoke/heartbeat.
+    retired: Mutex<VecDeque<EnvironmentStatus>>,
     revision: watch::Sender<u64>,
     closed: AtomicBool,
 }
@@ -52,6 +54,7 @@ impl EnvironmentService {
             auth,
             owner,
             bindings: Mutex::new(HashMap::new()),
+            retired: Mutex::new(VecDeque::new()),
             revision: watch::channel(0).0,
             closed: AtomicBool::new(false),
         }
@@ -60,6 +63,22 @@ impl EnvironmentService {
     fn changed(&self) {
         self.revision
             .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    async fn remember(&self, session: &SessionId, binding: &Binding, reason: &str) {
+        let mut retired = self.retired.lock().await;
+        retired.retain(|status| status.session_id != *session);
+        retired.push_back(EnvironmentStatus {
+            session_id: session.clone(),
+            environment: Some(binding.key.clone()),
+            label: binding.manifest.label.clone(),
+            project_root: binding.manifest.project_root.clone(),
+            state: "disconnected".into(),
+            reason: Some(reason.chars().take(1024).collect()),
+        });
+        while retired.len() > 64 {
+            retired.pop_front();
+        }
     }
 
     pub(crate) fn revisions(&self) -> watch::Receiver<u64> {
@@ -93,7 +112,10 @@ impl EnvironmentService {
     async fn clear(&self) {
         let mut bindings = self.bindings.lock().await;
         if !bindings.is_empty() {
-            for binding in bindings.values() {
+            for (session, binding) in bindings.iter() {
+                binding.scope_lease.revoke();
+                self.remember(session, binding, "Gateway authority closed")
+                    .await;
                 if let Some(peer) = &binding.peer {
                     peer.close();
                 }
@@ -128,18 +150,29 @@ impl EnvironmentService {
         let before = bindings.len();
         let now = Instant::now();
         let mut revoked = Vec::new();
-        bindings.retain(|_, binding| {
-            let live = binding.scope_lease.live()
-                && binding.expires > now
-                && allowed.contains(&binding.device);
-            if !live && let Some(peer) = &binding.peer {
+        let expired: Vec<_> = bindings
+            .iter()
+            .filter(|(_, binding)| {
+                !binding.scope_lease.live()
+                    || binding.expires <= now
+                    || !allowed.contains(&binding.device)
+            })
+            .map(|(session, _)| session.clone())
+            .collect();
+        for session in expired {
+            let binding = bindings.remove(&session).expect("locked binding");
+            binding.scope_lease.revoke();
+            let reason = if !allowed.contains(&binding.device) {
+                "Device revoked or expired"
+            } else {
+                "TUI lease expired or local clock suspended"
+            };
+            self.remember(&session, &binding, reason).await;
+            if let Some(peer) = &binding.peer {
                 peer.close();
             }
-            if !live {
-                revoked.push(binding.key.clone());
-            }
-            live
-        });
+            revoked.push(binding.key.clone());
+        }
         for key in revoked {
             self.store.revoke_remote_approvals(key).await?;
         }
@@ -234,20 +267,20 @@ impl EnvironmentService {
         Ok(())
     }
 
-    pub(crate) async fn revoke(&self, key: &EnvironmentKey, _reason: &str) -> anyhow::Result<()> {
+    pub(crate) async fn revoke(&self, key: &EnvironmentKey, reason: &str) -> anyhow::Result<()> {
         let mut bindings = self.bindings.lock().await;
-        let before = bindings.len();
-        bindings.retain(|_, b| {
-            if b.key == *key {
-                if let Some(peer) = &b.peer {
-                    peer.close();
-                }
-                false
-            } else {
-                true
+        let session = bindings
+            .iter()
+            .find(|(_, b)| b.key == *key)
+            .map(|(session, _)| session.clone());
+        if let Some(session) = session {
+            let binding = bindings.remove(&session).expect("locked binding");
+            binding.scope_lease.revoke();
+            self.remember(&session, &binding, reason).await;
+            if let Some(peer) = &binding.peer {
+                peer.close();
             }
-        });
-        if before != bindings.len() {
+            drop(binding);
             self.changed();
         }
         self.store.revoke_remote_approvals(key.clone()).await?;
@@ -256,20 +289,22 @@ impl EnvironmentService {
 
     pub(crate) async fn revoke_device(&self, device: Uuid) {
         let mut bindings = self.bindings.lock().await;
-        let before = bindings.len();
         let mut revoked = Vec::new();
-        bindings.retain(|_, b| {
-            if b.device == device {
-                revoked.push(b.key.clone());
-                if let Some(peer) = &b.peer {
-                    peer.close();
-                }
-                false
-            } else {
-                true
+        let sessions: Vec<_> = bindings
+            .iter()
+            .filter(|(_, b)| b.device == device)
+            .map(|(session, _)| session.clone())
+            .collect();
+        for session in sessions {
+            let binding = bindings.remove(&session).expect("locked binding");
+            binding.scope_lease.revoke();
+            self.remember(&session, &binding, "Device revoked").await;
+            revoked.push(binding.key.clone());
+            if let Some(peer) = &binding.peer {
+                peer.close();
             }
-        });
-        if before != bindings.len() {
+        }
+        if !revoked.is_empty() {
             self.changed();
         }
         for key in revoked {
@@ -280,9 +315,17 @@ impl EnvironmentService {
     }
 
     pub(crate) async fn status(&self, session: &SessionId) -> Option<EnvironmentStatus> {
-        self.prune().await.ok()?;
+        let _ = self.prune().await;
         let bindings = self.bindings.lock().await;
-        let binding = bindings.get(session)?;
+        let Some(binding) = bindings.get(session) else {
+            return self
+                .retired
+                .lock()
+                .await
+                .iter()
+                .find(|status| status.session_id == *session)
+                .cloned();
+        };
         if self.closed.load(Ordering::SeqCst) || binding.expires <= Instant::now() {
             return None;
         }

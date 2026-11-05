@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 12;
+pub(super) const VERSION: i64 = 13;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -208,6 +208,9 @@ impl SqliteSessionStore {
         if version < 12 {
             crate::remote::store::migrate(&tx)?;
         }
+        if version < 13 {
+            crate::remote::store::migrate_attachments(&tx)?;
+        }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
         // SQLite derives sidecar permissions from the already-private main database.
@@ -223,6 +226,10 @@ impl SqliteSessionStore {
 
     pub async fn open_async(directory: PathBuf) -> anyhow::Result<Self> {
         tokio::task::spawn_blocking(move || Self::open(directory)).await?
+    }
+
+    pub(crate) fn attachment_directory(&self) -> PathBuf {
+        self.directory.join("attachments")
     }
 
     pub(crate) async fn with_connection<T: Send + 'static>(

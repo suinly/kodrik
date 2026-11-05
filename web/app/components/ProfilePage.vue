@@ -108,6 +108,10 @@ onMounted(()=>{void load();void loadAuditMode()})
       </section>
       <USeparator />
       <PushSettings />
+      <template v-if="profile.owner">
+        <USeparator />
+        <DeviceConnections />
+      </template>
       <USeparator />
       <form v-if="profile.owner" class="space-y-5" @submit.prevent="changePassword">
         <div class="space-y-2">

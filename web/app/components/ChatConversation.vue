@@ -166,6 +166,10 @@ function receive(view: Snapshot) {
   if (!mounted || view.session_id !== props.conversation.id) return
   connection.value = ''
   loading.value = false
+  if(snapshot.value && (view.environment_revision ?? 0) > (snapshot.value.environment_revision ?? 0)) {
+    snapshot.value.environment=view.environment
+    snapshot.value.environment_revision=view.environment_revision
+  }
   if (view.revision <= revision) return
   const titleChanged = (!!view.title && view.title !== (snapshot.value?.title ?? props.conversation.title)) ||
     (snapshot.value !== null && view.titles_revision !== undefined && view.titles_revision !== snapshot.value.titles_revision) ||
@@ -528,20 +532,20 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
             <h1 class="text-2xl font-semibold text-highlighted">{{ home ? t('С чего начнём?') : t('Есть мысль?') }}</h1>
             <p class="text-muted">{{ home ? t('Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.') : t('Начните с вопроса, задачи, файла или фотографии.') }}</p>
           </div>
-          <ChatItem v-for="message in snapshot?.messages ?? []" :key="message.id" :message="message" :superseded="superseded" :actions="!editorLocked"
+          <ChatItem v-for="message in snapshot?.messages ?? []" :key="message.id" :message="message" :environment="snapshot?.environment" :superseded="superseded" :actions="!editorLocked"
             :editable="message.role==='user' && !locked && !busy && !snapshot?.queued.length && !editingMessage" :saving="editingMessage===message.id"
             :search-selected="matches[matchIndex]===message.id"
             @edit="text=>editMessage(message,text)" @version="id=>emit('navigate',id)"
             @prompt="text=>{if(!editorLocked){draft=draft.trim()?`${draft}\n\n${text}`:text;focusInput()}}" />
           <div v-if="snapshot?.live.current?.text" data-testid="partial">
             <p v-if="snapshot.live.current.status === 'Interrupted'" class="text-muted text-sm"> {{ t("Незавершённая попытка") }} </p>
-            <ChatItem :message="{ id: 'partial', role: 'assistant', parts: [{ type: 'text', text: snapshot.live.current.text }] }" />
+            <ChatItem :environment="snapshot?.environment" :message="{ id: 'partial', role: 'assistant', parts: [{ type: 'text', text: snapshot.live.current.text }] }" />
           </div>
           <UCollapsible v-if="snapshot?.live.interrupted?.text">
             <UButton :label="t('Предыдущая незавершённая попытка')" variant="ghost" color="neutral" trailing-icon="i-lucide-chevron-down" />
             <template #content><ChatMarkdown :text="snapshot.live.interrupted.text" /></template>
           </UCollapsible>
-          <ChatItem v-for="message in queuedMessages" :key="message.id" :message="message"
+          <ChatItem v-for="message in queuedMessages" :key="message.id" :message="message" :environment="snapshot?.environment"
             :status="snapshot?.blocked_reason ? t('Передача приостановлена') : t('Ожидает передачи агенту')" />
           <UChatShimmer v-if="busy && !hint && !stopping && !snapshot?.command_approvals?.length" as="p" :text="t('Кодрик работает…')" role="status" aria-live="polite" class="text-sm" />
         </div>
@@ -551,6 +555,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
       </div>
     </div>
     <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent.capture="drop" @paste.capture="paste">
+      <EnvironmentStatus v-if="snapshot?.environment && snapshot.environment.session_id===conversation.id" :status="snapshot.environment" />
       <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length || snapshot?.command_approvals?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>

@@ -13,14 +13,17 @@ export const messageOf = (error: unknown) => error instanceof TypeError ? t('–ù–
 export type Conversation = { id: string; root_id?:string; title: string; title_default?:boolean; title_pending?: boolean; pinned?:boolean; busy: boolean; updated_at: string | null; snippet?:string|null; match_message?:string|null;webhook?:{id:string;name:string}|null };
 export type PublishedPage = {slug: string; title: string; url: string; visibility: 'private' | 'public'; document: boolean};
 export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; pendingFiles?: {id:string;files:File[]} };
+export type ToolOrigin = {label:string;project_root:string;environment:{connection_id:string;generation:string};tool_id:string};
 export type MessagePart =
   | { type: 'text'; text: string;format?:'code' }
-  | { type: 'file'; filename: string; mediaType: string; url?: string }
-  | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string };
+  | { type: 'file'; filename: string; mediaType: string; url?: string; origin?:ToolOrigin }
+  | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string; origin?:ToolOrigin; attachment_saved?:boolean };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };
 export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
 export type CommandAuditMode = 'trusted'|'review'|'ask';
-export type CommandApproval = {id:string;run_id:string;call_id:string;tool_name?:string;arguments_json?:string;target?:{tool_kind:string;environment:{connection_id:string;generation:string};project_root:string};cmd:string;workdir:string|null;reason:string;reason_code?:string};
+export type RegisteredDevice = {id:string;label:string;expires_at:number};
+export type EnvironmentStatus = {session_id:string;environment?:{connection_id:string;generation:string}|null;label:string;project_root:string;state:string;reason?:string|null};
+export type CommandApproval = {id:string;run_id:string;call_id:string;tool_name?:string;arguments_json?:string;target?:{tool_kind:string;environment:{connection_id:string;generation:string};project_root:string;label?:string};cmd:string;workdir:string|null;reason:string;reason_code?:string};
 
 export async function checkedFetch(input: RequestInfo | URL, init?: RequestInit) {
   const headers=new Headers(init?.headers);
@@ -77,6 +80,8 @@ export type Compaction = {
 };
 export type Snapshot = {
   type: 'snapshot'; session_id: string; run_id: string | null; revision: number;
+  environment?: EnvironmentStatus | null;
+  environment_revision?: number;
   title?: string;
   title_default?: boolean;
   titles_revision?: number;

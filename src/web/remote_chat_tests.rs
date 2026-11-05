@@ -455,6 +455,20 @@ async fn native_attachment_references_include_tool_images_without_inline_blobs()
         },
     }));
     chat.sessions.save(&session).await.unwrap();
+    let web = chat.snapshot(id.as_str()).await.unwrap();
+    let web_images: Vec<_> = web["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row["parts"].as_array().unwrap())
+        .filter(|part| {
+            part["url"]
+                .as_str()
+                .is_some_and(|url| url.contains("/tool_images/"))
+        })
+        .collect();
+    assert_eq!(web_images.len(), 1, "result image lost from Web history");
+    assert_eq!(web_images[0]["toolCallId"], "picture");
     let snapshot = chat.remote_snapshot(&id).await.unwrap();
     let text = serde_json::to_string(&snapshot).unwrap();
     assert!(!text.contains("base64"));
@@ -592,6 +606,333 @@ async fn native_history_bounds_preserve_tool_groups_and_durable_content() {
 }
 
 #[tokio::test]
+async fn historical_remote_origins_cover_older_pages_after_new_run() {
+    use crate::{
+        agent::run_state::{Checkpoint, RunPhase},
+        remote::protocol::*,
+    };
+    let (_dir, chat, _state, id) = fixture().await;
+    let key = EnvironmentKey {
+        connection_id: uuid::Uuid::new_v4(),
+        generation: uuid::Uuid::new_v4(),
+    };
+    let descriptor = ToolDescriptor {
+        id: "view_image".into(),
+        kind: ToolKind::Image,
+        description: "image".into(),
+        parameters: json!({"type":"object"}),
+        deferred: false,
+    };
+    let alias = crate::remote::tools::alias(&key, &descriptor);
+    let manifest = EnvironmentManifest {
+        label: "<Laptop & private>".into(),
+        project_root: "/only-on-laptop/project".into(),
+        tools: vec![descriptor],
+        skills: vec![],
+        project_instructions: None,
+        warnings: vec![],
+    };
+    let device = uuid::Uuid::new_v4();
+    chat.sessions
+        .remote_binding(device, key.clone(), id.clone(), manifest)
+        .await
+        .unwrap();
+    let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+    for index in 0..270 {
+        session.push(Message::User(UserMessage {
+            content: format!("turn {index}"),
+            files: vec![],
+            images: vec![],
+        }));
+        session.push(Message::ToolCall(ToolCall {
+            call_id: format!("image-{index}"),
+            name: alias.clone(),
+            arguments: json!({}),
+        }));
+        session.push(Message::ToolResult(ToolResult {
+            call_id: format!("image-{index}"),
+            content: crate::agent::tools::ToolOutput {
+                output: json!({"path":"/only-on-laptop/image.png"}),
+                images: vec![crate::agent::Image {
+                    data_url: "data:image/png;base64,aW1hZ2U=".into(),
+                    width: 1,
+                    height: 1,
+                }],
+            },
+        }));
+    }
+    cp.save(&session, RunPhase::Completed, None).await.unwrap();
+    let run = cp.record.id.clone();
+    let environment = key.clone();
+    let session_id = id.clone();
+    chat.sessions
+        .with_connection(move |db| {
+            for index in 0..270 {
+                let call = format!("image-{index}");
+                let receipt = OperationReceipt {
+                    invocation: Invocation {
+                        environment: environment.clone(),
+                        session_id: session_id.clone(),
+                        run_id: run.clone(),
+                        call_id: call.clone(),
+                        tool_id: "view_image".into(),
+                        arguments: json!({}),
+                        deadline: chrono::Utc::now(),
+                    },
+                    arguments_hash: arguments_hash(&json!({}))?,
+                    state: OperationState::Completed,
+                    result: Some(json!({"ok":true}).into()),
+                };
+                db.execute(
+                    "INSERT INTO remote_operations VALUES(?1,?2,?3,?4,?5,?6)",
+                    rusqlite::params![
+                        run,
+                        call,
+                        device.to_string(),
+                        environment.connection_id.to_string(),
+                        environment.generation.to_string(),
+                        serde_json::to_vec(&receipt)?
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut newer = Checkpoint::new(&chat.sessions, &id, &session);
+    newer
+        .save(&session, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let expected = json!({"label":"<Laptop & private>","project_root":"/only-on-laptop/project","environment":key,"tool_id":"view_image"});
+    let web = chat.snapshot(id.as_str()).await.unwrap();
+    let first = &web["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["parts"][0]["toolCallId"] == "image-0")
+        .unwrap()["parts"];
+    assert_eq!(first[0]["origin"], expected);
+    assert_eq!(first[1]["origin"], expected);
+    let page = chat.remote_snapshot(&id).await.unwrap();
+    let older = chat
+        .remote_history(&id, page.previous_cursor.as_deref().unwrap())
+        .await
+        .unwrap();
+    let tool_parts: Vec<_> = older
+        .messages
+        .iter()
+        .flat_map(|row| row["parts"].as_array().unwrap())
+        .filter(|part| part["toolCallId"].as_str().is_some())
+        .collect();
+    assert!(!tool_parts.is_empty());
+    for part in tool_parts {
+        assert_eq!(part["origin"], expected);
+    }
+    assert!(
+        !serde_json::to_string(&older)
+            .unwrap()
+            .contains("data:image")
+    );
+}
+
+#[tokio::test]
+async fn saved_local_text_survives_disconnect_and_download_requires_session_auth() {
+    use crate::{
+        agent::run_state::{Checkpoint, RunPhase},
+        remote::protocol::*,
+    };
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let (dir, chat, state, id) = fixture().await;
+    let key = EnvironmentKey {
+        connection_id: uuid::Uuid::new_v4(),
+        generation: uuid::Uuid::new_v4(),
+    };
+    let descriptor = ToolDescriptor {
+        id: "read_file".into(),
+        kind: ToolKind::ReadFile,
+        description: "Read".into(),
+        parameters: json!({"type":"object"}),
+        deferred: false,
+    };
+    let name = crate::remote::tools::alias(&key, &descriptor);
+    let manifest = EnvironmentManifest {
+        label: "Laptop".into(),
+        project_root: "/only-on-laptop".into(),
+        tools: vec![descriptor],
+        skills: vec![],
+        project_instructions: None,
+        warnings: vec![],
+    };
+    let device = uuid::Uuid::new_v4();
+    chat.sessions
+        .remote_binding(device, key.clone(), id.clone(), manifest)
+        .await
+        .unwrap();
+    let call = ToolCall {
+        call_id: "selected".into(),
+        name,
+        arguments: json!({"path":"notes.txt","save_attachment":true}),
+    };
+    let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+    session.push(Message::ToolCall(call.clone()));
+    let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+    cp.record.pending_calls = vec![call.clone()];
+    cp.save(
+        &session,
+        RunPhase::ExecutingTool {
+            call_id: call.call_id.clone(),
+            replay: crate::agent::tools::ReplayPolicy::Never,
+        },
+        Some(crate::agent::run_state::ToolExecution {
+            call: call.clone(),
+            replay: crate::agent::tools::ReplayPolicy::Never,
+            result: None,
+        }),
+    )
+    .await
+    .unwrap();
+    let invocation = Invocation {
+        environment: key.clone(),
+        session_id: id.clone(),
+        run_id: cp.record.id.clone(),
+        call_id: call.call_id.clone(),
+        tool_id: "read_file".into(),
+        arguments: call.arguments.clone(),
+        deadline: chrono::Utc::now() + chrono::Duration::minutes(1),
+    };
+    chat.sessions
+        .remote_intent(device, invocation.clone())
+        .await
+        .unwrap();
+    chat.sessions
+        .remote_dispatch(device, invocation.clone())
+        .await
+        .unwrap();
+    let output: crate::agent::tools::ToolOutput =
+        json!({"path":"/fake-server-secret","text":"saved laptop text"}).into();
+    chat.sessions
+        .remote_receipt(
+            device,
+            OperationReceipt {
+                arguments_hash: arguments_hash(&invocation.arguments).unwrap(),
+                invocation,
+                state: OperationState::Completed,
+                result: Some(output.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    let result_index = session.messages().len();
+    session.push(Message::ToolResult(ToolResult {
+        call_id: call.call_id,
+        content: output,
+    }));
+    cp.save(&session, RunPhase::Completed, None).await.unwrap();
+    chat.sessions.remote_disconnect(key).await.unwrap();
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    let parts: Vec<_> = snapshot
+        .messages
+        .iter()
+        .flat_map(|row| row["parts"].as_array().unwrap())
+        .collect();
+    let file = parts
+        .iter()
+        .find(|part| part["type"] == "file")
+        .expect("saved file missing");
+    assert_eq!(file["filename"], "notes.txt");
+    assert_eq!(file["origin"]["label"], "Laptop");
+    assert_eq!(
+        file["url"],
+        format!(
+            "./api/remote/chat/sessions/{}/attachments/{result_index}/tool_files/0",
+            id.as_str()
+        )
+    );
+    assert!(parts.iter().any(|part| part["attachment_saved"] == true));
+    let path = format!(
+        "/kodrik/api/remote/chat/sessions/{}/attachments/{result_index}/tool_files/0",
+        id.as_str()
+    );
+    let now = chrono::Utc::now().timestamp();
+    let pairing = state.auth.start_device_pairing("download", now).unwrap();
+    state
+        .auth
+        .approve_device_pairing(pairing.request_id, &pairing.code, &Identity::Owner, now)
+        .unwrap();
+    let crate::web::auth::devices::PairingPoll::Authorized { token, .. } = state
+        .auth
+        .poll_device_pairing(pairing.request_id, &pairing.polling_secret, now)
+        .unwrap()
+    else {
+        panic!()
+    };
+    let app = crate::web::server::router_with_chat(
+        state.settings.clone(),
+        dir.path(),
+        Some(chat.clone()),
+    );
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&path)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(
+        &to_bytes(response.into_body(), 1024).await.unwrap()[..],
+        b"saved laptop text"
+    );
+    let wrong = path.replace("tool_files/0", "tool_files/1");
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(wrong)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    // A private child session containing copied result JSON is not a file-read authority.
+    let child = SessionId::new("companion:subagent:private");
+    chat.sessions
+        .save(&Session::new(child.clone()))
+        .await
+        .unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(path.replace(id.as_str(), child.as_str()))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
 async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
@@ -669,7 +1010,7 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     assert!(
         std::str::from_utf8(&closed)
             .unwrap()
-            .contains("\"environment\":null")
+            .contains("\"state\":\"disconnected\"")
     );
     state.auth.revoke_device(device_id).unwrap();
     assert!(

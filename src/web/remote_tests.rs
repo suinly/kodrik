@@ -202,7 +202,10 @@ async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
     })
     .await
     .unwrap();
-    assert!(service.status(&session).await.is_none());
+    assert_eq!(
+        service.status(&session).await.unwrap().state,
+        "disconnected"
+    );
     server.abort();
 }
 
@@ -919,7 +922,15 @@ async fn final_old_key_evidence_cannot_grant_execution_or_accept_unsaved_calls()
         .receipt(fixture.device, receipt.clone())
         .await
         .unwrap();
-    assert!(fixture.service.status(&fixture.session).await.is_none());
+    assert_eq!(
+        fixture
+            .service
+            .status(&fixture.session)
+            .await
+            .unwrap()
+            .state,
+        "disconnected"
+    );
     assert!(fixture.service.invoke(call).await.is_err());
     let mut different = receipt;
     different.invocation.call_id = "unsaved".into();
@@ -941,7 +952,15 @@ async fn disconnected(fixture: &mut Fixture) {
     })
     .await
     .expect("remote socket retained revoked authority");
-    assert!(fixture.service.status(&fixture.session).await.is_none());
+    assert_eq!(
+        fixture
+            .service
+            .status(&fixture.session)
+            .await
+            .unwrap()
+            .state,
+        "disconnected"
+    );
 }
 #[tokio::test]
 async fn malformed_and_oversized_frames_revoke_the_binding() {

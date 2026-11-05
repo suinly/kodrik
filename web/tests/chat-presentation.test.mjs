@@ -2,7 +2,7 @@ import {setLanguage} from '../app/utils/i18n.ts';
 setLanguage('ru');
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody} from '../app/utils/chat-presentation.ts';
+import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody,localFileNotice} from '../app/utils/chat-presentation.ts';
 
 test('webhook code displays JSON with indentation and keeps non-JSON payloads literal',()=>{
   for(const [raw,formatted] of [
@@ -28,6 +28,17 @@ test('message dates use local calendar days and show the year only when needed',
 });
 
 const tool=(id,name='exec_command',url)=>({type:'dynamic-tool',toolCallId:id,toolName:name,state:'output-available',input:{},output:url?{url}: {}});
+test('unsaved local file notices follow the exact generation rather than another connected device',()=>{
+  const origin={label:'Laptop',project_root:'/work',tool_id:'read_file',environment:{connection_id:'connection',generation:'old'}};
+  const local={...tool('read','local__read_file'),origin,input:{path:'notes.txt'}};
+  assert.equal(localFileNotice(local,null),'Файл остался на отключённом устройстве.');
+  assert.equal(localFileNotice(local,{state:'connected',environment:{connection_id:'connection',generation:'new'}}),'Файл остался на отключённом устройстве.');
+  assert.equal(localFileNotice(local,{state:'connected',environment:origin.environment}),'Локальный файл не сохранён на сервере.');
+  assert.equal(localFileNotice({...local,origin:{...origin,tool_id:'view_image'}},null),'');
+  assert.equal(localFileNotice({...local,input:{path:'notes.txt',save_attachment:true}},null),'Файл остался на отключённом устройстве.');
+  assert.equal(localFileNotice({...local,attachment_saved:true},null),'');
+  assert.equal(localFileNotice(tool('server','read_file'),null),'');
+});
 test('child tools have localized names while technical names remain available for other tools',()=>{
   assert.equal(toolLabel(tool('a','spawn_agent')),'Запуск дочерней задачи');
   assert.equal(toolLabel(tool('a','exec_command')),'exec_command');

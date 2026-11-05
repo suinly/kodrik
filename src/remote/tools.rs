@@ -62,6 +62,8 @@ impl ScopeLease {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AuditTarget {
+    #[serde(default)]
+    pub label: String,
     pub tool_kind: ToolKind,
     pub environment: EnvironmentKey,
     pub project_root: String,
@@ -209,6 +211,7 @@ pub(crate) fn saved_target(
         let manifest: EnvironmentManifest = serde_json::from_slice(&bytes)?;
         if let Some(tool) = manifest.tools.iter().find(|tool| alias(&key, tool) == name) {
             return Ok(Some(AuditTarget {
+                label: manifest.label,
                 tool_kind: tool.kind,
                 environment: key,
                 project_root: manifest.project_root,
@@ -256,6 +259,7 @@ impl Tool for Proxy {
     }
     fn audit_target(&self) -> Option<AuditTarget> {
         Some(AuditTarget {
+            label: self.scope.manifest.label.clone(),
             tool_kind: self.descriptor.kind,
             environment: self.scope.key.clone(),
             project_root: self.scope.manifest.project_root.clone(),

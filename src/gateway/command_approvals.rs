@@ -539,4 +539,39 @@ mod tests {
         assert!(text.contains("Web or TUI"));
         assert!(text.contains("/approvals session"));
     }
+
+    #[test]
+    fn command_approval_origin_is_visible_and_included_in_the_overflow_guard() {
+        let mut approval: CommandApproval = serde_json::from_value(serde_json::json!({
+            "id":"request", "run_id":"run", "call_id":"call", "tool_name":"device_exec",
+            "cmd":"pwd", "workdir":null, "reason":"review", "reason_code":"review",
+            "target": {"tool_kind":"exec", "environment": {
+                "connection_id":"00000000-0000-0000-0000-000000000001",
+                "generation":"00000000-0000-0000-0000-000000000002"
+            }, "project_root":"/project\nsecret", "label":"Owner laptop\nfixture"}
+        }))
+        .unwrap();
+        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        assert!(
+            text.contains("/project\\nsecret"),
+            "origin must be visible with control characters escaped"
+        );
+        assert!(text.contains("00000000-0000-0000-0000-000000000002"));
+        assert!(text.contains("Owner laptop\\nfixture"));
+        assert!(!buttons.is_empty());
+        approval.target.as_mut().unwrap().project_root = "🙂".repeat(2200);
+        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        assert!(
+            buttons.is_empty(),
+            "unreviewable origin must not allow approval"
+        );
+        assert!(text.encode_utf16().count() <= 4000);
+        approval.target.as_mut().unwrap().project_root = "/project".into();
+        approval.target.as_mut().unwrap().label = "🙂".repeat(2200);
+        let (_, buttons) = approval_view(&approval, "session", Language::En);
+        assert!(
+            buttons.is_empty(),
+            "unreviewable device label must not allow approval"
+        );
+    }
 }

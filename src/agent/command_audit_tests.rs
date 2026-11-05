@@ -1277,7 +1277,7 @@ async fn schema_upgrade_preserves_existing_modes_and_defaults_new_sessions_to_re
         store.save(&second).await.unwrap();
         drop(store);
         let db = Connection::open(dir.path().join("state.sqlite3")).unwrap();
-        db.execute_batch("DROP TABLE remote_operations; DROP TABLE remote_bindings; DROP TABLE command_audit_modes; DROP TABLE command_audit_profile;")
+        db.execute_batch("DROP TABLE remote_tool_attachments; DROP TABLE remote_operations; DROP TABLE remote_bindings; DROP TABLE command_audit_modes; DROP TABLE command_audit_profile;")
             .unwrap();
         if version == 8 {
             db.execute_batch("DROP TABLE command_audits;").unwrap();
@@ -1606,6 +1606,7 @@ async fn revoked_environment_approval_stops_waiting_even_in_trusted_mode() {
         generation: uuid::Uuid::new_v4(),
     };
     let target = crate::remote::tools::AuditTarget {
+        label: "Laptop".into(),
         tool_kind: crate::remote::protocol::ToolKind::Exec,
         environment: key.clone(),
         project_root: "/laptop".into(),
@@ -1652,6 +1653,7 @@ async fn unavailable_local_tool_does_not_create_a_late_approval() {
         }
         fn audit_target(&self) -> Option<crate::remote::tools::AuditTarget> {
             Some(crate::remote::tools::AuditTarget {
+                label: "Laptop".into(),
                 tool_kind: crate::remote::protocol::ToolKind::Exec,
                 environment: crate::remote::protocol::EnvironmentKey {
                     connection_id: uuid::Uuid::new_v4(),

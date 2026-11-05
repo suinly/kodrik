@@ -51,6 +51,7 @@ pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<
                 "toolName":call.name, "input":call.arguments, "state":"input-available"})),
             Message::ToolResult(result) => {
                 if let Some(part) = parts.iter_mut().find(|p| p["toolCallId"] == result.call_id) {
+                    part["result_message"] = json!(index);
                     let child_outcome = matches!(
                         part["toolName"].as_str(),
                         Some("spawn_agent" | "send_message" | "wait_agent" | "stop_agent")
@@ -74,6 +75,16 @@ pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<
                         part["state"] = json!("output-available");
                         part["output"] = result.content.output.clone();
                     }
+                }
+                for (image_index, image) in result.content.images.iter().enumerate() {
+                    let mime = image
+                        .data_url
+                        .strip_prefix("data:")
+                        .and_then(|data| data.split(';').next())
+                        .unwrap_or("image/png");
+                    parts.push(json!({"type":"file","filename":format!("Tool image {}",image_index+1),
+                        "mediaType":mime,"toolCallId":result.call_id,
+                        "url":format!("../api/chat/sessions/{}/attachments/{index}/tool_images/{image_index}",session.id().as_str())}));
                 }
             }
             Message::User(_) => unreachable!(),

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
-import {toolLabel,toolSummary,type ToolPart} from '../utils/chat-presentation'
-const props=defineProps<{tools:ToolPart[]}>()
+import {toolLabel,toolSummary,localFileNotice,type ToolPart} from '../utils/chat-presentation'
+import type {EnvironmentStatus} from '../utils/api'
+const props=defineProps<{tools:ToolPart[];environment?:EnvironmentStatus|null}>()
 const open=ref(false)
 const steps=useTemplateRef('steps')
 const running=computed(()=>props.tools.some(tool=>!['output-available','output-error'].includes(tool.state)))
@@ -25,6 +26,11 @@ async function collapseSteps() {
       :ui="{leadingIcon:tool.state==='output-error'?'text-error':undefined}"
       :icon="tool.state === 'output-error' ? 'i-lucide-circle-alert' : 'i-lucide-check'">
       <div class="space-y-2 text-sm">
+        <div v-if="tool.origin" class="text-xs text-muted whitespace-pre-wrap break-all">
+          <p>{{ tool.origin.label }} · {{ tool.origin.project_root }}</p>
+          <p>{{ tool.origin.tool_id }} · {{ tool.origin.environment.connection_id }} / {{ tool.origin.environment.generation }}</p>
+          <p v-if="localFileNotice(tool,environment)" role="status">{{ localFileNotice(tool,environment) }}</p>
+        </div>
         <p class="text-muted"> {{ t("Входные данные") }} </p>
         <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all">{{ JSON.stringify(tool.input,null,2) }}</pre>
         <template v-if="tool.state==='output-available'">

@@ -1,8 +1,15 @@
 import {locale,t} from './i18n.ts'
-import type {ChatMessage,MessagePart} from './api'
+import type {ChatMessage,MessagePart,EnvironmentStatus} from './api'
 
 export type ToolPart = Extract<MessagePart,{type:'dynamic-tool'}>
 type MessageBlock = {kind:'tools';tools:ToolPart[]} | {kind:'content';part:Exclude<MessagePart,ToolPart>}
+
+export function localFileNotice(tool:ToolPart,environment?:Pick<EnvironmentStatus,'state'|'environment'>|null):string {
+  if(tool.origin?.tool_id!=='read_file' || tool.attachment_saved===true) return ''
+  const key=tool.origin.environment
+  return environment?.state==='connected' && environment.environment?.connection_id===key.connection_id
+    && environment.environment.generation===key.generation ? t('Локальный файл не сохранён на сервере.') : t('Файл остался на отключённом устройстве.')
+}
 
 export function formatWebhookBody(text:string):string {
   try {

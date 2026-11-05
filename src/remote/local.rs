@@ -108,7 +108,7 @@ impl LocalEnvironment {
                 deferred: tool.deferred(),
             })
             .collect();
-        descriptors.push(ToolDescriptor {id:"read_file".into(),kind:ToolKind::ReadFile,description:"Read a UTF-8 file inside the selected project or skill roots, at most 1 MiB".into(),parameters:json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}),deferred:false});
+        descriptors.push(ToolDescriptor {id:"read_file".into(),kind:ToolKind::ReadFile,description:"Read a UTF-8 file inside the selected project or skill roots, at most 1 MiB. Set save_attachment only to persist a specifically requested text output on the server.".into(),parameters:json!({"type":"object","properties":{"path":{"type":"string"},"save_attachment":{"type":"boolean"}},"required":["path"],"additionalProperties":false}),deferred:false});
         descriptors.sort_by(|a, b| a.id.cmp(&b.id));
         let mut skill_roots = Vec::new();
         let mut skills = Vec::new();
@@ -370,18 +370,14 @@ impl LocalEnvironment {
                 }
                 "read_file" | "view_image" => {
                     let path = PathBuf::from(arguments["path"].as_str().context("Path required")?);
-                    let mut roots = vec![self.root.clone()];
-                    roots.extend(self.skill_roots.clone());
                     let image = call.tool_id == "view_image";
-                    let file_path = path.clone();
-                    let bytes = tokio::task::spawn_blocking(move || {
-                        read_scoped(
-                            &roots,
-                            &file_path,
+                    let bytes = self
+                        .read_artifact(
+                            &call.environment,
+                            path.to_str().context("Non-UTF8 path")?,
                             if image { 10 * 1024 * 1024 } else { 1024 * 1024 },
                         )
-                    })
-                    .await??;
+                        .await?;
                     if image {
                         let image = Image::from_bytes(&bytes)?;
                         Ok(ToolOutput {
@@ -389,7 +385,7 @@ impl LocalEnvironment {
                             images: vec![image],
                         })
                     } else {
-                        Ok(json!({"path":path,"text":String::from_utf8(bytes)?}).into())
+                        Ok(json!({"path":path,"text":String::from_utf8(bytes)?,"attachment_requested":arguments.get("save_attachment").and_then(Value::as_bool).unwrap_or(false)}).into())
                     }
                 }
                 _ => {
@@ -465,8 +461,10 @@ impl LocalEnvironment {
             args["workdir"] = json!(path);
         } else if matches!(call.tool_id.as_str(), "read_file" | "view_image") {
             ensure!(
-                args.as_object().unwrap().len() == 1,
-                "Only path is supported"
+                args.as_object().unwrap().keys().all(|key| key == "path"
+                    || (call.tool_id == "read_file" && key == "save_attachment"))
+                    && args.get("save_attachment").is_none_or(Value::is_boolean),
+                "Only path and optional read_file save_attachment boolean are supported"
             );
             let path = PathBuf::from(args["path"].as_str().context("Path required")?);
             args["path"] = json!(if path.is_absolute() {
@@ -476,6 +474,37 @@ impl LocalEnvironment {
             });
         }
         Ok(args)
+    }
+
+    // Private to this executor: called only after durable scoped ReadFile/Image admission.
+    async fn read_artifact(
+        &self,
+        key: &EnvironmentKey,
+        path: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<u8>> {
+        ensure!(
+            limit <= 10 * 1024 * 1024,
+            "Artifact limit exceeds image quota"
+        );
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Local state poisoned"))?;
+            ensure!(
+                !self.closed.load(Ordering::SeqCst)
+                    && state
+                        .binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.key == *key),
+                "Environment unavailable"
+            );
+        }
+        let mut roots = vec![self.root.clone()];
+        roots.extend(self.skill_roots.clone());
+        let path = PathBuf::from(path);
+        tokio::task::spawn_blocking(move || read_scoped(&roots, &path, limit)).await?
     }
 
     pub(crate) async fn cancel(&self, run: &str, call: &str) -> anyhow::Result<()> {

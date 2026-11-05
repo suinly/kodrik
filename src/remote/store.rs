@@ -29,6 +29,85 @@ pub(crate) fn migrate(db: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn migrate_attachments(db: &Connection) -> anyhow::Result<()> {
+    db.execute_batch(
+        "CREATE TABLE remote_tool_attachments (
+        run_id TEXT NOT NULL, call_id TEXT NOT NULL, payload BLOB NOT NULL,
+        PRIMARY KEY(run_id,call_id),
+        FOREIGN KEY(run_id,call_id) REFERENCES remote_operations(run_id,call_id) ON DELETE CASCADE);
+        PRAGMA user_version=13;",
+    )?;
+    Ok(())
+}
+
+fn save_selected_text(
+    db: &Connection,
+    directory: &std::path::Path,
+    receipt: &OperationReceipt,
+) -> anyhow::Result<()> {
+    let call = &receipt.invocation;
+    if receipt.state != OperationState::Completed || call.arguments["save_attachment"] != true {
+        return Ok(());
+    }
+    let manifest: Vec<u8> = db.query_row(
+        "SELECT manifest FROM remote_bindings WHERE connection_id=?1 AND generation=?2",
+        params![
+            call.environment.connection_id.to_string(),
+            call.environment.generation.to_string()
+        ],
+        |row| row.get(0),
+    )?;
+    let manifest: EnvironmentManifest = serde_json::from_slice(&manifest)?;
+    if !manifest
+        .tools
+        .iter()
+        .any(|tool| tool.id == call.tool_id && tool.kind == ToolKind::ReadFile)
+    {
+        return Ok(());
+    }
+    let Some(text) = receipt
+        .result
+        .as_ref()
+        .and_then(|output| output.output["text"].as_str())
+    else {
+        return Ok(());
+    };
+    ensure!(text.len() <= 1024 * 1024, "Selected text exceeds 1 MiB");
+    if text.is_empty() {
+        return Ok(());
+    }
+    // Only bytes from the admitted receipt are stored; client paths/attachment metadata are never opened.
+    let filename = call.arguments["path"]
+        .as_str()
+        .unwrap_or("selected.txt")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("selected.txt");
+    let filename =
+        if crate::agent::file::file_type(filename, Some("text/plain")).is_ok_and(|mime| {
+            mime.starts_with("text/")
+                || matches!(
+                    mime,
+                    "application/json" | "application/javascript" | "application/xml"
+                )
+        }) {
+            filename.to_owned()
+        } else {
+            "selected.txt".into()
+        };
+    let file = crate::agent::FileAttachment::save(
+        directory,
+        &filename,
+        Some("text/plain"),
+        text.as_bytes(),
+    )?;
+    db.execute(
+        "INSERT INTO remote_tool_attachments(run_id,call_id,payload) VALUES(?1,?2,?3)",
+        params![call.run_id, call.call_id, serde_json::to_vec(&file)?],
+    )?;
+    Ok(())
+}
+
 fn operation(
     db: &Connection,
     run: &str,
@@ -194,6 +273,55 @@ pub(crate) fn reconciliation(
 }
 
 impl SqliteSessionStore {
+    pub(crate) async fn remote_saved_file(
+        &self,
+        session: &SessionId,
+        call: crate::agent::message::ToolCall,
+        output: serde_json::Value,
+    ) -> anyhow::Result<Option<crate::agent::FileAttachment>> {
+        let session = session.as_str().to_owned();
+        self.with_connection(move |db| {
+            let mut query=db.prepare("SELECT a.payload,o.payload,b.manifest FROM remote_tool_attachments a JOIN remote_operations o USING(run_id,call_id) JOIN runs r ON r.id=o.run_id JOIN remote_bindings b ON b.connection_id=o.connection_id AND b.generation=o.generation WHERE r.session_id=?1 AND o.call_id=?2 ORDER BY o.rowid DESC")?;
+            for row in query.query_map(params![session,call.call_id],|row|Ok((row.get::<_,Vec<u8>>(0)?,row.get::<_,Vec<u8>>(1)?,row.get::<_,Vec<u8>>(2)?)))? {
+                let (file,receipt,manifest)=row?;
+                let receipt:OperationReceipt=serde_json::from_slice(&receipt)?;
+                let manifest:EnvironmentManifest=serde_json::from_slice(&manifest)?;
+                if receipt.invocation.arguments==call.arguments
+                    && receipt.result.as_ref().is_some_and(|result|result.output==output)
+                    && manifest.tools.iter().any(|tool|tool.id==receipt.invocation.tool_id && super::tools::alias(&receipt.invocation.environment,tool)==call.name) {
+                    return Ok(Some(serde_json::from_slice(&file)?));
+                }
+            }
+            Ok(None)
+        }).await
+    }
+
+    pub(crate) async fn remote_history_origins(
+        &self,
+        session: &SessionId,
+        calls: Vec<(String, String)>,
+    ) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
+        let session = session.as_str().to_owned();
+        self.with_connection(move |db| {
+            let mut origins = std::collections::HashMap::new();
+            let mut query = db.prepare("SELECT o.connection_id,o.generation,o.payload,b.manifest FROM remote_operations o JOIN runs r ON r.id=o.run_id JOIN remote_bindings b ON b.connection_id=o.connection_id AND b.generation=o.generation WHERE r.session_id=?1 AND o.call_id=?2 ORDER BY o.rowid DESC")?;
+            // Bound the query to displayed call IDs, not the latest run or receipt window.
+            for (call, name) in calls {
+                for row in query.query_map(params![session,call], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Vec<u8>>(2)?,row.get::<_,Vec<u8>>(3)?)))? {
+                    let (connection,generation,payload,manifest) = row?;
+                    let key = EnvironmentKey { connection_id: connection.parse()?, generation: generation.parse()? };
+                    let receipt: OperationReceipt = serde_json::from_slice(&payload)?;
+                    let manifest: EnvironmentManifest = serde_json::from_slice(&manifest)?;
+                    if manifest.tools.iter().any(|tool| tool.id == receipt.invocation.tool_id && super::tools::alias(&key,tool) == name) {
+                        origins.insert(call.clone(),serde_json::json!({"label":manifest.label,"project_root":manifest.project_root,"environment":key,"tool_id":receipt.invocation.tool_id}));
+                        break;
+                    }
+                }
+            }
+            Ok(origins)
+        }).await
+    }
+
     pub(crate) async fn remote_reconciliation(
         &self,
         session: &SessionId,
@@ -378,6 +506,7 @@ impl SqliteSessionStore {
                 "Output exceeds 16 MiB"
             );
         }
+        let directory = self.attachment_directory();
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let (owner, saved) =
@@ -402,6 +531,7 @@ impl SqliteSessionStore {
                 return Ok(());
             }
             if serde_json::to_value(&saved)? != serde_json::to_value(&receipt)? {
+                save_selected_text(&tx, &directory, &receipt)?;
                 save(&tx, &receipt)?;
             }
             tx.commit()?;

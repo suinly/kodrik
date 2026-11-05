@@ -129,7 +129,7 @@ async fn serve(
                 biased;
                 _=async {let _=closed.wait_for(|closed|*closed).await;}=>anyhow::bail!("Environment revoked"),
                 _=tokio::time::sleep_until(expiry)=>anyhow::bail!("Heartbeat expired"),
-                _=check.tick()=>{ensure!(service.status(&session_id).await.is_some_and(|s|s.environment.as_ref()==Some(&key)),"Environment authority lost");},
+                _=check.tick()=>{ensure!(service.status(&session_id).await.is_some_and(|s|s.state=="connected" && s.environment.as_ref()==Some(&key)),"Environment authority lost");},
                 frame=receive(&mut socket)=>{
                     ensure!(clock.live(),"Lease expired or suspend gap detected");
                     let frame=frame?;

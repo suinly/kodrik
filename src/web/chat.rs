@@ -324,6 +324,8 @@ impl Chat {
         snapshot["command_approvals"] = json!(self.sessions.pending_command_approvals(id).await?);
         snapshot["command_audit_mode"] = json!(self.sessions.command_audit_mode(id).await?);
         self.decorate_versions(id, &mut snapshot).await?;
+        self.decorate_origins(id, &view.session, &mut snapshot)
+            .await?;
         Ok(snapshot)
     }
 
@@ -916,6 +918,34 @@ async fn attachment(
         _ => None,
     };
     let (mime, filename, bytes) = match kind.as_str() {
+        "tool_files" if index == 0 => {
+            let Some(crate::agent::message::Message::ToolResult(result)) = stored else {
+                return Err(error(StatusCode::NOT_FOUND, "Attachment not found"));
+            };
+            let call = session.messages()[..message]
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    crate::agent::message::Message::ToolCall(call)
+                        if call.call_id == result.call_id =>
+                    {
+                        Some(call.clone())
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?;
+            let file = chat
+                .sessions
+                .remote_saved_file(session.id(), call, result.content.output.clone())
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?;
+            (
+                file.mime_type.clone(),
+                file.filename.clone(),
+                file.bytes().await.map_err(internal)?,
+            )
+        }
         "files" => {
             let user = user.ok_or_else(|| error(StatusCode::NOT_FOUND, "Attachment not found"))?;
             let file = user
