@@ -154,6 +154,25 @@ test('active chat reports presence without a push subscription and clears it on 
   } finally {await browser.close();}
 });
 
+test('visible webhook event reports presence for approval notification routing', {timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  let hook;
+  try {
+    const page=await signedPage(browser);
+    const response=await page.request.post(new URL('api/webhooks',base).href,{headers:{Origin:new URL(base).origin},data:{name:'Presence hook',instruction:'Handle event.'}});
+    assert.equal(response.status(),201);hook=await response.json();
+    const delivered=await fetch(hook.url,{method:'POST',headers:{Authorization:`Bearer ${hook.token}`},body:'presence event'});
+    assert.equal(delivered.status,202);
+    const {conversation_id:id}=await delivered.json();
+    const opened=page.waitForResponse(response=>response.url().endsWith('/api/chat/push/presence') && response.request().postDataJSON()?.session_id===id,{timeout:5000});
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    assert.equal((await opened).status(),204);
+  } finally {
+    if(hook) await fetch(new URL(`api/webhooks/${hook.id}`,base),{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}});
+    await browser.close();
+  }
+});
+
 test('Telegram approval login shows only that user shared history without a code form', {timeout:60000},async()=>{
   const owner=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

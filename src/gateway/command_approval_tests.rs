@@ -47,6 +47,94 @@ async fn seed_command_approval(
 }
 
 #[tokio::test]
+async fn telegram_approvals_wait_until_the_source_is_not_visible_in_web() {
+    let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
+    let approval = seed_command_approval(&store, "web-source", "rm old.txt").await;
+    let gateway = gateway.clone().with_chat_runners(HashMap::from([(
+        SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
+    )]));
+    store.with_connection(|db| {
+        db.execute("INSERT INTO web_push_presence VALUES('browser','tab','web-source',?1)", [chrono::Utc::now().timestamp()])?;
+        Ok(())
+    }).await.unwrap();
+    let mut shown = Default::default();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    assert!(menus.lock().unwrap().is_empty(), "visible Web Chat must suppress Telegram");
+    assert!(shown.is_empty(), "suppression must not mark the request sent");
+    store.with_connection(|db| {
+        db.execute("UPDATE web_push_presence SET updated_at=?1", [chrono::Utc::now().timestamp()-46])?;
+        Ok(())
+    }).await.unwrap();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    assert_eq!(menus.lock().unwrap().len(), 1);
+    assert!(menus.lock().unwrap()[0].1.contains(&approval.tool_name));
+}
+
+#[tokio::test]
+async fn refused_telegram_deletions_do_not_starve_other_resolved_requests() {
+    struct RefusedDeletes {
+        sent: std::sync::atomic::AtomicUsize,
+        attempts: Arc<Mutex<Vec<String>>>,
+    }
+    #[async_trait::async_trait]
+    impl Interface for RefusedDeletes {
+        fn id(&self) -> InterfaceId { InterfaceId("telegram:test".into()) }
+        fn allows_recipient(&self, chat: &str) -> bool { chat == "42" }
+        async fn run(&self, _: mpsc::Sender<Event>) -> anyhow::Result<()> { Ok(()) }
+        async fn send(&self, _: &str, _: &str) -> anyhow::Result<MessageId> {
+            Ok(MessageId(self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst).to_string()))
+        }
+        async fn delete(&self, chat: &str, id: &MessageId) -> anyhow::Result<()> {
+            assert_eq!(chat, "42");
+            self.attempts.lock().unwrap().push(id.0.clone());
+            anyhow::bail!("temporary refusal")
+        }
+    }
+    let (_dir, mut gateway, store, _, _, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
+    let attempts = Arc::new(Mutex::new(vec![]));
+    gateway.interfaces = vec![Arc::new(RefusedDeletes { sent: Default::default(), attempts: attempts.clone() })];
+    let gateway = gateway.clone().with_chat_runners(HashMap::from([(
+        SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
+    )]));
+    let mut approvals = vec![];
+    for i in 0..6 {
+        let session = format!("background-{i}");
+        let approval = seed_command_approval(&store, &session, "rm old.txt").await;
+        approvals.push((session, approval.id));
+    }
+    let mut shown = Default::default();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    for (session, id) in approvals {
+        store.decide_command_approval(&session, &id, true).await.unwrap();
+    }
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    let attempted: std::collections::HashSet<_> = attempts.lock().unwrap().iter().cloned().collect();
+    assert_eq!(attempted.len(), 6, "every resolved request gets a deletion attempt");
+    assert_eq!(shown.len(), 6, "failed deletions stay tracked for retry");
+}
+
+#[tokio::test]
+async fn telegram_removes_the_sent_request_after_a_web_decision() {
+    let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
+    let approval = seed_command_approval(&store, "web-source", "rm old.txt").await;
+    let gateway = gateway.clone().with_chat_runners(HashMap::from([(
+        SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
+    )]));
+    let mut shown = Default::default();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    assert_eq!(menus.lock().unwrap().len(), 1);
+    store.decide_command_approval("web-source", &approval.id, true).await.unwrap();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    gateway.show_command_approvals(&mut shown).await.unwrap();
+    assert!(shown.is_empty());
+    let menus = menus.lock().unwrap();
+    assert_eq!(menus.len(), 2, "delete exactly once after the durable decision");
+    assert_eq!(menus[1].1, "deleted:42:1");
+}
+
+#[tokio::test]
 async fn telegram_background_approvals_scan_personal_store_once_and_resolve_old_session() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
     let old = seed_command_approval(&store, "old-personal-session", "rm old.txt").await;
@@ -501,7 +589,7 @@ async fn telegram_command_approval_is_durable_explicit_and_single_use() {
     for action in ["a", "r"] {
         let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
         let approval = seed_command_approval(&store, "telegram:test:42", "rm important.txt").await;
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = HashMap::new();
         gateway.show_command_approvals(&mut shown).await.unwrap();
         gateway.show_command_approvals(&mut shown).await.unwrap();
         assert_eq!(

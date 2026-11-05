@@ -230,7 +230,7 @@ impl GatewayRunner {
 
     pub(super) async fn show_command_approvals(
         &self,
-        shown: &mut HashSet<(String, String)>,
+        shown: &mut HashMap<(String, String), (SessionId, MessageId, std::time::Instant)>,
     ) -> anyhow::Result<()> {
         let mut jobs: Vec<_> = if let Some(runners) = &self.chat_runners {
             runners
@@ -248,6 +248,9 @@ impl GatewayRunner {
         if let Some(recipient) = &self.approval_recipient {
             jobs.push((recipient.clone(), self.runner_for(recipient)?.clone()));
         }
+        for (conversation, _, _) in shown.values() {
+            jobs.push((conversation.clone(), self.runner_for(conversation)?.clone()));
+        }
         jobs.sort_by_key(|(id, _)| {
             (
                 Some(id) != self.approval_recipient.as_ref(),
@@ -256,6 +259,7 @@ impl GatewayRunner {
         });
         let mut pending = HashSet::new();
         let mut scanned = HashSet::new();
+        let mut reachable = HashSet::new();
         let mut remaining = 5;
         for (conversation, runner) in jobs {
             let Some((interface_id, chat)) = conversation.as_str().rsplit_once(':') else {
@@ -289,6 +293,7 @@ impl GatewayRunner {
             if self.chat_runners.is_some() && !scanned.insert(store_key.clone()) {
                 continue;
             }
+            reachable.insert(store_key.clone());
             for session in approval_sessions(&store).await? {
                 for approval in store
                     .pending_command_approvals(session.id().as_str())
@@ -302,7 +307,19 @@ impl GatewayRunner {
                     }
                     let key = (store_key.clone(), approval.id.clone());
                     pending.insert(key.clone());
-                    if shown.contains(&key) || remaining == 0 {
+                    if shown.contains_key(&key) || remaining == 0 {
+                        continue;
+                    }
+                    let source = session.id().as_str().to_owned();
+                    let visible = store.with_connection(move |db| {
+                        let branches: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_chat_branches')", [], |row| row.get(0))?;
+                        let root = if branches {
+                            db.query_row("SELECT coalesce((SELECT root_id FROM web_chat_branches WHERE session_id=?1),?1)", [&source], |row| row.get::<_,String>(0))?
+                        } else { source };
+                        Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM web_push_presence WHERE session_id=?1 AND updated_at>?2)",
+                            rusqlite::params![root, chrono::Utc::now().timestamp()-45], |row| row.get::<_,bool>(0))?)
+                    }).await?;
+                    if visible {
                         continue;
                     }
                     remaining -= 1;
@@ -318,8 +335,9 @@ impl GatewayRunner {
                     )
                     .await
                     {
-                        Ok(Ok(_)) => {
-                            shown.insert(key);
+                        Ok(Ok(id)) => {
+                            shown
+                                .insert(key, (conversation.clone(), id, std::time::Instant::now()));
                         }
                         Ok(Err(error)) => warn!("Could not send command approval: {error:#}"),
                         Err(_) => warn!("Sending command approval timed out"),
@@ -327,7 +345,31 @@ impl GatewayRunner {
                 }
             }
         }
-        shown.retain(|key| pending.contains(key));
+        let mut stale: Vec<_> = shown
+            .iter()
+            .filter(|(key, _)| reachable.contains(&key.0) && !pending.contains(*key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        // Oldest attempts first so refused deletions cannot starve other messages.
+        stale.sort_by_key(|(_, (_, _, attempted))| *attempted);
+        for (key, (conversation, id, _)) in stale.into_iter().take(5) {
+            let Some((interface_id, chat)) = conversation.as_str().rsplit_once(':') else {
+                continue;
+            };
+            let Some(interface) = self.interfaces.iter().find(|interface| {
+                interface.id().0 == interface_id && interface.allows_recipient(chat)
+            }) else {
+                continue;
+            };
+            shown.get_mut(&key).unwrap().2 = std::time::Instant::now();
+            match tokio::time::timeout(Duration::from_secs(5), interface.delete(chat, &id)).await {
+                Ok(Ok(())) => {
+                    shown.remove(&key);
+                }
+                Ok(Err(error)) => warn!("Could not delete command approval: {error:#}"),
+                Err(_) => warn!("Deleting command approval timed out"),
+            }
+        }
         Ok(())
     }
 

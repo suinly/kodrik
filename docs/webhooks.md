@@ -55,6 +55,13 @@ Telegram receives approval requests, and opted-in Web Push subscriptions receive
 an approval notification linking back to that conversation. Notification delivery
 does not grant approval or bypass the selected mode.
 
+Telegram approval notifications are suppressed while the source conversation is
+visible and focused in Web Chat, including webhook events. Closing or leaving
+the conversation allows Telegram delivery again (stale browser presence expires
+after 45 seconds). When a request is resolved in Web Chat, its Telegram message
+is removed on the next approval scan. Message IDs are tracked for the current
+gateway process; cleanup cannot recover messages sent before a gateway restart.
+
 Wakeups scheduled from a personal conversation retain that source session and
 generation for tool audit and approvals, including when scheduled from a webhook
 conversation. They use the source session's policy rather than a later global

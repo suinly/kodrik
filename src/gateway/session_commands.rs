@@ -314,6 +314,13 @@ mod tests {
             self.callbacks.lock().unwrap().push(id.into());
             Ok(())
         }
+        async fn delete(&self, chat: &str, id: &MessageId) -> anyhow::Result<()> {
+            self.menus
+                .lock()
+                .unwrap()
+                .push((true, format!("deleted:{chat}:{}", id.0), vec![]));
+            Ok(())
+        }
         async fn answer_guest(&self, _: &str, text: &str) -> anyhow::Result<MessageId> {
             self.send("guest", text).await
         }

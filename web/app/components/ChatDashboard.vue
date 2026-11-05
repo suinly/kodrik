@@ -34,7 +34,7 @@ let navigationRevision=0
 const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks')
 const showEvents = computed(()=>section.value==='webhooks' && webhookTab.value==='events')
 const viewingConversation = computed(()=>section.value==='chat' || showEvents.value && !!selected.value?.webhook)
-const pushConversation = computed(()=>viewingConversation.value && !restoring.value && !locationError.value && !selected.value?.webhook ? selected.value?.id ?? null : null)
+const pushConversation = computed(()=>viewingConversation.value && !restoring.value && !locationError.value ? selected.value?.id ?? null : null)
 const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value) }
 watch([pushConversation,pushEnabled],reportPushPresence)
 useIntervalFn(reportPushPresence,15000)

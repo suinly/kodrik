@@ -337,7 +337,7 @@ impl GatewayRunner {
         delivery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut approval_tick = tokio::time::interval(Duration::from_secs(1));
         approval_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut shown_approvals = std::collections::HashSet::new();
+        let mut shown_approvals = HashMap::new();
         let mut approval_tasks = tokio::task::JoinSet::new();
         loop {
             if *shutdown.borrow() {

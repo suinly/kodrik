@@ -1261,14 +1261,25 @@ impl Interface for TelegramInterface {
     }
 
     async fn delete(&self, conversation_id: &str, id: &MessageId) -> anyhow::Result<()> {
-        let body = self
+        let result = self
             .api_request(
                 "deleteMessage",
                 json!({
                     "chat_id": conversation_id.parse::<i64>()?, "message_id": id.0.parse::<i32>()?,
                 }),
             )
-            .await?;
+            .await;
+        if result.as_ref().is_err_and(|error| {
+            error
+                .downcast_ref::<super::SendRejection>()
+                .is_some_and(|error| {
+                    error.error_code == 400
+                        && error.description.ends_with("message to delete not found")
+                })
+        }) {
+            return Ok(());
+        }
+        let body = result?;
         anyhow::ensure!(
             body["result"] == true,
             "Telegram deleteMessage did not confirm deletion"
@@ -1417,6 +1428,16 @@ mod tests {
         );
         interface
             .send_buttons("7", "Confirm login", &[])
+            .await
+            .unwrap();
+        request.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deleting_an_already_missing_message_is_complete() {
+        let (interface, request) = server("400 Bad Request", json!({"ok":false,"error_code":400,"description":"Bad Request: message to delete not found"})).await;
+        interface
+            .delete("42", &MessageId("123".into()))
             .await
             .unwrap();
         request.await.unwrap();
