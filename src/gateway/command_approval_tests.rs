@@ -3,6 +3,15 @@ async fn seed_command_approval(
     conversation: &str,
     cmd: &str,
 ) -> crate::agent::command_audit::CommandApproval {
+    seed_approval_from(store, conversation, conversation, cmd).await
+}
+
+async fn seed_approval_from(
+    store: &SqliteSessionStore,
+    conversation: &str,
+    channel: &str,
+    cmd: &str,
+) -> crate::agent::command_audit::CommandApproval {
     use crate::agent::{
         message::ToolCall,
         run_state::{Checkpoint, RunPhase},
@@ -14,6 +23,12 @@ async fn seed_command_approval(
         arguments: serde_json::json!({"cmd":cmd, "workdir":"/workspace"}),
     };
     session.push(Message::ToolCall(call.clone()));
+    if conversation != channel {
+        let mut history = Checkpoint::new(store, session.id(), &session);
+        history.record.conversation_id = channel.into();
+        history.record.routing_from = Some(store.active_id(&SessionId::new(channel)).await.unwrap().as_str().to_owned());
+        history.save(&session, RunPhase::Completed, None).await.unwrap();
+    }
     let mut checkpoint = Checkpoint::new(store, session.id(), &session);
     checkpoint.record.pending_calls = vec![call.clone()];
     checkpoint
@@ -47,9 +62,22 @@ async fn seed_command_approval(
 }
 
 #[tokio::test]
+async fn telegram_approvals_ignore_web_and_tui_without_telegram_history() {
+    let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
+    for session in ["web-only", "cli:interactive:1"] {
+        seed_command_approval(&store, session, "rm private.txt").await;
+    }
+    let gateway = gateway.clone().with_chat_runners(HashMap::from([(
+        SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
+    )]));
+    gateway.show_command_approvals(&mut Default::default()).await.unwrap();
+    assert!(menus.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn telegram_approvals_wait_until_the_source_is_not_visible_in_web() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
-    let approval = seed_command_approval(&store, "web-source", "rm old.txt").await;
+    let approval = seed_approval_from(&store, "web-source", "telegram:test:42", "rm old.txt").await;
     let gateway = gateway.clone().with_chat_runners(HashMap::from([(
         SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
     )]));
@@ -99,7 +127,7 @@ async fn refused_telegram_deletions_do_not_starve_other_resolved_requests() {
     let mut approvals = vec![];
     for i in 0..6 {
         let session = format!("background-{i}");
-        let approval = seed_command_approval(&store, &session, "rm old.txt").await;
+        let approval = seed_approval_from(&store, &session, "telegram:test:42", "rm old.txt").await;
         approvals.push((session, approval.id));
     }
     let mut shown = Default::default();
@@ -118,7 +146,7 @@ async fn refused_telegram_deletions_do_not_starve_other_resolved_requests() {
 #[tokio::test]
 async fn telegram_removes_the_sent_request_after_a_web_decision() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
-    let approval = seed_command_approval(&store, "web-source", "rm old.txt").await;
+    let approval = seed_approval_from(&store, "web-source", "telegram:test:42", "rm old.txt").await;
     let gateway = gateway.clone().with_chat_runners(HashMap::from([(
         SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
     )]));
@@ -137,7 +165,7 @@ async fn telegram_removes_the_sent_request_after_a_web_decision() {
 #[tokio::test]
 async fn telegram_background_approvals_scan_personal_store_once_and_resolve_old_session() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
-    let old = seed_command_approval(&store, "old-personal-session", "rm old.txt").await;
+    let old = seed_approval_from(&store, "old-personal-session", "telegram:test:42", "rm old.txt").await;
     seed_command_approval(&store, "telegram:test:-100", "rm group.txt").await;
     seed_command_approval(&store, "telegram:test:42:guest", "rm guest.txt").await;
     seed_command_approval(&store, "companion:private", "rm internal.txt").await;
@@ -226,7 +254,7 @@ async fn telegram_background_approvals_cannot_cross_user_stores() {
 }
 
 #[tokio::test]
-async fn telegram_webhook_approval_requires_owner_fallback_and_displays_recorded_source() {
+async fn telegram_webhook_approval_requires_telegram_history_not_owner_fallback() {
     let (_dir, mut gateway, store, sent, menus, _) =
         setup_with_model(vec![], Arc::new(NoModel)).await;
     let id = "59ab817a-af67-4fb8-b58d-161644c24f34";
@@ -272,44 +300,14 @@ async fn telegram_webhook_approval_requires_owner_fallback_and_displays_recorded
     assert!(gateway.handle_command_approval(&message).await.is_err());
     gateway.approval_recipient = Some(SessionId::new("telegram:test:42"));
     gateway.approval_web_base = Some(reqwest::Url::parse("https://example.com/kodrik/").unwrap());
-    gateway
-        .show_command_approvals(&mut Default::default())
-        .await
-        .unwrap();
-    {
-        let sent = sent.lock().unwrap();
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, "42");
-        for context in [
-            id,
-            "Site errors",
-            "hook-123",
-            "webhook:hook-123:delivery-456",
-            &approval.run_id,
-            "exec_command",
-            "rm webhook.txt",
-            "https://example.com/kodrik/app/chat/59ab817a-af67-4fb8-b58d-161644c24f34",
-        ] {
-            assert!(
-                sent[0].1.contains(context),
-                "missing {context}: {}",
-                sent[0].1
-            );
-        }
-        assert!(!sent[0].1.contains("PRIVATE INSTRUCTION"));
-    }
-    let mut foreign = message.clone();
-    foreign.source.conversation_id = "7".into();
-    assert!(gateway.handle_command_approval(&foreign).await.is_err());
-    gateway.handle_command_approval(&message).await.unwrap();
-    assert!(
-        store
-            .pending_command_approvals(id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    gateway = gateway.clone().with_chat_runners(HashMap::from([(
+        SessionId::new("telegram:test:42"), gateway.agent_runner.clone(),
+    )]));
+    gateway.show_command_approvals(&mut Default::default()).await.unwrap();
+    assert!(menus.lock().unwrap().is_empty(), "webhook without Telegram history stays in Web");
     assert!(gateway.handle_command_approval(&message).await.is_err());
+    assert!(sent.lock().unwrap().is_empty());
+    assert_eq!(store.pending_command_approvals(id).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -343,7 +341,7 @@ async fn telegram_unbound_approval_discovery_never_leaks_other_sources_to_first_
 async fn telegram_background_approval_scan_keeps_delivery_cap_and_context_budget() {
     let (_dir, gateway, store, _, menus, _) = setup_with_model(vec![], Arc::new(NoModel)).await;
     for index in 0..7 {
-        seed_command_approval(&store, &format!("background-{index}"), "rm queued.txt").await;
+        seed_approval_from(&store, &format!("background-{index}"), "telegram:test:42", "rm queued.txt").await;
     }
     let gateway = gateway.clone().with_chat_runners(HashMap::from([(
         SessionId::new("telegram:test:42"),
@@ -356,7 +354,7 @@ async fn telegram_background_approval_scan_keeps_delivery_cap_and_context_budget
     assert_eq!(menus.lock().unwrap().len(), 7);
     gateway.show_command_approvals(&mut shown).await.unwrap();
     assert_eq!(menus.lock().unwrap().len(), 7);
-    let approval = seed_command_approval(&store, "oversized-context", "rm small.txt").await;
+    let approval = seed_approval_from(&store, "oversized-context", "telegram:test:42", "rm small.txt").await;
     let mut session = store
         .load(&SessionId::new("oversized-context"))
         .await

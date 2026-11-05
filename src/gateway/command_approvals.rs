@@ -88,21 +88,24 @@ impl GatewayRunner {
         store: &SqliteSessionStore,
         conversation: &SessionId,
         session: &Session,
-        approval: &CommandApproval,
+        _approval: &CommandApproval,
     ) -> anyhow::Result<bool> {
-        if self.chat_runners.is_some() || session.id() == conversation {
+        if session.id() == conversation {
             return Ok(true);
         }
-        let Some((run, _)) = store.load_run(&approval.run_id).await? else {
-            return Ok(false);
-        };
-        if run.conversation_id.starts_with("telegram:") {
-            return Ok(run.conversation_id == conversation.as_str());
-        }
-        if session.id().as_str().starts_with("telegram:") {
-            return Ok(false);
-        }
-        Ok(self.approval_recipient.as_ref() == Some(conversation))
+        let (session, conversation) = (
+            session.id().as_str().to_owned(),
+            conversation.as_str().to_owned(),
+        );
+        store
+            .with_connection(move |db| {
+                Ok(db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND conversation_id=?2)",
+                    rusqlite::params![session, conversation],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
     }
 
     async fn approval_context(
@@ -290,7 +293,7 @@ impl GatewayRunner {
                     )?)
                 })
                 .await?;
-            if self.chat_runners.is_some() && !scanned.insert(store_key.clone()) {
+            if !scanned.insert((store_key.clone(), conversation.clone())) {
                 continue;
             }
             reachable.insert(store_key.clone());

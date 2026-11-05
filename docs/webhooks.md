@@ -50,8 +50,10 @@ captured with the session and delivery in the admission transaction, before work
 starts. Changing the webhook setting affects future deliveries, not old or running
 sessions, and starts a new conversation window when its captured mode differs.
 
-Pending approvals are available in the source conversation. Configured owner
-Telegram receives approval requests, and opted-in Web Push subscriptions receive
+Pending approvals are available in the source conversation. Telegram receives
+approval requests only for conversations that have been used in that Telegram
+chat; configuring an owner alone does not route Web, TUI or webhook approvals
+there. Wakeups use their source conversation's Telegram history. Opted-in Web Push subscriptions receive
 an approval notification linking back to that conversation. Notification delivery
 does not grant approval or bypass the selected mode.
 
