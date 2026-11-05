@@ -194,6 +194,30 @@ impl AgentRunner {
             durable.request.isolated == self.agent.isolated(),
             "Wakeup execution permissions changed"
         );
+        let source = self
+            .sessions
+            .load(&SessionId::new(
+                task.source_session
+                    .as_deref()
+                    .context("Missing wakeup source")?,
+            ))
+            .await?;
+        let Some(source) = source else {
+            self.cancel_conversation(&internal).await?;
+            self.cancel_queued_input(&internal, &durable.request.request_id)
+                .await?;
+            let journal = journal.clone();
+            crate::agent::run_state::spawn_owned_blocking(move || {
+                journal.finish(
+                    &task.id,
+                    Status::Failed,
+                    Some("Wakeup source session not found".into()),
+                    None,
+                )
+            })
+            .await??;
+            return Ok(());
+        };
         let submitted = store.submit(durable.request.clone()).await?;
         let ownership = store
             .claim_execution(internal.as_str(), internal.as_str())
@@ -215,11 +239,16 @@ impl AgentRunner {
                 true,
             )
         } else {
-            let session = Session::new(internal.clone());
+            let mut session = Session::new(internal.clone());
+            session.approval_parent = Some((
+                source.id().as_str().to_owned(),
+                source.generation().to_owned(),
+            ));
             let mut cp = Checkpoint::new(store, &internal, &session);
             cp.ownership = Some(ownership.clone());
             cp.record.submission_ids.push(submitted.id.clone());
             cp.record.model_limit = Some(16);
+            // Human approval waits count against the same bounded execution deadline.
             cp.record.deadline_at = Some(durable.deadline_at);
             (cp, session, false)
         };
@@ -405,7 +434,8 @@ mod durable_tests {
     use crate::{
         agent::inbox::{BusyMode, SubmissionRequest},
         agent::{
-            Agent, AssistantMessage, ContextBuilder, session::SqliteSessionStore,
+            Agent, AssistantMessage, ContextBuilder,
+            session::{SessionStore, SqliteSessionStore},
             tools::ToolRegistry,
         },
         gateway::{IncomingMessage, InterfaceId},
@@ -495,6 +525,9 @@ mod durable_tests {
             )),
             sql.clone(),
         );
+        sql.save(&Session::new(SessionId::new("source")))
+            .await
+            .unwrap();
         runner
             .execute_wakeup(Some(&Chat), &store, &claimed, now)
             .await

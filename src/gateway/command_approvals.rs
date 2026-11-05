@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     agent::{
         command_audit::{CommandApproval, CommandAuditMode},
-        session::SessionStore,
+        session::{Session, SessionStore, SqliteSessionStore},
     },
     interfaces::InlineButton,
 };
@@ -12,10 +12,11 @@ fn approval_view(
     approval: &CommandApproval,
     session: &str,
     language: Language,
+    context: &str,
 ) -> (String, Vec<Vec<InlineButton>>) {
     // Literal menus and debug quoting keep command control characters visible.
     let text = format!(
-        "{}\n{}: {:?}\n{}: {:?}\n{}: {}",
+        "{}\n{context}\n{}: {:?}\n{}: {:?}\n{}: {}",
         language.pick("Tool approval required", "Требуется подтверждение действия"),
         language.pick("Tool", "Инструмент"),
         approval.tool_name,
@@ -26,10 +27,10 @@ fn approval_view(
     );
     // Never offer approval for a command that Telegram cannot display completely.
     if text.encode_utf16().count() > 4000 || approval.id.len() > 59 {
-        let text = format!("{}\n{}: {session}\n/approvals {session}", language.pick(
+        let text = format!("{}\n{}\n{}: {session}\n/approvals {session}", language.pick(
             "A tool call needs approval, but is too long to review here. Open this session in Web or TUI using the same local store and review the complete tool call before allowing it. TUI command:",
             "Вызов инструмента требует подтверждения, но слишком длинная для просмотра здесь. Откройте диалог в Web или TUI с тем же локальным хранилищем и просмотрите вызов целиком. Команда TUI:",
-        ), language.pick("Session", "Сеанс"));
+        ), context.chars().take(1500).collect::<String>(), language.pick("Session", "Сеанс"));
         return (
             if text.encode_utf16().count() <= 4000 {
                 text
@@ -65,7 +66,101 @@ fn approval_view(
     )
 }
 
+async fn approval_sessions(store: &SqliteSessionStore) -> anyhow::Result<Vec<Session>> {
+    let ids: Vec<String> = store.with_connection(|db| {
+        let mut query = db.prepare("SELECT DISTINCT a.session_id FROM command_audits a JOIN runs r ON r.id=a.run_id WHERE r.terminal=0 ORDER BY a.session_id")?;
+        Ok(query.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?)
+    }).await?;
+    let mut sessions = Vec::new();
+    for id in ids {
+        if let Some(session) = store.load(&SessionId::new(id)).await?
+            && super::session_commands::personal_session(&session)
+        {
+            sessions.push(session);
+        }
+    }
+    Ok(sessions)
+}
+
 impl GatewayRunner {
+    async fn approval_recipient_allowed(
+        &self,
+        store: &SqliteSessionStore,
+        conversation: &SessionId,
+        session: &Session,
+        approval: &CommandApproval,
+    ) -> anyhow::Result<bool> {
+        if self.chat_runners.is_some() || session.id() == conversation {
+            return Ok(true);
+        }
+        let Some((run, _)) = store.load_run(&approval.run_id).await? else {
+            return Ok(false);
+        };
+        if run.conversation_id.starts_with("telegram:") {
+            return Ok(run.conversation_id == conversation.as_str());
+        }
+        if session.id().as_str().starts_with("telegram:") {
+            return Ok(false);
+        }
+        Ok(self.approval_recipient.as_ref() == Some(conversation))
+    }
+
+    async fn approval_context(
+        &self,
+        store: &SqliteSessionStore,
+        session: &Session,
+        approval: &CommandApproval,
+        language: Language,
+    ) -> anyhow::Result<String> {
+        let mut context = format!(
+            "{}: {:?}\n{}: {:?}",
+            language.pick("Session", "Сеанс"),
+            session.id().as_str(),
+            language.pick("Run", "Запуск"),
+            approval.run_id
+        );
+        if let Some(recorded) = session
+            .webhook_instruction
+            .as_deref()
+            .and_then(|text| text.strip_prefix("## Recorded delivery source\n"))
+            .and_then(|text| text.lines().next())
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        {
+            context.push_str(&format!(
+                "\nWebhook: {:?} ({:?})",
+                recorded["webhook_name"].as_str().unwrap_or_default(),
+                recorded["webhook_id"].as_str().unwrap_or_default()
+            ));
+        }
+        if let Some((run, _)) = store.load_run(&approval.run_id).await? {
+            if run.conversation_id.starts_with("companion:wakeup:") {
+                context.push_str(&format!(
+                    "\n{}: {:?}",
+                    language.pick("Wakeup", "Пробуждение"),
+                    run.conversation_id
+                ));
+            }
+            for id in &run.submission_ids {
+                if let Some(submission) = store.submission_by_id(id).await? {
+                    context.push_str(&format!(
+                        "\n{}: {:?}",
+                        language.pick("Request", "Запрос"),
+                        submission.request.request_id
+                    ));
+                }
+            }
+        }
+        if let Some(base) = &self.approval_web_base {
+            let mut url = base.join("app/chat/")?;
+            url.path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Invalid Web base URL"))?
+                .pop_if_empty()
+                .push(session.id().as_str());
+            context.push_str(&format!("\n{}: {url}", language.pick("Review", "Просмотр")));
+        }
+        Ok(context)
+    }
+
     pub(super) async fn audit_command_text(
         &self,
         message: &IncomingMessage,
@@ -137,7 +232,7 @@ impl GatewayRunner {
         &self,
         shown: &mut HashSet<(String, String)>,
     ) -> anyhow::Result<()> {
-        let jobs: Vec<_> = if let Some(runners) = &self.chat_runners {
+        let mut jobs: Vec<_> = if let Some(runners) = &self.chat_runners {
             runners
                 .iter()
                 .map(|(id, runner)| (id.clone(), runner.clone()))
@@ -150,7 +245,17 @@ impl GatewayRunner {
                 .map(|id| (id, self.agent_runner.clone()))
                 .collect()
         };
+        if let Some(recipient) = &self.approval_recipient {
+            jobs.push((recipient.clone(), self.runner_for(recipient)?.clone()));
+        }
+        jobs.sort_by_key(|(id, _)| {
+            (
+                Some(id) != self.approval_recipient.as_ref(),
+                id.as_str().to_owned(),
+            )
+        });
         let mut pending = HashSet::new();
+        let mut scanned = HashSet::new();
         let mut remaining = 5;
         for (conversation, runner) in jobs {
             let Some((interface_id, chat)) = conversation.as_str().rsplit_once(':') else {
@@ -172,27 +277,53 @@ impl GatewayRunner {
             let Some(store) = runner.sqlite_store() else {
                 continue;
             };
-            let session = store.active_id(&conversation).await?;
-            for approval in store.pending_command_approvals(session.as_str()).await? {
-                let key = (conversation.as_str().to_owned(), approval.id.clone());
-                pending.insert(key.clone());
-                if shown.contains(&key) || remaining == 0 {
-                    continue;
-                }
-                remaining -= 1;
-                let (text, buttons) =
-                    approval_view(&approval, session.as_str(), interface.language(chat));
-                match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    interface.send_buttons(chat, &text, &buttons),
-                )
-                .await
+            let store_key: String = store
+                .with_connection(|db| {
+                    Ok(db.query_row(
+                        "SELECT file FROM pragma_database_list WHERE name='main'",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await?;
+            if self.chat_runners.is_some() && !scanned.insert(store_key.clone()) {
+                continue;
+            }
+            for session in approval_sessions(&store).await? {
+                for approval in store
+                    .pending_command_approvals(session.id().as_str())
+                    .await?
                 {
-                    Ok(Ok(_)) => {
-                        shown.insert(key);
+                    if !self
+                        .approval_recipient_allowed(&store, &conversation, &session, &approval)
+                        .await?
+                    {
+                        continue;
                     }
-                    Ok(Err(error)) => warn!("Could not send command approval: {error:#}"),
-                    Err(_) => warn!("Sending command approval timed out"),
+                    let key = (store_key.clone(), approval.id.clone());
+                    pending.insert(key.clone());
+                    if shown.contains(&key) || remaining == 0 {
+                        continue;
+                    }
+                    remaining -= 1;
+                    let language = interface.language(chat);
+                    let context = self
+                        .approval_context(&store, &session, &approval, language)
+                        .await?;
+                    let (text, buttons) =
+                        approval_view(&approval, session.id().as_str(), language, &context);
+                    match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        interface.send_buttons(chat, &text, &buttons),
+                    )
+                    .await
+                    {
+                        Ok(Ok(_)) => {
+                            shown.insert(key);
+                        }
+                        Ok(Err(error)) => warn!("Could not send command approval: {error:#}"),
+                        Err(_) => warn!("Sending command approval timed out"),
+                    }
                 }
             }
         }
@@ -263,28 +394,63 @@ impl GatewayRunner {
         let store = runner
             .sqlite_store()
             .context("Command approval store unavailable")?;
-        let session = store.active_id(&conversation).await?;
-        let pending = store.pending_command_approvals(session.as_str()).await?;
+        anyhow::ensure!(
+            self.interfaces
+                .iter()
+                .any(|interface| interface.id() == message.source.interface
+                    && interface.allows_recipient(&message.source.conversation_id)),
+            "Recipient unavailable"
+        );
+        let id_owned = (*id).to_owned();
+        let session_id: Option<String> = store.with_connection(move |db| {
+            use rusqlite::OptionalExtension;
+            Ok(db.query_row("SELECT a.session_id FROM command_audits a JOIN runs r ON r.id=a.run_id WHERE a.id=?1 AND r.terminal=0", [id_owned], |row| row.get(0)).optional()?)
+        }).await?;
+        let session = store
+            .load(&SessionId::new(
+                session_id.context("Command approval unavailable")?,
+            ))
+            .await?
+            .context("Session unavailable")?;
+        anyhow::ensure!(
+            super::session_commands::personal_session(&session),
+            "Personal session required"
+        );
+        let pending = store
+            .pending_command_approvals(session.id().as_str())
+            .await?;
         let approval = pending
             .iter()
             .find(|approval| approval.id == *id)
             .context("Command approval unavailable")?;
         anyhow::ensure!(
-            !approval_view(approval, session.as_str(), self.message_language(message))
-                .1
-                .is_empty(),
+            self.approval_recipient_allowed(&store, &conversation, &session, approval)
+                .await?,
+            "Private store binding required"
+        );
+        anyhow::ensure!(
+            !approval_view(
+                approval,
+                session.id().as_str(),
+                self.message_language(message),
+                &self
+                    .approval_context(&store, &session, approval, self.message_language(message))
+                    .await?
+            )
+            .1
+            .is_empty(),
             "Complete review requires Web or TUI"
         );
         let language = self.message_language(message);
         if *action == "s" {
             store
-                .disable_command_audit_for_approval(session.as_str(), id)
+                .disable_command_audit_for_approval(session.id().as_str(), id)
                 .await?;
             return Ok(language.pick("No checks for this session. Pending tool calls may proceed. /audit review enables AI review; /audit ask always asks.", "Без проверок для этого диалога. Ожидающие действия могут выполняться. /audit review включает проверку ИИ; /audit ask спрашивает всегда."));
         }
         let approve = *action == "a";
         store
-            .decide_command_approval(session.as_str(), id, approve)
+            .decide_command_approval(session.id().as_str(), id, approve)
             .await?;
         Ok(if approve {
             language.pick("Tool call allowed once.", "Действие разрешено один раз.")
@@ -311,18 +477,18 @@ mod tests {
             reason: "Destructive action".into(),
             reason_code: "destructive".into(),
         };
-        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        let (text, buttons) = approval_view(&approval, "session", Language::En, "");
         assert!(text.contains("rm -rf /tmp/test\\\\necho `done`"));
         assert!(text.contains("/tmp/a b"));
         assert!(text.contains("May delete data"));
         assert_eq!(buttons[0][0].data, "ca:a:request");
         assert_eq!(buttons[0][1].data, "ca:r:request");
         assert_eq!(buttons[1][0].data, "ca:s:request");
-        let (russian, _) = approval_view(&approval, "session", Language::Ru);
+        let (russian, _) = approval_view(&approval, "session", Language::Ru, "");
         assert!(russian.contains("Возможны удаление данных"));
         assert!(!russian.contains("Destructive action") && !russian.contains("May delete data"));
         approval.cmd = "🙂".repeat(2200);
-        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        let (text, buttons) = approval_view(&approval, "session", Language::En, "");
         assert!(buttons.is_empty());
         assert!(text.contains("Web or TUI"));
         assert!(text.contains("/approvals session"));

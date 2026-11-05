@@ -29,11 +29,38 @@ select another webhook or leave the section. It is shown only in the creation
 or rotation response and is not stored in browser storage. The server
 stores its SHA-256 hash in the existing private SQLite session database.
 
-You can edit the name/instruction, disable ingestion, rotate the token, or delete
+You can edit the name/instruction and tool audit mode, disable ingestion, rotate the token, or delete
 the webhook without restarting Kodrik or editing configuration. Rotating a token
 invalidates the previous one immediately. Disabling a webhook pauses ingestion;
 reenabling it accepts its current token again. Deleting it permanently disables
 its endpoint. Already accepted tasks and their conversations are preserved.
+
+### Tool audit and approvals
+
+Each webhook has its own **Webhook tool audit** setting:
+
+- `trusted` — **No checks**: tools run without audit or confirmation.
+- `review` — **AI review**: tools, including MCP calls, are reviewed; risky or
+  unclear actions require approval.
+- `ask` — **Always ask**: every tool call requires approval, without AI review.
+
+New webhooks default to `review`, independently of the profile's new-conversation
+setting. Existing webhook records are upgraded to `review`. The selected mode is
+captured with the session and delivery in the admission transaction, before work
+starts. Changing the webhook setting affects future deliveries, not old or running
+sessions, and starts a new conversation window when its captured mode differs.
+
+Pending approvals are available in the source conversation. Configured owner
+Telegram receives approval requests, and opted-in Web Push subscriptions receive
+an approval notification linking back to that conversation. Notification delivery
+does not grant approval or bypass the selected mode.
+
+Wakeups scheduled from a personal conversation retain that source session and
+generation for tool audit and approvals, including when scheduled from a webhook
+conversation. They use the source session's policy rather than a later global
+profile setting. A missing, replaced or non-personal source cannot silently gain
+trusted execution; legacy unbound wakeups retain fail-closed approval handling.
+See [Companion](companion.md) for wakeup execution and recovery limits.
 
 ## Manage through the agent
 
@@ -46,8 +73,8 @@ groups and guest queries cannot use it.
 | --- | --- | --- |
 | `list` | None | `webhooks` array with settings and endpoint URLs |
 | `get` | `id` | Webhook settings and endpoint URL |
-| `create` | `name`, `instruction`, optional `enabled` (defaults to true) | Webhook settings, URL and new `token` |
-| `update` | `id` and any of `name`, `instruction`, `enabled` | Updated settings; omitted/null fields stay unchanged |
+| `create` | `name`, `instruction`, optional `enabled` (defaults to true), `command_audit_mode` (defaults to `review`) | Webhook settings, URL and new `token` |
+| `update` | `id` and any of `name`, `instruction`, `enabled`, `command_audit_mode` | Updated settings; omitted/null fields stay unchanged |
 | `delete` | `id` | `id` and `deleted: true` |
 | `rotate_token` | `id` | New `token`; the old token stops working immediately |
 | `events` | `id` | `events` array with the last 30 accepted deliveries |
@@ -64,6 +91,12 @@ blank. `list` and `get` never return credentials. Creating or rotating a token
 returns its plaintext to the agent, so it is saved in conversation/tool history
 and sent to the configured model provider. Share it only with the owner or the
 intended sender. The webhook record still stores only its SHA-256 hash.
+
+The owner HTTP management API exposes `command_audit_mode` in creation and list
+responses and accepts it on `POST /api/webhooks` and `PATCH /api/webhooks/ID`.
+Only `trusted`, `review` and `ask` are valid. HTTP updates still supply the name
+and instruction; omitted or null mode preserves the saved setting. Omitted/null
+mode at creation defaults to `review`.
 
 Interrupted tool calls are not automatically replayed. After an uncertain change,
 inspect `list`/`get` before trying again. A token lost during creation or rotation
@@ -108,7 +141,7 @@ server restarts because it uses saved receipt times.
 
 For example, events received at 12:00 and 12:04 share a conversation. An event at
 12:05 starts a new one. Different webhooks always use separate conversations.
-Changing the saved owner instruction also starts a new conversation. Deleting a
+Changing the saved owner instruction or audit mode also starts a new conversation. Deleting a
 conversation prevents new events from reusing it.
 
 ## Send a notification to another channel
@@ -190,7 +223,7 @@ An error group can contain several distinct events. Choose delivery keys that
 identify individual events. Time-based grouping shares conversation context;
 matching events to incidents or existing PRs is not part of this endpoint.
 
-The session, owner instruction snapshot, queue submission and deduplication
+The session, owner instruction and audit mode snapshot, queue submission and deduplication
 receipt are committed in one SQLite transaction before returning 202. Accepted
 work continues if the sender disconnects and is recovered after a process
 restart using the existing agent recovery rules. Changing the webhook's

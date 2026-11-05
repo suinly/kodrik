@@ -73,6 +73,57 @@ async fn call(
 }
 
 #[tokio::test]
+async fn approval_push_context_identifies_background_source_without_arguments() {
+    use crate::agent::{
+        message::ToolCall,
+        run_state::{Checkpoint, RunPhase},
+    };
+    let (_dir, chat, _token) = fixture().await;
+    let mut session = Session::new(SessionId::new("webhook-session"));
+    session.webhook_instruction = Some(format!(
+        "## Recorded delivery source\n{}\n\n## Owner instruction\nprivate instruction",
+        json!({"webhook_name":"Incident monitor","webhook_id":"hook-id"})
+    ));
+    let call = ToolCall {
+        call_id: "call".into(),
+        name: "exec_command".into(),
+        arguments: json!({"cmd":"secret command"}),
+    };
+    session.push(Message::ToolCall(call.clone()));
+    let mut cp = Checkpoint::new(&chat.sessions, session.id(), &session);
+    cp.record.pending_calls = vec![call.clone()];
+    cp.save(
+        &session,
+        RunPhase::NeedTool {
+            call_id: call.call_id.clone(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    chat.sessions
+        .record_command_audits(&cp.record, &[(call, "destructive".into())])
+        .await
+        .unwrap();
+    let approval = chat
+        .sessions
+        .pending_command_approvals(session.id().as_str())
+        .await
+        .unwrap()
+        .remove(0);
+    let context = chat
+        .approval_push_context(&approval, session.id().as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        context,
+        json!({"source":"Webhook: Incident monitor (hook-id)","event":cp.record.id,"tool":"exec_command"})
+    );
+    assert!(!context.to_string().contains("secret"));
+    assert!(!context.to_string().contains("private instruction"));
+}
+
+#[tokio::test]
 async fn subscriptions_validate_endpoints_keys_and_session_ownership() {
     let (dir, chat, token) = fixture().await;
     let push = chat.push.as_ref().unwrap();

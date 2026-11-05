@@ -138,7 +138,7 @@ pub(crate) fn stage_personal_sessions(
                 ("web_chat_branches", &["session_id"][..], 4),
                 ("web_chat_selection", &["root_id"][..], 2),
                 ("web_chat_pins", &["root_id"][..], 1),
-                ("webhooks", &["id"][..], 6),
+                ("webhooks", &["id"][..], 7),
                 ("webhook_receipts", &["webhook_id", "request_key"][..], 5),
                 ("subagent_sessions", &["id"][..], 4),
             ] {
@@ -157,6 +157,9 @@ pub(crate) fn stage_personal_sessions(
                     )?;
                     if !exists {
                         tx.execute_batch(&definition)?;
+                    }
+                    if table == "webhooks" {
+                        crate::web::webhook_store::upgrade_audit_mode(&tx)?;
                     }
                     merge_table(&snapshot, &tx, table, keys, columns).with_context(|| {
                         format!(
@@ -200,7 +203,22 @@ fn merge_table(
     columns: usize,
 ) -> anyhow::Result<()> {
     // All identifiers come from the fixed schema above, never user input.
-    let select = format!("SELECT * FROM {table}");
+    let select = if table == "webhooks" {
+        let has_mode: bool = source.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('webhooks') WHERE name='command_audit_mode')",
+            [], |row| row.get(0),
+        )?;
+        format!(
+            "SELECT id,name,instruction,token_hash,enabled,created_at,{} FROM webhooks",
+            if has_mode {
+                "command_audit_mode"
+            } else {
+                "'review'"
+            }
+        )
+    } else {
+        format!("SELECT * FROM {table}")
+    };
     let placeholders = vec!["?"; columns].join(",");
     let names = if table == "submissions" && columns == 6 {
         "(id,conversation_id,request_id,payload_hash,sequence,payload)"
@@ -286,6 +304,99 @@ pub(crate) fn checkpoint_owner_destination(directory: &Path) -> anyhow::Result<(
 mod tests {
     use super::*;
     use crate::agent::session::{Session, SessionId, SessionStore};
+
+    #[tokio::test]
+    async fn owner_migration_preserves_webhook_modes_across_old_and_new_schemas() {
+        for legacy_first in [false, true] {
+            let old = tempfile::tempdir().unwrap();
+            let new = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            for (directory, legacy) in [(old.path(), true), (new.path(), false)] {
+                let store = SqliteSessionStore::open(directory.into()).unwrap();
+                store.with_connection(move |db| {
+                    db.execute_batch("CREATE TABLE webhooks (id TEXT PRIMARY KEY,name TEXT NOT NULL,instruction TEXT NOT NULL,token_hash TEXT NOT NULL,enabled INTEGER NOT NULL,created_at TEXT NOT NULL);
+                        INSERT INTO webhooks VALUES('shared','Shared','Investigate','hash',1,'2026-01-01');")?;
+                    if legacy {
+                        db.execute_batch("INSERT INTO webhooks VALUES('legacy','Old','Old instruction','old-token',0,'2026-01-01');")?;
+                    } else {
+                        db.execute_batch("ALTER TABLE webhooks ADD COLUMN command_audit_mode TEXT NOT NULL DEFAULT 'review';
+                            INSERT INTO webhooks VALUES('ask','Ask','Ask instruction','ask-token',0,'2026-01-01','ask');
+                            INSERT INTO webhooks VALUES('trusted','Trusted','Trusted instruction','trusted-token',1,'2026-01-01','trusted');")?;
+                    }
+                    Ok(())
+                }).await.unwrap();
+            }
+            let directories = if legacy_first {
+                vec![old.path().into(), new.path().into()]
+            } else {
+                vec![new.path().into(), old.path().into()]
+            };
+            stage_personal_sessions(&directories, destination.path()).unwrap();
+            let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+            let modes = migrated
+                .with_connection(|db| {
+                    Ok(db
+                        .prepare("SELECT id,command_audit_mode FROM webhooks ORDER BY id")?
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                modes,
+                vec![
+                    ("ask".into(), "ask".into()),
+                    ("legacy".into(), "review".into()),
+                    ("shared".into(), "review".into()),
+                    ("trusted".into(), "trusted".into())
+                ]
+            );
+            let settings = migrated
+                .with_connection(|db| {
+                    Ok(db
+                        .prepare(
+                            "SELECT id,instruction,token_hash,enabled FROM webhooks ORDER BY id",
+                        )?
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, bool>(3)?,
+                            ))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                settings,
+                vec![
+                    (
+                        "ask".into(),
+                        "Ask instruction".into(),
+                        "ask-token".into(),
+                        false
+                    ),
+                    (
+                        "legacy".into(),
+                        "Old instruction".into(),
+                        "old-token".into(),
+                        false
+                    ),
+                    ("shared".into(), "Investigate".into(), "hash".into(), true),
+                    (
+                        "trusted".into(),
+                        "Trusted instruction".into(),
+                        "trusted-token".into(),
+                        true
+                    ),
+                ]
+            );
+        }
+    }
 
     #[tokio::test]
     async fn owner_migration_preserves_command_audit_modes_and_profile() {

@@ -59,6 +59,17 @@ test('notification click focuses/navigates an existing app window or opens the c
   assert.deepEqual(w.focused,[true])
 })
 
+test('background approval push identifies its source, event and tool without command arguments',async()=>{
+  const w=await worker()
+  await w.fire('push',{data:{json:()=>({session_id:'hook-session',event_id:'approval:request',locale:'ru',approval_context:{source:'Webhook: Incident monitor (hook-id)',event:'delivery-id',tool:'exec_command'},arguments:'secret command'})}})
+  const [,options]=w.shown[0]
+  assert.ok(options.body.includes('Incident monitor'))
+  assert.ok(options.body.includes('delivery-id'))
+  assert.ok(options.body.includes('exec_command'))
+  assert.equal(options.data.url,'https://example.com/kodrik/app/chat/hook-session')
+  assert.ok(!JSON.stringify(w.shown).includes('secret command'))
+})
+
 test('malformed push still shows a generic notification; click cannot leave the app origin/scope',async()=>{
   const w=await worker()
   await w.fire('push',{data:{json:()=>{throw new Error('invalid')}}})

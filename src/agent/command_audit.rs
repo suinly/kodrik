@@ -9,7 +9,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CommandAuditMode {
     Trusted,
@@ -178,17 +180,10 @@ pub(super) async fn wait_for_decision(
             Some(Decision::Pending | Decision::Ask | Decision::Safe) => {
                 let (run_id, call_id) = (cp.record.id.clone(), call.call_id.clone());
                 let source: Option<String> = cp.store.with_connection(move |db| {
-                    Ok(db.query_row("SELECT r.conversation_id FROM command_audits a JOIN runs r ON r.session_id=a.session_id WHERE a.run_id=?1 AND a.call_id=?2 AND r.terminal=0 LIMIT 1", params![run_id,call_id],|r|r.get(0)).optional()?)
+                    let owner: Option<String> = db.query_row("SELECT session_id FROM command_audits WHERE run_id=?1 AND call_id=?2", params![run_id,call_id],|r|r.get(0)).optional()?;
+                    Ok(owner.filter(|id| audit_owner(db, id).ok().flatten().is_some_and(|session| personal_audit_owner(&session))))
                 }).await?;
-                let interactive = source.as_deref().is_some_and(|source| {
-                    !source.starts_with("companion:")
-                        && !source.ends_with(":guest")
-                        && !source.starts_with("cli:once:")
-                        && !source
-                            .rsplit(':')
-                            .next()
-                            .is_some_and(|chat| chat.starts_with('-'))
-                });
+                let interactive = source.is_some();
                 if !interactive && !cp.record.conversation_id.starts_with("cli:once:") {
                     return Ok(Permission::Unavailable);
                 }
@@ -425,7 +420,7 @@ fn audit_owner(db: &Connection, id: &str) -> anyhow::Result<Option<Session>> {
     let session: Option<Session> = bytes
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some((_, generation)) = child {
+    if let Some((_, generation)) = &child {
         ensure!(
             session
                 .as_ref()
@@ -433,7 +428,43 @@ fn audit_owner(db: &Connection, id: &str) -> anyhow::Result<Option<Session>> {
             "Child parent generation changed"
         );
     }
-    Ok(session)
+    let Some(session) = session else {
+        return Ok(None);
+    };
+    if owner.starts_with("companion:wakeup:") {
+        // Legacy unbound wakeups retain their non-interactive, fail-closed approval channel.
+        let Some((parent, generation)) = session.approval_parent.as_ref() else {
+            return Ok(Some(session));
+        };
+        ensure!(
+            !parent.starts_with("companion:"),
+            "Invalid wakeup approval source"
+        );
+        let bytes: Vec<u8> = db.query_row(
+            "SELECT payload FROM sessions WHERE id=?1",
+            [parent],
+            |row| row.get(0),
+        )?;
+        let source: Session = serde_json::from_slice(&bytes)?;
+        ensure!(
+            source.generation() == generation && personal_audit_owner(&source),
+            "Wakeup approval source changed or is not personal"
+        );
+        return Ok(Some(source));
+    }
+    Ok(Some(session))
+}
+
+fn personal_audit_owner(session: &Session) -> bool {
+    let id = session.id().as_str();
+    session.telegram_group().is_none()
+        && !id.starts_with("companion:")
+        && !id.ends_with(":guest")
+        && !id.starts_with("cli:once:")
+        && !id
+            .rsplit(':')
+            .next()
+            .is_some_and(|chat| chat.starts_with('-'))
 }
 
 fn audit_mode(db: &Connection, id: &str) -> anyhow::Result<CommandAuditMode> {
@@ -646,6 +677,10 @@ fn pending_record(db: &Connection, session_id: &str, id: &str) -> anyhow::Result
         execution
             .as_ref()
             .is_none_or(|execution| awaiting_replay(&run, execution))
+            && audit_owner(db, &run.session_id)
+                .ok()
+                .flatten()
+                .is_some_and(|owner| owner.id().as_str() == session_id)
             && needs_approval(audit_mode(db, session_id)?, record.decision)
             && run
                 .pending_calls
@@ -677,7 +712,11 @@ fn pending(db: &Connection, session_id: &str) -> anyhow::Result<Vec<CommandAppro
         let execution: Option<super::run_state::ToolExecution> = execution
             .map(|bytes| serde_json::from_slice(&bytes))
             .transpose()?;
-        if needs_approval(mode, record.decision)
+        if audit_owner(db, &run.session_id)
+            .ok()
+            .flatten()
+            .is_some_and(|owner| owner.id().as_str() == session_id)
+            && needs_approval(mode, record.decision)
             && execution
                 .as_ref()
                 .is_none_or(|execution| awaiting_replay(&run, execution))
@@ -809,23 +848,11 @@ impl SqliteSessionStore {
                 current.revision == run.revision && current.session_id == run.session_id,
                 "Stale command audit"
             );
-            let mut owner = run.session_id.clone();
-            if run.session_id.starts_with(super::subagents::PREFIX) {
-                let (parent, generation): (String, String) = tx.query_row(
-                    "SELECT parent,generation FROM subagent_sessions WHERE id=?1",
-                    [&run.session_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )?;
-                let bytes: Vec<u8> =
-                    tx.query_row("SELECT payload FROM sessions WHERE id=?1", [&parent], |r| {
-                        r.get(0)
-                    })?;
-                ensure!(
-                    serde_json::from_slice::<Session>(&bytes)?.generation() == generation,
-                    "Child parent generation changed"
-                );
-                owner = parent;
-            }
+            let owner = audit_owner(&tx, &run.session_id)?
+                .context("Approval session not found")?
+                .id()
+                .as_str()
+                .to_owned();
             for (call, verdict) in calls {
                 ensure!(
                     current

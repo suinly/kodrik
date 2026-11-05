@@ -28,7 +28,9 @@ pub(crate) fn migrate(db: &Connection) -> anyhow::Result<()> {
 }
 
 pub(crate) fn enqueue(db: &Connection, id: &str, session: &Session) -> anyhow::Result<()> {
-    if !super::chat::personal_session(session) || session.webhook_instruction.is_some() {
+    if !super::chat::personal_session(session)
+        || session.webhook_instruction.is_some() && !id.starts_with("approval:")
+    {
         return Ok(());
     }
     db.execute(

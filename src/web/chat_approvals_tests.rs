@@ -51,6 +51,74 @@ async fn snapshot(fixture: &Fixture, id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn wakeup_approvals_belong_to_the_original_source_and_expire_on_reset() {
+    let fixture = Fixture::new().await;
+    let parent = fixture.create().await;
+    let other = fixture.create().await;
+    let store = SqliteSessionStore::open(fixture.data.path().join("owner-sessions")).unwrap();
+    let source = store.load(&SessionId::new(&parent)).await.unwrap().unwrap();
+    let mut saved =
+        serde_json::to_value(Session::new(SessionId::new("companion:wakeup:test"))).unwrap();
+    saved["approval_parent"] = json!([parent, source.generation()]);
+    let wakeup: Session = serde_json::from_value(saved).unwrap();
+    store.save(&wakeup).await.unwrap();
+    let approval = pending(&store, wakeup, &parent).await;
+    assert_eq!(
+        snapshot(&fixture, &parent).await["command_approvals"],
+        json!([approval])
+    );
+    assert_eq!(
+        snapshot(&fixture, &other).await["command_approvals"],
+        json!([])
+    );
+    let path = format!("sessions/{parent}/command-approvals/{}", approval.id);
+    assert_eq!(
+        fixture
+            .request(reqwest::Method::POST, &path)
+            .json(&json!({"approve":true}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert!(
+        store
+            .pending_command_approvals(&parent)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A source reset must revoke pending authority, even before tool execution checks it.
+    let mut saved =
+        serde_json::to_value(Session::new(SessionId::new("companion:wakeup:reset"))).unwrap();
+    saved["approval_parent"] = json!([parent, source.generation()]);
+    let wakeup: Session = serde_json::from_value(saved).unwrap();
+    store.save(&wakeup).await.unwrap();
+    let approval = pending(&store, wakeup, &parent).await;
+    store
+        .save(&Session::new(SessionId::new(&parent)))
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot(&fixture, &parent).await["command_approvals"],
+        json!([])
+    );
+    let path = format!("sessions/{parent}/command-approvals/{}", approval.id);
+    assert_eq!(
+        fixture
+            .request(reqwest::Method::POST, &path)
+            .json(&json!({"approve":true}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+}
+
+#[tokio::test]
 async fn command_audit_mode_requires_session_auth_and_keeps_other_sessions_unchanged() {
     let data = tempfile::tempdir().unwrap();
     let fixture = Fixture::configured(Some(data.path()), "127.0.0.1:0").await;

@@ -90,6 +90,12 @@ impl GatewayRunner {
         owner_app: AppContext,
     ) -> anyhow::Result<Self> {
         config.validate_owner()?;
+        self.approval_recipient = config
+            .owner
+            .as_ref()
+            .map(|owner| SessionId::new(format!("telegram:{}:{}", owner.interface, owner.user_id)));
+        self.approval_web_base =
+            crate::web::Settings::from_config(&config.web)?.map(|settings| settings.base_url);
         let auth = crate::web::auth::AuthStore::new(root);
         auth.configure_owner(config.owner.as_ref().map(|owner| owner.user_id.get()))?;
         let recipient = config

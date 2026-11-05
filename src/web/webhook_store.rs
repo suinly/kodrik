@@ -1,4 +1,4 @@
-use crate::agent::session::SqliteSessionStore;
+use crate::agent::{command_audit::CommandAuditMode, session::SqliteSessionStore};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -24,9 +24,11 @@ impl std::error::Error for WebhookError {}
 
 pub(crate) async fn init(store: &SqliteSessionStore) -> anyhow::Result<()> {
     store.with_connection(|db| {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS webhooks (
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS webhooks (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, instruction TEXT NOT NULL,
-            token_hash TEXT NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL);
+            token_hash TEXT NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL,
+            command_audit_mode TEXT NOT NULL DEFAULT 'review' CHECK(command_audit_mode IN ('trusted','review','ask')));
             CREATE TABLE IF NOT EXISTS webhook_receipts (
             webhook_id TEXT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
             request_key TEXT NOT NULL, body_hash TEXT NOT NULL,
@@ -35,8 +37,21 @@ pub(crate) async fn init(store: &SqliteSessionStore) -> anyhow::Result<()> {
             PRIMARY KEY(webhook_id,request_key));
             CREATE INDEX IF NOT EXISTS webhook_receipts_time ON webhook_receipts(webhook_id,accepted_at);
             CREATE INDEX IF NOT EXISTS webhook_receipts_session ON webhook_receipts(webhook_id,session_id,accepted_at);")?;
+        upgrade_audit_mode(&tx)?;
+        tx.commit()?;
         Ok(())
     }).await
+}
+
+pub(crate) fn upgrade_audit_mode(db: &rusqlite::Connection) -> anyhow::Result<()> {
+    let has_mode: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('webhooks') WHERE name='command_audit_mode')",
+        [], |row| row.get(0),
+    )?;
+    if !has_mode {
+        db.execute_batch("ALTER TABLE webhooks ADD COLUMN command_audit_mode TEXT NOT NULL DEFAULT 'review' CHECK(command_audit_mode IN ('trusted','review','ask'))")?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -46,6 +61,7 @@ struct Webhook {
     instruction: String,
     enabled: bool,
     created_at: String,
+    command_audit_mode: CommandAuditMode,
 }
 
 impl Webhook {
@@ -56,6 +72,15 @@ impl Webhook {
             instruction: row.get(2)?,
             enabled: row.get(3)?,
             created_at: row.get(4)?,
+            command_audit_mode: row.get::<_, String>(5)?.parse().map_err(
+                |error: anyhow::Error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        5,
+                        rusqlite::types::Type::Text,
+                        error.into(),
+                    )
+                },
+            )?,
         })
     }
 }
@@ -82,7 +107,7 @@ impl WebhookStore {
 
     pub(crate) async fn list(&self) -> anyhow::Result<Value> {
         let hooks = self.sessions.with_connection(|db| {
-            Ok(db.prepare("SELECT id,name,instruction,enabled,created_at FROM webhooks ORDER BY created_at DESC,id")?
+            Ok(db.prepare("SELECT id,name,instruction,enabled,created_at,command_audit_mode FROM webhooks ORDER BY created_at DESC,id")?
                 .query_map([], Webhook::from_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
         }).await?;
         Ok(json!(
@@ -99,7 +124,7 @@ impl WebhookStore {
             .with_connection(move |db| {
                 Ok(db
                     .query_row(
-                        "SELECT id,name,instruction,enabled,created_at FROM webhooks WHERE id=?1",
+                        "SELECT id,name,instruction,enabled,created_at,command_audit_mode FROM webhooks WHERE id=?1",
                         [id],
                         Webhook::from_row,
                     )
@@ -115,6 +140,7 @@ impl WebhookStore {
         name: String,
         instruction: String,
         enabled: bool,
+        command_audit_mode: CommandAuditMode,
     ) -> anyhow::Result<Value> {
         validate(Some(&name), Some(&instruction))?;
         let hook = Webhook {
@@ -123,6 +149,7 @@ impl WebhookStore {
             instruction,
             enabled,
             created_at: chrono::Utc::now().to_rfc3339(),
+            command_audit_mode,
         };
         let token = new_token();
         let digest = hash(&token);
@@ -137,14 +164,15 @@ impl WebhookStore {
                     return Err(WebhookError::LimitReached.into());
                 }
                 tx.execute(
-                    "INSERT INTO webhooks VALUES(?1,?2,?3,?4,?5,?6)",
+                    "INSERT INTO webhooks(id,name,instruction,token_hash,enabled,created_at,command_audit_mode) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                     params![
                         hook.id,
                         hook.name,
                         hook.instruction,
                         digest,
                         hook.enabled,
-                        hook.created_at
+                        hook.created_at,
+                        hook.command_audit_mode.code()
                     ],
                 )?;
                 tx.commit()?;
@@ -162,11 +190,12 @@ impl WebhookStore {
         name: Option<String>,
         instruction: Option<String>,
         enabled: Option<bool>,
+        command_audit_mode: Option<CommandAuditMode>,
     ) -> anyhow::Result<Value> {
         validate(name.as_deref(), instruction.as_deref())?;
         let hook = self.sessions.with_connection(move |db| {
-            Ok(db.query_row("UPDATE webhooks SET name=coalesce(?2,name),instruction=coalesce(?3,instruction),enabled=coalesce(?4,enabled) WHERE id=?1 RETURNING id,name,instruction,enabled,created_at",
-                params![id, name.as_deref().map(str::trim), instruction, enabled], Webhook::from_row).optional()?)
+            Ok(db.query_row("UPDATE webhooks SET name=coalesce(?2,name),instruction=coalesce(?3,instruction),enabled=coalesce(?4,enabled),command_audit_mode=coalesce(?5,command_audit_mode) WHERE id=?1 RETURNING id,name,instruction,enabled,created_at,command_audit_mode",
+                params![id, name.as_deref().map(str::trim), instruction, enabled, command_audit_mode.map(CommandAuditMode::code)], Webhook::from_row).optional()?)
         }).await?.ok_or(WebhookError::NotFound)?;
         Ok(self.with_url(hook))
     }

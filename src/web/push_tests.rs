@@ -26,6 +26,12 @@ async fn push_outbox_queues_new_approvals_once_and_follows_audit_mode_changes() 
         ("ask", CommandAuditMode::Ask, "ask", true),
         ("trusted", CommandAuditMode::Trusted, "destructive", false),
         (
+            "webhook-risk",
+            CommandAuditMode::Review,
+            "destructive",
+            true,
+        ),
+        (
             "telegram:main:-123",
             CommandAuditMode::Review,
             "destructive",
@@ -40,6 +46,9 @@ async fn push_outbox_queues_new_approvals_once_and_follows_audit_mode_changes() 
     ] {
         store.set_default_command_audit_mode(mode).await.unwrap();
         let mut session = Session::new(SessionId::new(id));
+        if id == "webhook-risk" {
+            session.webhook_instruction = Some("Webhook owner instruction".into());
+        }
         let call = crate::agent::message::ToolCall {
             call_id: "call".into(),
             name: "exec_command".into(),
@@ -101,6 +110,25 @@ async fn push_outbox_queues_new_approvals_once_and_follows_audit_mode_changes() 
                 .unwrap(),
             0
         );
+        if id == "webhook-risk" {
+            // Enabling approval notifications must not enable ordinary webhook completion pushes.
+            session.push(Message::Assistant(AssistantMessage {
+                content: "done".into(),
+            }));
+            cp.save(&session, RunPhase::Completed, None).await.unwrap();
+            let event = cp.record.id.clone();
+            let count: i64 = store
+                .with_connection(move |db| {
+                    Ok(db.query_row(
+                        "SELECT count(*) FROM web_push_queue WHERE event_id=?1",
+                        [event],
+                        |r| r.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(count, 0);
+        }
     }
     store
         .set_command_audit_mode("review-safe", CommandAuditMode::Ask)

@@ -1,5 +1,5 @@
 use super::{Chat, WebState, internal};
-use crate::agent::session::SqliteSessionStore;
+use crate::agent::session::{SessionId, SessionStore, SqliteSessionStore};
 use crate::web::{
     Settings,
     auth::{AuthStore, request_token, token_hash},
@@ -87,6 +87,44 @@ impl Subscription {
 }
 
 impl Chat {
+    async fn approval_push_context(
+        &self,
+        approval: &crate::agent::command_audit::CommandApproval,
+        session_id: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let session = self
+            .sessions
+            .load(&SessionId::new(session_id))
+            .await?
+            .context("Approval session missing")?;
+        let (run, _) = self
+            .sessions
+            .load_run(&approval.run_id)
+            .await?
+            .context("Approval run missing")?;
+        let source = if let Some(id) = run.conversation_id.strip_prefix("companion:wakeup:") {
+            format!("Wakeup: {id}")
+        } else if let Some(hook) = super::webhook_source(&session) {
+            format!(
+                "Webhook: {} ({})",
+                hook["name"].as_str().unwrap_or(""),
+                hook["id"].as_str().unwrap_or("")
+            )
+        } else {
+            format!("Session: {session_id}")
+        };
+        let mut event = run.id;
+        if let Some(id) = run.submission_ids.first()
+            && let Some(submission) = self.sessions.submission_by_id(id).await?
+        {
+            event = submission.request.request_id;
+        }
+        // Notification previews identify the action, never include instructions or arguments.
+        Ok(
+            json!({"source":source.chars().take(260).collect::<String>(),"event":event.chars().take(160).collect::<String>(),"tool":approval.tool_name.chars().take(160).collect::<String>()}),
+        )
+    }
+
     pub(crate) async fn with_push(
         mut self,
         settings: Settings,
@@ -266,16 +304,18 @@ impl Chat {
         if !bound || !allowed {
             return self.remove_push(&row.endpoint, &row.hash).await;
         }
-        if let Some(id) = row.event.strip_prefix("approval:")
-            && !self
+        let approval_context = if let Some(id) = row.event.strip_prefix("approval:") {
+            let pending = self
                 .sessions
                 .pending_command_approvals(&row.session)
-                .await?
-                .iter()
-                .any(|approval| approval.id == id)
-        {
-            return self.finish_push(row).await;
-        }
+                .await?;
+            let Some(approval) = pending.iter().find(|approval| approval.id == id) else {
+                return self.finish_push(row).await;
+            };
+            Some(self.approval_push_context(approval, &row.session).await?)
+        } else {
+            None
+        };
         let (event, endpoint, hash) = (row.event.clone(), row.endpoint.clone(), row.hash.clone());
         let viewers = self.sessions.with_connection(move |db| {
             let root: Option<String> = db.query_row("SELECT coalesce((SELECT root_id FROM web_chat_branches WHERE session_id=q.session_id),q.session_id)
@@ -316,9 +356,12 @@ impl Chat {
             return self.finish_push(row).await;
         }
         let subscription: Subscription = serde_json::from_slice(&row.subscription)?;
-        let payload = serde_json::to_vec(
-            &json!({"session_id":row.session,"event_id":row.event,"locale":row.locale}),
-        )?;
+        let mut payload =
+            json!({"session_id":row.session,"event_id":row.event,"locale":row.locale});
+        if let Some(context) = approval_context {
+            payload["approval_context"] = context;
+        }
+        let payload = serde_json::to_vec(&payload)?;
         let request = subscription
             .builder()?
             .with_valid_duration(Duration::from_secs(

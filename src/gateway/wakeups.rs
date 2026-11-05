@@ -546,6 +546,363 @@ mod tests {
             Utc::now() - chrono::Duration::minutes(2)).unwrap()["wakeup"]["id"].as_str().unwrap().into()
     }
 
+    struct ApprovalTaskModel(std::path::PathBuf);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ApprovalTaskModel {
+        async fn generate(
+            &self,
+            context: &LlmContext<'_>,
+            _: &[&dyn Tool],
+            _: Option<&mpsc::Sender<AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            let message = if context.messages.len() == 1 {
+                Message::ToolCall(ToolCall {
+                    call_id: "effect".into(),
+                    name: "exec_command".into(),
+                    arguments: json!({"cmd":"printf x >> marker", "workdir":self.0}),
+                })
+            } else {
+                Message::Assistant(crate::agent::AssistantMessage {
+                    content: "{\"message\":null}".into(),
+                })
+            };
+            Ok((vec![message], None))
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_wakeup_binds_original_source_generation_and_preserves_it_on_replay() {
+        use crate::agent::session::{Session, SessionStore, SqliteSessionStore};
+        let root = tempfile::tempdir().unwrap();
+        let sessions = Arc::new(
+            SqliteSessionStore::open_async(root.path().join("sessions"))
+                .await
+                .unwrap(),
+        );
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(ApprovalTaskModel(root.path().to_owned())),
+                ToolRegistry::default().register(Arc::new(ExecCommandTool)),
+                ContextBuilder::new("test"),
+            )),
+            sessions.clone(),
+        );
+        let conversation = SessionId::new("telegram:test:42");
+        let source = runner.new_session(&conversation).await.unwrap();
+        let store = ReminderStore::wakeups(root.path());
+        let id = create(&store, source.id().as_str());
+        runner.new_session(&conversation).await.unwrap();
+        let task = store.due(Utc::now()).unwrap().pop().unwrap();
+        runner
+            .execute_wakeup(Some(&Chat::new(false)), &store, &task, Utc::now())
+            .await
+            .unwrap();
+        let internal = SessionId::new(format!("companion:wakeup:{id}"));
+        let history = sessions.load(&internal).await.unwrap().unwrap();
+        let expected = json!([source.id().as_str(), source.generation()]);
+        assert_eq!(
+            serde_json::to_value(&history).unwrap()["approval_parent"],
+            expected
+        );
+
+        // A crash after the terminal checkpoint must not rebind to a reset source.
+        sessions
+            .save(&Session::new(source.id().clone()))
+            .await
+            .unwrap();
+        let path = root.path().join("wakeups.json");
+        let mut records: Vec<crate::agent::reminders::Reminder> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        records[0].status = Status::Running;
+        std::fs::write(&path, serde_json::to_vec(&records).unwrap()).unwrap();
+        store.recover().unwrap();
+        runner
+            .execute_wakeup(Some(&Chat::new(false)), &store, &records[0], Utc::now())
+            .await
+            .unwrap();
+        let reopened = SqliteSessionStore::open_async(root.path().join("sessions"))
+            .await
+            .unwrap();
+        let history = reopened.load(&internal).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&history).unwrap()["approval_parent"],
+            expected
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("marker")).unwrap(),
+            "x"
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_wakeup_missing_source_does_not_manufacture_approval_owner() {
+        use crate::agent::session::{SessionStore, SqliteSessionStore};
+        let root = tempfile::tempdir().unwrap();
+        let sessions = Arc::new(
+            SqliteSessionStore::open_async(root.path().join("sessions"))
+                .await
+                .unwrap(),
+        );
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(ApprovalTaskModel(root.path().to_owned())),
+                ToolRegistry::default().register(Arc::new(ExecCommandTool)),
+                ContextBuilder::new("test"),
+            )),
+            sessions.clone(),
+        );
+        let store = ReminderStore::wakeups(root.path());
+        create(&store, "missing-source");
+        let task = store.due(Utc::now()).unwrap().pop().unwrap();
+        runner
+            .execute_wakeup(Some(&Chat::new(false)), &store, &task, Utc::now())
+            .await
+            .unwrap();
+        let saved: Vec<crate::agent::reminders::Reminder> =
+            serde_json::from_slice(&std::fs::read(root.path().join("wakeups.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved[0].status, Status::Failed);
+        assert!(
+            saved[0]
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("Wakeup source session not found")
+        );
+        assert!(
+            sessions
+                .submission(
+                    &format!("companion:wakeup:{}", task.id),
+                    &format!("wakeup:{}", task.id)
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            sessions
+                .load(&SessionId::new("missing-source"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!root.path().join("marker").exists());
+    }
+
+    #[tokio::test]
+    async fn deleted_wakeup_source_does_not_stop_later_tasks_or_replay_queued_input() {
+        use crate::agent::{
+            inbox::{BusyMode, SubmissionRequest, SubmissionStatus},
+            session::{SessionStore, SqliteSessionStore},
+        };
+        for interrupted in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let sessions = Arc::new(
+                SqliteSessionStore::open_async(root.path().join("sessions"))
+                    .await
+                    .unwrap(),
+            );
+            let runner = Arc::new(AgentRunner::new(
+                Arc::new(Agent::new(
+                    Arc::new(ApprovalTaskModel(root.path().to_owned())),
+                    ToolRegistry::default().register(Arc::new(ExecCommandTool)),
+                    ContextBuilder::new("test"),
+                )),
+                sessions.clone(),
+            ));
+            let store = ReminderStore::wakeups(root.path());
+            let source = runner
+                .new_session(&SessionId::new("telegram:test:42"))
+                .await
+                .unwrap();
+            let deleted = create(&store, source.id().as_str());
+            sessions.delete(source.id()).await.unwrap();
+            let internal = SessionId::new(format!("companion:wakeup:{deleted}"));
+            let request_id = format!("wakeup:{deleted}");
+            if interrupted {
+                let mut input = crate::gateway::IncomingMessage::new(
+                    InterfaceId("internal".into()),
+                    "wakeup",
+                    "previously queued",
+                );
+                input.request_id = request_id.clone();
+                let request = SubmissionRequest::new(&internal, input, BusyMode::FollowUp);
+                store
+                    .claim_durable(&deleted, Utc::now(), request.clone())
+                    .unwrap()
+                    .unwrap();
+                sessions.submit(request).await.unwrap();
+            }
+            let valid_source = runner
+                .new_session(&SessionId::new("telegram:test:42"))
+                .await
+                .unwrap();
+            let valid = create(&store, valid_source.id().as_str());
+            let scheduler = Wakeups::new(store.clone(), runner, CompanionConfig::default());
+            let interfaces: Vec<Arc<dyn Interface>> = vec![Arc::new(Chat::new(false))];
+            scheduler.check(&interfaces, Utc::now()).await.unwrap();
+            store.recover().unwrap();
+            scheduler.check(&interfaces, Utc::now()).await.unwrap();
+            let saved: Vec<crate::agent::reminders::Reminder> =
+                serde_json::from_slice(&std::fs::read(root.path().join("wakeups.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                saved.iter().find(|task| task.id == deleted).unwrap().status,
+                Status::Failed
+            );
+            assert_eq!(
+                saved.iter().find(|task| task.id == valid).unwrap().status,
+                Status::Completed
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("marker")).unwrap(),
+                "x"
+            );
+            let submission = sessions
+                .submission(internal.as_str(), &request_id)
+                .await
+                .unwrap();
+            if interrupted {
+                assert_eq!(submission.unwrap().status, SubmissionStatus::Cancelled);
+            } else {
+                assert!(submission.is_none());
+            }
+            assert!(
+                !sessions
+                    .queued_conversations()
+                    .await
+                    .unwrap()
+                    .contains(&internal)
+            );
+            assert!(sessions.load(source.id()).await.unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_wakeup_uses_source_approvals_without_a_live_source_run() {
+        use crate::agent::{
+            command_audit::CommandAuditMode,
+            session::{SessionStore, SqliteSessionStore},
+            system_one::SystemOne,
+        };
+        for (mode, approve) in [
+            (CommandAuditMode::Ask, Some(false)),
+            (CommandAuditMode::Ask, Some(true)),
+            (CommandAuditMode::Trusted, None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let sessions = Arc::new(
+                SqliteSessionStore::open_async(root.path().join("sessions"))
+                    .await
+                    .unwrap(),
+            );
+            sessions
+                .set_default_command_audit_mode(CommandAuditMode::Ask)
+                .await
+                .unwrap();
+            let model = Arc::new(ApprovalTaskModel(root.path().to_owned()));
+            let runner = Arc::new(AgentRunner::new(
+                Arc::new(
+                    Agent::new(
+                        model.clone(),
+                        ToolRegistry::default().register(Arc::new(ExecCommandTool)),
+                        ContextBuilder::new("test"),
+                    )
+                    .with_command_auditor(SystemOne::new(model)),
+                ),
+                sessions.clone(),
+            ));
+            let source = runner
+                .new_session(&SessionId::new("telegram:test:42"))
+                .await
+                .unwrap();
+            sessions
+                .set_command_audit_mode(source.id().as_str(), mode)
+                .await
+                .unwrap();
+            assert!(sessions.unfinished_runs().await.unwrap().is_empty());
+            let store = ReminderStore::wakeups(root.path());
+            let id = create(&store, source.id().as_str());
+            let task = store.due(Utc::now()).unwrap().pop().unwrap();
+            let journal = store.clone();
+            let mut execution = tokio::spawn(async move {
+                runner
+                    .execute_wakeup(Some(&Chat::new(false)), &journal, &task, Utc::now())
+                    .await
+            });
+            if let Some(approve) = approve {
+                let approval = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let pending = sessions
+                            .pending_command_approvals(source.id().as_str())
+                            .await
+                            .unwrap();
+                        if let Some(approval) = pending.into_iter().next() {
+                            break approval;
+                        }
+                        assert!(
+                            !execution.is_finished(),
+                            "wakeup finished without a source approval"
+                        );
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("source approval must not require a live source run");
+                assert!(!root.path().join("marker").exists());
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), &mut execution)
+                        .await
+                        .is_err()
+                );
+                sessions
+                    .decide_command_approval(source.id().as_str(), &approval.id, approve)
+                    .await
+                    .unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(5), execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let expected_effect = approve != Some(false);
+            assert_eq!(root.path().join("marker").exists(), expected_effect);
+            if expected_effect {
+                assert_eq!(
+                    std::fs::read_to_string(root.path().join("marker")).unwrap(),
+                    "x"
+                );
+            }
+            assert!(
+                sessions
+                    .pending_command_approvals(source.id().as_str())
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let saved: Vec<crate::agent::reminders::Reminder> =
+                serde_json::from_slice(&std::fs::read(root.path().join("wakeups.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                saved.iter().find(|task| task.id == id).unwrap().status,
+                Status::Completed
+            );
+            let internal = sessions
+                .load(&SessionId::new(format!("companion:wakeup:{id}")))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                internal.approval_parent,
+                Some((
+                    source.id().as_str().to_owned(),
+                    source.generation().to_owned()
+                ))
+            );
+        }
+    }
+
     #[tokio::test]
     async fn wakeups_recheck_revocation_after_execution_before_delivery() {
         struct RevokingModel {

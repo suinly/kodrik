@@ -3607,9 +3607,13 @@ test('owner manages webhooks, rotates one-time tokens and opens arbitrary event 
     await page.getByRole('button',{name:'Создать вебхук',exact:true}).click();
     await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки checkout');
     await page.getByLabel('Инструкция агенту',{exact:true}).fill('Найди причину ошибки и открой PR после проверки тестов.');
+    await expect(page.getByRole('combobox',{name:'Проверка инструментов вебхука',exact:true})).toContainText('Проверка ИИ');
+    await page.getByRole('combobox',{name:'Проверка инструментов вебхука',exact:true}).click();
+    await page.getByRole('option',{name:'Без проверок',exact:true}).click();
     await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
     const url=await page.getByLabel('URL вебхука',{exact:true}).inputValue();
     const token=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
+    await expect(page.getByRole('combobox',{name:'Проверка инструментов вебхука',exact:true})).toContainText('Без проверок');
     assert.ok(token.length>=32);
     assert.equal((await fetch(url,{method:'POST',body:'unauthorized'})).status,401);
     const event=await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Idempotency-Key':'browser-event'},body:'checkout error\nraw stack trace'});
@@ -3622,8 +3626,12 @@ test('owner manages webhooks, rotates one-time tokens and opens arbitrary event 
     await expect(page.getByLabel('Bearer-токен',{exact:true})).toHaveCount(0);
     await page.getByLabel('Название вебхука',{exact:true}).fill('Ошибки оплаты');
     await page.getByLabel('Инструкция агенту',{exact:true}).fill('Проверь новую инструкцию.');
+    await page.getByRole('combobox',{name:'Проверка инструментов вебхука',exact:true}).click();
+    await page.getByRole('option',{name:'Спрашивать всегда',exact:true}).click();
     await page.getByRole('button',{name:'Сохранить вебхук',exact:true}).click();
     await expect(page.getByRole('navigation',{name:'Список вебхуков'})).toContainText('Ошибки оплаты');
+    await page.reload();
+    await expect(page.getByRole('combobox',{name:'Проверка инструментов вебхука',exact:true})).toContainText('Спрашивать всегда');
     await page.getByRole('button',{name:'Перевыпустить токен',exact:true}).click();
     await page.getByRole('button',{name:'Подтвердить перевыпуск',exact:true}).click();
     const rotated=await page.getByLabel('Bearer-токен',{exact:true}).inputValue();
@@ -3648,6 +3656,7 @@ test('webhook form works in the mobile sidebar and English interface', {timeout:
     await page.getByRole('button',{name:'Create webhook',exact:true}).click();
     await page.getByLabel('Webhook name',{exact:true}).fill('Mobile errors');
     await page.getByLabel('Agent instruction',{exact:true}).fill('Investigate the event.');
+    await expect(page.getByRole('combobox',{name:'Webhook tool audit',exact:true})).toContainText('AI review');
     const toggle=page.getByRole('switch',{name:'Webhook enabled',exact:true});
     const track=await toggle.boundingBox();
     assert.ok(track.width>track.height*1.5,`Switch keeps a pill-shaped track: ${JSON.stringify(track)}`);

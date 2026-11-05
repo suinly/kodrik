@@ -16,6 +16,9 @@ const emit=defineEmits<{open:[id:string]}>()
         <UFormField :label="t('Инструкция агенту')" :description="t('Опишите задачу, репозиторий и условия успешного выполнения.')" required>
           <UTextarea v-model="manager.draft.instruction" :aria-label="t('Инструкция агенту')" :maxlength="16384" :rows="6" :disabled="manager.saving" required class="w-full" />
         </UFormField>
+        <UFormField :label="t('Проверка инструментов вебхука')" :description="t('Применяется к новым событиям. Уже принятые задачи сохраняют свой режим проверки.')">
+          <USelect v-model="manager.draft.command_audit_mode" :items="manager.auditModes" :aria-label="t('Проверка инструментов вебхука')" :disabled="manager.saving" class="w-full" />
+        </UFormField>
         <USwitch v-model="manager.draft.enabled" :label="t('Вебхук включён')" :disabled="manager.saving" />
         <UButton type="submit" :label="t('Сохранить вебхук')" :loading="manager.saving" :disabled="!manager.draft.name.trim() || !manager.draft.instruction.trim()" />
       </form>

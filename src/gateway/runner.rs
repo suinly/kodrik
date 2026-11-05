@@ -31,6 +31,8 @@ use crate::{
 pub struct GatewayRunner {
     agent_runner: Arc<AgentRunner>,
     chat_runners: Option<HashMap<SessionId, Arc<AgentRunner>>>,
+    approval_recipient: Option<SessionId>,
+    approval_web_base: Option<reqwest::Url>,
     telegram_spaces: Option<Arc<telegram_spaces::TelegramSpaces>>,
     user_spaces: Option<Arc<crate::users::UserSpaces>>,
     interfaces: Vec<Arc<dyn Interface>>,
@@ -141,6 +143,8 @@ impl GatewayRunner {
         Self {
             agent_runner,
             chat_runners: None,
+            approval_recipient: None,
+            approval_web_base: None,
             telegram_spaces: None,
             user_spaces: None,
             interfaces: Vec::new(),

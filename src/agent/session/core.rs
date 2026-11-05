@@ -30,6 +30,8 @@ pub struct Session {
     system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) webhook_instruction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) approval_parent: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     webhook_messages: std::collections::BTreeMap<usize, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +62,7 @@ impl Session {
             id,
             system_prompt: None,
             webhook_instruction: None,
+            approval_parent: None,
             webhook_messages: Default::default(),
             telegram_group: None,
             skills_catalog: None,

@@ -7,9 +7,13 @@ self.addEventListener('push', event => {
   const url = new URL('app/chat', self.registration.scope)
   if (typeof data.session_id === 'string') url.pathname += `/${encodeURIComponent(data.session_id)}`
   const approval = typeof data.event_id === 'string' && data.event_id.startsWith('approval:')
+  const context = data.approval_context
+  const detail = approval && context && typeof context === 'object'
+    ? [context.source, context.event, context.tool].filter(value => typeof value === 'string').map(value => value.slice(0, 260)).join('\n')
+    : ''
   event.waitUntil(self.registration.showNotification(data.locale === 'ru' ? 'Кодрик' : 'Kodrik', {
     body: approval
-      ? (data.locale === 'ru' ? 'Требуется подтверждение действия' : 'Action approval required')
+      ? (data.locale === 'ru' ? 'Требуется подтверждение действия' : 'Action approval required') + (detail ? `\n${detail}` : '')
       : (data.locale === 'ru' ? 'Новое сообщение в Kodrik' : 'New message in Kodrik'),
     icon: new URL('chat/icon-192.png', self.registration.scope).href,
     tag: `kodrik-${typeof data.event_id === 'string' ? data.event_id : 'message'}`,

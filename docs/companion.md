@@ -121,9 +121,19 @@ history search/listing. It receives the original instruction, deadline and sourc
 and current session IDs so it can check whether the work remains relevant.
 Follow-up wakeups keep the searchable original conversation as their source.
 
+New durable wakeup executions inherit the original source session's tool-audit
+mode, not the profile default or whichever session is currently selected. Pending
+tool approvals appear in that source conversation in Web/TUI and can be delivered
+to its authorized private Telegram chat or enabled Web Push subscriptions.
+The source generation is captured at the first execution and retained on resume;
+resetting or deleting it then invalidates pending authority. Legacy unbound runs
+do not acquire a new approval source automatically. Proactive research retains
+its separate restricted tools; ordinary reminders do not execute agent tools.
+
 Each execution is limited to 16 model attempts (including provider retries) and
-five minutes from its original claim; downtime consumes this deadline. Intermediate text,
-tool results and plans stay internal. The agent may finish silently, send a useful
+five minutes from its original claim; downtime and human approval waiting consume
+this deadline. An expired attempt does not automatically rerun its tool calls.
+Intermediate text, tool results and plans stay internal. The agent may finish silently, send a useful
 message, or schedule another one-shot follow-up. Task tools may run during quiet
 hours, but optional messages wait until `companion.quiet_start`/`quiet_end` allow
 delivery in `companion.timezone`. The saved message is delivered without rerunning

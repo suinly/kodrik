@@ -1,5 +1,6 @@
 use super::{Chat, WebState, error, internal};
 use crate::agent::{
+    command_audit::CommandAuditMode,
     inbox::{BusyMode, SubmissionRequest, admit_submission},
     session::{Session, SessionId},
 };
@@ -94,6 +95,7 @@ struct Input {
     instruction: String,
     #[serde(default = "enabled")]
     enabled: bool,
+    command_audit_mode: Option<CommandAuditMode>,
 }
 fn enabled() -> bool {
     true
@@ -105,7 +107,12 @@ async fn create(
 ) -> Result<(StatusCode, Json<Value>), Response> {
     let result = store(&state)
         .map_err(IntoResponse::into_response)?
-        .create(input.name, input.instruction, input.enabled)
+        .create(
+            input.name,
+            input.instruction,
+            input.enabled,
+            input.command_audit_mode.unwrap_or_default(),
+        )
         .await
         .map_err(management_error)?;
     Ok((StatusCode::CREATED, Json(result)))
@@ -123,6 +130,7 @@ async fn update(
             Some(input.name),
             Some(input.instruction),
             Some(input.enabled),
+            input.command_audit_mode,
         )
         .await
         .map_err(management_error)?;
@@ -243,17 +251,20 @@ pub(super) fn window_session(
     db: &rusqlite::Connection,
     id: &str,
     instruction: &str,
+    mode: CommandAuditMode,
     now: chrono::DateTime<chrono::Utc>,
 ) -> anyhow::Result<Option<String>> {
     let latest: Option<(String, String, Option<String>)> = db
         .query_row(
             "SELECT r.session_id,min(r.accepted_at),json_extract(s.payload,'$.webhook_instruction')
          FROM webhook_receipts r JOIN sessions s ON s.id=r.session_id
+         JOIN command_audit_modes a ON a.session_id=s.id
+             AND a.generation=coalesce(json_extract(CAST(s.payload AS TEXT),'$.generation'),'') AND a.mode=?2
          WHERE r.webhook_id=?1 AND r.session_id=(
              SELECT session_id FROM webhook_receipts WHERE webhook_id=?1
              ORDER BY accepted_at DESC,rowid DESC LIMIT 1)
          GROUP BY r.session_id",
-            [id],
+            params![id, mode.code()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
@@ -285,8 +296,9 @@ async fn admit(
     let result = chat.sessions.with_connection(move |db| {
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Recheck revocation at the same boundary as persisting work.
-        let webhook: Option<(String,String)> = tx.query_row("SELECT name,instruction FROM webhooks WHERE id=?1 AND token_hash=?2 AND enabled=1", params![id,digest], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
-        let Some((name,instruction)) = webhook else { return Ok(Err(StatusCode::UNAUTHORIZED)); };
+        let webhook: Option<(String,String,String)> = tx.query_row("SELECT name,instruction,command_audit_mode FROM webhooks WHERE id=?1 AND token_hash=?2 AND enabled=1", params![id,digest], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        let Some((name,instruction,mode)) = webhook else { return Ok(Err(StatusCode::UNAUTHORIZED)); };
+        let mode: CommandAuditMode = mode.parse()?;
         let old: Option<(String, Option<String>)> = tx.query_row("SELECT body_hash,session_id FROM webhook_receipts WHERE webhook_id=?1 AND request_key=?2", params![id,key], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
         let body_hash = hash(&body);
         if let Some((old_hash, session)) = old {
@@ -297,13 +309,15 @@ async fn admit(
         let recent: i64 = tx.query_row("SELECT count(*) FROM webhook_receipts WHERE webhook_id=?1 AND accepted_at>?2", params![id,cutoff], |row| row.get(0))?;
         if queue_full || recent >= 10 { return Ok(Err(StatusCode::TOO_MANY_REQUESTS)); }
         let source = json!({"transport":"http_webhook","webhook_id":id,"webhook_name":name,"received_at":now.to_rfc3339()});
-        let session_id = match window_session(&tx, &id, &instruction, now)? {
+        let session_id = match window_session(&tx, &id, &instruction, mode, now)? {
             Some(session) => session,
             None => {
                 let session_id = uuid::Uuid::new_v4().to_string();
                 let mut session = Session::new(SessionId::new(&session_id));
                 session.webhook_instruction = Some(format!("## Recorded delivery source\n{source}\n\n## Owner instruction\n{instruction}"));
                 crate::agent::session::save_in_transaction(&tx, &session)?;
+                tx.execute("INSERT INTO command_audit_modes(session_id,generation,mode) VALUES(?1,?2,?3) ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation,mode=excluded.mode",
+                    params![session_id, session.generation(), mode.code()])?;
                 session_id
             }
         };

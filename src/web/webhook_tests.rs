@@ -16,6 +16,199 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn webhook_audit_mode_defaults_validates_and_persists_across_api_and_tool() {
+    let mut f = Fixture::new().await;
+    let hook = f.create().await;
+    assert_eq!(hook["command_audit_mode"], "review");
+    let id = hook["id"].as_str().unwrap();
+    for mode in ["trusted", "ask", "review"] {
+        let changed = f
+            .tool()
+            .execute(json!({"action":"update","id":id,"command_audit_mode":mode}))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(changed["command_audit_mode"], mode);
+        let (_, listed) = f.manage("GET", "", Value::Null).await;
+        assert_eq!(listed[0]["command_audit_mode"], mode);
+    }
+    let path = format!("/{id}");
+    assert_eq!(
+        f.manage(
+            "PATCH",
+            &path,
+            json!({"name":"Updated","instruction":"Investigate","command_audit_mode":"ask"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    for changes in [
+        json!({"name":"Updated","instruction":"Investigate"}),
+        json!({"name":"Updated","instruction":"Investigate","command_audit_mode":null}),
+    ] {
+        assert_eq!(
+            f.manage("PATCH", &path, changes).await.0,
+            StatusCode::NO_CONTENT
+        );
+        let saved = f
+            .tool()
+            .execute(json!({"action":"get","id":id}))
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(saved["command_audit_mode"], "ask");
+    }
+    for changes in [
+        json!({"action":"update","id":id,"name":"Tool update"}),
+        json!({"action":"update","id":id,"enabled":true,"command_audit_mode":null}),
+    ] {
+        assert_eq!(
+            f.tool().execute(changes).await.unwrap().output["command_audit_mode"],
+            "ask"
+        );
+    }
+    assert!(f.tool().execute(json!({"action":"create","name":"Invalid","instruction":"Investigate","command_audit_mode":"invalid"})).await.is_err());
+    assert!(
+        f.tool()
+            .execute(json!({"action":"update","id":id,"command_audit_mode":"invalid"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        f.tool()
+            .execute(json!({"action":"list","command_audit_mode":"ask"}))
+            .await
+            .is_err()
+    );
+    for method in ["POST", "PATCH"] {
+        let status = f.manage(method, if method == "POST" { "" } else { &path }, json!({"name":"Invalid","instruction":"Investigate","command_audit_mode":"invalid"})).await.0;
+        assert!(status.is_client_error(), "{status}");
+    }
+    let explicit = f.tool().execute(json!({"action":"create","name":"Trusted","instruction":"Investigate","command_audit_mode":"trusted"})).await.unwrap().output;
+    assert_eq!(explicit["command_audit_mode"], "trusted");
+    f.reopen().await;
+    assert_eq!(
+        f.tool()
+            .execute(json!({"action":"get","id":id}))
+            .await
+            .unwrap()
+            .output["command_audit_mode"],
+        "ask"
+    );
+    assert_eq!(
+        f.tool()
+            .execute(json!({"action":"get","id":explicit["id"]}))
+            .await
+            .unwrap()
+            .output["command_audit_mode"],
+        "trusted"
+    );
+}
+
+#[tokio::test]
+async fn webhook_audit_mode_admission_captures_current_setting_and_splits_windows() {
+    use crate::agent::command_audit::CommandAuditMode;
+    let f = Fixture::new().await;
+    f.chat.runner.suspend();
+    f.chat
+        .sessions
+        .set_default_command_audit_mode(CommandAuditMode::Trusted)
+        .await
+        .unwrap();
+    let hook = f.create().await;
+    let (_, first) = f.deliver(&hook, "review", "first").await;
+    let first_id = first["conversation_id"].as_str().unwrap();
+    assert_eq!(
+        f.chat.sessions.command_audit_mode(first_id).await.unwrap(),
+        CommandAuditMode::Review
+    );
+    let (_, same) = f.deliver(&hook, "same", "next").await;
+    assert_eq!(same["conversation_id"], first["conversation_id"]);
+
+    // Change settings after authentication but before the body finishes reading.
+    let (started, reading) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let body = Body::from_stream(futures::stream::once(async move {
+        started.send(()).unwrap();
+        released.await.unwrap();
+        Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"new setting"))
+    }));
+    let delivery = f.deliver(&hook, "changed-during-read", body);
+    tokio::pin!(delivery);
+    tokio::select! {
+        _ = &mut delivery => panic!("body should be waiting"),
+        result = reading => result.unwrap(),
+    }
+    f.tool()
+        .execute(json!({"action":"update","id":hook["id"],"command_audit_mode":"ask"}))
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    let (status, second) = delivery.await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_ne!(second["conversation_id"], first["conversation_id"]);
+    let second_id = second["conversation_id"].as_str().unwrap();
+    assert_eq!(
+        f.chat.sessions.command_audit_mode(first_id).await.unwrap(),
+        CommandAuditMode::Review
+    );
+    assert_eq!(
+        f.chat.sessions.command_audit_mode(second_id).await.unwrap(),
+        CommandAuditMode::Ask
+    );
+    let (_, duplicate) = f.deliver(&hook, "review", "first").await;
+    assert_eq!(duplicate["conversation_id"], first["conversation_id"]);
+    f.tool()
+        .execute(json!({"action":"update","id":hook["id"],"command_audit_mode":"trusted"}))
+        .await
+        .unwrap();
+    let (_, third) = f.deliver(&hook, "trusted", "third").await;
+    let third_id = third["conversation_id"].as_str().unwrap();
+    assert_ne!(third["conversation_id"], second["conversation_id"]);
+    assert_eq!(
+        f.chat.sessions.command_audit_mode(third_id).await.unwrap(),
+        CommandAuditMode::Trusted
+    );
+}
+
+#[tokio::test]
+async fn webhook_audit_mode_lazy_init_upgrades_legacy_table_idempotently() {
+    let f = Fixture::new().await;
+    f.chat.sessions.with_connection(|db| {
+        db.execute_batch("DROP TABLE webhook_receipts; DROP TABLE webhooks;
+            CREATE TABLE webhooks (id TEXT PRIMARY KEY,name TEXT NOT NULL,instruction TEXT NOT NULL,token_hash TEXT NOT NULL,enabled INTEGER NOT NULL,created_at TEXT NOT NULL);
+            INSERT INTO webhooks VALUES('legacy','Legacy','Investigate','hash',1,'2026-01-01');")?;
+        Ok(())
+    }).await.unwrap();
+    crate::web::webhook_store::init(&f.chat.sessions)
+        .await
+        .unwrap();
+    let legacy = f
+        .tool()
+        .execute(json!({"action":"get","id":"legacy"}))
+        .await
+        .unwrap()
+        .output;
+    assert_eq!(legacy["command_audit_mode"], "review");
+    f.tool()
+        .execute(json!({"action":"update","id":"legacy","command_audit_mode":"ask"}))
+        .await
+        .unwrap();
+    crate::web::webhook_store::init(&f.chat.sessions)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.tool()
+            .execute(json!({"action":"get","id":"legacy"}))
+            .await
+            .unwrap()
+            .output["command_audit_mode"],
+        "ask"
+    );
+}
+
+#[tokio::test]
 async fn webhook_tool_and_http_share_settings_tokens_and_accepted_work() {
     let f = Fixture::new().await;
     f.chat.runner.suspend();
@@ -725,7 +918,13 @@ async fn webhook_window_boundary_is_fixed_at_the_first_receipt() {
                 })?;
             let opened = chrono::DateTime::parse_from_rfc3339(&opened)?.with_timezone(&chrono::Utc);
             assert_eq!(
-                super::webhooks::window_session(db, &hook_id, &instruction, opened)?,
+                super::webhooks::window_session(
+                    db,
+                    &hook_id,
+                    &instruction,
+                    crate::agent::command_audit::CommandAuditMode::Review,
+                    opened
+                )?,
                 Some(expected.clone())
             );
             assert_eq!(
@@ -733,6 +932,7 @@ async fn webhook_window_boundary_is_fixed_at_the_first_receipt() {
                     db,
                     &hook_id,
                     &instruction,
+                    crate::agent::command_audit::CommandAuditMode::Review,
                     opened + chrono::Duration::minutes(5) - chrono::Duration::nanoseconds(1)
                 )?,
                 Some(expected)
@@ -742,6 +942,7 @@ async fn webhook_window_boundary_is_fixed_at_the_first_receipt() {
                     db,
                     &hook_id,
                     &instruction,
+                    crate::agent::command_audit::CommandAuditMode::Review,
                     opened + chrono::Duration::minutes(5)
                 )?,
                 None
@@ -751,6 +952,7 @@ async fn webhook_window_boundary_is_fixed_at_the_first_receipt() {
                     db,
                     &hook_id,
                     &instruction,
+                    crate::agent::command_audit::CommandAuditMode::Review,
                     opened - chrono::Duration::nanoseconds(1)
                 )?,
                 None

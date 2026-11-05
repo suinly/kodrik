@@ -9,6 +9,8 @@ export const en = {
   'ИИ проверяет все инструменты, включая MCP, и запрашивает разрешение для рискованных или неясных действий.': 'AI reviews all tools, including MCP, and requests approval for risky or unclear actions.',
   'Каждый вызов инструмента требует вашего разрешения. Проверка ИИ не используется.': 'Every tool call requires your approval. AI review is not used.',
   'Проверка инструментов в новых диалогах': 'Tool audit in new conversations',
+  'Проверка инструментов вебхука': 'Webhook tool audit',
+  'Применяется к новым событиям. Уже принятые задачи сохраняют свой режим проверки.': 'Applies to new events. Already accepted tasks keep their audit mode.',
   'Этот режим применяется только к новым диалогам и веткам. Настройки существующих диалогов не изменятся.': 'This mode applies only to new conversations and branches. Existing conversations keep their settings.',
   'Режим новых диалогов сохранён.': 'New conversation mode saved.',
   'Вызов инструмента признан безопасным': 'Tool call assessed as safe',

@@ -1,8 +1,9 @@
 import {computed, onMounted, reactive, ref, watch, type Ref} from 'vue'
 import {base, checkedFetch, messageOf} from './api'
+import type {CommandAuditMode} from './api'
 import {locale, t} from './i18n'
 
-type Webhook = {id:string; name:string; instruction:string; enabled:boolean; url:string}
+type Webhook = {id:string; name:string; instruction:string; enabled:boolean; url:string; command_audit_mode:CommandAuditMode}
 type Delivery = {conversation_id:string|null; accepted_at:string; status:string}
 
 export function useWebhooks(active:Ref<boolean>) {
@@ -10,7 +11,12 @@ export function useWebhooks(active:Ref<boolean>) {
   const error=ref(''), token=ref(''), copied=ref(false)
   const hooks=ref<Webhook[]>([]), selected=ref<string|null>(null), deliveries=ref<Delivery[]>([])
   const confirmation=ref<'rotate'|'delete'|null>(null)
-  const draft=reactive({name:'',instruction:'',enabled:true})
+  const draft=reactive({name:'',instruction:'',enabled:true,command_audit_mode:'review' as CommandAuditMode})
+  const auditModes=computed(()=>[
+    {value:'trusted',label:t('Без проверок')},
+    {value:'review',label:t('Проверка ИИ')},
+    {value:'ask',label:t('Спрашивать всегда')},
+  ])
   const current=computed(()=>hooks.value.find(hook=>hook.id===selected.value))
   const dateFormat=computed(()=>new Intl.DateTimeFormat(locale.value,{dateStyle:'short',timeStyle:'short'}))
   const curl=computed(()=>current.value ? `curl -X POST '${current.value.url}' \\\n  -H 'Authorization: Bearer ${token.value || '<TOKEN>'}' \\\n  -H 'Content-Type: text/plain' \\\n  --data-binary @event.txt` : '')
@@ -39,7 +45,7 @@ export function useWebhooks(active:Ref<boolean>) {
   function choose(hook?:Webhook) {
     selectionRevision++
     selected.value=hook?.id ?? null;editing.value=true;token.value='';copied.value=false;error.value='';deliveries.value=[]
-    Object.assign(draft,{name:hook?.name ?? '',instruction:hook?.instruction ?? '',enabled:hook?.enabled ?? true})
+    Object.assign(draft,{name:hook?.name ?? '',instruction:hook?.instruction ?? '',enabled:hook?.enabled ?? true,command_audit_mode:hook?.command_audit_mode ?? 'review'})
   }
   async function save() {
     if(saving.value) return
@@ -97,7 +103,7 @@ export function useWebhooks(active:Ref<boolean>) {
     onCleanup(()=>{disposed=true;clearInterval(timer)})
   })
   onMounted(load)
-  return reactive({allowed,loading,saving,editing,error,token,copied,hooks,selected,deliveries,confirmation,draft,current,dateFormat,curl,statusLabels,load,clear,choose,save,confirm,copyToken})
+  return reactive({allowed,loading,saving,editing,error,token,copied,hooks,selected,deliveries,confirmation,draft,current,dateFormat,curl,statusLabels,auditModes,load,clear,choose,save,confirm,copyToken})
 }
 
 export type WebhooksState = ReturnType<typeof useWebhooks>
