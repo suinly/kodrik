@@ -14,6 +14,32 @@ fn snapshot() -> RemoteChatSnapshot {
 }
 
 #[test]
+fn remote_projection_clears_completed_plan_after_new_user_request() {
+    for status in ["pending", "in_progress", "completed"] {
+        let mut view = snapshot();
+        view.messages[1]["parts"] = json!([{"type":"dynamic-tool","toolCallId":"plan","toolName":"update_plan","state":"output-available","input":{"plan":[{"step":"Inspect","status":status}]},"output":"Plan updated"}]);
+        let mut app = App::default();
+        remote::project(&mut app, &view).unwrap();
+        assert!(app.plan.is_some());
+        view.run.as_mut().unwrap()["clear_completed_plan"] = json!(true);
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.plan.is_none(), status == "completed", "queued {status}");
+        view.run.as_mut().unwrap()["clear_completed_plan"] = json!(false);
+        view.messages.push(
+            json!({"id":"next","role":"user","parts":[{"type":"text","text":"Next request"}]}),
+        );
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.plan.is_none(), status == "completed", "{status}");
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(
+            app.plan.is_none(),
+            status == "completed",
+            "reloaded {status}"
+        );
+    }
+}
+
+#[test]
 fn server_projection_preserves_draft_versions_tools_and_live_status() {
     let mut app = App {
         input: "unsent draft".into(),

@@ -297,6 +297,7 @@ impl Chat {
         }
         let versions = Value::Null;
         let mut run = json!({"busy":view.busy,"blocked_reason":view.blocked_reason,
+            "clear_completed_plan":!view.queued.is_empty(),
             "model":self.runner.model_identity(),
             "compaction":view.run.as_ref().and_then(|r| r.compaction.as_ref()),
             "phase":view.run.as_ref().map(|r| &r.run.phase),

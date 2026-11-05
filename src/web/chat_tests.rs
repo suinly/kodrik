@@ -24,6 +24,41 @@ mod approvals;
 mod subagents;
 
 #[tokio::test]
+async fn web_completed_plan_clears_on_next_request_but_incomplete_plan_remains() {
+    let f = Fixture::new().await;
+    for (text, completed) in [
+        ("tools", true),
+        ("tools-pending", false),
+        ("tools-in-progress", false),
+    ] {
+        let id = f.create().await;
+        for (index, text) in [text, "hello"].iter().enumerate() {
+            let response = f
+                .request(reqwest::Method::POST, "send")
+                .json(&json!({"id":id,"text":text,"request_id":uuid::Uuid::new_v4()}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            f.idle(&id).await;
+            let view: Value = f
+                .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                view["plan"].is_null(),
+                index == 1 && completed,
+                "{text}: {view}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn chat_form_actions_require_a_successful_declaration_in_the_scoped_session() {
     use crate::agent::{datasets::DatasetStore, message::ToolResult, session::SessionId};
     let f = Fixture::new().await;
@@ -641,12 +676,14 @@ impl LlmProvider for FakeLlm {
         if text == "fail" {
             anyhow::bail!("test provider failure");
         }
-        if text == "tools" && !matches!(context.messages.last(), Some(Message::ToolResult(_))) {
+        if ["tools", "tools-pending", "tools-in-progress"].contains(&text)
+            && !matches!(context.messages.last(), Some(Message::ToolResult(_)))
+        {
             return Ok((
                 vec![Message::ToolCall(ToolCall {
                     call_id: "plan-call".into(),
                     name: "update_plan".into(),
-                    arguments: json!({"plan":[{"step":"Проверить чат", "status":"completed"}]}),
+                    arguments: json!({"plan":[{"step":"Проверить чат", "status":match text {"tools-pending" => "pending", "tools-in-progress" => "in_progress", _ => "completed"}}]}),
                 })],
                 None,
             ));

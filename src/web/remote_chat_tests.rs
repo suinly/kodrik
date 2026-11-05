@@ -74,6 +74,48 @@ async fn fixture() -> (tempfile::TempDir, Chat, WebState, SessionId) {
 }
 
 #[tokio::test]
+async fn queued_request_hides_only_completed_plans_in_web_and_remote_snapshots() {
+    use crate::agent::{
+        inbox::{BusyMode, SubmissionRequest},
+        run_state::{Checkpoint, RunPhase},
+    };
+    for status in ["pending", "in_progress", "completed"] {
+        let (_dir, chat, _state, id) = fixture().await;
+        let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+        session.push(Message::ToolCall(ToolCall {
+            call_id: "plan".into(),
+            name: "update_plan".into(),
+            arguments: json!({"plan":[{"step":"Inspect","status":status}]}),
+        }));
+        session.push(Message::ToolResult(ToolResult {
+            call_id: "plan".into(),
+            content: json!("Plan updated").into(),
+        }));
+        let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+        cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+        assert!(!chat.snapshot(id.as_str()).await.unwrap()["plan"].is_null());
+        chat.sessions
+            .submit(SubmissionRequest::new(
+                &id,
+                crate::gateway::IncomingMessage::new(
+                    crate::gateway::InterfaceId("web".into()),
+                    id.as_str(),
+                    "Next request",
+                ),
+                BusyMode::Steer,
+            ))
+            .await
+            .unwrap();
+        let web = chat.snapshot(id.as_str()).await.unwrap();
+        assert_eq!(web["queued"].as_array().unwrap().len(), 1);
+        assert_eq!(web["plan"].is_null(), status == "completed", "{status}");
+        let native = chat.remote_snapshot(&id).await.unwrap();
+        assert_eq!(native.run.unwrap()["clear_completed_plan"], true);
+        assert!(!chat.sessions.load(&id).await.unwrap().unwrap().messages().iter().any(|message| matches!(message, Message::User(user) if user.content == "Next request")));
+    }
+}
+
+#[tokio::test]
 async fn native_snapshot_reads_shared_history_without_private_snapshots() {
     let (_dir, chat, _state, id) = fixture().await;
     let snapshot = chat.remote_snapshot(&id).await.unwrap();

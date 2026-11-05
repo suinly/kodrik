@@ -684,6 +684,10 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     refresh_history(app, &session);
     app.versions = versions;
     let run = snapshot.run.as_ref().unwrap_or(&serde_json::Value::Null);
+    if run["clear_completed_plan"] == true && app.plan_completed {
+        app.plan = None;
+        app.plan_completed = false;
+    }
     app.model = run["model"].as_str().unwrap_or("server agent").into();
     app.remote_environment = Some(snapshot.environment.as_ref().map_or_else(
         || format!("{} · laptop detached", snapshot.session_id.as_str()),

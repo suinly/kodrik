@@ -305,6 +305,9 @@ impl Chat {
         snapshot["busy"] = json!(view.busy);
         snapshot["blocked_reason"] = json!(view.blocked_reason);
         snapshot["queued"] = json!(view.queued);
+        let plan = crate::agent::tools::TaskPlan::from_history(view.session.messages())
+            .filter(|plan| view.queued.is_empty() || !plan.is_completed());
+        snapshot["plan"] = json!(plan);
         let (title, title_default) = self.display_title(&view.session).await?;
         snapshot["title"] = json!(title);
         snapshot["title_default"] = json!(title_default);

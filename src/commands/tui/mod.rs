@@ -717,15 +717,12 @@ async fn select_message_version(
 fn restore_history(app: &mut App, session: &Session) {
     app.session = Some(session.id().clone());
     app.plan = None;
-    let mut plan_calls = std::collections::HashMap::new();
+    app.plan_completed = false;
     for message in session.messages() {
         match message {
             Message::User(message) => app.push_user_message(message.content.clone()),
             Message::Assistant(message) => app.push_kodrik_message(message.content.clone()),
             Message::ToolCall(call) => {
-                if call.name == "update_plan" {
-                    plan_calls.insert(call.call_id.clone(), call.arguments.clone());
-                }
                 show_progress(
                     app,
                     AgentEvent::ToolStarted {
@@ -736,13 +733,6 @@ fn restore_history(app: &mut App, session: &Session) {
                 );
             }
             Message::ToolResult(result) => {
-                if result.content.output.get("error").is_none()
-                    && result.content.output.get("interrupted").is_none()
-                    && let Some(arguments) = plan_calls.remove(&result.call_id)
-                    && let Ok(plan) = crate::agent::tools::TaskPlan::parse(arguments)
-                {
-                    app.update_plan(plan);
-                }
                 show_progress(
                     app,
                     AgentEvent::ToolFinished {
@@ -753,6 +743,9 @@ fn restore_history(app: &mut App, session: &Session) {
                 );
             }
         }
+    }
+    if let Some(plan) = crate::agent::tools::TaskPlan::from_history(session.messages()) {
+        app.update_plan(plan);
     }
 }
 
@@ -765,6 +758,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     let source_changed = app.session != saved.session;
     if !source_changed
         && app.plan == saved.plan
+        && app.plan_completed == saved.plan_completed
         && app.messages.len() == saved.messages.len()
         && app
             .messages
@@ -793,6 +787,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     }
     app.messages = saved.messages;
     app.plan = saved.plan;
+    app.plan_completed = saved.plan_completed;
     app.session = saved.session;
     if let Some(turn) = selected_turn.filter(|_| !source_changed) {
         app.navigation.selected = app
@@ -927,6 +922,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.compaction_progress = None;
             app.view = Default::default();
             app.plan = None;
+            app.plan_completed = false;
             let boundary = app
                 .messages
                 .iter()
@@ -1693,6 +1689,67 @@ mod tests {
         app.plan = Some("Old plan".into());
         reset_session(&mut app);
         assert!(app.plan.is_none());
+    }
+
+    fn append_plan_update(session: &mut Session, id: &str, step: &str, status: &str) {
+        use crate::agent::message::{ToolCall, ToolResult};
+        session.push(Message::ToolCall(ToolCall {
+            call_id: id.into(),
+            name: "update_plan".into(),
+            arguments: serde_json::json!({"plan": [{"step": step, "status": status}]}),
+        }));
+        session.push(Message::ToolResult(ToolResult {
+            call_id: id.into(),
+            content: serde_json::json!("Plan updated").into(),
+        }));
+    }
+
+    #[test]
+    fn plan_history_clears_completed_plans_at_the_next_user_request() {
+        use crate::agent::message::UserMessage;
+        for (status, expected) in [
+            ("pending", Some("Plan · 0/1\n○ Inspect")),
+            ("in_progress", Some("Plan · 0/1\n→ Inspect")),
+            ("completed", None),
+        ] {
+            let mut session = Session::new(SessionId::new("plan-boundary"));
+            append_plan_update(&mut session, "first", "Inspect", status);
+            let mut app = App::default();
+            restore_history(&mut app, &session);
+            assert!(app.plan.is_some());
+            session.push(Message::User(UserMessage {
+                content: "next request".into(),
+                images: Vec::new(),
+                files: Vec::new(),
+            }));
+            assert!(refresh_history(&mut app, &session));
+            assert_eq!(app.plan.as_deref(), expected, "{status}");
+            let mut restored = App::default();
+            restore_history(&mut restored, &session);
+            assert_eq!(restored.plan.as_deref(), expected, "{status}");
+            assert!(!refresh_history(&mut app, &session));
+
+            append_plan_update(&mut session, "second", "New task", "pending");
+            assert!(refresh_history(&mut app, &session));
+            assert_eq!(app.plan.as_deref(), Some("Plan · 0/1\n○ New task"));
+            app.push_user_message("continue the new plan".into());
+            assert_eq!(app.plan.as_deref(), Some("Plan · 0/1\n○ New task"));
+        }
+    }
+
+    #[test]
+    fn reloaded_completed_plans_clear_on_live_user_input() {
+        let mut session = Session::new(SessionId::new("completed-plan"));
+        append_plan_update(&mut session, "first", "Inspect", "completed");
+        let mut app = App::default();
+        assert!(refresh_history(&mut app, &session));
+        app.push_user_message("next request".into());
+        assert!(app.plan.is_none());
+
+        let mut restored = App::default();
+        restore_history(&mut restored, &session);
+        restored.push_user_message("next request".into());
+        assert!(restored.plan.is_none());
     }
 
     #[test]

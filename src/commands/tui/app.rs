@@ -25,6 +25,7 @@ pub struct App {
     pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
     pub plan: Option<String>,
+    pub plan_completed: bool,
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
     pub shown_approvals: HashMap<String, String>,
@@ -232,6 +233,10 @@ impl App {
     }
 
     pub fn push_user_message(&mut self, content: String) {
+        if self.plan_completed {
+            self.plan = None;
+            self.plan_completed = false;
+        }
         self.messages.push(AppMessage {
             role: AppMessageRole::User,
             content,
@@ -239,6 +244,7 @@ impl App {
     }
 
     pub fn update_plan(&mut self, plan: crate::agent::tools::TaskPlan) {
+        self.plan_completed = plan.is_completed();
         if plan.plan.is_empty() {
             self.plan = None;
             return;
@@ -484,6 +490,48 @@ mod tests {
         assert_eq!(app.messages.last().unwrap().content, pasted);
         app.insert_input("  /audit ask  ");
         assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/audit ask"));
+    }
+
+    #[test]
+    fn sending_a_request_clears_only_completed_plans() {
+        for (status, expected) in [
+            ("pending", Some("Plan · 0/1\n○ Inspect")),
+            ("in_progress", Some("Plan · 0/1\n→ Inspect")),
+            ("completed", None),
+        ] {
+            let mut app = App::default();
+            app.update_plan(
+                crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                    "plan": [{"step": "Inspect", "status": status}]
+                }))
+                .unwrap(),
+            );
+            app.insert_input("next request");
+            assert_eq!(
+                key(&mut app, KeyCode::Enter).as_deref(),
+                Some("next request")
+            );
+            assert_eq!(app.plan.as_deref(), expected, "{status}");
+            assert_eq!(app.messages.last().unwrap().content, "next request");
+        }
+    }
+
+    #[test]
+    fn local_commands_and_unsent_input_keep_completed_plans() {
+        for input in ["/language ru", "/audit status", "/sessions", "   "] {
+            let mut app = App::default();
+            app.update_plan(
+                crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                    "plan": [{"step": "Inspect", "status": "completed"}]
+                }))
+                .unwrap(),
+            );
+            app.insert_input(input);
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+            key(&mut app, KeyCode::Enter);
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+            assert!(app.messages.is_empty());
+        }
     }
 
     #[test]

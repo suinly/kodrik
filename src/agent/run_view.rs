@@ -138,12 +138,7 @@ fn read_run_view(tx: &Connection, id: &str) -> anyhow::Result<RunView> {
     {
         current.status = PartialStatus::Interrupted;
     }
-    let mut plan = None;
-    for message in session.messages() {
-        if let Message::ToolCall(call)=message && call.name=="update_plan" && session.messages().iter().any(|m|matches!(m,Message::ToolResult(result) if result.call_id==call.call_id && result.content.output.get("error").is_none() && result.content.output.get("interrupted").is_none())) {
-                    plan=Some(TaskPlan::parse(call.arguments.clone())?);
-                }
-    }
+    let plan = TaskPlan::from_history(session.messages());
     let mut queued = vec![];
     let mut stmt=tx.prepare("SELECT s.payload FROM submissions s LEFT JOIN active_sessions a ON a.conversation_id=s.conversation_id WHERE s.status='Queued' AND coalesce(s.session_id,a.session_id,s.conversation_id)=?1 ORDER BY s.rowid")?;
     for bytes in stmt.query_map([&run.session_id], |r| r.get::<_, Vec<u8>>(0))? {
@@ -417,6 +412,49 @@ mod tests {
         run_state::{Checkpoint, RunPhase},
         session::{Session, SessionId, SqliteSessionStore},
     };
+
+    #[tokio::test]
+    async fn completed_plan_clears_on_new_user_message_and_stays_cleared_after_reopen() {
+        use crate::agent::message::{ToolCall, ToolResult};
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open_async(dir.path().into())
+            .await
+            .unwrap();
+        for status in ["pending", "in_progress", "completed"] {
+            let mut session = Session::new(SessionId::new(status));
+            let mut cp = Checkpoint::new(&store, session.id(), &session);
+            session.push(Message::ToolCall(ToolCall {
+                call_id: "plan".into(),
+                name: "update_plan".into(),
+                arguments: serde_json::json!({"plan":[{"step":"Inspect","status":status}]}),
+            }));
+            session.push(Message::ToolResult(ToolResult {
+                call_id: "plan".into(),
+                content: serde_json::json!("Plan updated").into(),
+            }));
+            cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+            assert!(store.run_view(&cp.record.id).await.unwrap().plan.is_some());
+            session.push(Message::User(UserMessage {
+                content: "Next request".into(),
+                files: vec![],
+                images: vec![],
+            }));
+            cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+            let reopened = SqliteSessionStore::open_async(dir.path().into())
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .run_view(&cp.record.id)
+                    .await
+                    .unwrap()
+                    .plan
+                    .is_none(),
+                status == "completed",
+                "{status}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn conversation_view_projects_shared_session_run_across_transports() {
