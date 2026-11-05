@@ -351,17 +351,83 @@ impl Chat {
         })
     }
 
-    pub(super) async fn remote_sessions(&self) -> Result<Value, Response> {
-        management::list_sessions(
-            self,
-            management::Search {
-                q: String::new(),
-                limit: 100,
-                offset: 0,
-                webhooks: false,
-            },
-        )
-        .await
+    pub(super) async fn remote_sessions(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Value, Response> {
+        if !(1..=100).contains(&limit) || offset > i64::MAX as usize {
+            return Err(error(StatusCode::BAD_REQUEST, "Invalid conversation page"));
+        }
+        self.sessions
+            .with_connection(move |db| {
+                // rtrim with the non-colon character set locates the last ID component,
+                // matching personal_session_id even for legacy Telegram selectors.
+                let mut statement = db.prepare(
+                    "WITH eligible AS MATERIALIZED (
+                    SELECT s.id,coalesce(b.root_id,s.id) AS root_id,s.updated_at,
+                        json_extract(s.payload,'$.last_message_at') AS last_message_at
+                    FROM sessions s LEFT JOIN web_chat_branches b ON b.session_id=s.id
+                    WHERE s.id NOT GLOB 'companion:*' AND s.id NOT GLOB '*:guest'
+                        AND NOT (s.id GLOB 'telegram:*' AND
+                            substr(s.id,length(rtrim(s.id,replace(s.id,':','')))+1,1)='-')
+                        AND json_extract(s.payload,'$.telegram_group') IS NULL
+                        AND json_extract(s.payload,'$.webhook_instruction') IS NULL
+                ), groups AS (
+                    SELECT e.root_id,max(e.updated_at) AS activity,
+                        max(e.last_message_at) AS updated_at,p.root_id IS NOT NULL AS pinned
+                    FROM eligible e LEFT JOIN web_chat_pins p ON p.root_id=e.root_id
+                    GROUP BY e.root_id
+                    ORDER BY pinned DESC,activity DESC,e.root_id LIMIT ?1 OFFSET ?2
+                ), ranked AS (
+                    SELECT e.id,e.root_id,row_number() OVER (
+                        PARTITION BY e.root_id ORDER BY
+                        (e.id=coalesce(selection.session_id,e.root_id)) DESC,e.updated_at DESC,e.id
+                    ) AS rank
+                    FROM eligible e JOIN groups g ON g.root_id=e.root_id
+                    LEFT JOIN web_chat_selection selection ON selection.root_id=e.root_id
+                )
+                SELECT r.id,g.root_id,t.title,g.pinned,g.updated_at
+                FROM groups g JOIN ranked r ON r.root_id=g.root_id AND r.rank=1
+                LEFT JOIN web_chat_titles t ON t.conversation_id=g.root_id
+                ORDER BY g.pinned DESC,g.activity DESC,g.root_id",
+                )?;
+                let mut fallback = db.prepare(
+                    "SELECT json_extract(message.value,'$.User.content')
+                 FROM sessions s,json_each(s.payload,'$.messages') message
+                 WHERE s.id=?1 AND json_type(message.value,'$.User.content')='text'
+                 ORDER BY CAST(message.key AS INTEGER)",
+                )?;
+                let mut rows = statement.query(rusqlite::params![limit as i64, offset as i64])?;
+                let mut result = Vec::new();
+                while let Some(row) = rows.next()? {
+                    let id: String = row.get(0)?;
+                    let mut title: Option<String> = row.get(2)?;
+                    if title.is_none() {
+                        let mut messages = fallback.query([&id])?;
+                        while let Some(message) = messages.next()? {
+                            let content: String = message.get(0)?;
+                            let candidate: String = content
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                                .chars()
+                                .take(80)
+                                .collect();
+                            if !candidate.is_empty() {
+                                title = Some(candidate);
+                                break;
+                            }
+                        }
+                    }
+                    result.push(json!({"id":id,"root_id":row.get::<_,String>(1)?,
+                    "title":title.unwrap_or_else(|| "Новый диалог".into()),
+                    "pinned":row.get::<_,bool>(3)?,"updated_at":row.get::<_,Option<String>>(4)?}));
+                }
+                Ok(json!(result))
+            })
+            .await
+            .map_err(internal)
     }
 
     pub(super) async fn remote_command(

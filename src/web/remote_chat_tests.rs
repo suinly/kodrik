@@ -74,6 +74,158 @@ async fn fixture() -> (tempfile::TempDir, Chat, WebState, SessionId) {
 }
 
 #[tokio::test]
+async fn native_sessions_pages_validate_bounds_and_default_to_thirty() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let (dir, chat, state, _) = fixture().await;
+    chat.sessions
+        .with_connection(|db| {
+            for index in 0..35 {
+                let id = format!("page-{index:02}");
+                let payload = json!({"id":id,"messages":[]});
+                db.execute(
+                    "INSERT INTO sessions VALUES(?1,?2,?3)",
+                    rusqlite::params![id, serde_json::to_vec(&payload)?, index],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let pairing = state.auth.start_device_pairing("Laptop", now).unwrap();
+    state
+        .auth
+        .approve_device_pairing(pairing.request_id, &pairing.code, &Identity::Owner, now)
+        .unwrap();
+    let crate::web::auth::devices::PairingPoll::Authorized { token, .. } = state
+        .auth
+        .poll_device_pairing(pairing.request_id, &pairing.polling_secret, now)
+        .unwrap()
+    else {
+        panic!()
+    };
+    let app = crate::web::server::router_with_chat(state.settings.clone(), dir.path(), Some(chat));
+    for (query, status, ids) in [
+        ("", 200, None),
+        ("?limit=2&offset=30", 200, Some(vec!["page-05", "page-04"])),
+        ("?limit=100&offset=36", 200, Some(vec![])),
+        ("?offset=9223372036854775807", 200, Some(vec![])),
+        ("?limit=0", 400, None),
+        ("?limit=101", 400, None),
+        ("?limit=-1", 400, None),
+        ("?offset=-1", 400, None),
+        ("?offset=9223372036854775808", 400, None),
+        ("?offset=18446744073709551616", 400, None),
+        ("?limit=abc", 400, None),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/kodrik/api/remote/chat/sessions{query}"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{query}");
+        if status == 200 {
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                    .unwrap();
+            let rows = body.as_array().unwrap();
+            if query.is_empty() {
+                assert_eq!(rows.len(), 30);
+            }
+            if let Some(ids) = ids {
+                assert_eq!(
+                    rows.iter()
+                        .map(|row| row["id"].as_str().unwrap())
+                        .collect::<Vec<_>>(),
+                    ids,
+                    "{query}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_sessions_group_order_and_titles_do_not_deserialize_histories() {
+    let (_dir, chat, _state, _) = fixture().await;
+    chat.sessions.with_connection(|db| {
+        db.execute("DELETE FROM sessions", [])?;
+        for (id, updated, extra) in [
+            ("pinned", 1, json!({})),
+            ("root", 2, json!({})),
+            ("selected", 3, json!({})),
+            ("active", 100, json!({})),
+            ("fallback", 4, json!({})),
+            ("fallback-child", 50, json!({})),
+            ("tie-a", 20, json!({})),
+            ("tie-b", 20, json!({})),
+            ("tie-b-child", 19, json!({})),
+            ("telegram:-42:owner", 15, json!({})),
+            ("telegram:42", 14, json!({"messages":[{"User":{"content":"🌍".repeat(100)}}]})),
+            ("blank", 10, json!({"messages":[{"User":{"content":"\n\u{2003}"}}]})),
+            ("companion:private", 999, json!({})),
+            ("owner:guest", 999, json!({})),
+            ("telegram:owner:-42", 999, json!({})),
+            ("metadata-group", 999, json!({"telegram_group":{}})),
+            ("webhook", 999, json!({"webhook_instruction":"secret"})),
+        ] {
+            let mut payload = json!({"id":id,"messages":[{"ToolResult":{"invalid":"history"}},{"User":{"content":" \n\t"}},{"User":{"content":format!("  {id}\n  title 🌍  "),"images":"invalid attachment"}}],"compaction":"invalid unused metadata"});
+            payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            db.execute("INSERT INTO sessions VALUES(?1,?2,?3)", rusqlite::params![id,serde_json::to_vec(&payload)?,updated])?;
+        }
+        for (id, root) in [("selected", "root"), ("active", "root"), ("fallback-child", "fallback"), ("tie-b-child", "tie-b")] {
+            db.execute("INSERT INTO web_chat_branches VALUES(?1,?2,?2,0)", [id,root])?;
+        }
+        db.execute("INSERT INTO web_chat_selection VALUES('root','selected'),('fallback','pinned')", [])?;
+        db.execute("INSERT INTO web_chat_pins VALUES('pinned')", [])?;
+        db.execute("INSERT INTO web_chat_titles VALUES('root','Saved root title')", [])?;
+        Ok(())
+    }).await.unwrap();
+    let rows = chat.remote_sessions(30, 0).await.unwrap();
+    assert_eq!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "pinned",
+            "selected",
+            "fallback-child",
+            "tie-a",
+            "tie-b",
+            "telegram:-42:owner",
+            "telegram:42",
+            "blank"
+        ]
+    );
+    assert_eq!(rows[0]["pinned"], true);
+    assert_eq!(rows[1]["root_id"], "root");
+    assert_eq!(rows[1]["title"], "Saved root title");
+    assert_eq!(rows[2]["title"], "fallback-child title 🌍");
+    assert_eq!(rows[6]["title"], "🌍".repeat(80));
+    assert_eq!(rows[7]["title"], "Новый диалог");
+    assert_eq!(
+        chat.remote_sessions(2, 0).await.unwrap(),
+        json!(rows.as_array().unwrap()[..2])
+    );
+    assert_eq!(
+        chat.remote_sessions(2, 2).await.unwrap(),
+        json!(rows.as_array().unwrap()[2..4])
+    );
+}
+
+#[tokio::test]
 async fn queued_request_hides_only_completed_plans_in_web_and_remote_snapshots() {
     use crate::agent::{
         inbox::{BusyMode, SubmissionRequest},

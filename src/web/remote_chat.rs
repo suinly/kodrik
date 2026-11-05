@@ -60,9 +60,25 @@ async fn authorize(
     next.run(request).await
 }
 
-async fn sessions(Extension(state): Extension<WebState>) -> Result<Json<Value>, Response> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionsQuery {
+    #[serde(default = "sessions_page_size")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+}
+
+fn sessions_page_size() -> usize {
+    30
+}
+
+async fn sessions(
+    Extension(state): Extension<WebState>,
+    Query(query): Query<SessionsQuery>,
+) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    Ok(Json(chat.remote_sessions().await?))
+    Ok(Json(chat.remote_sessions(query.limit, query.offset).await?))
 }
 
 #[derive(Default, Deserialize)]
