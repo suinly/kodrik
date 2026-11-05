@@ -30,6 +30,11 @@ the [configuration reference](configuration.md).
   message. A paused run does not automatically resume or replay commands.
 - Use `/retry` for unconfirmed sent/edited input, not a duplicate new message.
   This checks its original submission ID, not a tool's external outcome.
+- `Cleanup worker exited` blocks local environment startup. Preserve the full
+  error, including worker PID, status and bounded stdout/stderr diagnostics;
+  do not delete receipts or automatically replay commands. For local development,
+  use a separate `CARGO_TARGET_DIR` for each checkout so another build cannot
+  replace an executable while its tests are running.
 - A changed skill or project `AGENTS.md` requires detach/reattach. Required HTTP
   MCP failure blocks attachment; an explicitly optional MCP can be omitted with
   a warning. stdio MCP and remote `ask` are unsupported.

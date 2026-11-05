@@ -40,12 +40,20 @@ fn read_control_line(reader: &mut BufReader<std::process::ChildStdout>) -> anyho
             ensure!(ready > 0, "Cleanup worker acknowledgement unavailable");
         }
         let mut byte = [0u8];
-        ensure!(reader.read(&mut byte)? == 1, "Cleanup worker exited");
+        ensure!(
+            reader.read(&mut byte)? == 1,
+            "Cleanup worker exited; partial stdout={:?}",
+            String::from_utf8_lossy(&line)
+        );
         if byte[0] == b'\n' {
             return Ok(String::from_utf8(line)?);
         }
         line.push(byte[0]);
-        ensure!(line.len() <= 256, "Cleanup worker response too long");
+        ensure!(
+            line.len() <= 256,
+            "Cleanup worker response too long; partial stdout={:?}",
+            String::from_utf8_lossy(&line)
+        );
     }
 }
 
@@ -69,7 +77,12 @@ impl Supervisor {
         command.arg("remote-supervisor-worker");
         #[cfg(test)]
         command
-            .args(["--exact", "remote::supervisor_tests::worker", "--nocapture"])
+            .args([
+                "--exact",
+                "remote::supervisor_tests::worker",
+                "--nocapture",
+                "--format=terse",
+            ])
             .env("KODRIK_SUPERVISOR_WORKER", "1");
         // stderr is private lifetime input, not a log channel. stdout is ACK-only.
         let mut child = command
@@ -89,19 +102,33 @@ impl Supervisor {
             failure: None,
         };
         // libtest has a preamble in fixtures; the production worker emits only READY.
+        let mut startup = Vec::new();
         let ready = (|| {
             for _ in 0..8 {
-                if read_control_line(&mut control.reader)?.trim() == "READY" {
+                let line = read_control_line(&mut control.reader)?;
+                if line.trim() == "READY" {
                     return Ok(());
                 }
+                startup.push(line);
             }
             anyhow::bail!("Cleanup worker did not initialize")
         })();
         if let Err(error) = ready {
+            let status = control.child.try_wait();
+            let mut diagnostics = Vec::new();
+            if let Some(lifetime) = &mut control.lifetime {
+                if lifetime.set_nonblocking(true).is_ok() {
+                    let _ = lifetime.take(4096).read_to_end(&mut diagnostics);
+                }
+            }
             control.lifetime.take();
             let _ = control.child.kill();
             let _ = control.child.wait();
-            return Err(error);
+            anyhow::bail!(
+                "{error:#}; cleanup worker startup pid={} status={status:?} stdout={startup:?} stderr={:?}",
+                control.child.id(),
+                String::from_utf8_lossy(&diagnostics)
+            );
         }
         Ok(Self(Mutex::new(control)))
     }

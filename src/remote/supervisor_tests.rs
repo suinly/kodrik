@@ -8,6 +8,14 @@ use std::{
 #[test]
 fn worker() {
     if std::env::var_os("KODRIK_SUPERVISOR_WORKER").is_some() {
+        if std::env::var_os("KODRIK_SUPERVISOR_STARTUP_FAILURE").is_some() {
+            use std::io::Write;
+            eprintln!("fixture startup failure");
+            println!("fixture startup output");
+            print!("fixture exited before READY");
+            std::io::stdout().flush().unwrap();
+            std::process::exit(23);
+        }
         // Test harness output must not become protocol bytes.
         match super::supervisor::worker() {
             Ok(()) => std::process::exit(0),
@@ -16,6 +24,59 @@ fn worker() {
                 std::process::exit(1);
             }
         }
+    }
+}
+
+#[test]
+fn startup_probe_worker() {
+    let Some(mode) = std::env::var_os("KODRIK_SUPERVISOR_STARTUP_PROBE") else {
+        return;
+    };
+    if mode == "failure" {
+        let error = match Supervisor::spawn() {
+            Ok(_) => panic!("failed startup was accepted"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("Cleanup worker exited"), "{error}");
+        assert!(error.contains("fixture startup output"), "{error}");
+        assert!(error.contains("fixture exited before READY"), "{error}");
+        assert!(error.contains("fixture startup failure"), "{error}");
+        assert!(error.contains("status="), "{error}");
+    } else {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = Supervisor::spawn().unwrap();
+        let mut shell = gated_command(&supervisor, "echo executed > effect", dir.path()).unwrap();
+        assert!(shell.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("effect")).unwrap(),
+            "executed\n"
+        );
+        supervisor.stop_all().unwrap();
+    }
+}
+
+#[test]
+fn startup_accepts_single_threaded_harness_and_retains_exit_diagnostics() {
+    for mode in ["success", "failure"] {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "remote::supervisor_tests::startup_probe_worker",
+                "--nocapture",
+            ])
+            .env("RUST_TEST_THREADS", "1")
+            .env("KODRIK_SUPERVISOR_STARTUP_PROBE", mode);
+        if mode == "failure" {
+            command.env("KODRIK_SUPERVISOR_STARTUP_FAILURE", "1");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
