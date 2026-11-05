@@ -2775,6 +2775,66 @@ test('long tool lists keep compact summaries and collapse back to their header',
   } finally {await browser.close();}
 });
 
+test('remote environment stays beside tool audit and updates without a run revision change',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  let finishStream;
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844}});
+    const environment={session_id:id,environment:{connection_id:'connection',generation:'generation'},label:'Laptop <img src=x onerror=alert(1)>',project_root:'/work/'+'project/'.repeat(40),state:'connected',reason:null};
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,environment_revision:1,environment,busy:false,cancel_requested:false,phase:null,blocked_reason:null,
+      live:{current:null,interrupted:null},plan:null,queued:[],subagents:[],command_approvals:[],command_audit_mode:'review',messages:[]};
+    const streamReady=new Promise(resolve=>{finishStream=resolve});
+    await page.route('**/run',route=>route.fulfill({json:snapshot}));
+    await page.route('**/events',async route=>{
+      await streamReady;
+      const disconnected={...snapshot,environment_revision:2,environment:{...environment,state:'disconnected',reason:'TUI closed'}};
+      const foreign={...snapshot,session_id:'another-session',revision:99,environment_revision:99,environment:{...environment,session_id:'another-session',label:'Wrong session'}};
+      await route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(disconnected)}\n\ndata: ${JSON.stringify(foreign)}\n\n`});
+    });
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const control=page.getByRole('button',{name:'Execution environment',exact:true});
+    const audit=page.getByRole('button',{name:'Tool audit: AI review',exact:true});
+    await expect(control).toBeVisible();
+    assert.ok(await control.evaluate(el=>el.nextElementSibling?.getAttribute('aria-label')==='Tool audit: AI review' && !!el.closest('header')));
+    await expect(page.getByTestId('chat-composer').getByRole('status',{name:'Execution environment',exact:true})).toHaveCount(0);
+    await expect(control).toHaveAttribute('title',`Connected · ${environment.label}`);
+    await control.click();
+    const details=page.getByRole('status',{name:'Execution environment',exact:true});
+    await expect(details).toContainText(environment.label);
+    await expect(details).toContainText(environment.project_root);
+    await expect(details.locator('img,script')).toHaveCount(0);
+    finishStream();
+    await expect(details).toContainText('Disconnected');
+    await expect(details).toContainText('TUI closed');
+    await expect(details).not.toContainText('Wrong session');
+    await expect(control).toHaveAttribute('title',`Disconnected · ${environment.label}`);
+    await page.unroute('**/events');
+    await page.route('**/events',route=>route.fulfill({contentType:'text/event-stream',body:''}));
+    await page.keyboard.press('Escape');
+    for(const width of [1280,390,320]) {
+      await page.setViewportSize({width,height:844});
+      await expect(control).toBeInViewport();
+      await expect(audit).toBeInViewport();
+      const [connectionBox,auditBox]=await Promise.all([control.boundingBox(),audit.boundingBox()]);
+      assert.ok(Math.abs(connectionBox.y-auditBox.y)<4,'connection and audit share a header row');
+      await control.click();
+      await expect(details).toBeVisible();
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      if(width!==320) await page.screenshot({path:`/tmp/kodrik-remote-header-${width}.png`,fullPage:true,animations:'disabled'});
+      await page.keyboard.press('Escape');
+    }
+    snapshot.environment={...environment,session_id:'another-session'};
+    await page.reload();
+    await expect(audit).toBeEnabled();
+    await expect(control).toHaveCount(0);
+    snapshot.environment=null;
+    await page.reload();
+    await expect(audit).toBeEnabled();
+    await expect(control).toHaveCount(0);
+  } finally {finishStream?.();await browser.close()}
+});
+
 test('session command audit header offers three modes with durable state and errors',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

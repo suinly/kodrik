@@ -256,7 +256,8 @@ function recoverInputFocus(event:KeyboardEvent) {
 }
 const commandAuditMode=computed(()=>snapshot.value?.command_audit_mode ?? 'review')
 const commandAuditDisabled=computed(()=>!snapshot.value || editorLocked.value || savingCommandAudit.value || decidingCommands.value.size > 0)
-defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit})
+const environment=computed(()=>snapshot.value?.environment?.session_id===props.conversation.id ? snapshot.value.environment : null)
+defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
   if(!editor) return
   // UEditor applies options only at creation; keep its live instance in sync.
@@ -555,7 +556,6 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
       </div>
     </div>
     <div data-testid="chat-composer" class="mx-auto flex max-h-[75%] w-full max-w-3xl shrink-0 flex-col gap-2 px-3 py-2 sm:px-6" @dragover.prevent @drop.prevent.capture="drop" @paste.capture="paste">
-      <EnvironmentStatus v-if="snapshot?.environment && snapshot.environment.session_id===conversation.id" :status="snapshot.environment" />
       <div v-if="problem || draftState.missingFiles.length || snapshot?.blocked_reason && snapshot.queued.length || attachmentsOpen || files.length || snapshot?.plan || snapshot?.subagents?.length || snapshot?.command_approvals?.length" class="min-h-0 space-y-3 overflow-y-auto overscroll-contain">
         <div v-if="problem" class="space-y-1">
           <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>

@@ -9,7 +9,7 @@ import {chromium,expect} from '@playwright/test';
 // Compile the real SFCs in memory: no app server, generated assets or Rust fixture needed.
 export async function componentPage(name,props={}) {
   const root=fileURLToPath(new URL('../',import.meta.url));
-  const child=name==='ProfilePage'?'DeviceConnections':name==='ChatConversation'?'EnvironmentStatus':null;
+  const child=name==='ProfilePage'?'DeviceConnections':null;
   const result=await build({stdin:{contents:`import * as VueForTests from 'vue';import {createApp,h,reactive} from 'vue';import Component from './app/components/${name}.vue';${child?`import Child from './app/components/${child}.vue';`:''}window.VueForTests=VueForTests;window.props=reactive(${JSON.stringify(props)});window.app=createApp({render:()=>h(Component,window.props)});${child?`app.component('${child}',Child);`:''}`,resolveDir:root},bundle:true,write:false,format:'iife',plugins:[{
     name:'vue-test',setup(builder){builder.onLoad({filter:/\.vue$/},async({path})=>{
       const {descriptor}=parse(await readFile(path,'utf8'),{filename:path});

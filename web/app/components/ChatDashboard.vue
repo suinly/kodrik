@@ -598,6 +598,15 @@ onMounted(() => {
               <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
             </template>
             <template v-else-if="viewingConversation && selected">
+              <UPopover v-if="conversationView?.environment" :content="{align:'end'}">
+                <UButton :icon="conversationView.environment.state==='connected' ? 'i-lucide-monitor-dot' : 'i-lucide-monitor-off'"
+                  :color="conversationView.environment.state==='connected' ? 'success' : 'neutral'" variant="ghost" size="sm"
+                  :aria-label="t('Среда выполнения')"
+                  :title="`${conversationView.environment.state==='connected' ? t('Подключено') : conversationView.environment.state==='disconnected' ? t('Отключено') : conversationView.environment.state} · ${conversationView.environment.label}`" />
+                <template #content>
+                  <EnvironmentStatus :status="conversationView.environment" class="w-80 max-w-[calc(100vw-1rem)] p-4 [overflow-wrap:anywhere]" />
+                </template>
+              </UPopover>
               <CommandAuditMenu :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
               <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
