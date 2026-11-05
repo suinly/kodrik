@@ -3885,6 +3885,41 @@ test('English document chrome switches language without changing document titles
   } finally {await browser.close();}
 });
 
+test('initial editor focus does not collapse a newer mobile draft selection',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+    await page.addInitScript(({id})=>{
+      if(sessionStorage.getItem('draft-test-seeded')) return;
+      const requestFrame=window.requestAnimationFrame,frames=[];
+      window.requestAnimationFrame=callback=>frames.push(callback);
+      window.releaseEditorFrames=()=>{
+        window.requestAnimationFrame=requestFrame;
+        for(const callback of frames.splice(0)) callback(performance.now());
+      };
+      sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'Saved unsent draft',files:[]}));
+      sessionStorage.setItem('draft-test-seeded','1');
+    },{id});
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const editor=page.getByRole('textbox',{name:'Message',exact:true});
+    await expect(editor).toHaveText('Saved unsent draft');
+    await expect(editor).toBeEditable();
+    // Release initial focus work between select-all and insertText, the two phases of fill().
+    await editor.evaluate(el=>{
+      el.focus();
+      const selection=getSelection(),range=document.createRange();
+      range.selectNodeContents(el);selection.removeAllRanges();selection.addRange(range);
+      releaseEditorFrames();
+    });
+    await page.keyboard.insertText('English mobile question');
+    await editor.press('Shift+Enter');
+    await editor.press('End');
+    await editor.press('a');
+    await expect(editor).toHaveText('English mobile question\na',{useInnerText:true});
+  } finally {await browser.close();}
+});
+
 test('English mobile chat keeps keyboard sending, saved drafts and language selection usable',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -4427,4 +4462,31 @@ test('chat forms permit consecutive inserts and hydrate current update revisions
     assert.deepEqual(await page.evaluate(()=>Object.keys(localStorage).filter(key=>key.startsWith('kodrik.form.'))),[]);
     assert.deepEqual(errors,[]);
   } finally {await browser.close()}
+});
+
+test('composer focus does not steal a subsequent table input selection', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'ui'});
+  await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).busy).toBe(false);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const filter=page.getByRole('textbox',{name:'Фильтр таблицы',exact:true});
+    await expect(filter).toBeVisible();
+    // Hold the editor's deferred focus until the user has moved to another input.
+    await page.getByRole('button',{name:'Добавить приём пищи',exact:true}).evaluate(button=>{
+      const original=window.requestAnimationFrame,frames=[];
+      window.requestAnimationFrame=callback=>{frames.push(callback);return 0};
+      button.focus();button.click();
+      const input=document.querySelector('input[aria-label="Фильтр таблицы"]');
+      input.focus();
+      input.value='Breakfast';input.dispatchEvent(new Event('input',{bubbles:true}));
+      window.requestAnimationFrame=original;
+      for(const callback of frames)callback(performance.now());
+    });
+    await expect(filter).toBeFocused();
+    await expect(filter).toHaveValue('Breakfast');
+    await expect(page.getByRole('table')).not.toContainText('Lunch');
+  } finally {await browser.close();}
 });

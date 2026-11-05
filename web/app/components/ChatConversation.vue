@@ -241,7 +241,7 @@ onMounted(() => {
 watch(() => props.conversation.id, () => { persistDraft(); void observe() })
 onBeforeUnmount(() => { mounted = false; controller.abort(); scrollObserver?.disconnect(); searchObserver?.disconnect(); CSS.highlights?.delete('conversation-search') })
 function focusInput() {
-  if (mounted && !editorLocked.value) prompt.value?.editor?.commands.focus(undefined,{scrollIntoView:false})
+  if (mounted && !editorLocked.value) prompt.value?.editor?.view.focus()
 }
 function recoverInputFocus(event:KeyboardEvent) {
   if(event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || [...event.key].length!==1 || editorLocked.value) return
@@ -268,7 +268,7 @@ watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async
     await nextTick()
     focusInput()
   }
-})
+}, {flush:'post'})
 watch(snapshot, async () => {
   await nextTick()
   if (follow.value) scrollToLatest()
