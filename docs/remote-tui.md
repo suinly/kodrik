@@ -87,15 +87,17 @@ kodrik --remote --remote-config /absolute/path/to/remote.toml
 
 An interactive terminal is required. The initial server conversation is the
 first in the returned session list, or a new conversation if none exists.
-**Local access starts detached**, even if this device was paired before. Use
-`/sessions` to select the intended server conversation before attaching.
+The launch project attaches automatically. For a new or changed environment
+grant, the TUI first shows the server, project and capabilities with an
+**Allow / Reject** keyboard picker, like a command approval. Use arrows and
+Enter; Esc rejects. Rejection keeps server chat available without local access.
+An unchanged saved grant needs no further confirmation.
 
 | Remote TUI input | Action |
 | --- | --- |
 | `/sessions` | Select a saved server conversation |
 | `/new` | Create and select a server conversation |
-| `/attach` | Disclose server, session, device, project and selected capabilities; does not grant access |
-| `/attach yes` | Explicitly attach the current project to this session; a new manifest grant also requires terminal `yes` |
+| `/attach` | Reconnect the launch project; show the grant picker if approval is needed |
 | `/detach` | Revoke this environment binding and clean up local work; keep server chat available |
 | `/retry` | Check an unconfirmed message/edit using its original request ID; not a tool retry |
 | `/older` | Load another server history page; PageUp also requests older history |
@@ -114,15 +116,24 @@ controls; full durable results remain in server history.
 The project root is the canonical launch directory. File read, patch and image
 tools are included; shell is included only with `allow_shell = true`. A new
 manifest grant discloses exact tools, selected MCP, skills and project
-instructions outside the full-screen UI. The saved `.grant` fingerprint beside
-the credential can avoid repeating that terminal prompt for an unchanged
-configuration/manifest; it never attaches a session automatically.
+instructions inside the full-screen UI, with PageUp/PageDown for long details.
+The saved `.grant` fingerprint beside the credential avoids repeating the
+picker for an unchanged configuration/manifest. Shell remains opt-in.
 
 Selecting a conversation, creating one, editing a message into a new branch or
-switching message versions **detaches the old binding before switching**. Access
-is not migrated to the new branch/session. Run `/attach` and `/attach yes` again
-if it should receive the environment. At most one environment can be attached
-to a session, and one connection serves one session.
+switching message versions **detaches the old binding before switching**, then
+automatically attaches the selected conversation without another approval for
+an unchanged grant. The previous conversation loses local access. At most one
+environment can be attached to a session, and one connection serves one session.
+
+The remote footer shows the audit mode, model, project basename and connection
+state, without the session UUID, device label or full project path. `connected`
+means both server chat and this TUI's local binding are connected; `detached`
+means server chat is available without a local binding; `disconnected` means
+server observation or a previously attached local binding has lost connection.
+Use `/attach` to recover a failed local binding. On narrow terminals connection
+state takes priority over model/project details. Standalone TUI has no remote
+connection label.
 
 While attached, new explicit owner messages in that same server conversation
 can use the environment from TUI, Web Chat or personal Telegram, subject to the

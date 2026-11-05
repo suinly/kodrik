@@ -101,6 +101,10 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
     let language = app.language;
+    if app.remote_grant.is_some() {
+        render_remote_grant(app, frame);
+        return;
+    }
     let has_picker = app.approval.is_some() || app.audit_picker.is_some();
     if let Some(sessions) = &app.sessions {
         app.view
@@ -510,6 +514,195 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         layout[2].width.saturating_sub(1),
         layout[2].height,
     );
+    render_footer(app, frame, footer);
+
+    app.view.restore_footer(frame.buffer_mut());
+    app.view.finish_frame(
+        frame.buffer_mut(),
+        (!has_picker && app.navigation.selected.is_none()).then_some(super::view::InputRows {
+            text: &app.input,
+            rows: &input_rows,
+            area: input_area,
+            scroll: scroll_y as usize,
+        }),
+    );
+
+    if !has_picker
+        && app.navigation.selected.is_none()
+        && input_area.width > 0
+        && input_area.height > 0
+    {
+        frame.set_cursor_position((
+            input_area.x + cursor_x.min(input_area.width - 1),
+            input_area.y + cursor_y.saturating_sub(scroll_y),
+        ));
+    }
+}
+
+fn literal_text(text: &str) -> String {
+    text.chars()
+        .flat_map(|ch| {
+            if matches!(ch, '\n' | '\'' | '"' | '\\') {
+                ch.to_string()
+            } else {
+                ch.escape_debug().to_string()
+            }
+            .chars()
+            .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn render_remote_grant(app: &mut App, frame: &mut Frame) {
+    let area = frame.area();
+    app.view.clear_selection();
+    app.view
+        .prepare(&app.messages, area, 0, &mut app.scroll, true);
+    let layout = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(4),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(app.language.pick(
+            " Local environment access · confirmation required",
+            " Доступ к локальному окружению · требуется подтверждение",
+        ))
+        .style(Style::default().fg(Color::Yellow).bold()),
+        layout[0],
+    );
+    let grant = app.remote_grant.as_ref().unwrap();
+    let details =
+        Paragraph::new(literal_text(&grant.details)).wrap(ratatui::widgets::Wrap { trim: false });
+    let max_scroll = details
+        .line_count(layout[1].width.max(1))
+        .saturating_sub(usize::from(layout[1].height));
+    app.remote_grant_scroll = app
+        .remote_grant_scroll
+        .min(max_scroll)
+        .min(u16::MAX as usize);
+    frame.render_widget(
+        details.scroll((app.remote_grant_scroll as u16, 0)),
+        layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new(app.language.pick(
+            " ↑/↓ or j/k select · Enter confirm · Esc reject · PgUp/PgDn scroll",
+            " ↑/↓ или j/k выбор · Enter подтвердить · Esc отказ · PgUp/PgDn текст",
+        ))
+        .style(Style::default().fg(Color::DarkGray)),
+        layout[2],
+    );
+    let selection_style = Style::default().fg(Color::Yellow).bold();
+    frame.render_widget(
+        Block::new().style(Style::default().bg(Color::Rgb(54, 58, 79))),
+        layout[3],
+    );
+    frame.render_stateful_widget(
+        List::new([
+            ListItem::new(app.language.pick("Allow", "Разрешить")),
+            ListItem::new(app.language.pick("Reject", "Отклонить")),
+        ])
+        .highlight_symbol(Span::styled("> ", selection_style))
+        .highlight_style(selection_style),
+        Rect::new(
+            layout[3].x.saturating_add(1),
+            layout[3].y.saturating_add(1),
+            layout[3].width.saturating_sub(1),
+            layout[3].height.saturating_sub(2),
+        ),
+        &mut ListState::default().with_selected(Some(grant.choice.min(1))),
+    );
+    render_footer(
+        app,
+        frame,
+        Rect::new(
+            layout[4].x.saturating_add(1),
+            layout[4].y,
+            layout[4].width.saturating_sub(1),
+            layout[4].height,
+        ),
+    );
+    app.view.finish_frame(frame.buffer_mut(), None);
+}
+
+fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
+    let language = app.language;
+    let (mode_icon, mode_color) = match app.audit_mode {
+        CommandAuditMode::Trusted => ("◈", Color::Yellow),
+        CommandAuditMode::Review => ("◇", Color::Cyan),
+        CommandAuditMode::Ask => ("◆", Color::Green),
+    };
+    let audit = format!("{mode_icon} {}", app.audit_mode.label(language));
+    if let Some(connection) = app.remote_connection {
+        let model = app
+            .model
+            .split_once('/')
+            .map_or(app.model.as_str(), |(_, model)| model);
+        let mut parts = vec![audit.clone(), literal_text(model)];
+        if let Some(project) = &app.remote_environment {
+            parts.push(literal_text(project));
+        }
+        parts.push(connection.into());
+        if let Some(tokens) = app.context_tokens {
+            parts.push(format!("{}K", tokens / 1000));
+        }
+        let width = usize::from(footer.width);
+        let notice_width = app
+            .copy_notice
+            .as_ref()
+            .map_or(0, |(notice, _)| Span::raw(notice.as_str()).width() + 1);
+        let mandatory_width = Span::raw(format!("{audit} · {connection}")).width();
+        let metadata_width = if mandatory_width + notice_width <= width {
+            width.saturating_sub(notice_width)
+        } else {
+            width
+        };
+        // Audit and connection take priority over notices; notices take priority over metadata.
+        if Span::raw(parts.join(" · ")).width() > metadata_width && app.context_tokens.is_some() {
+            parts.pop();
+        }
+        if Span::raw(parts.join(" · ")).width() > metadata_width && app.remote_environment.is_some()
+        {
+            parts.remove(2);
+        }
+        if Span::raw(parts.join(" · ")).width() > metadata_width {
+            parts.remove(1);
+        }
+        if Span::raw(parts.join(" · ")).width() > width {
+            parts[0] = mode_icon.into();
+        }
+        let text_width = Span::raw(parts.join(" · ")).width();
+        let mut spans = vec![Span::styled(
+            parts.remove(0),
+            Style::default().fg(mode_color),
+        )];
+        spans.push(Span::styled(
+            format!(" · {}", parts.join(" · ")),
+            Style::default().fg(Color::Yellow),
+        ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), footer);
+        if let Some((notice, _)) = &app.copy_notice {
+            let notice_width = Span::raw(notice.as_str()).width();
+            if text_width + 1 + notice_width <= width {
+                frame.render_widget(
+                    Paragraph::new(notice.as_str())
+                        .right_aligned()
+                        .style(Style::default().fg(Color::Gray)),
+                    Rect::new(
+                        footer.x + text_width as u16 + 1,
+                        footer.y,
+                        footer.width.saturating_sub(text_width as u16 + 1),
+                        footer.height,
+                    ),
+                );
+            }
+        }
+        return;
+    }
     let notice_width = app.copy_notice.as_ref().map_or(0, |(notice, _)| {
         Span::raw(notice.as_str())
             .width()
@@ -522,15 +715,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let model = match app.context_tokens {
         Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
         None => app.model.clone(),
-    };
-    let model = match &app.remote_environment {
-        Some(environment) => format!("{model} · {environment}"),
-        None => model,
-    };
-    let (mode_icon, mode_color) = match app.audit_mode {
-        CommandAuditMode::Trusted => ("◈", Color::Yellow),
-        CommandAuditMode::Review => ("◇", Color::Cyan),
-        CommandAuditMode::Ask => ("◆", Color::Green),
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -554,28 +738,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 footer.height,
             ),
         );
-    }
-
-    app.view.restore_footer(frame.buffer_mut());
-    app.view.finish_frame(
-        frame.buffer_mut(),
-        (!has_picker && app.navigation.selected.is_none()).then_some(super::view::InputRows {
-            text: &app.input,
-            rows: &input_rows,
-            area: input_area,
-            scroll: scroll_y as usize,
-        }),
-    );
-
-    if !has_picker
-        && app.navigation.selected.is_none()
-        && input_area.width > 0
-        && input_area.height > 0
-    {
-        frame.set_cursor_position((
-            input_area.x + cursor_x.min(input_area.width - 1),
-            input_area.y + cursor_y.saturating_sub(scroll_y),
-        ));
     }
 }
 
@@ -635,6 +797,114 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn remote_footer_shortens_provider_model_prefix() {
+        let mut app = App {
+            model: "openai/gpt-5.4".into(),
+            remote_environment: Some("kodrik".into()),
+            remote_connection: Some("connected"),
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let row = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+            .collect::<String>();
+        assert!(row.contains("gpt-5.4 · kodrik · connected"), "{row}");
+        assert!(!row.contains("openai/"), "{row}");
+    }
+
+    #[test]
+    fn remote_footer_keeps_connection_visible_before_project_model_and_notice() {
+        for connection in ["connected", "disconnected", "detached"] {
+            for width in [24, 28, 40, 80] {
+                let mut app = App {
+                    model: "provider/an-extremely-long-model-name".into(),
+                    remote_environment: Some("a-very-long-project-name".into()),
+                    remote_connection: Some(connection),
+                    context_tokens: Some(12_000),
+                    ..Default::default()
+                };
+                app.set_copy_notice("Copied something very long".into());
+                let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|frame| render(&mut app, frame)).unwrap();
+                let row = (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+                    .collect::<String>();
+                assert!(row.contains(connection), "width {width}: {row}");
+            }
+        }
+    }
+
+    #[test]
+    fn remote_footer_reserves_copy_notice_before_optional_metadata() {
+        let mut app = App {
+            model: "provider/server-test-model".into(),
+            remote_environment: Some("temporary-project".into()),
+            remote_connection: Some("connected"),
+            context_tokens: Some(12_000),
+            ..Default::default()
+        };
+        app.set_copy_notice("Copy requested from terminal".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let row = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+            .collect::<String>();
+        assert!(row.contains("AI review"), "{row}");
+        assert!(row.contains("connected"), "{row}");
+        assert!(row.ends_with("Copy requested from terminal"), "{row}");
+    }
+
+    #[test]
+    fn remote_grant_disclosure_is_literal_scrollable_and_separate_from_server_approvals() {
+        let mut app = App {
+            remote_grant: Some(super::super::app::RemoteGrant {
+                details: format!(
+                    "**literal**\nunsafe\u{1b}[31m\u{202e}\n{}\nLAST DISCLOSURE",
+                    "detail\n".repeat(60)
+                ),
+                choice: 1,
+            }),
+            input: "do not show this draft".into(),
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("**literal**"));
+        assert!(text.contains("unsafe\\u{1b}[31m\\u{202e}"), "{text}");
+        assert!(text.contains("> Reject"));
+        assert!(!text.contains("do not show this draft"));
+        assert!(!text.contains("No checks for this session"));
+        assert!(!terminal.backend().cursor_visible());
+        for _ in 0..10 {
+            app.update(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::PageDown,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        }
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("LAST DISCLOSURE"));
+        for width in [1, 12, 24] {
+            let mut narrow = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            narrow.draw(|frame| render(&mut app, frame)).unwrap();
+        }
+    }
 
     #[test]
     fn compact_logo_keeps_its_gradient_and_bottom_spacing() {

@@ -10,6 +10,9 @@ pub struct App {
     pub should_quit: bool,
     pub model: String,
     pub remote_environment: Option<String>,
+    pub remote_connection: Option<&'static str>,
+    pub remote_grant: Option<RemoteGrant>,
+    pub remote_grant_scroll: usize,
     pub context_tokens: Option<u64>,
     pub compacting: bool,
     pub compaction_progress: Option<crate::agent::CompactionProgress>,
@@ -42,6 +45,11 @@ pub struct App {
     pub status: Status,
 }
 
+pub struct RemoteGrant {
+    pub details: String,
+    pub choice: usize,
+}
+
 #[derive(Default)]
 pub enum Status {
     #[default]
@@ -62,7 +70,8 @@ impl App {
         ));
     }
     pub fn command_suggestions(&self) -> Vec<(&'static str, &'static str)> {
-        if self.approval.is_some()
+        if self.remote_grant.is_some()
+            || self.approval.is_some()
             || self.audit_picker.is_some()
             || self.navigation.selected.is_some()
             || self.navigation.editing.is_some()
@@ -128,7 +137,8 @@ impl App {
     }
 
     pub fn insert_input(&mut self, text: &str) {
-        if self.approval.is_some()
+        if self.remote_grant.is_some()
+            || self.approval.is_some()
             || self.audit_picker.is_some()
             || self.navigation.selected.is_some()
         {
@@ -272,9 +282,53 @@ impl App {
         });
     }
 
+    fn update_remote_grant(&mut self, key: KeyEvent) -> Option<String> {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'C' | 'с' | 'С'))
+        {
+            self.should_quit = true;
+            return None;
+        }
+        if !key.modifiers.is_empty() {
+            return None;
+        }
+        let grant = self.remote_grant.as_mut()?;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => grant.choice = grant.choice.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                grant.choice = grant.choice.saturating_add(1).min(1)
+            }
+            KeyCode::PageUp => {
+                self.remote_grant_scroll = self.remote_grant_scroll.saturating_sub(10)
+            }
+            KeyCode::PageDown => {
+                self.remote_grant_scroll = self.remote_grant_scroll.saturating_add(10)
+            }
+            KeyCode::Enter | KeyCode::Esc => {
+                let allow = key.code == KeyCode::Enter && grant.choice == 0;
+                self.remote_grant = None;
+                self.remote_grant_scroll = 0;
+                return Some(
+                    if allow {
+                        "/attach allow"
+                    } else {
+                        "/attach deny"
+                    }
+                    .into(),
+                );
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub fn update(&mut self, key: KeyEvent) -> Option<String> {
         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
             return None;
+        }
+        if self.remote_grant.is_some() {
+            self.navigation.escape = None;
+            return self.update_remote_grant(key);
         }
         if key.code != KeyCode::Esc
             || self.sessions.is_some()
@@ -479,6 +533,90 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) -> Option<String> {
         app.update(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn remote_grant_denies_by_default_and_keeps_chat_input_untouched() {
+        let mut app = App {
+            remote_grant: Some(RemoteGrant {
+                details: "manifest".into(),
+                choice: 1,
+            }),
+            input: "/audit trusted".into(),
+            ..Default::default()
+        };
+        app.insert_input("pasted");
+        key(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.input, "/audit trusted");
+        assert!(app.command_suggestions().is_empty());
+        assert_eq!(
+            key(&mut app, KeyCode::Enter).as_deref(),
+            Some("/attach deny")
+        );
+        assert!(app.remote_grant.is_none());
+        assert!(app.messages.is_empty());
+        assert_eq!(
+            app.audit_mode,
+            crate::agent::command_audit::CommandAuditMode::default()
+        );
+    }
+
+    #[test]
+    fn remote_grant_keyboard_choices_scroll_and_escape_are_local() {
+        for up in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut app = App {
+                remote_grant: Some(RemoteGrant {
+                    details: "manifest".into(),
+                    choice: 1,
+                }),
+                audit_picker: Some(super::super::approvals::AuditPicker {
+                    session: None,
+                    choice: 0,
+                }),
+                ..Default::default()
+            };
+            key(&mut app, up);
+            assert_eq!(app.remote_grant.as_ref().unwrap().choice, 0);
+            key(&mut app, KeyCode::PageDown);
+            assert_eq!(app.remote_grant_scroll, 10);
+            key(&mut app, KeyCode::PageUp);
+            assert_eq!(app.remote_grant_scroll, 0);
+            assert_eq!(
+                key(&mut app, KeyCode::Enter).as_deref(),
+                Some("/attach allow")
+            );
+            assert!(app.audit_picker.is_some());
+        }
+        for down in [KeyCode::Down, KeyCode::Char('j'), KeyCode::Esc] {
+            let mut app = App {
+                remote_grant: Some(RemoteGrant {
+                    details: "manifest".into(),
+                    choice: 0,
+                }),
+                ..Default::default()
+            };
+            key(&mut app, down);
+            if down != KeyCode::Esc {
+                assert_eq!(
+                    key(&mut app, KeyCode::Enter).as_deref(),
+                    Some("/attach deny")
+                );
+            } else {
+                assert!(app.remote_grant.is_none());
+            }
+        }
+        let mut app = App {
+            remote_grant: Some(RemoteGrant {
+                details: "manifest".into(),
+                choice: 1,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            app.update(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+                .is_none()
+        );
+        assert!(app.should_quit);
     }
 
     #[test]

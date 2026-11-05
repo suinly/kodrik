@@ -9,6 +9,18 @@ use crate::remote::{
 use anyhow::{Context, ensure};
 use std::path::PathBuf;
 
+struct Prepared(Option<Arc<LocalEnvironment>>);
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        if let Some(environment) = self.0.take() {
+            let _ = environment.stop_admission();
+            tokio::spawn(async move {
+                let _ = environment.close().await;
+            });
+        }
+    }
+}
+
 pub(super) fn with_scrollback(
     current: &RemoteChatSnapshot,
     mut latest: RemoteChatSnapshot,
@@ -47,29 +59,47 @@ impl Drop for Binding {
     }
 }
 impl Binding {
-    async fn open(config: &RemoteConfig, root: &Path, session: SessionId) -> anyhow::Result<Self> {
-        let environment = LocalEnvironment::open(config, root).await?;
+    async fn open(
+        config: &RemoteConfig,
+        mut prepared: Prepared,
+        session: SessionId,
+    ) -> anyhow::Result<Self> {
+        let environment = prepared
+            .0
+            .as_ref()
+            .context("Local environment missing")?
+            .clone();
         let result = async {
             let manifest = environment.manifest()?;
-            crate::commands::connect::authorize(config, &manifest)?;
+            ensure!(
+                config.manifest_authorized(&manifest)?,
+                "Local environment needs approval"
+            );
             let mut client = RemoteClient::connect(config).await?;
             client.attach(session, manifest).await?;
             let (stop, receiver) = oneshot::channel();
+            let (ready, started) = oneshot::channel();
             let local = environment.clone();
-            let task = tokio::spawn(async move { client.serve_local_until(local, receiver).await });
-            Ok(Self {
+            let task = tokio::spawn(async move {
+                client
+                    .serve_local_until_ready(local, receiver, Some(ready))
+                    .await
+            });
+            let binding = Self {
                 stop: Some(stop),
                 task,
                 environment: environment.clone(),
-            })
+            };
+            tokio::time::timeout(Duration::from_secs(8), started).await??;
+            Ok(binding)
         }
         .await;
-        if result.is_err() {
-            let _ = tokio::time::timeout(Duration::from_secs(8), environment.close()).await;
+        if result.is_ok() {
+            prepared.0.take();
         }
         result
     }
-    async fn close(mut self) -> anyhow::Result<()> {
+    async fn close(&mut self) -> anyhow::Result<()> {
         self.environment.stop_admission()?;
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -134,9 +164,13 @@ fn observe(
 }
 
 struct Remote {
+    config: RemoteConfig,
     chat: ChatClient,
     session: SessionId,
     binding: Option<Binding>,
+    pending: Option<Prepared>,
+    server_connected: bool,
+    binding_failed: bool,
     observer: Option<Observer>,
     updates: mpsc::Sender<(u64, Update)>,
     epoch: u64,
@@ -146,6 +180,106 @@ struct Remote {
     root: PathBuf,
 }
 impl Remote {
+    fn connection_status(&self, app: &mut App) {
+        app.remote_environment = Some(
+            self.root
+                .file_name()
+                .unwrap_or(self.root.as_os_str())
+                .to_string_lossy()
+                .chars()
+                .flat_map(char::escape_debug)
+                .collect(),
+        );
+        app.remote_connection = Some(if !self.server_connected || self.binding_failed {
+            "disconnected"
+        } else if self.binding.is_some() {
+            "connected"
+        } else {
+            "detached"
+        });
+    }
+
+    async fn attach(&mut self, app: &mut App) -> anyhow::Result<()> {
+        if self.binding.is_some() || self.pending.is_some() {
+            return Ok(());
+        }
+        self.binding_failed = true;
+        let prepared = Prepared(Some(
+            LocalEnvironment::open(&self.config, &self.root).await?,
+        ));
+        let manifest = prepared.0.as_ref().unwrap().manifest()?;
+        if self.config.manifest_authorized(&manifest)? {
+            self.binding = Some(Binding::open(&self.config, prepared, self.session.clone()).await?);
+            self.binding_failed = false;
+            app.remote_connection = Some("connected");
+            app.push_kodrik_message("Local environment attached to this session.".into());
+        } else {
+            let literal = |text: &str| {
+                text.chars()
+                    .flat_map(char::escape_debug)
+                    .collect::<String>()
+            };
+            let details = format!(
+                "Grant local environment access?\nServer: {}\nProject: {}\nShell: {} (not sandboxed)\nSelected HTTP MCP: {}\nShared tools: {}\nSkills: {}\nProject instructions: {}\n{}\n\nTool arguments, file contents, skill instructions and command/MCP outputs may be sent to the server and its model. Shell and MCP can affect resources outside this project; cleanup is best effort, not rollback. Access follows the selected conversation and ends when this TUI closes.",
+                literal(self.config.server.as_str()),
+                literal(&manifest.project_root),
+                self.config.allow_shell,
+                self.config
+                    .mcp
+                    .keys()
+                    .map(|s| literal(s))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                manifest
+                    .tools
+                    .iter()
+                    .map(|tool| literal(&tool.id))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                manifest
+                    .skills
+                    .iter()
+                    .map(|skill| literal(&skill.name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                manifest.project_instructions.is_some(),
+                manifest
+                    .warnings
+                    .iter()
+                    .map(|warning| literal(warning))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            self.pending = Some(prepared);
+            self.binding_failed = false;
+            app.remote_grant = Some(super::app::RemoteGrant { details, choice: 1 });
+            app.remote_connection = Some("detached");
+            app.remote_grant_scroll = 0;
+        }
+        Ok(())
+    }
+
+    async fn decide_grant(&mut self, app: &mut App, allow: bool) -> anyhow::Result<()> {
+        let prepared = self
+            .pending
+            .take()
+            .context("No local access request pending")?;
+        app.remote_grant = None;
+        if !allow {
+            app.remote_connection = Some("detached");
+            app.push_kodrik_message("Local access declined; server chat remains available. Use /attach to review again.".into());
+            return Ok(());
+        }
+        self.binding_failed = true;
+        let manifest = prepared.0.as_ref().unwrap().manifest()?;
+        self.config.authorize_manifest(&manifest, || Ok(true))?;
+        self.binding = Some(Binding::open(&self.config, prepared, self.session.clone()).await?);
+        self.binding_failed = false;
+        app.remote_connection = Some("connected");
+        app.push_kodrik_message("Local environment attached to this session.".into());
+        Ok(())
+    }
+
     async fn older(&mut self, app: &mut App) -> anyhow::Result<()> {
         if let Some(cursor) = self.snapshot.previous_cursor.clone() {
             let mut older = self.chat.history(&self.session, &cursor).await?;
@@ -168,8 +302,12 @@ impl Remote {
         Ok(())
     }
     async fn detach(&mut self) -> anyhow::Result<()> {
-        if let Some(binding) = self.binding.take() {
-            binding.close().await?;
+        self.pending.take();
+        self.binding_failed = false;
+        if let Some(binding) = self.binding.as_mut() {
+            let result = binding.close().await;
+            self.binding.take();
+            result?;
         }
         Ok(())
     }
@@ -197,10 +335,8 @@ impl Remote {
             self.epoch,
             self.updates.clone(),
         ));
-        app.push_kodrik_message(
-            "Local access is detached. Use /attach then /attach yes to grant this session access."
-                .into(),
-        );
+        app.remote_connection = Some("detached");
+        self.attach(app).await?;
         Ok(())
     }
     async fn send(&mut self, app: &mut App, text: String) -> anyhow::Result<()> {
@@ -257,14 +393,9 @@ impl Remote {
             .map(|turn| turn as usize)
             .unwrap_or(local))
     }
-    async fn input(
-        &mut self,
-        app: &mut App,
-        input: String,
-        config: &RemoteConfig,
-        tui: &mut Tui,
-    ) -> anyhow::Result<()> {
+    async fn input(&mut self, app: &mut App, input: String) -> anyhow::Result<()> {
         if app.navigation.editing.is_some()
+            && self.pending.is_none()
             && !(self.uncertain.is_some() && input.trim() == "/retry")
         {
             return self.send(app, input).await;
@@ -277,61 +408,159 @@ impl Remote {
             return Ok(());
         }
         match input.trim() {
-            "/audit"=>{
-                app.audit_picker=Some(approvals::AuditPicker{session:None,choice:approvals::AUDIT_MODES.iter().position(|mode|*mode==app.audit_mode).unwrap_or(1)});
-                app.sessions=None;app.view.clear_selection();
+            "/audit" => {
+                app.audit_picker = Some(approvals::AuditPicker {
+                    session: None,
+                    choice: approvals::AUDIT_MODES
+                        .iter()
+                        .position(|mode| *mode == app.audit_mode)
+                        .unwrap_or(1),
+                });
+                app.sessions = None;
+                app.view.clear_selection();
             }
-            "/audit status"=>app.push_kodrik_message(format!("Current server tool mode: {}",app.audit_mode.code())),
-            "/sessions"=>{
-                let sessions=self.chat.sessions().await?;
-                app.sessions=Some(sessions.as_array().context("Invalid session list")?.iter().filter_map(|row|Some((SessionId::new(row["id"].as_str()?),row["title"].as_str().unwrap_or("Conversation").to_owned()))).collect());app.session_index=0;
+            "/audit status" => app.push_kodrik_message(format!(
+                "Current server tool mode: {}",
+                app.audit_mode.code()
+            )),
+            "/sessions" => {
+                let sessions = self.chat.sessions().await?;
+                app.sessions = Some(
+                    sessions
+                        .as_array()
+                        .context("Invalid session list")?
+                        .iter()
+                        .filter_map(|row| {
+                            Some((
+                                SessionId::new(row["id"].as_str()?),
+                                row["title"].as_str().unwrap_or("Conversation").to_owned(),
+                            ))
+                        })
+                        .collect(),
+                );
+                app.session_index = 0;
             }
-            "/new"=>self.select(app,ChatCommand::New).await?,
-            "/detach"=>{self.detach().await?;app.push_kodrik_message("Local access detached; server conversation remains available.".into());},
-            "/attach"=>app.push_kodrik_message(format!("Server: {}\nSession: {}\nDevice: {}\nProject: {}\nCapabilities: file read, patch, image; shell: {}; HTTP MCP: {}\nType /attach yes to confirm. Exact tools/skills/instructions are disclosed before a new manifest grant. Shell/MCP are not sandboxed; cleanup is best effort.",config.server,self.session.as_str(),config.label,self.root.display(),config.allow_shell,config.mcp.keys().cloned().collect::<Vec<_>>().join(", "))),
-            "/attach yes"=>{
+            "/new" => self.select(app, ChatCommand::New).await?,
+            "/detach" => {
                 self.detach().await?;
-                tui.exit()?;
-                let result=Binding::open(config,&self.root,self.session.clone()).await;
-                tui.resume()?;
-                self.binding=Some(result?);
-                app.push_kodrik_message("Local environment attached to this session only.".into());
+                app.remote_connection = Some("detached");
+                app.push_kodrik_message(
+                    "Local access detached; server conversation remains available.".into(),
+                );
             }
-            "/older"=>self.older(app).await?,
-            "/retry"=>{
-                let command=self.uncertain.clone().context("No unconfirmed input")?;
-                let request_id=match &command {ChatCommand::Send{request_id,..}|ChatCommand::Edit{request_id,..}=>*request_id,_=>unreachable!()};
-                let status=self.chat.command(&self.session,ChatCommand::SubmissionStatus{request_id}).await?;
-                if status.is_null(){
-                    let response=self.chat.command(&self.session,command.clone()).await?;
-                    self.uncertain=None;
-                    if matches!(command,ChatCommand::Edit{..}){self.select(app,ChatCommand::Select{session_id:SessionId::new(response["id"].as_str().context("Edit returned no branch")?)}).await?;}
-                }else{
-                    self.uncertain=None;
-                    app.push_kodrik_message(format!("Original input confirmed: {}",status["status"]));
-                    if matches!(command,ChatCommand::Edit{..}) && let Some(id)=status["session_id"].as_str(){self.select(app,ChatCommand::Select{session_id:SessionId::new(id)}).await?;}
+            "/attach" | "/attach yes" => self.attach(app).await?,
+            "/attach allow" => self.decide_grant(app, true).await?,
+            "/attach deny" => self.decide_grant(app, false).await?,
+            "/older" => self.older(app).await?,
+            "/retry" => {
+                let command = self.uncertain.clone().context("No unconfirmed input")?;
+                let request_id = match &command {
+                    ChatCommand::Send { request_id, .. } | ChatCommand::Edit { request_id, .. } => {
+                        *request_id
+                    }
+                    _ => unreachable!(),
+                };
+                let status = self
+                    .chat
+                    .command(&self.session, ChatCommand::SubmissionStatus { request_id })
+                    .await?;
+                if status.is_null() {
+                    let response = self.chat.command(&self.session, command.clone()).await?;
+                    self.uncertain = None;
+                    if matches!(command, ChatCommand::Edit { .. }) {
+                        self.select(
+                            app,
+                            ChatCommand::Select {
+                                session_id: SessionId::new(
+                                    response["id"].as_str().context("Edit returned no branch")?,
+                                ),
+                            },
+                        )
+                        .await?;
+                    }
+                } else {
+                    self.uncertain = None;
+                    app.push_kodrik_message(format!(
+                        "Original input confirmed: {}",
+                        status["status"]
+                    ));
+                    if matches!(command, ChatCommand::Edit { .. })
+                        && let Some(id) = status["session_id"].as_str()
+                    {
+                        self.select(
+                            app,
+                            ChatCommand::Select {
+                                session_id: SessionId::new(id),
+                            },
+                        )
+                        .await?;
+                    }
                 }
-                app.input.clear();app.input_cursor=0;
+                app.input.clear();
+                app.input_cursor = 0;
             }
-            "/approvals"=>{project(app,&self.chat.snapshot(&self.session).await?)?;},
-            input if input.starts_with("/approve ")||input.starts_with("/deny ")=>{
-                let mut parts=input.split_whitespace();let allow=parts.next()==Some("/approve");let id=parts.next().context("Approval ID required")?;
-                ensure!(parts.next().is_none(),"Unexpected approval arguments");
-                ensure!(!allow || app.approval.as_ref().is_some_and(|approval|approval.id==id),"Review the complete pending approval with /approvals before allowing it");
-                self.chat.command(&self.session,ChatCommand::DecideApproval{approval_id:id.into(),allow}).await?;
+            "/approvals" => {
+                project(app, &self.chat.snapshot(&self.session).await?)?;
             }
-            input if input.starts_with("/audit ")=>{
-                let parts=input.split_whitespace().collect::<Vec<_>>();
-                if let ["/audit","trusted",session,approval_id]=parts.as_slice(){
-                    ensure!(*session==self.session.as_str() && app.approval.as_ref().is_some_and(|approval|approval.id==*approval_id),"Approval is no longer displayed in this session");
-                    self.chat.command(&self.session,ChatCommand::TrustApproval{approval_id:(*approval_id).into()}).await?;
+            input if input.starts_with("/approve ") || input.starts_with("/deny ") => {
+                let mut parts = input.split_whitespace();
+                let allow = parts.next() == Some("/approve");
+                let id = parts.next().context("Approval ID required")?;
+                ensure!(parts.next().is_none(), "Unexpected approval arguments");
+                ensure!(
+                    !allow
+                        || app
+                            .approval
+                            .as_ref()
+                            .is_some_and(|approval| approval.id == id),
+                    "Review the complete pending approval with /approvals before allowing it"
+                );
+                self.chat
+                    .command(
+                        &self.session,
+                        ChatCommand::DecideApproval {
+                            approval_id: id.into(),
+                            allow,
+                        },
+                    )
+                    .await?;
+            }
+            input if input.starts_with("/audit ") => {
+                let parts = input.split_whitespace().collect::<Vec<_>>();
+                if let ["/audit", "trusted", session, approval_id] = parts.as_slice() {
+                    ensure!(
+                        *session == self.session.as_str()
+                            && app
+                                .approval
+                                .as_ref()
+                                .is_some_and(|approval| approval.id == *approval_id),
+                        "Approval is no longer displayed in this session"
+                    );
+                    self.chat
+                        .command(
+                            &self.session,
+                            ChatCommand::TrustApproval {
+                                approval_id: (*approval_id).into(),
+                            },
+                        )
+                        .await?;
                     return Ok(());
                 }
-                let mode=audit_mode(input)?;
-                self.chat.command(&self.session,ChatCommand::SetAuditMode{mode:mode.code().into()}).await?;
+                let mode = audit_mode(input)?;
+                self.chat
+                    .command(
+                        &self.session,
+                        ChatCommand::SetAuditMode {
+                            mode: mode.code().into(),
+                        },
+                    )
+                    .await?;
             }
-            input if input.starts_with('/')=>anyhow::bail!("Unknown remote command or arguments: {}",input.split_whitespace().next().unwrap_or("/")),
-            _=>self.send(app,input).await?,
+            input if input.starts_with('/') => anyhow::bail!(
+                "Unknown remote command or arguments: {}",
+                input.split_whitespace().next().unwrap_or("/")
+            ),
+            _ => self.send(app, input).await?,
         }
         Ok(())
     }
@@ -356,11 +585,15 @@ pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
     let snapshot = chat.snapshot(&session).await?;
     let (tx, mut rx) = mpsc::channel(4);
     let mut remote = Remote {
+        config: config.clone(),
         observer: Some(observe(chat.clone(), session.clone(), 0, tx.clone())),
         epoch: 0,
         chat,
         session,
         binding: None,
+        pending: None,
+        server_connected: true,
+        binding_failed: false,
         updates: tx,
         projection: Projection::default(),
         snapshot,
@@ -376,7 +609,7 @@ pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
     };
     remote.projection.accept(&mut app, &remote.snapshot)?;
     let mut tui = Tui::enter()?;
-    let result = event_loop(config, &mut remote, &mut app, &mut tui, &mut rx).await;
+    let result = event_loop(&mut remote, &mut app, &mut tui, &mut rx).await;
     remote.observer.take();
     let cleanup = remote.detach().await;
     let terminal = tui.exit();
@@ -384,7 +617,6 @@ pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
 }
 
 async fn event_loop(
-    config: &RemoteConfig,
     remote: &mut Remote,
     app: &mut App,
     tui: &mut Tui,
@@ -395,7 +627,33 @@ async fn event_loop(
     let mut deferred = std::collections::VecDeque::new();
     let shutdown = crate::commands::shutdown_signal();
     tokio::pin!(shutdown);
+    remote.connection_status(app);
+    tui.draw(app)?;
+    let startup = {
+        let attach = remote.attach(app);
+        tokio::pin!(attach);
+        loop {
+            tokio::select! {
+                result = &mut attach => break Some(result),
+                _ = &mut shutdown => break None,
+                event = next_terminal_event() => {
+                    let event = event?;
+                    if matches!(event, Event::Key(key) if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'|'C'|'с'|'С'))) { break None; }
+                    if deferred.len() >= 64 || matches!(&event, Event::Paste(text) if text.len()>64*1024) { break Some(Err(anyhow::anyhow!("Pending UI input limit reached"))); }
+                    deferred.push_back(event);
+                }
+            }
+        }
+    };
+    match startup {
+        None => return Ok(()),
+        Some(Err(error)) => app.push_kodrik_message(format!(
+            "Local attachment failed: {error}. Server chat remains available; use /attach to retry."
+        )),
+        Some(Ok(())) => {}
+    }
     while !app.should_quit {
+        remote.connection_status(app);
         tui.draw(app)?;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
@@ -403,21 +661,25 @@ async fn event_loop(
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
                     let _=remote.detach().await;
-                    app.push_kodrik_message("Laptop disconnected; use /attach and confirm again for a new lease. Server chat remains available.".into());
+                    remote.binding_failed=true;
+                    app.push_kodrik_message("Local environment disconnected; use /attach to reconnect. Server chat remains available.".into());
                 }
             },
             Some((epoch,update))=updates.recv()=>{
                 if !current_observer(remote.epoch,epoch) {continue;}
                 match update {
                 Update::Snapshot(snapshot)=>{
+                    remote.server_connected=true;
                     let snapshot=with_scrollback(&remote.snapshot,snapshot);
                     if remote.projection.accept(app,&snapshot)? {remote.snapshot=snapshot;}
                 }
                 Update::Resynchronized(snapshot)=>{
+                    remote.server_connected=true;
                     let snapshot=with_scrollback(&remote.snapshot,snapshot);
                     if remote.projection.resynchronize(app,&snapshot)? {remote.snapshot=snapshot;}
                 }
                 Update::Disconnected=>{
+                    remote.server_connected=false;
                     app.set_copy_notice("Server disconnected; reconnecting (no local fallback)".into());
                 }
             }},
@@ -432,15 +694,16 @@ async fn event_loop(
                         None=>(),
                     }
                     let operation=async {
-                        if key.code==KeyCode::Enter && let Some((id,_))=app.sessions.as_ref().and_then(|rows|rows.get(app.session_index)) {
+                        if app.remote_grant.is_none() && key.code==KeyCode::Enter && let Some((id,_))=app.sessions.as_ref().and_then(|rows|rows.get(app.session_index)) {
                             return remote.select(app,ChatCommand::Select{session_id:id.clone()}).await;
                         }
-                        if key.code==KeyCode::Esc && app.sessions.is_none() && app.audit_picker.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
+                        if key.code==KeyCode::Esc && app.remote_grant.is_none() && app.sessions.is_none() && app.audit_picker.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
                             remote.chat.command(&remote.session,ChatCommand::Stop).await?;app.status=Status::Stopping;return Ok(());
                         }
                         let turn=app.selected_user_turn();
-                        if let Some(input)=app.update(key){remote.input(app,input,config,tui).await?;}
-                        if key.code==KeyCode::PageUp && app.navigation.selected.is_none() {remote.older(app).await?;}
+                        let granting=app.remote_grant.is_some();
+                        if let Some(input)=app.update(key){remote.input(app,input).await?;}
+                        if !granting && key.code==KeyCode::PageUp && app.navigation.selected.is_none() {remote.older(app).await?;}
                         if let Some(id)=app.navigation.pending_version.take() && let Some(turn)=turn {
                             let user_turn=remote.absolute_turn(turn)?;
                             remote.select(app,ChatCommand::SelectVersion{session_id:SessionId::new(id),user_turn}).await?;
@@ -470,7 +733,7 @@ async fn event_loop(
                     let Some(operation)=operation else {app.should_quit=true;continue;};
                     if let Err(error)=operation {app.status=Status::Error;app.push_kodrik_message(format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."));}
                 }
-                Event::Paste(text)=>{if app.sessions.is_none(){app.insert_input(&text);}},
+                Event::Paste(text)=>{if app.sessions.is_none() && app.remote_grant.is_none(){app.insert_input(&text);}},
                 Event::Mouse(mouse)=>{
                     if let Some(text)=app.view.mouse(mouse,&mut app.scroll){let id=app.view.selection_id();copies.spawn(async move{(id,clipboard::copy(text).await)});}
                 }
@@ -480,6 +743,55 @@ async fn event_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_close_keeps_cleanup_task_joinable() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = RemoteConfig {
+            server: "http://localhost/".parse().unwrap(),
+            credential_file: directory.path().join("remote/device.json"),
+            label: "test".into(),
+            allow_shell: false,
+            skill_roots: vec![],
+            mcp: Default::default(),
+            optional_mcp: vec![],
+        };
+        let environment = LocalEnvironment::open(&config, directory.path())
+            .await
+            .unwrap();
+        let (stop, stopped) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let (started, closing) = oneshot::channel();
+        let local = environment.clone();
+        let task = tokio::spawn(async move {
+            stopped.await?;
+            let _ = started.send(());
+            released.await?;
+            local.close().await
+        });
+        let mut binding = Binding {
+            stop: Some(stop),
+            task,
+            environment,
+        };
+        {
+            let close = binding.close();
+            tokio::pin!(close);
+            tokio::select! {
+                result = &mut close => panic!("cleanup completed before release: {result:?}"),
+                result = closing => result.unwrap(),
+            }
+        }
+        assert!(binding.stop.is_none());
+        assert!(!binding.task.is_finished());
+        release.send(()).unwrap();
+        binding.close().await.unwrap();
+    }
 }
 
 #[derive(Default)]
@@ -689,18 +1001,10 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         app.plan_completed = false;
     }
     app.model = run["model"].as_str().unwrap_or("server agent").into();
-    app.remote_environment = Some(snapshot.environment.as_ref().map_or_else(
-        || format!("{} · laptop detached", snapshot.session_id.as_str()),
-        |environment| {
-            format!(
-                "{} · {} · {} · {}",
-                snapshot.session_id.as_str(),
-                environment.label,
-                environment.project_root,
-                environment.state
-            )
-        },
-    ));
+    if app.remote_environment.is_none() {
+        app.remote_environment = Some(String::new());
+        app.remote_connection = Some("detached");
+    }
     app.status = if run["busy"] == true {
         Status::Working
     } else if run["phase"] == "Cancelled" {

@@ -7,13 +7,40 @@ use std::{
 };
 
 impl RemoteConfig {
+    pub(crate) fn manifest_authorized(
+        &self,
+        manifest: &super::protocol::EnvironmentManifest,
+    ) -> anyhow::Result<bool> {
+        self.grant_matches(&self.manifest_fingerprint(manifest)?)
+    }
+
     pub(crate) fn authorize_manifest(
         &self,
         manifest: &super::protocol::EnvironmentManifest,
         confirm: impl FnOnce() -> anyhow::Result<bool>,
     ) -> anyhow::Result<()> {
-        use sha2::{Digest, Sha256};
         use std::io::Write;
+        let fingerprint = self.manifest_fingerprint(manifest)?;
+        if self.grant_matches(&fingerprint)? {
+            return Ok(());
+        }
+        ensure!(confirm()?, "Local environment access denied");
+        let path = self.credential_file.with_extension("grant");
+        let parent = path.parent().context("Grant directory missing")?;
+        super::client::private_directory(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(fingerprint.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(&path)?;
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+
+    fn manifest_fingerprint(
+        &self,
+        manifest: &super::protocol::EnvironmentManifest,
+    ) -> anyhow::Result<String> {
+        use sha2::{Digest, Sha256};
         super::protocol::validate_manifest(manifest)?;
         let mcp: std::collections::BTreeMap<_, _> = self
             .mcp
@@ -30,7 +57,7 @@ impl RemoteConfig {
             })
             .collect();
         // Only this hash is persisted; HTTP headers and tool schemas never enter the grant file.
-        let fingerprint = format!(
+        Ok(format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&(
                 self.server.as_str(),
@@ -39,37 +66,32 @@ impl RemoteConfig {
                 &self.skill_roots,
                 mcp
             ))?)
-        );
-        let path = self.credential_file.with_extension("grant");
-        if path.try_exists()? {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(&path)?;
-            use std::io::Read;
-            let metadata = file.metadata()?;
-            ensure!(
-                metadata.is_file()
-                    && metadata.len() <= 64
-                    && metadata.permissions().mode() & 0o077 == 0,
-                "Grant must be a private bounded regular file"
-            );
-            let mut saved = String::new();
-            file.take(65).read_to_string(&mut saved)?;
-            if saved == fingerprint {
-                return Ok(());
-            }
-        }
-        ensure!(confirm()?, "Local environment access denied");
-        let parent = path.parent().context("Grant directory missing")?;
-        super::client::private_directory(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(fingerprint.as_bytes())?;
-        file.as_file().sync_all()?;
-        file.persist(&path)?;
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
+        ))
     }
+
+    fn grant_matches(&self, fingerprint: &str) -> anyhow::Result<bool> {
+        use std::io::Read;
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.credential_file.with_extension("grant"))
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file()
+                && metadata.len() <= 64
+                && metadata.permissions().mode() & 0o077 == 0,
+            "Grant must be a private bounded regular file"
+        );
+        let mut saved = String::new();
+        file.take(65).read_to_string(&mut saved)?;
+        Ok(saved == fingerprint)
+    }
+
     pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]

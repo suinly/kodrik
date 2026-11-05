@@ -189,15 +189,18 @@ fn remote_controls_do_not_become_user_messages_and_status_is_visible() {
 }
 
 #[test]
-fn remote_environment_display_identifies_session_and_project() {
+fn server_snapshot_does_not_overwrite_local_connection_display() {
     let mut view = snapshot();
     view.environment=Some(serde_json::from_value(json!({"session_id":"server-session","environment":null,"label":"Work laptop","project_root":"/projects/demo","state":"connected","reason":null})).unwrap());
-    let mut app = App::default();
+    let mut app = App {
+        remote_environment: Some("demo".into()),
+        remote_connection: Some("detached"),
+        ..Default::default()
+    };
     remote::project(&mut app, &view).unwrap();
     let status = app.remote_environment.unwrap();
-    assert!(status.contains("Work laptop"));
-    assert!(status.contains("/projects/demo"));
-    assert!(status.contains("server-session"));
+    assert_eq!(status, "demo");
+    assert_eq!(app.remote_connection, Some("detached"));
 }
 
 #[test]
@@ -250,7 +253,8 @@ fn reconnect_accepts_fresh_snapshot_after_gateway_environment_counter_reset() {
     view.environment_revision = 1;
     view.environment=Some(serde_json::from_value(json!({"session_id":"server-session","environment":null,"label":"Laptop","project_root":"/tmp/project","state":"disconnected","reason":"gateway restarted"})).unwrap());
     assert!(projection.resynchronize(&mut app, &view).unwrap());
-    assert!(app.remote_environment.unwrap().contains("disconnected"));
+    assert_eq!(app.remote_connection, Some("detached"));
+    assert!(app.remote_environment.unwrap().is_empty());
 }
 
 #[cfg(unix)]
@@ -282,6 +286,9 @@ async fn terminal_remote_fixture() {
         };
         let hello: ClientFrame = decode_frame(&bytes).unwrap();
         std::fs::write("last-hello", serde_json::to_vec(&hello).unwrap()).unwrap();
+        if let ClientFrame::Hello { session_id, .. } = &hello {
+            eprintln!("fixture-attached-{}", session_id.as_str());
+        }
         let environment = EnvironmentKey {
             connection_id: uuid::Uuid::new_v4(),
             generation: uuid::Uuid::new_v4(),
@@ -330,6 +337,7 @@ async fn terminal_remote_fixture() {
     ) -> axum::response::Response {
         if matches!(&command,ChatCommand::Send{text,..} if text=="slow") {
             std::fs::write("slow-request", b"1").unwrap();
+            eprintln!("fixture-slow-request");
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
         let mut view = state.lock().unwrap();
@@ -397,6 +405,7 @@ async fn terminal_remote_fixture() {
             ChatCommand::TrustApproval { approval_id } => {
                 assert_eq!(approval_id, "approval");
                 std::fs::write("approval-decision", "trusted").unwrap();
+                eprintln!("fixture-approval-decided");
                 view.run.as_mut().unwrap()["command_approvals"] = json!([]);
                 serde_json::Value::Null
             }
@@ -494,9 +503,11 @@ async fn terminal_remote_fixture() {
     let environment = crate::remote::local::LocalEnvironment::open(&config, &dir)
         .await
         .unwrap();
-    config
-        .authorize_manifest(&environment.manifest().unwrap(), || Ok(true))
-        .unwrap();
+    if std::env::var("KODRIK_TUI_CASE").as_deref() != Ok("remote-first-grant") {
+        config
+            .authorize_manifest(&environment.manifest().unwrap(), || Ok(true))
+            .unwrap();
+    }
     environment.close().await.unwrap();
     remote::run(&config).await.unwrap();
     std::fs::write(dir.join("remote-clean-exit"), b"1").unwrap();
@@ -529,20 +540,44 @@ fn remote_pty_loads_server_history_sends_steers_stops_and_exits_without_provider
 
 #[cfg(unix)]
 #[test]
-fn remote_switch_revokes_old_binding_and_never_silently_attaches_new_session() {
+fn first_remote_grant_uses_picker_before_sharing_and_is_cached() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote-first-grant");
+    terminal.wait_for(b"Grant local environment access?", 0);
+    assert!(!dir.path().join("last-hello").exists());
+    assert!(!dir.path().join("remote/device.grant").exists());
+    terminal.send(b"\x1b[27u");
+    terminal.wait_for(b"Local access declined", 0);
+    terminal.send(b"still online\r");
+    terminal.wait_for(b"remote echo: still online", 0);
+    assert!(!dir.path().join("last-hello").exists());
+    let since = terminal.output.len();
+    terminal.send(b"/attach\r");
+    terminal.wait_for(b"Grant local environment access?", since);
+    terminal.send(b"\x1b[A\r");
+    terminal.wait_for(b"Local environment attached", 0);
+    assert!(dir.path().join("remote/device.grant").exists());
+    assert!(dir.path().join("last-hello").exists());
+    terminal.send(b"\x03");
+    wait_clean_exit(dir.path());
+    assert!(dir.path().join("local-detached").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_start_attaches_and_switch_transfers_binding_without_confirmation() {
     let dir = tempfile::tempdir().unwrap();
     let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
     terminal.wait_for(b"server answer", 0);
-    terminal.send(b"/attach yes\r");
     terminal.wait_for(b"Local environment attached", 0);
     terminal.send(b"\x1b");
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"/new\r");
-    terminal.wait_for(b"Local access is detached", 0);
+    terminal.wait_for(b"fixture-attached-new-session", 0);
     assert!(dir.path().join("local-detached").exists());
     let hello: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("last-hello")).unwrap()).unwrap();
-    assert_eq!(hello["session_id"], "server-session");
+    assert_eq!(hello["session_id"], "new-session");
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }
@@ -563,8 +598,7 @@ fn failed_environment_attachment_keeps_server_chat_and_terminal_usable() {
     let mut terminal =
         startup_tests::PrivateTerminal::start_case(dir.path(), "remote-failed-attach");
     terminal.wait_for(b"server answer", 0);
-    terminal.send(b"/attach yes\r");
-    terminal.wait_for(b"Remote action not confirmed", 0);
+    terminal.wait_for(b"Local attachment failed", 0);
     terminal.send(b"still online\r");
     terminal.wait_for(b"remote echo: still online", 0);
     terminal.send(b"\x03");
@@ -647,6 +681,7 @@ fn remote_approval_keyboard_sends_server_decision() {
     let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote-approval");
     terminal.wait_for(b"echo hi", 0);
     terminal.send(b"\r");
+    terminal.wait_for(b"fixture-approval-decided", 0);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !dir.path().join("approval-decision").exists() {
         assert!(
@@ -673,8 +708,9 @@ fn remote_session_picker_and_version_navigation_use_server_commands() {
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"/sessions\r");
     terminal.wait_for(b"server conversation", 0);
+    let since = terminal.output.len();
     terminal.send(b"\r");
-    terminal.wait_for(b"Local access is detached", 0);
+    terminal.wait_for(b"fixture-attached-server-session", since);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("selected-session")).unwrap(),
         "server-session"
@@ -682,6 +718,7 @@ fn remote_session_picker_and_version_navigation_use_server_commands() {
     terminal.send(b"\x1b[27u\x1b[27u");
     terminal.wait_for(b"versions", 0);
     terminal.send(b"\x1b[C");
+    terminal.wait_for(b"fixture-attached-branch", 0);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !dir.path().join("selected-version").exists() {
         assert!(
@@ -728,6 +765,7 @@ fn remote_trust_shortcut_is_tied_to_displayed_approval_not_generic_mode_change()
         startup_tests::PrivateTerminal::start_case(dir.path(), "remote-approval-trust");
     terminal.wait_for(b"echo hi", 0);
     terminal.send(b"jj\r");
+    terminal.wait_for(b"fixture-approval-decided", 0);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !dir.path().join("approval-decision").exists() {
         assert!(
@@ -751,7 +789,6 @@ fn history_failure_after_attach_still_closes_environment_on_exit() {
     let mut terminal =
         startup_tests::PrivateTerminal::start_case(dir.path(), "remote-history-error");
     terminal.wait_for(b"server answer", 0);
-    terminal.send(b"/attach yes\r");
     terminal.wait_for(b"Local environment attached", 0);
     terminal.send(b"/older\r");
     terminal.wait_for(b"Remote action not confirmed", 0);
@@ -797,7 +834,7 @@ fn remote_local_controls_never_become_model_input() {
 
 #[cfg(unix)]
 #[test]
-fn successful_remote_edit_selects_server_branch_and_stays_detached() {
+fn successful_remote_edit_selects_server_branch_and_transfers_access() {
     let dir = tempfile::tempdir().unwrap();
     let mut terminal =
         startup_tests::PrivateTerminal::start_case(dir.path(), "remote-edit-success");
@@ -807,7 +844,7 @@ fn successful_remote_edit_selects_server_branch_and_stays_detached() {
     terminal.send(b"\x1b[27u\x1b[27u");
     terminal.wait_for(b"versions", 0);
     terminal.send(b"\r\x05 changed\r");
-    terminal.wait_for(b"Local access is detached", 0);
+    terminal.wait_for(b"fixture-attached-edited-branch", 0);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("selected-session")).unwrap(),
         "edited-branch"
@@ -816,7 +853,19 @@ fn successful_remote_edit_selects_server_branch_and_stays_detached() {
         std::fs::read_to_string(dir.path().join("edited-text")).unwrap(),
         "server question changed"
     );
-    assert!(!dir.path().join("last-hello").exists());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let hello: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("last-hello")).unwrap()).unwrap();
+        if hello["session_id"] == "edited-branch" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "edited branch not attached"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }
@@ -827,14 +876,10 @@ fn exit_during_unanswered_http_request_closes_local_binding_promptly() {
     let dir = tempfile::tempdir().unwrap();
     let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
     terminal.wait_for(b"server answer", 0);
-    terminal.send(b"/attach yes\r");
     terminal.wait_for(b"Local environment attached", 0);
     terminal.send(b"slow\r");
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !dir.path().join("slow-request").exists() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    terminal.wait_for(b"fixture-slow-request", 0);
+    assert!(dir.path().join("slow-request").exists());
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
     assert!(dir.path().join("local-detached").exists());

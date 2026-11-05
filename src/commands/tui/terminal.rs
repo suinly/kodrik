@@ -42,7 +42,10 @@ impl Tui {
     }
 
     pub fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
-        if app.approval.is_some() || app.audit_picker.is_some() || app.navigation.selected.is_some()
+        if app.approval.is_some()
+            || app.audit_picker.is_some()
+            || app.remote_grant.is_some()
+            || app.navigation.selected.is_some()
         {
             self.terminal.hide_cursor()?;
         }
@@ -61,15 +64,6 @@ impl Tui {
 
     pub fn exit(&mut self) -> anyhow::Result<()> {
         reset()?;
-        Ok(())
-    }
-
-    pub fn resume(&mut self) -> anyhow::Result<()> {
-        terminal::enable_raw_mode()?;
-        execute!(io::stderr(), EnterAlternateScreen)?;
-        enable_input_modes(io::stderr())?;
-        self.terminal.clear()?;
-        self.terminal.hide_cursor()?;
         Ok(())
     }
 

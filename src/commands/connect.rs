@@ -28,25 +28,6 @@ pub async fn remote_tui(path: Option<&Path>) -> anyhow::Result<()> {
     super::tui::remote::run(&config).await
 }
 
-pub(crate) fn authorize(
-    config: &RemoteConfig,
-    manifest: &crate::remote::protocol::EnvironmentManifest,
-) -> anyhow::Result<()> {
-    config.authorize_manifest(manifest, || {
-        ensure!(std::io::stdin().is_terminal(), "Local access requires interactive confirmation");
-        eprintln!("\nGrant local environment access to {}?\nProject: {}\nShell: {} (not sandboxed)\nSelected HTTP MCP: {}\nShared tools: {}\nSkills: {}\nProject instructions: {}\n\nTool arguments, file contents, skill instructions and command/MCP outputs may be sent to the server and its model. Shell and MCP can affect resources outside this project; cleanup is best effort, not rollback. Access ends when this TUI disconnects.\nType yes to allow this exact root and manifest:",
-            config.server, manifest.project_root, config.allow_shell,
-            config.mcp.keys().cloned().collect::<Vec<_>>().join(", "),
-            manifest.tools.iter().map(|tool| tool.id.as_str()).collect::<Vec<_>>().join(", "),
-            manifest.skills.len(), manifest.project_instructions.is_some());
-        for warning in &manifest.warnings { eprintln!("Warning: {warning}"); }
-        std::io::stderr().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        Ok(answer.trim() == "yes")
-    })
-}
-
 async fn response(request: reqwest::RequestBuilder) -> anyhow::Result<serde_json::Value> {
     use futures::StreamExt;
     let response = request

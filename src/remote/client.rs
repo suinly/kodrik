@@ -182,8 +182,16 @@ impl RemoteClient {
         environment: Arc<LocalEnvironment>,
         stop: tokio::sync::oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
+        self.serve_local_until_ready(environment, stop, None).await
+    }
+    pub(crate) async fn serve_local_until_ready(
+        &mut self,
+        environment: Arc<LocalEnvironment>,
+        stop: tokio::sync::oneshot::Receiver<()>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> anyhow::Result<()> {
         let mut guard = EnvironmentGuard(Some(environment.clone()));
-        let result = self.serve_inner(environment.clone(), stop).await;
+        let result = self.serve_inner(environment.clone(), stop, ready).await;
         self.binding = None;
         let cleanup = environment.close().await;
         guard.0.take();
@@ -193,11 +201,15 @@ impl RemoteClient {
         &mut self,
         environment: Arc<LocalEnvironment>,
         mut stop: tokio::sync::oneshot::Receiver<()>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> anyhow::Result<()> {
         let (key, session) = self.binding.clone().context("Client not attached")?;
         environment
             .attach(self.device, key.clone(), session.clone())
             .await?;
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
         let socket = self.socket.take().context("Client closed")?;
         let (mut sink, mut stream) = socket.split();
         let (outgoing, mut queue) = tokio::sync::mpsc::channel::<ClientFrame>(32);
