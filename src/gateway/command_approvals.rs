@@ -551,7 +551,7 @@ mod tests {
             }, "project_root":"/project\nsecret", "label":"Owner laptop\nfixture"}
         }))
         .unwrap();
-        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        let (text, buttons) = approval_view(&approval, "session", Language::En, "");
         assert!(
             text.contains("/project\\nsecret"),
             "origin must be visible with control characters escaped"
@@ -560,7 +560,7 @@ mod tests {
         assert!(text.contains("Owner laptop\\nfixture"));
         assert!(!buttons.is_empty());
         approval.target.as_mut().unwrap().project_root = "🙂".repeat(2200);
-        let (text, buttons) = approval_view(&approval, "session", Language::En);
+        let (text, buttons) = approval_view(&approval, "session", Language::En, "");
         assert!(
             buttons.is_empty(),
             "unreviewable origin must not allow approval"
@@ -568,7 +568,7 @@ mod tests {
         assert!(text.encode_utf16().count() <= 4000);
         approval.target.as_mut().unwrap().project_root = "/project".into();
         approval.target.as_mut().unwrap().label = "🙂".repeat(2200);
-        let (_, buttons) = approval_view(&approval, "session", Language::En);
+        let (_, buttons) = approval_view(&approval, "session", Language::En, "");
         assert!(
             buttons.is_empty(),
             "unreviewable device label must not allow approval"
