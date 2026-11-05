@@ -121,6 +121,35 @@ impl Drop for Observer {
         self.0.abort();
     }
 }
+
+struct SessionListRequest {
+    offset: usize,
+    task: tokio::task::JoinHandle<anyhow::Result<serde_json::Value>>,
+}
+impl Drop for SessionListRequest {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn session_rows(value: serde_json::Value) -> anyhow::Result<Vec<(SessionId, String)>> {
+    let rows = value.as_array().context("Invalid session list")?;
+    ensure!(rows.len() <= 30, "Session page exceeds limit");
+    rows.iter()
+        .map(|row| {
+            let id = row["id"].as_str().context("Missing session ID")?;
+            ensure!(
+                !id.is_empty() && id.len() <= 1024 && !id.chars().any(char::is_control),
+                "Invalid session ID"
+            );
+            let title = row["title"].as_str().context("Missing session title")?;
+            Ok((
+                SessionId::new(id),
+                title.chars().flat_map(char::escape_debug).collect(),
+            ))
+        })
+        .collect()
+}
 enum Update {
     Snapshot(RemoteChatSnapshot),
     Resynchronized(RemoteChatSnapshot),
@@ -177,9 +206,61 @@ struct Remote {
     projection: Projection,
     snapshot: RemoteChatSnapshot,
     uncertain: Option<ChatCommand>,
+    session_list: Option<SessionListRequest>,
+    sessions_offset: usize,
     root: PathBuf,
 }
 impl Remote {
+    fn load_sessions(&mut self, app: &mut App, reset: bool) {
+        if reset {
+            self.session_list.take();
+            self.sessions_offset = 0;
+            app.sessions = Some(Vec::new());
+            app.session_index = 0;
+            app.sessions_more = true;
+        } else if self.session_list.is_some() || app.sessions.is_none() || !app.sessions_more {
+            return;
+        }
+        app.sessions_loading = true;
+        app.sessions_error = None;
+        let chat = self.chat.clone();
+        let offset = self.sessions_offset;
+        self.session_list = Some(SessionListRequest {
+            offset,
+            task: tokio::spawn(async move { chat.sessions_page(offset).await }),
+        });
+    }
+
+    fn receive_sessions(
+        &mut self,
+        app: &mut App,
+        result: Result<anyhow::Result<serde_json::Value>, tokio::task::JoinError>,
+    ) {
+        let Some(request) = self.session_list.take() else {
+            return;
+        };
+        app.sessions_loading = false;
+        let Some(rows) = app.sessions.as_mut() else {
+            return;
+        };
+        match result
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+            .and_then(session_rows)
+        {
+            Ok(page) => {
+                self.sessions_offset = request.offset + page.len();
+                app.sessions_more = page.len() == 30;
+                for row in page {
+                    if !rows.iter().any(|(id, _)| id == &row.0) {
+                        rows.push(row);
+                    }
+                }
+            }
+            Err(error) => app.sessions_error = Some(error.to_string()),
+        }
+    }
+
     fn connection_status(&self, app: &mut App) {
         app.remote_environment = Some(
             self.root
@@ -424,22 +505,9 @@ impl Remote {
                 app.audit_mode.code()
             )),
             "/sessions" => {
-                let sessions = self.chat.sessions().await?;
-                app.sessions = Some(
-                    sessions
-                        .as_array()
-                        .context("Invalid session list")?
-                        .iter()
-                        .filter_map(|row| {
-                            Some((
-                                SessionId::new(row["id"].as_str()?),
-                                row["title"].as_str().unwrap_or("Conversation").to_owned(),
-                            ))
-                        })
-                        .collect(),
-                );
-                app.session_index = 0;
+                self.load_sessions(app, true);
             }
+            "/sessions retry" => self.load_sessions(app, false),
             "/new" => self.select(app, ChatCommand::New).await?,
             "/detach" => {
                 self.detach().await?;
@@ -598,6 +666,8 @@ pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
         projection: Projection::default(),
         snapshot,
         uncertain: None,
+        session_list: None,
+        sessions_offset: 0,
         root: std::env::current_dir()?.canonicalize()?,
     };
     let mut app = App {
@@ -653,10 +723,27 @@ async fn event_loop(
         Some(Ok(())) => {}
     }
     while !app.should_quit {
+        if app.sessions.is_none() {
+            remote.session_list.take();
+            app.sessions_loading = false;
+        } else if !app.sessions_loading
+            && app.sessions_error.is_none()
+            && app.sessions_more
+            && app
+                .sessions
+                .as_ref()
+                .is_some_and(|rows| app.session_index.saturating_add(5) >= rows.len())
+        {
+            remote.load_sessions(app, false);
+        }
         remote.connection_status(app);
         tui.draw(app)?;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
+            result=async {match remote.session_list.as_mut() {
+                Some(request)=>(&mut request.task).await,
+                None=>std::future::pending().await,
+            }}=>remote.receive_sessions(app,result),
             _=tick.tick()=>{
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
@@ -694,10 +781,10 @@ async fn event_loop(
                         None=>(),
                     }
                     let operation=async {
-                        if app.remote_grant.is_none() && key.code==KeyCode::Enter && let Some((id,_))=app.sessions.as_ref().and_then(|rows|rows.get(app.session_index)) {
+                        if app.remote_grant.is_none() && key.code==KeyCode::Enter && key.kind==KeyEventKind::Press && let Some((id,_))=app.sessions.as_ref().and_then(|rows|rows.get(app.session_index)) {
                             return remote.select(app,ChatCommand::Select{session_id:id.clone()}).await;
                         }
-                        if key.code==KeyCode::Esc && app.remote_grant.is_none() && app.sessions.is_none() && app.audit_picker.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
+                        if key.code==KeyCode::Esc && app.remote_grant.is_none() && app.sessions.is_none() && app.audit_picker.is_none() && app.language_choice.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
                             remote.chat.command(&remote.session,ChatCommand::Stop).await?;app.status=Status::Stopping;return Ok(());
                         }
                         let turn=app.selected_user_turn();
@@ -748,6 +835,24 @@ async fn event_loop(
 #[cfg(test)]
 mod binding_tests {
     use super::*;
+
+    #[test]
+    fn session_pages_validate_rows_and_escape_titles() {
+        use serde_json::json;
+        let page = session_rows(json!([{"id":"one","title":"hello\n\u{1b}[31mworld"}])).unwrap();
+        assert_eq!(page[0].0.as_str(), "one");
+        assert!(!page[0].1.chars().any(char::is_control));
+        for value in [
+            json!({"sessions":[]}),
+            json!([{"title":"missing ID"}]),
+            json!([{"id":"","title":"empty ID"}]),
+            json!([{"id":"bad\nID","title":"control"}]),
+            json!([{"id":"one"}]),
+            json!(vec![json!({"id":"one","title":"too many"}); 31]),
+        ] {
+            assert!(session_rows(value).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn cancelled_close_keeps_cleanup_task_joinable() {

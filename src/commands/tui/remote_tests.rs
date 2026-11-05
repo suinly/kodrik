@@ -75,7 +75,12 @@ fn native_controls_remain_usable_with_large_approval_and_unavailable_review() {
     let arguments = serde_json::to_string(&json!({"patch":patch})).unwrap();
     view.run.as_mut().unwrap()["command_approvals"] = json!([{"id":"large-call","run_id":"run","call_id":"call","tool_name":"apply_patch","arguments_json":arguments,"cmd":"","workdir":null,"reason":"ask","reason_code":"ask"}]);
     let mut app = App::default();
+    app.language_choice = Some(1);
     remote::project(&mut app, &view).unwrap();
+    assert!(
+        app.language_choice.is_none(),
+        "approval must replace the language picker"
+    );
     assert!(matches!(app.status, Status::Working));
     assert_eq!(app.approval.as_ref().unwrap().id, "large-call");
     assert_eq!(
@@ -438,7 +443,29 @@ async fn terminal_remote_fixture() {
     let app = Router::new()
         .route(
             "/api/remote/chat/sessions",
-            get(|| async { Json(json!([{"id":"server-session","title":"server conversation"}])) }),
+            get(|axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String,String>>| async move {
+                let case=std::env::var("KODRIK_TUI_CASE").unwrap_or_default();
+                if case.starts_with("remote-sessions-") && query.contains_key("offset") {
+                    let offset=query["offset"].parse::<usize>().unwrap();
+                    assert_eq!(query.get("limit").map(String::as_str),Some("30"));
+                    if case=="remote-sessions-slow" {
+                        std::fs::write("sessions-request",b"1").unwrap();
+                        while !std::path::Path::new("sessions-release").exists() {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                    }
+                    if (case=="remote-sessions-retry" || case=="remote-sessions-pages-retry" && offset==30) && !std::path::Path::new("sessions-failed").exists() {
+                        std::fs::write("sessions-failed",b"1").unwrap();
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    if case.starts_with("remote-sessions-pages") {
+                        std::fs::write(format!("sessions-page-{offset}"),b"1").unwrap();
+                        let rows=(offset..(offset+30).min(35)).map(|index|json!({"id":format!("session-{index}"),"title":format!("Paged conversation {index}")})).collect::<Vec<_>>();
+                        return Json(json!(rows)).into_response();
+                    }
+                }
+                Json(json!([{"id":"server-session","title":"server conversation"}])).into_response()
+            }),
         )
         .route(
             "/api/remote/chat/sessions/{id}",
@@ -731,6 +758,120 @@ fn remote_session_picker_and_version_navigation_use_server_commands() {
         std::fs::read_to_string(dir.path().join("selected-version")).unwrap(),
         "branch"
     );
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_sessions_loading_remains_cancellable_and_late_results_stay_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-sessions-slow");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"Loading sessions", 0);
+    terminal.send(b"\x1b[27u");
+    terminal.send(b"hello\r");
+    terminal.wait_for(b"remote echo: hello", 0);
+    std::fs::write(dir.path().join("sessions-release"), b"1").unwrap();
+    terminal.send(b"\x1b[27u");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"server conversation", 0);
+    terminal.send(b"\x1b[27u");
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+    assert!(!dir.path().join("selected-session").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_sessions_paginates_near_end_and_selects_later_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-sessions-pages");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"Paged conversation 0", 0);
+    assert!(!dir.path().join("sessions-page-30").exists());
+    for _ in 0..27 {
+        terminal.send(b"\x1b[B");
+    }
+    terminal.wait_for(b"Paged conversation 27", 0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !dir.path().join("sessions-page-30").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next page not prefetched"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    for _ in 0..7 {
+        terminal.send(b"\x1b[B");
+    }
+    terminal.wait_for(b"Paged conversation 34", 0);
+    terminal.send(b"\r");
+    terminal.wait_for(b"fixture-attached-session-34", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-session")).unwrap(),
+        "session-34"
+    );
+    assert!(!dir.path().join("sessions-page-35").exists());
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_sessions_error_is_retried_inside_the_picker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-sessions-retry");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"Could not load sessions", 0);
+    terminal.send(b"r");
+    terminal.wait_for(b"server conversation", 0);
+    terminal.send(b"\r");
+    terminal.wait_for(b"fixture-attached-server-session", 0);
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_sessions_later_page_failure_keeps_rows_and_retries_same_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-sessions-pages-retry");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"Paged conversation 0", 0);
+    for _ in 0..27 {
+        terminal.send(b"\x1b[B");
+    }
+    terminal.wait_for(b"Could not load sessions", 0);
+    terminal.wait_for(b"Paged conversation 27", 0);
+    terminal.send(b"r");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("sessions-page-30").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "failed page was not retried"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    terminal.send(b"\r");
+    terminal.wait_for(b"fixture-attached-session-27", 0);
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }

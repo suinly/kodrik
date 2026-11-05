@@ -95,7 +95,7 @@ An unchanged saved grant needs no further confirmation.
 
 | Remote TUI input | Action |
 | --- | --- |
-| `/sessions` | Select a saved server conversation |
+| `/sessions` | Select a saved server conversation; load 30 at a time without blocking keyboard input |
 | `/new` | Create and select a server conversation |
 | `/attach` | Reconnect the launch project; show the grant picker if approval is needed |
 | `/detach` | Revoke this environment binding and clean up local work; keep server chat available |
@@ -104,6 +104,17 @@ An unchanged saved grant needs no further confirmation.
 | `/audit`, `/audit trusted`, `/audit review`, `/audit ask`, `/audit status` | Inspect/change the current server session's command audit mode |
 | `/approvals`, `/approve <id>`, `/deny <id>` | Refresh pending approvals or decide one for this session |
 | Esc while working, with no menu/editor open | Stop the current server request |
+
+The session picker opens immediately with a loading indicator. Near the end,
+it loads the next page automatically. Esc closes it even during a request;
+on a list error, existing rows remain available and `r` retries that page.
+Use matching client and gateway versions: older gateways do not support this
+paginated session-list API.
+
+In slash-command suggestions, Enter runs the highlighted command directly;
+Tab only completes its name. `/language` and `/audit` open keyboard choices.
+Bare `/approve` and `/deny` open the full pending-call review, without deciding
+anything until a separate explicit choice.
 
 The terminal reviews one pending approval at a time and preserves its complete
 arguments. `/approve` and the trust shortcut require that approval to be

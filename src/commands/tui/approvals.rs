@@ -76,6 +76,7 @@ fn literal_block(text: &str) -> String {
 }
 
 pub(super) fn show(app: &mut App, session: &SessionId, approval: &CommandApproval) {
+    app.language_choice = None;
     let language = app.language;
     let arguments = approval.arguments_text();
     let invocation = if approval.tool_name == "exec_command"
@@ -1171,7 +1172,12 @@ mod tests {
                 .is_err(),
             "unseen command must be reviewed first"
         );
+        app.language_choice = Some(1);
         assert!(refresh(&mut app, &runner, &session_id).await.unwrap());
+        assert!(
+            app.language_choice.is_none(),
+            "approval must replace the language picker"
+        );
         let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
         assert_eq!(app.approval_choice, Some(0));
         app.update(key(KeyCode::Char('x')));

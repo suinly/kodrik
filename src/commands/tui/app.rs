@@ -21,7 +21,11 @@ pub struct App {
     pub input_width: usize,
     pub commands_dismissed: bool,
     pub command_index: usize,
+    pub language_choice: Option<usize>,
     pub sessions: Option<Vec<(crate::agent::session::SessionId, String)>>,
+    pub sessions_loading: bool,
+    pub sessions_error: Option<String>,
+    pub sessions_more: bool,
     pub session_index: usize,
     pub session: Option<crate::agent::session::SessionId>,
     pub versions: HashMap<usize, crate::agent::session::branches::MessageVersions>,
@@ -73,12 +77,14 @@ impl App {
         if self.remote_grant.is_some()
             || self.approval.is_some()
             || self.audit_picker.is_some()
+            || self.language_choice.is_some()
+            || self.sessions.is_some()
             || self.navigation.selected.is_some()
             || self.navigation.editing.is_some()
         {
             return Vec::new();
         }
-        [
+        let mut commands = vec![
             (
                 "/new",
                 self.language
@@ -121,12 +127,43 @@ impl App {
                     "Выбор режима: /audit [trusted|review|ask|status] [SESSION_ID]",
                 ),
             ),
-        ]
-        .into_iter()
-        .filter(|(name, _)| {
-            !self.commands_dismissed && self.input.starts_with('/') && name.starts_with(&self.input)
-        })
-        .collect()
+        ];
+        if self.remote_environment.is_some() {
+            commands.extend([
+                (
+                    "/attach",
+                    self.language.pick(
+                        "Connect local environment",
+                        "Подключить локальное окружение",
+                    ),
+                ),
+                (
+                    "/detach",
+                    self.language.pick(
+                        "Disconnect local environment",
+                        "Отключить локальное окружение",
+                    ),
+                ),
+                (
+                    "/older",
+                    self.language
+                        .pick("Load older messages", "Загрузить предыдущие сообщения"),
+                ),
+                (
+                    "/retry",
+                    self.language
+                        .pick("Retry the last request", "Повторить последний запрос"),
+                ),
+            ]);
+        }
+        commands
+            .into_iter()
+            .filter(|(name, _)| {
+                !self.commands_dismissed
+                    && self.input.starts_with('/')
+                    && name.starts_with(&self.input)
+            })
+            .collect()
     }
 
     pub fn command_suggestion(&self) -> Option<(&'static str, &'static str)> {
@@ -140,6 +177,7 @@ impl App {
         if self.remote_grant.is_some()
             || self.approval.is_some()
             || self.audit_picker.is_some()
+            || self.language_choice.is_some()
             || self.navigation.selected.is_some()
         {
             return;
@@ -333,12 +371,35 @@ impl App {
         if key.code != KeyCode::Esc
             || self.sessions.is_some()
             || self.audit_picker.is_some()
+            || self.language_choice.is_some()
             || self.approval.is_some()
         {
             self.navigation.escape = None;
         }
         if self.audit_picker.is_some() {
             return super::approvals::update_audit_picker(self, key);
+        }
+        if self.language_choice.is_some() {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'C' | 'с' | 'С'))
+            {
+                self.should_quit = true;
+            } else if key.modifiers.is_empty() {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => self.language_choice = Some(0),
+                    KeyCode::Down | KeyCode::Char('j') => self.language_choice = Some(1),
+                    KeyCode::Esc => self.language_choice = None,
+                    KeyCode::Enter => {
+                        let choice = self.language_choice.take()?;
+                        return Some(format!(
+                            "/language {}",
+                            if choice == 0 { "en" } else { "ru" }
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            return None;
         }
         if self.approval.is_some() {
             return super::approvals::update(self, key);
@@ -352,7 +413,19 @@ impl App {
                     self.session_index =
                         (self.session_index + 1).min(sessions.len().saturating_sub(1))
                 }
-                KeyCode::Esc => self.sessions = None,
+                KeyCode::Char('r')
+                    if key.modifiers.is_empty()
+                        && key.kind == KeyEventKind::Press
+                        && self.sessions_error.is_some() =>
+                {
+                    return Some("/sessions retry".into());
+                }
+                KeyCode::Esc => {
+                    self.sessions = None;
+                    self.sessions_loading = false;
+                    self.sessions_error = None;
+                    self.sessions_more = false;
+                }
                 _ => {}
             }
             return None;
@@ -366,13 +439,13 @@ impl App {
                     self.commands_dismissed = true;
                     return None;
                 }
-                KeyCode::Tab | KeyCode::Enter
-                    if self.input != command || key.code == KeyCode::Tab =>
-                {
+                KeyCode::Tab | KeyCode::Enter => {
                     self.input = command.to_owned();
                     self.input_cursor = self.input.len();
                     self.commands_dismissed = true;
-                    return None;
+                    if key.code == KeyCode::Tab {
+                        return None;
+                    }
                 }
                 KeyCode::Up | KeyCode::Down | KeyCode::Char('j' | 'k') => {
                     let count = self.command_suggestions().len();
@@ -443,6 +516,13 @@ impl App {
                 let input = std::mem::take(&mut self.input);
                 self.input_cursor = 0;
                 let command = input.trim();
+                if command == "/language" {
+                    self.language_choice = Some(usize::from(self.language == Language::Ru));
+                    return None;
+                }
+                if matches!(command, "/approve" | "/deny") {
+                    return Some("/approvals".into());
+                }
                 if matches!(command, "/new" | "/sessions")
                     || (self.remote_environment.is_some()
                         && matches!(
@@ -814,7 +894,7 @@ mod tests {
 
     #[test]
     fn language_commands_are_local_even_while_working() {
-        for input in ["/language ru", "/language en", "/language de", "/language"] {
+        for input in ["/language ru", "/language en", "/language de"] {
             let mut app = App {
                 language: Language::Ru,
                 status: Status::Working,
@@ -836,7 +916,118 @@ mod tests {
             Some(("/language", "Язык интерфейса: en|ru"))
         );
         assert!(key(&mut app, KeyCode::Enter).is_none());
-        assert_eq!(app.input, "/language");
+        assert!(app.input.is_empty());
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            key(&mut app, KeyCode::Enter).as_deref(),
+            Some("/language en")
+        );
+    }
+
+    #[test]
+    fn slash_enter_executes_selected_command_in_one_press_without_chat_submission() {
+        for (input, expected) in [
+            ("/n", "/new"),
+            ("/ses", "/sessions"),
+            ("/aud", "/audit"),
+            ("/approvals", "/approvals"),
+            ("/approve", "/approvals"),
+            ("/deny", "/approvals"),
+            ("/approve request-id", "/approve request-id"),
+            ("/deny request-id", "/deny request-id"),
+        ] {
+            let mut app = App::default();
+            app.insert_input(input);
+            assert_eq!(
+                key(&mut app, KeyCode::Enter).as_deref(),
+                Some(expected),
+                "{input}"
+            );
+            assert!(app.input.is_empty());
+            assert!(app.messages.is_empty());
+            assert!(matches!(app.status, Status::Ready));
+            assert!(
+                app.update(KeyEvent::new_with_kind(
+                    KeyCode::Enter,
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat
+                ))
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn language_picker_requires_separate_press_and_supports_cancel() {
+        let mut app = App::default();
+        app.insert_input("/lang");
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(app.input.is_empty());
+        app.insert_input("ignored paste");
+        assert!(app.input.is_empty());
+        assert!(
+            app.update(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat
+            ))
+            .is_none()
+        );
+        key(&mut app, KeyCode::Down);
+        assert_eq!(
+            key(&mut app, KeyCode::Enter).as_deref(),
+            Some("/language ru")
+        );
+        app.insert_input("/language");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Esc);
+        assert!(key(&mut app, KeyCode::Enter).is_none());
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn session_picker_retry_and_cancel_do_not_change_chat_status() {
+        let mut app = App {
+            sessions: Some(vec![]),
+            sessions_loading: true,
+            sessions_error: Some("offline".into()),
+            sessions_more: true,
+            status: Status::Working,
+            ..Default::default()
+        };
+        assert_eq!(
+            key(&mut app, KeyCode::Char('r')).as_deref(),
+            Some("/sessions retry")
+        );
+        assert!(
+            app.update(KeyEvent::new_with_kind(
+                KeyCode::Char('r'),
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat
+            ))
+            .is_none()
+        );
+        assert!(matches!(app.status, Status::Working));
+        assert!(app.messages.is_empty());
+        key(&mut app, KeyCode::Esc);
+        assert!(app.sessions.is_none());
+        assert!(!app.sessions_loading);
+        assert!(app.sessions_error.is_none());
+        assert!(!app.sessions_more);
+    }
+
+    #[test]
+    fn remote_commands_are_suggested_and_execute_only_in_remote_mode() {
+        for command in ["/attach", "/detach", "/older", "/retry"] {
+            let mut app = App::default();
+            app.insert_input(command);
+            assert!(app.command_suggestions().is_empty());
+            app.remote_environment = Some("laptop".into());
+            assert_eq!(app.command_suggestion().unwrap().0, command);
+            assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some(command));
+            assert!(app.messages.is_empty());
+            assert!(matches!(app.status, Status::Ready));
+        }
     }
 
     #[test]
@@ -855,8 +1046,9 @@ mod tests {
             app.command_suggestions(),
             vec![("/sessions", "Select a session")]
         );
-        key(&mut app, KeyCode::Enter);
+        assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/sessions"));
         app.status = Status::Working;
+        app.insert_input("/ses");
         assert!(key(&mut app, KeyCode::Enter).is_none());
         assert_eq!(app.input, "/sessions");
         app.status = Status::Ready;
@@ -891,7 +1083,7 @@ mod tests {
             app.insert_input(input);
             assert!(app.command_suggestion().is_none(), "{input:?}");
         }
-        for accept in [KeyCode::Tab, KeyCode::Enter] {
+        for accept in [KeyCode::Tab] {
             let mut app = App::default();
             key(&mut app, KeyCode::Char('/'));
             assert_eq!(app.command_suggestion().unwrap().0, "/new");

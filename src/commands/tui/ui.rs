@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, List, ListItem, ListState, Paragraph, Widget},
+    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Widget},
 };
 
 use super::app::{App, AppMessage, AppMessageRole, Status, ToolState};
@@ -105,7 +105,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         render_remote_grant(app, frame);
         return;
     }
-    let has_picker = app.approval.is_some() || app.audit_picker.is_some();
+    let has_picker =
+        app.approval.is_some() || app.audit_picker.is_some() || app.language_choice.is_some();
     if let Some(sessions) = &app.sessions {
         app.view
             .prepare(&app.messages, area, 0, &mut app.scroll, true);
@@ -113,27 +114,59 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             .iter()
             .map(|(id, title)| ListItem::new(format!("{title}  · {}", id.as_str())))
             .collect::<Vec<_>>();
-        let block = Block::bordered().title(language.pick(
+        let mut block = Block::bordered().title(language.pick(
             " Sessions · ↑/↓ select · Enter open · Esc close ",
             " Сеансы · ↑/↓ выбор · Enter открыть · Esc закрыть ",
         ));
+        let mut notices = Vec::new();
+        if app.sessions_loading {
+            notices.push(format!(
+                "{} {}",
+                FRAMES[app.animation_frame % FRAMES.len()],
+                language.pick("Loading sessions…", "Загружаю сеансы…")
+            ));
+        }
+        if let Some(error) = &app.sessions_error {
+            notices.push(format!(
+                "{} · {}: {}",
+                language.pick("Could not load sessions", "Не удалось загрузить сеансы"),
+                language.pick("r retry", "r повторить"),
+                literal_text(error).replace('\n', " ")
+            ));
+        } else if app.sessions_more {
+            notices.push(
+                language
+                    .pick("More sessions available", "Есть ещё сеансы")
+                    .to_owned(),
+            );
+        }
+        if !notices.is_empty() {
+            block = block.title_bottom(format!(" {} ", notices.join(" · ")));
+        }
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
         if items.is_empty() {
             frame.render_widget(
-                Paragraph::new(language.pick("No saved sessions", "Нет сохранённых сеансов"))
-                    .block(block),
-                area,
+                Paragraph::new(if app.sessions_loading {
+                    notices[0].as_str()
+                } else if app.sessions_error.is_some() {
+                    language.pick(
+                        "Could not load sessions · r retry",
+                        "Не удалось загрузить сеансы · r повторить",
+                    )
+                } else {
+                    language.pick("No saved sessions", "Нет сохранённых сеансов")
+                }),
+                inner,
             );
         } else {
             frame.render_stateful_widget(
-                List::new(items)
-                    .block(block)
-                    .highlight_symbol("> ")
-                    .highlight_style(
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .bg(Color::Rgb(54, 58, 79)),
-                    ),
-                area,
+                List::new(items).highlight_symbol("> ").highlight_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .bg(Color::Rgb(54, 58, 79)),
+                ),
+                inner,
                 &mut ListState::default().with_selected(Some(app.session_index)),
             );
         }
@@ -145,6 +178,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let (input_rows, (cursor_x, cursor_y)) = app.input_layout(app.input_width);
     let input_lines = if app.audit_picker.is_some() {
         5
+    } else if app.language_choice.is_some() {
+        2
     } else if has_picker {
         3
     } else if app.navigation.selected.is_some() {
@@ -152,7 +187,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     } else {
         input_rows.len().min(6) as u16
     };
-    let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
+    let command_height = (app.command_suggestions().len() as u16 + 3).max(3);
     let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
     let plan_width = area.width.saturating_sub(3).max(1);
     let available_plan_height = area.height.saturating_sub(footer_height + 2);
@@ -273,6 +308,15 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             ),
             String::new(),
         )
+    } else if app.language_choice.is_some() {
+        (
+            "◇",
+            language.pick(
+                "Interface language · ↑/↓ select · Enter apply · Esc close",
+                "Язык интерфейса · ↑/↓ выбор · Enter применить · Esc закрыть",
+            ),
+            String::new(),
+        )
     } else if app.approval.is_some() {
         (
             "!",
@@ -372,14 +416,16 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 )
             })
             .collect::<Vec<_>>();
+        lines.insert(0, Line::default());
         lines.push(Line::styled(
             language.pick(
-                "   ↑/↓ · Tab/Enter — select · Esc — close",
-                "   ↑/↓ · Tab/Enter — выбор · Esc — закрыть",
+                "   ↑/↓ · Enter — run · Tab — complete · Esc — close",
+                "   ↑/↓ · Enter — запуск · Tab — дополнить · Esc — закрыть",
             ),
             Style::default().fg(Color::Gray),
         ));
-        let height = (lines.len() as u16).min(layout[0].height);
+        let height = (lines.len() as u16).min(layout[0].height.saturating_sub(1));
+        frame.render_widget(Clear, layout[0]);
         frame.render_widget(
             Paragraph::new(lines).style(Style::default().bg(Color::Rgb(54, 58, 79))),
             Rect::new(
@@ -466,6 +512,15 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 })
                 .collect::<Vec<_>>();
             (items, Some(picker.choice), Style::default())
+        } else if let Some(choice) = app.language_choice {
+            (
+                ["English", "Русский"]
+                    .into_iter()
+                    .map(ListItem::new)
+                    .collect(),
+                Some(choice),
+                selection_style,
+            )
         } else {
             (
                 [
@@ -1294,7 +1349,7 @@ mod tests {
             "Начать новый сеанс",
             "Выбрать сеанс",
             "Язык интерфейса: en|ru",
-            "Tab/Enter — выбор",
+            "Enter — запуск · Tab — дополнить",
         ] {
             assert!(rendered.contains(expected), "{expected}");
         }
@@ -1350,6 +1405,79 @@ mod tests {
     }
 
     #[test]
+    fn session_picker_shows_loading_errors_and_more_without_hiding_rows() {
+        let mut app = App {
+            sessions: Some(vec![]),
+            sessions_loading: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        let text = |terminal: &Terminal<TestBackend>| {
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("Loading sessions…"));
+        assert!(!text(&terminal).contains("No saved sessions"));
+        assert!(text(&terminal).contains(FRAMES[0]));
+        app.animation_frame = 1;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains(FRAMES[1]));
+        app.sessions_loading = false;
+        app.sessions = Some(vec![(
+            crate::agent::session::SessionId::new("one"),
+            "Saved conversation".into(),
+        )]);
+        app.sessions_error = Some("Connection failed".into());
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("Saved conversation"));
+        assert!(text(&terminal).contains("Could not load sessions"));
+        assert!(text(&terminal).contains("r retry"));
+        assert!(matches!(app.status, Status::Ready));
+        app.sessions_error = None;
+        app.sessions_more = true;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("More sessions available"));
+        app.language = crate::i18n::Language::Ru;
+        app.sessions = Some(vec![]);
+        app.sessions_loading = true;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(text(&terminal).contains("Загружаю сеансы…"));
+        for (width, height) in [(1, 1), (3, 3), (8, 5)] {
+            app.sessions_error = Some("offline".into());
+            let mut small = Terminal::new(TestBackend::new(width, height)).unwrap();
+            small.draw(|frame| render(&mut app, frame)).unwrap();
+        }
+    }
+
+    #[test]
+    fn language_picker_renders_choices_and_hides_composer_cursor() {
+        let mut app = App::default();
+        app.insert_input("/language");
+        app.update(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("> English"));
+        assert!(text.contains("Русский"));
+        assert!(!terminal.backend().cursor_visible());
+    }
+
+    #[test]
     fn slash_menu_renders_description_and_disappears_on_escape() {
         let mut app = App::default();
         app.insert_input("/");
@@ -1363,6 +1491,22 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("/new  Start a new session"));
+        let buffer = terminal.backend().buffer();
+        let command_y = (0..20)
+            .find(|&y| {
+                (0..64)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains("/new")
+            })
+            .unwrap();
+        assert!(command_y >= 2);
+        for x in 0..64 {
+            assert_eq!(buffer[(x, command_y - 1)].symbol(), " ");
+            assert_eq!(buffer[(x, command_y - 1)].bg, Color::Rgb(54, 58, 79));
+            assert_eq!(buffer[(x, command_y - 2)].symbol(), " ");
+            assert_ne!(buffer[(x, command_y - 2)].bg, Color::Rgb(54, 58, 79));
+        }
         assert_eq!(terminal.get_cursor_position().unwrap(), (4, 17).into());
         app.update(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Esc,

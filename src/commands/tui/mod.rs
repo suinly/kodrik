@@ -244,7 +244,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Esc && recovering && app.command_suggestion().is_none() {
+                        if key.code == KeyCode::Esc && recovering && app.command_suggestion().is_none() && app.language_choice.is_none() {
                             // Recovery is paused here, so queued work cannot start during cancellation.
                             while let Some(input) = runner.next_input(&session_id).await? {
                                 runner.cancel_queued_input(&session_id, &input.request_id).await?;
@@ -254,7 +254,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Enter && app.sessions.is_some() {
+                        if key.code == KeyCode::Enter && key.kind == KeyEventKind::Press && app.sessions.is_some() {
                             if let Some((id, _)) = app.sessions.as_ref().and_then(|sessions| sessions.get(app.session_index)) {
                                 match runner.select_session(&session_id, id).await {
                                     Ok(session) => {
@@ -274,7 +274,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Esc && app.command_suggestion().is_none() && matches!(app.status, Status::Working) {
+                        if key.code == KeyCode::Esc && app.command_suggestion().is_none() && app.language_choice.is_none() && matches!(app.status, Status::Working) {
                             if let Some(cancel) = cancel_request.take() {
                                 let _ = cancel.send(());
                                 app.status = Status::Stopping;
@@ -282,7 +282,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Esc && app.sessions.is_none() && app.command_suggestion().is_none()
+                        if key.code == KeyCode::Esc && app.sessions.is_none() && app.command_suggestion().is_none() && app.language_choice.is_none()
                             && !matches!(app.status, Status::Working | Status::Recovering | Status::Stopping)
                         {
                             match runner.load_session(session_id.clone()).await {
