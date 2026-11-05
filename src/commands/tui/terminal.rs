@@ -64,6 +64,15 @@ impl Tui {
         Ok(())
     }
 
+    pub fn resume(&mut self) -> anyhow::Result<()> {
+        terminal::enable_raw_mode()?;
+        execute!(io::stderr(), EnterAlternateScreen)?;
+        enable_input_modes(io::stderr())?;
+        self.terminal.clear()?;
+        self.terminal.hide_cursor()?;
+        Ok(())
+    }
+
     pub fn copy_to_terminal(&mut self, sequence: &str) -> io::Result<()> {
         use io::Write;
         let mut output = io::stderr().lock();

@@ -193,6 +193,9 @@ pub(crate) enum ChatCommand {
         request_id: Uuid,
         text: String,
     },
+    SubmissionStatus {
+        request_id: Uuid,
+    },
     Stop,
     New,
     Select {
@@ -210,6 +213,9 @@ pub(crate) enum ChatCommand {
     DecideApproval {
         approval_id: String,
         allow: bool,
+    },
+    TrustApproval {
+        approval_id: String,
     },
     SetAuditMode {
         mode: String,

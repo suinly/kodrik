@@ -20,6 +20,14 @@ pub(super) fn group_starts(session: &Session) -> Vec<usize> {
 pub(super) fn history_group(session: &Session, start: usize, end: usize) -> Value {
     let mut rows = super::super::chat_stream::history_range(session, start, end);
     let row = rows.first_mut().expect("Nonempty message group");
+    if row["role"] == "user" {
+        row["user_turn"] = json!(
+            session.messages()[..start]
+                .iter()
+                .filter(|message| matches!(message, crate::agent::message::Message::User(_)))
+                .count()
+        );
+    }
     let parts = row["parts"].as_array_mut().unwrap();
     for (index, message) in session.messages().iter().enumerate().take(end).skip(start) {
         if let crate::agent::message::Message::ToolResult(result) = message {
@@ -199,6 +207,8 @@ impl Chat {
         }
         let versions = Value::Null;
         let mut run = json!({"busy":view.busy,"blocked_reason":view.blocked_reason,
+            "model":self.runner.model_identity(),
+            "compaction":view.run.as_ref().and_then(|r| r.compaction.as_ref()),
             "phase":view.run.as_ref().map(|r| &r.run.phase),
             "live":view.run.as_ref().map(|r| &r.live),
             "remote_operations":view.run.as_ref().map(|r| &r.remote_operations),
@@ -246,6 +256,39 @@ impl Chat {
             }
         }
         match command {
+            ChatCommand::SubmissionStatus { request_id } => {
+                let request = request_id.to_string();
+                let mut submission = self
+                    .sessions
+                    .submission(web_conversation(id.as_str()).as_str(), &request)
+                    .await
+                    .map_err(internal)?;
+                if submission.is_none() {
+                    let original = id.as_str().to_owned();
+                    let branch = request.clone();
+                    let belongs = self
+                        .sessions
+                        .with_connection(move |db| {
+                            let root = crate::agent::session::branches::root(db, &original)?;
+                            Ok(crate::agent::session::branches::read_branches(db)?
+                                .iter()
+                                .any(|candidate| candidate.id == branch && candidate.root == root))
+                        })
+                        .await
+                        .map_err(internal)?;
+                    if belongs {
+                        submission = self
+                            .sessions
+                            .submission(&request, &request)
+                            .await
+                            .map_err(internal)?;
+                    }
+                }
+                Ok(submission.map_or(
+                    Value::Null,
+                    |record| json!({"status":record.status,"session_id":record.session_id}),
+                ))
+            }
             ChatCommand::Send { request_id, text } => {
                 let input = Input {
                     id: id.as_str().into(),
@@ -332,6 +375,13 @@ impl Chat {
             ChatCommand::DecideApproval { approval_id, allow } => {
                 self.decide_approval(id.as_str().into(), approval_id, allow)
                     .await?;
+                Ok(Value::Null)
+            }
+            ChatCommand::TrustApproval { approval_id } => {
+                self.sessions
+                    .disable_command_audit_for_approval(id.as_str(), &approval_id)
+                    .await
+                    .map_err(internal)?;
                 Ok(Value::Null)
             }
             ChatCommand::SetAuditMode { mode } => {

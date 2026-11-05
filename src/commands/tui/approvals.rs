@@ -75,7 +75,7 @@ fn literal_block(text: &str) -> String {
         .join("\n")
 }
 
-fn show(app: &mut App, session: &SessionId, approval: &CommandApproval) {
+pub(super) fn show(app: &mut App, session: &SessionId, approval: &CommandApproval) {
     let language = app.language;
     let arguments = approval.arguments_text();
     let invocation = if approval.tool_name == "exec_command"

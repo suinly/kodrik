@@ -5,6 +5,9 @@ mod herdr;
 mod instance;
 mod markdown;
 mod navigation;
+pub(crate) mod remote;
+#[cfg(test)]
+mod remote_tests;
 #[cfg(all(test, unix))]
 mod startup_tests;
 mod terminal;

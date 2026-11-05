@@ -516,6 +516,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
         None => app.model.clone(),
     };
+    let model = match &app.remote_environment {
+        Some(environment) => format!("{model} · {environment}"),
+        None => model,
+    };
     let (mode_icon, mode_color) = match app.audit_mode {
         CommandAuditMode::Trusted => ("◈", Color::Yellow),
         CommandAuditMode::Review => ("◇", Color::Cyan),

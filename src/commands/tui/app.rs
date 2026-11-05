@@ -9,6 +9,7 @@ pub struct App {
     pub language: Language,
     pub should_quit: bool,
     pub model: String,
+    pub remote_environment: Option<String>,
     pub context_tokens: Option<u64>,
     pub compacting: bool,
     pub compaction_progress: Option<crate::agent::CompactionProgress>,
@@ -383,6 +384,11 @@ impl App {
                 self.input_cursor = 0;
                 let command = input.trim();
                 if matches!(command, "/new" | "/sessions")
+                    || (self.remote_environment.is_some()
+                        && matches!(
+                            command.split_whitespace().next(),
+                            Some("/attach" | "/detach" | "/older" | "/retry")
+                        ))
                     || command.split_whitespace().next() == Some("/language")
                     || super::approvals::is_command(command)
                 {

@@ -214,10 +214,10 @@ async fn terminal_recovery_fixture() {
     std::fs::write(directory.join("clean-exit"), b"1").unwrap();
 }
 
-struct PrivateTerminal {
+pub(super) struct PrivateTerminal {
     child: std::process::Child,
     master: Option<std::fs::File>,
-    output: Vec<u8>,
+    pub(super) output: Vec<u8>,
 }
 
 fn screen_text(output: &[u8]) -> String {
@@ -293,7 +293,7 @@ impl PrivateTerminal {
         Self::start_case(directory, "")
     }
 
-    fn start_case(directory: &Path, case: &str) -> Self {
+    pub(super) fn start_case(directory: &Path, case: &str) -> Self {
         use std::os::{
             fd::{AsRawFd, FromRawFd},
             unix::process::CommandExt,
@@ -336,7 +336,11 @@ impl PrivateTerminal {
         command
             .args([
                 "--exact",
-                "commands::tui::startup_tests::terminal_recovery_fixture",
+                if case.starts_with("remote") {
+                    "commands::tui::remote_tests::terminal_remote_fixture"
+                } else {
+                    "commands::tui::startup_tests::terminal_recovery_fixture"
+                },
                 "--ignored",
                 "--nocapture",
                 "--test-threads=1",
@@ -376,7 +380,7 @@ impl PrivateTerminal {
         }
     }
 
-    fn wait_for(&mut self, needle: &[u8], since: usize) {
+    pub(super) fn wait_for(&mut self, needle: &[u8], since: usize) {
         use std::io::Read;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -417,7 +421,7 @@ impl PrivateTerminal {
         }
     }
 
-    fn send(&mut self, bytes: &[u8]) {
+    pub(super) fn send(&mut self, bytes: &[u8]) {
         self.master.as_mut().unwrap().write_all(bytes).unwrap();
     }
 }

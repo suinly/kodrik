@@ -1,0 +1,733 @@
+use super::*;
+use crate::remote::protocol::RemoteChatSnapshot;
+use serde_json::json;
+
+fn snapshot() -> RemoteChatSnapshot {
+    serde_json::from_value(json!({
+        "session_id":"server-session","revision":5,"environment_revision":1,
+        "messages":[
+            {"id":"server-session:0","role":"user","version":0,"versions":["server-session","branch"],"parts":[{"type":"text","text":"server question"}]},
+            {"id":"server-session:1","role":"assistant","parts":[{"type":"dynamic-tool","toolCallId":"tool","toolName":"read_file","state":"output-available","input":{"path":"file"},"output":{"text":"contents"}},{"type":"text","text":"server answer"}]}
+        ],"previous_cursor":null,"versions":null,"environment":null,
+        "run":{"busy":true,"model":"server-test-model","phase":"NeedModel","command_audit_mode":"review","command_approvals":[],"live":{"current":{"status":"Active","text":"partial reply"}}}
+    })).unwrap()
+}
+
+#[test]
+fn server_projection_preserves_draft_versions_tools_and_live_status() {
+    let mut app = App {
+        input: "unsent draft".into(),
+        input_cursor: 3,
+        ..Default::default()
+    };
+    remote::project(&mut app, &snapshot()).unwrap();
+    assert_eq!(app.session.unwrap().as_str(), "server-session");
+    assert_eq!(app.input, "unsent draft");
+    assert_eq!(app.input_cursor, 3);
+    assert_eq!(
+        app.messages
+            .iter()
+            .filter(|m| m.role == AppMessageRole::User)
+            .count(),
+        1
+    );
+    assert!(app.messages.iter().any(|m| m.content == "server answer"));
+    assert!(app.messages.iter().any(|m| m.content == "partial reply"));
+    assert!(
+        app.messages
+            .iter()
+            .any(|m| matches!(m.role, AppMessageRole::Tool(ToolState::Success)))
+    );
+    assert_eq!(app.versions[&0].ids, ["server-session", "branch"]);
+    assert!(matches!(app.status, Status::Working));
+}
+
+#[test]
+fn environment_pause_keeps_ui_writable_and_explains_new_message() {
+    let mut snapshot = snapshot();
+    snapshot.run = Some(
+        json!({"busy":false,"phase":{"EnvironmentPaused":{"reason":"disconnected"}},"command_approvals":[],"command_audit_mode":"review"}),
+    );
+    let mut app = App::default();
+    remote::project(&mut app, &snapshot).unwrap();
+    assert!(!matches!(
+        app.status,
+        Status::Working | Status::Recovering | Status::Stopping
+    ));
+    assert!(
+        app.messages
+            .iter()
+            .any(|m| m.content.contains("new message") || m.content.contains("новое сообщение"))
+    );
+    app.insert_input("continue");
+    assert_eq!(app.input, "continue");
+}
+
+#[test]
+fn stale_remote_snapshots_cannot_rewind_history_or_cross_sessions() {
+    let mut state = remote::Projection::default();
+    let mut app = App::default();
+    let snapshot = snapshot();
+    assert!(state.accept(&mut app, &snapshot).unwrap());
+    let mut stale = snapshot.clone();
+    stale.revision = 4;
+    assert!(!state.accept(&mut app, &stale).unwrap());
+    stale.revision = 5;
+    stale.environment_revision = 2;
+    assert!(state.accept(&mut app, &stale).unwrap());
+    stale.session_id = SessionId::new("other");
+    stale.revision = 100;
+    assert!(!state.accept(&mut app, &stale).unwrap());
+}
+
+#[test]
+fn remote_controls_do_not_become_user_messages_and_status_is_visible() {
+    let mut app = App::default();
+    remote::project(&mut app, &snapshot()).unwrap();
+    app.input = "/attach".into();
+    app.input_cursor = 7;
+    assert_eq!(
+        app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .as_deref(),
+        Some("/attach")
+    );
+    assert!(
+        !app.messages
+            .iter()
+            .any(|row| row.role == AppMessageRole::User && row.content == "/attach")
+    );
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("server-test-model"));
+    assert!(text.contains("detached"));
+}
+
+#[test]
+fn remote_environment_display_identifies_session_and_project() {
+    let mut view = snapshot();
+    view.environment=Some(serde_json::from_value(json!({"session_id":"server-session","environment":null,"label":"Work laptop","project_root":"/projects/demo","state":"connected","reason":null})).unwrap());
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    let status = app.remote_environment.unwrap();
+    assert!(status.contains("Work laptop"));
+    assert!(status.contains("/projects/demo"));
+    assert!(status.contains("server-session"));
+}
+
+#[test]
+fn projected_user_parts_stay_one_turn_and_equal_snapshot_has_no_duplicate_live_or_approval() {
+    let mut view = snapshot();
+    view.messages[0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"text","text":"second part"}));
+    view.messages[0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"file","filename":"image.png"}));
+    view.run.as_mut().unwrap()["command_approvals"] = json!([{"id":"approval","run_id":"run","call_id":"call","cmd":"echo hi","workdir":null,"reason":"ask","reason_code":""}]);
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    app.approval_choice = Some(2);
+    remote::project(&mut app, &view).unwrap();
+    assert_eq!(app.approval_choice, Some(2));
+    assert_eq!(
+        app.messages
+            .iter()
+            .filter(|row| row.role == AppMessageRole::User)
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.messages
+            .iter()
+            .filter(|row| row.content == "partial reply")
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.messages
+            .iter()
+            .filter(|row| row.role == AppMessageRole::Approval)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn reconnect_accepts_fresh_snapshot_after_gateway_environment_counter_reset() {
+    let mut app = App::default();
+    let mut projection = remote::Projection::default();
+    let mut view = snapshot();
+    view.environment_revision = 100;
+    projection.accept(&mut app, &view).unwrap();
+    view.environment_revision = 1;
+    view.environment=Some(serde_json::from_value(json!({"session_id":"server-session","environment":null,"label":"Laptop","project_root":"/tmp/project","state":"disconnected","reason":"gateway restarted"})).unwrap());
+    assert!(projection.resynchronize(&mut app, &view).unwrap());
+    assert!(app.remote_environment.unwrap().contains("disconnected"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "private PTY subprocess"]
+async fn terminal_remote_fixture() {
+    use crate::remote::{client::Credential, config::RemoteConfig, protocol::*};
+    use axum::{
+        Json, Router,
+        extract::{
+            Path as RoutePath, State, WebSocketUpgrade,
+            ws::{Message as WsMessage, WebSocket},
+        },
+        response::IntoResponse,
+        routing::{get, post},
+    };
+    use std::sync::Mutex;
+    let dir = std::path::PathBuf::from(std::env::var_os("KODRIK_TUI_FIXTURE").unwrap());
+    let state = Arc::new(Mutex::new(snapshot()));
+    if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-history-error") {
+        state.lock().unwrap().previous_cursor = Some("server-session:1".into());
+    }
+    async fn socket(mut ws: WebSocket) {
+        let hello = ws.recv().await.unwrap().unwrap();
+        let bytes = match hello {
+            WsMessage::Binary(b) => b.to_vec(),
+            WsMessage::Text(s) => s.as_bytes().to_vec(),
+            _ => panic!("hello"),
+        };
+        let hello: ClientFrame = decode_frame(&bytes).unwrap();
+        std::fs::write("last-hello", serde_json::to_vec(&hello).unwrap()).unwrap();
+        let environment = EnvironmentKey {
+            connection_id: uuid::Uuid::new_v4(),
+            generation: uuid::Uuid::new_v4(),
+        };
+        ws.send(WsMessage::Binary(
+            encode_frame(&ServerFrame::Welcome {
+                environment: environment.clone(),
+                heartbeat_seconds: 5,
+                lease_seconds: 15,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        while let Some(Ok(frame)) = ws.recv().await {
+            if let WsMessage::Binary(bytes) = frame {
+                match decode_frame::<ClientFrame>(&bytes).unwrap() {
+                    ClientFrame::Heartbeat { .. } => {
+                        if ws
+                            .send(WsMessage::Binary(
+                                encode_frame(&ServerFrame::HeartbeatAck {
+                                    environment: environment.clone(),
+                                })
+                                .unwrap()
+                                .into(),
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    ClientFrame::Close { .. } => {
+                        std::fs::write("local-detached", b"1").unwrap();
+                        break;
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
+    async fn command(
+        State(state): State<Arc<Mutex<RemoteChatSnapshot>>>,
+        Json(command): Json<ChatCommand>,
+    ) -> axum::response::Response {
+        if matches!(&command,ChatCommand::Send{text,..} if text=="slow") {
+            std::fs::write("slow-request", b"1").unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        let mut view = state.lock().unwrap();
+        view.revision += 1;
+        let value = match command {
+            ChatCommand::Send { text, request_id } => {
+                view.messages.push(json!({"id":"server-session:2","role":"assistant","parts":[{"type":"text","text":format!("remote echo: {text}")}]}));
+                if text == "uncertain" {
+                    use std::io::Write;
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("admitted")
+                            .unwrap(),
+                        "{request_id}"
+                    )
+                    .unwrap();
+                    return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                json!({"queued":true})
+            }
+            ChatCommand::SubmissionStatus { request_id } => {
+                let admitted = std::fs::read_to_string("admitted").unwrap_or_default();
+                if admitted.lines().any(|line| line == request_id.to_string()) {
+                    json!({"status":"Done","session_id":"server-session"})
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ChatCommand::Stop => {
+                view.run = Some(json!({"busy":false,"phase":"Cancelled"}));
+                serde_json::Value::Null
+            }
+            ChatCommand::New => {
+                assert!(
+                    std::path::Path::new("local-detached").exists(),
+                    "New dispatched before detach"
+                );
+                json!({"id":"new-session"})
+            }
+            ChatCommand::Select { session_id } => {
+                std::fs::write("selected-session", session_id.as_str()).unwrap();
+                json!({"id":session_id})
+            }
+            ChatCommand::SelectVersion {
+                session_id,
+                user_turn,
+            } => {
+                assert_eq!(user_turn, 0);
+                std::fs::write("selected-version", session_id.as_str()).unwrap();
+                json!({"id":session_id})
+            }
+            ChatCommand::DecideApproval { approval_id, allow } => {
+                assert_eq!(approval_id, "approval");
+                std::fs::write(
+                    "approval-decision",
+                    if allow { "allowed" } else { "denied" },
+                )
+                .unwrap();
+                view.run.as_mut().unwrap()["command_approvals"] = json!([]);
+                serde_json::Value::Null
+            }
+            ChatCommand::TrustApproval { approval_id } => {
+                assert_eq!(approval_id, "approval");
+                std::fs::write("approval-decision", "trusted").unwrap();
+                view.run.as_mut().unwrap()["command_approvals"] = json!([]);
+                serde_json::Value::Null
+            }
+            ChatCommand::Edit { text, .. } => {
+                if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-edit-success") {
+                    std::fs::write("edited-text", text).unwrap();
+                    return Json(json!({"id":"edited-branch"})).into_response();
+                }
+                return (
+                    axum::http::StatusCode::CONFLICT,
+                    Json(json!({"error":"fixture edit denied"})),
+                )
+                    .into_response();
+            }
+            _ => serde_json::Value::Null,
+        };
+        Json(value).into_response()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    if std::env::var("KODRIK_TUI_CASE").is_ok_and(|case| case.starts_with("remote-approval")) {
+        state.lock().unwrap().run.as_mut().unwrap()["command_approvals"] = json!([{"id":"approval","run_id":"run","call_id":"call","cmd":"echo hi","workdir":null,"reason":"ask","reason_code":""}]);
+    }
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route(
+            "/api/remote/chat/sessions",
+            get(|| async { Json(json!([{"id":"server-session","title":"server conversation"}])) }),
+        )
+        .route(
+            "/api/remote/chat/sessions/{id}",
+            get(
+                |RoutePath(id): RoutePath<String>,
+                 axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >,
+                 State(state): State<Arc<Mutex<RemoteChatSnapshot>>>| async move {
+                    if query.contains_key("cursor") {
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let mut view = state.lock().unwrap().clone();
+                    view.session_id = SessionId::new(id);
+                    Json(view).into_response()
+                },
+            ),
+        )
+        .route("/api/remote/chat/sessions/{id}/commands", post(command))
+        .route(
+            "/api/remote/chat/sessions/{id}/events",
+            get(
+                |State(state): State<Arc<Mutex<RemoteChatSnapshot>>>| async move {
+                    let data = serde_json::to_string(&*state.lock().unwrap()).unwrap();
+                    (
+                        [("content-type", "text/event-stream")],
+                        format!("data: {data}\n\n"),
+                    )
+                        .into_response()
+                },
+            ),
+        )
+        .route(
+            "/api/remote/environment",
+            get(|ws: WebSocketUpgrade| async move {
+                if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-failed-attach") {
+                    return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                ws.on_upgrade(socket)
+            }),
+        )
+        .with_state(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    std::env::set_current_dir(&dir).unwrap();
+    let config = RemoteConfig {
+        server: format!("http://{address}/").parse().unwrap(),
+        credential_file: dir.join("remote/device.json"),
+        label: "fixture".into(),
+        allow_shell: false,
+        skill_roots: vec![],
+        mcp: Default::default(),
+        optional_mcp: vec![],
+    };
+    Credential {
+        device_id: uuid::Uuid::new_v4(),
+        token: "fixture".into(),
+    }
+    .save(&config.credential_file)
+    .unwrap();
+    let environment = crate::remote::local::LocalEnvironment::open(&config, &dir)
+        .await
+        .unwrap();
+    config
+        .authorize_manifest(&environment.manifest().unwrap(), || Ok(true))
+        .unwrap();
+    environment.close().await.unwrap();
+    remote::run(&config).await.unwrap();
+    std::fs::write(dir.join("remote-clean-exit"), b"1").unwrap();
+    println!("remote-clean-exit");
+    server.abort();
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_pty_loads_server_history_sends_steers_stops_and_exits_without_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"hello\r");
+    terminal.wait_for(b"remote echo: hello", 0);
+    terminal.send(b"steering\r");
+    terminal.wait_for(b"remote echo: steering", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"\x03");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("remote-clean-exit").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "remote TUI did not clean up"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_switch_revokes_old_binding_and_never_silently_attaches_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"/attach yes\r");
+    terminal.wait_for(b"Local environment attached", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/new\r");
+    terminal.wait_for(b"Local access is detached", 0);
+    assert!(dir.path().join("local-detached").exists());
+    let hello: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("last-hello")).unwrap()).unwrap();
+    assert_eq!(hello["session_id"], "server-session");
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+fn wait_clean_exit(dir: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.join("remote-clean-exit").exists() {
+        assert!(std::time::Instant::now() < deadline, "cleanup timed out");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_environment_attachment_keeps_server_chat_and_terminal_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-failed-attach");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"/attach yes\r");
+    terminal.wait_for(b"Remote action not confirmed", 0);
+    terminal.send(b"still online\r");
+    terminal.wait_for(b"remote echo: still online", 0);
+    terminal.send(b"\x03");
+    wait_clean_exit(dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_remote_edit_preserves_editor_and_original_draft() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"original draft");
+    terminal.send(b"\x1b[27u\x1b[27u");
+    terminal.wait_for(b"Enter", 0);
+    terminal.send(b"\r");
+    terminal.send(b" edited\r");
+    terminal.wait_for(b"Remote action not confirmed", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"original draft", 0);
+    terminal.send(b"\x03\x03");
+    wait_clean_exit(dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn lost_send_response_checks_original_id_without_resubmitting_effect() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"uncertain\r");
+    terminal.wait_for(b"Remote action not confirmed", 0);
+    terminal.send(b"\x03/retry\r");
+    terminal.wait_for(b"Original input confirmed", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("admitted"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    terminal.send(b"\x03");
+    wait_clean_exit(dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_approval_keyboard_sends_server_decision() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote-approval");
+    terminal.wait_for(b"echo hi", 0);
+    terminal.send(b"\r");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("approval-decision").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "approval decision not dispatched"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("approval-decision")).unwrap(),
+        "allowed"
+    );
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_session_picker_and_version_navigation_use_server_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"server conversation", 0);
+    terminal.send(b"\r");
+    terminal.wait_for(b"Local access is detached", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-session")).unwrap(),
+        "server-session"
+    );
+    terminal.send(b"\x1b[27u\x1b[27u");
+    terminal.wait_for(b"versions", 0);
+    terminal.send(b"\x1b[C");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("selected-version").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "version command not dispatched"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-version")).unwrap(),
+        "branch"
+    );
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[test]
+fn remote_audit_rejects_ignored_session_or_approval_arguments() {
+    assert!(remote::audit_mode("/audit trusted unrelated approval").is_err());
+    assert_eq!(remote::audit_mode("/audit ask").unwrap().code(), "ask");
+}
+
+#[test]
+fn observer_refresh_keeps_loaded_scrollback_for_the_same_history_revision() {
+    let mut current = snapshot();
+    current.messages.insert(0,json!({"id":"older","role":"user","user_turn":0,"parts":[{"type":"text","text":"older question"}]}));
+    current.previous_cursor = None;
+    let latest = snapshot();
+    let merged = remote::with_scrollback(&current, latest);
+    assert_eq!(merged.messages[0]["id"], "older");
+    assert_eq!(merged.messages.len(), 3);
+    assert_eq!(merged.previous_cursor, None);
+    let mut changed = snapshot();
+    changed.revision += 1;
+    let replaced = remote::with_scrollback(&current, changed);
+    assert_eq!(replaced.messages.len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_trust_shortcut_is_tied_to_displayed_approval_not_generic_mode_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-approval-trust");
+    terminal.wait_for(b"echo hi", 0);
+    terminal.send(b"jj\r");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("approval-decision").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "guarded trust not dispatched"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("approval-decision")).unwrap(),
+        "trusted"
+    );
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn history_failure_after_attach_still_closes_environment_on_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-history-error");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"/attach yes\r");
+    terminal.wait_for(b"Local environment attached", 0);
+    terminal.send(b"/older\r");
+    terminal.wait_for(b"Remote action not confirmed", 0);
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+    assert!(dir.path().join("local-detached").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_copy_uses_laptop_terminal_clipboard_without_server_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"draft");
+    terminal.wait_for(b"draft", 0);
+    terminal.send(b"\x1b[<0;4;22M\x1b[<32;8;22M\x1b[<0;8;22m");
+    terminal.wait_for(b"\x1b]52;", 0);
+    terminal.wait_for(b"Copy requested from terminal", 0);
+    // Ctrl+C first clears the draft, just as in standalone TUI.
+    terminal.send(b"\x03\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_local_controls_never_become_model_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"/audit\r");
+    terminal.wait_for(b"Tool mode", 0);
+    terminal.send(b"\x1b[27u");
+    terminal.send(b"/audit status\r");
+    terminal.wait_for(b"Current server tool mode", 0);
+    terminal.send(b"/language en\r");
+    terminal.wait_for(b"Interface language: English", 0);
+    terminal.send(b"/attach no\r");
+    terminal.wait_for(b"Unknown remote command", 0);
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn successful_remote_edit_selects_server_branch_and_stays_detached() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-edit-success");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"\x1b[27u\x1b[27u");
+    terminal.wait_for(b"versions", 0);
+    terminal.send(b"\r\x05 changed\r");
+    terminal.wait_for(b"Local access is detached", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-session")).unwrap(),
+        "edited-branch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("edited-text")).unwrap(),
+        "server question changed"
+    );
+    assert!(!dir.path().join("last-hello").exists());
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn exit_during_unanswered_http_request_closes_local_binding_promptly() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"/attach yes\r");
+    terminal.wait_for(b"Local environment attached", 0);
+    terminal.send(b"slow\r");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !dir.path().join("slow-request").exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+    assert!(dir.path().join("local-detached").exists());
+}
+
+#[test]
+fn old_observer_cannot_reset_revision_after_same_session_selection() {
+    assert!(!remote::current_observer(2, 1));
+    assert!(remote::current_observer(2, 2));
+}

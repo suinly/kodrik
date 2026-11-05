@@ -89,11 +89,13 @@ pub(crate) struct RemoteClient {
     socket: Option<Socket>,
     device: uuid::Uuid,
     binding: Option<(EnvironmentKey, SessionId)>,
+    chat: ChatClient,
 }
 impl RemoteClient {
     pub(crate) async fn connect(config: &RemoteConfig) -> anyhow::Result<Self> {
         let url = endpoint(&config.server)?;
         let credential = Credential::load(&config.credential_file)?;
+        let chat = ChatClient::new(config)?;
         let mut request = url.as_str().into_client_request()?;
         request.headers_mut().insert(
             "Authorization",
@@ -114,7 +116,11 @@ impl RemoteClient {
             socket: Some(socket),
             device: credential.device_id,
             binding: None,
+            chat,
         })
+    }
+    pub(crate) fn chat(&self) -> ChatClient {
+        self.chat.clone()
     }
     pub(crate) async fn attach(
         &mut self,
@@ -168,14 +174,26 @@ impl RemoteClient {
         &mut self,
         environment: Arc<LocalEnvironment>,
     ) -> anyhow::Result<()> {
+        let (_keep_open, stop) = tokio::sync::oneshot::channel();
+        self.serve_local_until(environment, stop).await
+    }
+    pub(crate) async fn serve_local_until(
+        &mut self,
+        environment: Arc<LocalEnvironment>,
+        stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         let mut guard = EnvironmentGuard(Some(environment.clone()));
-        let result = self.serve_inner(environment.clone()).await;
+        let result = self.serve_inner(environment.clone(), stop).await;
         self.binding = None;
         let cleanup = environment.close().await;
         guard.0.take();
         result.and(cleanup)
     }
-    async fn serve_inner(&mut self, environment: Arc<LocalEnvironment>) -> anyhow::Result<()> {
+    async fn serve_inner(
+        &mut self,
+        environment: Arc<LocalEnvironment>,
+        mut stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
         let (key, session) = self.binding.clone().context("Client not attached")?;
         environment
             .attach(self.device, key.clone(), session.clone())
@@ -186,11 +204,15 @@ impl RemoteClient {
         let mut jobs = tokio::task::JoinSet::new();
         let writer = tokio::spawn(async move {
             while let Some(frame) = queue.recv().await {
+                let closing = matches!(frame, ClientFrame::Close { .. });
                 tokio::time::timeout(
                     Duration::from_secs(2),
                     sink.send(Message::Binary(encode_frame(&frame)?.into())),
                 )
                 .await??;
+                if closing {
+                    break;
+                }
             }
             Ok::<_, anyhow::Error>(())
         });
@@ -211,6 +233,12 @@ impl RemoteClient {
                 }
                 tokio::select! {
                     biased;
+                    _=&mut stop=>{
+                        environment.stop_admission()?;
+                        tokio::time::timeout(Duration::from_secs(2),outgoing.send(ClientFrame::Close{environment:key.clone()})).await??;
+                        tokio::time::timeout(Duration::from_secs(3),&mut writer.0).await???;
+                        return Ok(());
+                    },
                     result=&mut writer.0=>{result??;anyhow::bail!("Remote writer closed");},
                     _=check.tick()=>ensure!(clock.live(),"Remote lease expired or suspend detected"),
                     _=heartbeat.tick()=>{ensure!(clock.live(),"Remote lease expired");outgoing.try_send(ClientFrame::Heartbeat{environment:key.clone()})?;},
@@ -356,3 +384,252 @@ pub(crate) fn endpoint(url: &reqwest::Url) -> anyhow::Result<reqwest::Url> {
         .map_err(|_| anyhow::anyhow!("Invalid WebSocket URL"))?;
     Ok(endpoint)
 }
+
+#[derive(Clone)]
+pub(crate) struct ChatClient {
+    http: reqwest::Client,
+    base: reqwest::Url,
+}
+
+// The gateway budgets history at 1 MiB; leave room for snapshot metadata and SSE framing.
+const MAX_CHAT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_COMMAND_BYTES: usize = 64 * 1024;
+
+impl ChatClient {
+    pub(crate) fn new(config: &RemoteConfig) -> anyhow::Result<Self> {
+        endpoint(&config.server)?;
+        let credential = Credential::load(&config.credential_file)?;
+        let mut authorization: reqwest::header::HeaderValue =
+            format!("Bearer {}", credential.token)
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid device token"))?;
+        authorization.set_sensitive(true);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::AUTHORIZATION, authorization);
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .default_headers(headers)
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .connect_timeout(LEASE)
+                .read_timeout(Duration::from_secs(30))
+                .build()
+                .map_err(|_| anyhow::anyhow!("Cannot initialize remote chat client"))?,
+            base: config.server.clone(),
+        })
+    }
+
+    fn url(
+        &self,
+        session: Option<&SessionId>,
+        suffix: Option<&str>,
+    ) -> anyhow::Result<reqwest::Url> {
+        let mut url = self.base.join("api/remote/chat/sessions")?;
+        if let Some(session) = session {
+            ensure!(
+                !session.as_str().is_empty()
+                    && !matches!(session.as_str(), "." | "..")
+                    && session.as_str().len() <= 1024,
+                "Invalid remote session ID"
+            );
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Invalid remote chat URL"))?;
+            path.push(session.as_str());
+            if let Some(suffix) = suffix {
+                path.push(suffix);
+            }
+        }
+        Ok(url)
+    }
+
+    async fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> anyhow::Result<T> {
+        let response = chat_response(request.timeout(LEASE)).await?;
+        ensure!(
+            response
+                .content_length()
+                .is_none_or(|size| size <= MAX_CHAT_BYTES as u64),
+            "Remote chat response exceeds limit"
+        );
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| anyhow::anyhow!("Remote chat response interrupted"))?;
+            ensure!(
+                chunk.len() <= MAX_CHAT_BYTES - bytes.len(),
+                "Remote chat response exceeds limit"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid remote chat response"))
+    }
+
+    pub(crate) async fn snapshot(&self, session: &SessionId) -> anyhow::Result<RemoteChatSnapshot> {
+        let snapshot = self
+            .json(self.http.get(self.url(Some(session), None)?))
+            .await?;
+        checked_snapshot(snapshot, session)
+    }
+
+    pub(crate) async fn sessions(&self) -> anyhow::Result<serde_json::Value> {
+        self.json(self.http.get(self.url(None, None)?)).await
+    }
+
+    pub(crate) async fn command(
+        &self,
+        session: &SessionId,
+        command: ChatCommand,
+    ) -> anyhow::Result<serde_json::Value> {
+        let bytes =
+            serde_json::to_vec(&command).map_err(|_| anyhow::anyhow!("Invalid remote command"))?;
+        ensure!(
+            bytes.len() <= MAX_COMMAND_BYTES,
+            "Remote command exceeds limit"
+        );
+        // Never retry here: the caller retains request_id to resolve an uncertain send/edit.
+        self.json(
+            self.http
+                .post(self.url(Some(session), Some("commands"))?)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(bytes),
+        )
+        .await
+        .context("Remote command may have been applied; do not blindly retry; retain request_id")
+    }
+
+    pub(crate) async fn history(
+        &self,
+        session: &SessionId,
+        cursor: &str,
+    ) -> anyhow::Result<RemoteChatSnapshot> {
+        ensure!(cursor.len() <= 4096, "Remote history cursor exceeds limit");
+        let request = self
+            .http
+            .get(self.url(Some(session), None)?)
+            .query(&[("cursor", cursor)]);
+        checked_snapshot(self.json(request).await?, session)
+    }
+
+    pub(crate) async fn observe(
+        &self,
+        session: &SessionId,
+        tx: tokio::sync::mpsc::Sender<RemoteChatSnapshot>,
+    ) -> anyhow::Result<()> {
+        let response = tokio::select! {
+            biased;
+            _ = tx.closed() => return Ok(()),
+            response = chat_response(self.http.get(self.url(Some(session), Some("events"))?)
+                .header(reqwest::header::ACCEPT, "text/event-stream")) => response?,
+        };
+        ensure!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(';').next())
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream")),
+            "Invalid remote chat event content type"
+        );
+        let mut stream = response.bytes_stream();
+        let mut parser = ChatEvents::default();
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = tx.closed() => return Ok(()),
+                chunk = stream.next() => chunk.context("Remote chat event stream closed; resynchronize snapshot")?
+                    .map_err(|_| anyhow::anyhow!("Remote chat event stream interrupted; resynchronize snapshot"))?,
+            };
+            for byte in chunk {
+                if let Some(snapshot) = parser.push(byte)? {
+                    if tx.send(checked_snapshot(snapshot, session)?).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn chat_response(request: reqwest::RequestBuilder) -> anyhow::Result<reqwest::Response> {
+    let response = request
+        .send()
+        .await
+        .map_err(|_| anyhow::anyhow!("Remote chat request failed"))?;
+    ensure!(
+        response.status().is_success(),
+        "Remote chat request denied ({})",
+        response.status()
+    );
+    Ok(response)
+}
+
+fn checked_snapshot(
+    snapshot: RemoteChatSnapshot,
+    session: &SessionId,
+) -> anyhow::Result<RemoteChatSnapshot> {
+    ensure!(
+        &snapshot.session_id == session,
+        "Remote chat snapshot session mismatch"
+    );
+    Ok(snapshot)
+}
+
+// Native events use only data fields; other SSE fields/comments do not carry state.
+#[derive(Default)]
+struct ChatEvents {
+    line: Vec<u8>,
+    data: Vec<u8>,
+    skip_lf: bool,
+    started: bool,
+}
+
+impl ChatEvents {
+    fn push(&mut self, byte: u8) -> anyhow::Result<Option<RemoteChatSnapshot>> {
+        if std::mem::take(&mut self.skip_lf) && byte == b'\n' {
+            return Ok(None);
+        }
+        if !matches!(byte, b'\r' | b'\n') {
+            ensure!(
+                self.line.len() + self.data.len() < MAX_CHAT_BYTES,
+                "Remote chat event exceeds limit"
+            );
+            self.line.push(byte);
+            return Ok(None);
+        }
+        self.skip_lf = byte == b'\r';
+        let mut line = std::str::from_utf8(&self.line)
+            .map_err(|_| anyhow::anyhow!("Invalid remote chat event UTF-8"))?;
+        if !self.started {
+            line = line.strip_prefix('\u{feff}').unwrap_or(line);
+            self.started = true;
+        }
+        let snapshot = if line.is_empty() && !self.data.is_empty() {
+            self.data.pop(); // SSE joins data lines with LF and drops the final LF.
+            let snapshot = serde_json::from_slice(&self.data)
+                .map_err(|_| anyhow::anyhow!("Invalid remote chat event snapshot"))?;
+            self.data.clear();
+            Some(snapshot)
+        } else {
+            let (field, value) = line.split_once(':').unwrap_or((line, ""));
+            if field == "data" {
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                ensure!(
+                    self.data.len() + value.len() < MAX_CHAT_BYTES,
+                    "Remote chat event exceeds limit"
+                );
+                self.data.extend_from_slice(value.as_bytes());
+                self.data.push(b'\n');
+            }
+            None
+        };
+        self.line.clear();
+        Ok(snapshot)
+    }
+}
+
+#[cfg(test)]
+#[path = "chat_client_tests.rs"]
+mod chat_client_tests;

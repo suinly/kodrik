@@ -63,6 +63,10 @@ impl std::fmt::Display for GenerationSuperseded {
 impl std::error::Error for GenerationSuperseded {}
 
 impl Agent {
+    pub(crate) fn model_identity(&self) -> String {
+        self.llm.identity()
+    }
+
     pub(crate) fn child_agent(&self) -> Self {
         let mut agent = self.clone();
         agent.subagents = None;

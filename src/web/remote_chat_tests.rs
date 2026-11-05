@@ -11,6 +11,10 @@ use crate::{
 struct Echo;
 #[async_trait::async_trait]
 impl crate::agent::llm::LlmProvider for Echo {
+    fn identity(&self) -> String {
+        "test-provider:server-model".into()
+    }
+
     async fn generate(
         &self,
         context: &crate::agent::LlmContext<'_>,
@@ -85,6 +89,144 @@ async fn native_snapshot_reads_shared_history_without_private_snapshots() {
 }
 
 #[tokio::test]
+async fn native_snapshot_reports_server_provider_identity() {
+    let (_dir, chat, _state, id) = fixture().await;
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    assert_eq!(snapshot.run.unwrap()["model"], "test-provider:server-model");
+}
+
+#[tokio::test]
+async fn native_trust_stale_approval_does_not_change_audit_mode() {
+    use crate::agent::command_audit::CommandAuditMode;
+    let (_dir, chat, _state, id) = fixture().await;
+    chat.sessions
+        .set_command_audit_mode(id.as_str(), CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    let command = serde_json::from_value(json!({
+        "kind":"trust_approval", "approval_id":"stale-approval"
+    }))
+    .unwrap();
+    assert!(chat.remote_command(&id, command).await.is_err());
+    assert_eq!(
+        chat.sessions.command_audit_mode(id.as_str()).await.unwrap(),
+        CommandAuditMode::Ask
+    );
+}
+
+#[tokio::test]
+async fn native_submission_status_is_null_for_unknown_request() {
+    let (_dir, chat, _state, id) = fixture().await;
+    let status = chat
+        .remote_command(
+            &id,
+            ChatCommand::SubmissionStatus {
+                request_id: uuid::Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, Value::Null);
+}
+
+#[tokio::test]
+async fn native_submission_status_finds_send_retries_without_exposing_content() {
+    let (_dir, chat, _state, uuid_id) = fixture().await;
+    let legacy_id = SessionId::new("telegram:1234");
+    chat.sessions
+        .save(&Session::new(legacy_id.clone()))
+        .await
+        .unwrap();
+    for id in [uuid_id, legacy_id] {
+        let request_id = uuid::Uuid::new_v4();
+        let command = ChatCommand::Send {
+            request_id,
+            text: "original private input with secret-token".into(),
+        };
+        let first = chat.remote_command(&id, command.clone()).await.unwrap();
+        let retry = chat.remote_command(&id, command).await.unwrap();
+        assert_eq!(first["submission_id"], retry["submission_id"]);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while chat.sessions.session_busy(id.as_str()).await.unwrap()
+                || chat.runs.lock().await.contains(id.as_str())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let status = chat
+            .remote_command(&id, ChatCommand::SubmissionStatus { request_id })
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            json!({"status":"Done","session_id":id.as_str()}),
+            "status must expose only metadata for {}",
+            id.as_str()
+        );
+        let session = chat.sessions.load(&id).await.unwrap().unwrap();
+        assert_eq!(
+            session.messages().iter().filter(|message| matches!(message,
+                Message::User(user) if user.content == "original private input with secret-token"
+            )).count(),
+            1
+        );
+        assert!(session.messages().iter().any(|message| matches!(message,
+            Message::Assistant(reply) if reply.content.contains("echo original private input")
+        )));
+    }
+}
+
+#[tokio::test]
+async fn native_snapshot_projects_compaction_from_durable_run_view() {
+    use crate::agent::run_state::{Checkpoint, RunPhase};
+    let (_dir, chat, _state, id) = fixture().await;
+    let session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let mut checkpoint = Checkpoint::new(&chat.sessions, &id, &session);
+    checkpoint
+        .save(&session, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    let run_id = checkpoint.record.id.clone();
+    let job = json!({
+        "id":"compact-test", "run_id":run_id, "conversation_id":id.as_str(),
+        "status":"preparing", "snapshot":{
+            "session":session, "through":1, "history_tokens":123,
+            "threshold":100, "model_identity":"test-provider:server-model"
+        },
+        "candidate":null, "error":null, "model_calls":1,
+        "known_input_tokens":123, "unknown_calls":0
+    });
+    let session_id = id.as_str().to_owned();
+    chat.sessions
+        .with_connection(move |db| {
+            db.execute(
+                "INSERT INTO compaction_jobs VALUES(?1,'compact-test',?2,'preparing',?3)",
+                rusqlite::params![session_id, run_id, serde_json::to_vec(&job)?],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    let compaction = &snapshot.run.as_ref().unwrap()["compaction"];
+    assert_eq!(compaction["status"], "preparing");
+    assert_eq!(compaction["model"], "test-provider:server-model");
+    assert_eq!(compaction["input_tokens"], 123);
+    assert!(compaction.get("snapshot").is_none());
+}
+
+#[test]
+fn native_group_truncation_preserves_absolute_user_turn() {
+    let mut row = json!({"id":"session:30", "role":"user", "user_turn":15,
+        "parts":(0..8).map(|_| json!({"type":"text","text":"x".repeat(10000)})).collect::<Vec<_>>()});
+    service::project_group(&mut row, "session");
+    assert_eq!(row["parts"][0]["truncated"], true);
+    assert_eq!(row["user_turn"], 15);
+}
+
+#[tokio::test]
 async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
     let (_dir, chat, _state, id) = fixture().await;
     let request_id = uuid::Uuid::new_v4();
@@ -149,6 +291,21 @@ async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
     })
     .await
     .unwrap();
+    let edit_status = chat
+        .remote_command(&id, ChatCommand::SubmissionStatus { request_id })
+        .await
+        .unwrap();
+    assert_eq!(
+        edit_status,
+        json!({"status":"Done","session_id":branch.as_str()})
+    );
+    assert_eq!(
+        chat.remote_command(&branch, ChatCommand::SubmissionStatus { request_id })
+            .await
+            .unwrap(),
+        edit_status,
+        "edit status must also resolve on its own branch"
+    );
     let snapshot = chat.remote_snapshot(&branch).await.unwrap();
     assert!(
         snapshot
@@ -172,6 +329,13 @@ async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
         .save(&Session::new(unrelated.clone()))
         .await
         .unwrap();
+    assert_eq!(
+        chat.remote_command(&unrelated, ChatCommand::SubmissionStatus { request_id })
+            .await
+            .unwrap(),
+        Value::Null,
+        "an unrelated conversation must not reveal an edit submission"
+    );
     assert!(
         chat.remote_command(
             &id,
@@ -370,6 +534,38 @@ async fn native_history_bounds_preserve_tool_groups_and_durable_content() {
     let cursor = snapshot.previous_cursor.unwrap();
     let previous = chat.remote_history(&id, &cursor).await.unwrap();
     assert_ne!(previous.previous_cursor, Some(cursor));
+    for row in snapshot
+        .messages
+        .iter()
+        .chain(&previous.messages)
+        .filter(|row| row["role"] == "user")
+    {
+        let text = row["parts"][0]["text"].as_str().unwrap();
+        let expected = if text == "from telegram" {
+            0
+        } else {
+            text.strip_prefix("user ")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+                + 1
+        };
+        assert_eq!(row["user_turn"], expected, "wrong absolute turn for {text}");
+    }
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .rev()
+            .find(|row| row["role"] == "user")
+            .unwrap()["user_turn"],
+        220
+    );
+    let mut oldest = previous;
+    while let Some(cursor) = oldest.previous_cursor.clone() {
+        oldest = chat.remote_history(&id, &cursor).await.unwrap();
+    }
+    assert_eq!(oldest.messages[0]["user_turn"], 0);
     let text = serde_json::to_string(&snapshot.messages).unwrap();
     assert!(text.contains("truncated"));
     assert!(text.contains("/api/remote/chat/sessions/"));

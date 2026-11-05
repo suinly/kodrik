@@ -38,6 +38,10 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
+    pub(crate) fn model_identity(&self) -> String {
+        self.agent.model_identity()
+    }
+
     pub(crate) fn environments(&self) -> Option<&Arc<crate::remote::service::EnvironmentService>> {
         self.environments.get()
     }

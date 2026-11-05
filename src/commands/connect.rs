@@ -20,12 +20,12 @@ pub async fn run(path: Option<&Path>) -> anyhow::Result<()> {
 }
 
 pub async fn remote_tui(path: Option<&Path>) -> anyhow::Result<()> {
-    let _config = config(path)?;
+    let config = config(path)?;
     ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         "Remote TUI requires an interactive terminal"
     );
-    anyhow::bail!("Remote TUI event loop is not yet available")
+    super::tui::remote::run(&config).await
 }
 
 pub(crate) fn authorize(
