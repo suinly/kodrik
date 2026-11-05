@@ -23,6 +23,7 @@ pub struct App {
     pub versions: HashMap<usize, crate::agent::session::branches::MessageVersions>,
     pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
+    pub plan: Option<String>,
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
     pub shown_approvals: HashMap<String, String>,
@@ -237,16 +238,17 @@ impl App {
     }
 
     pub fn update_plan(&mut self, plan: crate::agent::tools::TaskPlan) {
+        if plan.plan.is_empty() {
+            self.plan = None;
+            return;
+        }
         let content = plan.render();
         let content = if self.language == Language::Ru {
             content.replacen("Plan ·", "План ·", 1)
         } else {
             content
         };
-        self.messages.push(AppMessage {
-            role: AppMessageRole::Plan,
-            content,
-        });
+        self.plan = Some(content);
     }
 
     pub fn push_kodrik_message(&mut self, content: String) {
@@ -448,7 +450,6 @@ pub struct AppMessage {
 pub enum AppMessageRole {
     Kodrik,
     User,
-    Plan,
     Approval,
     Tool(ToolState),
 }

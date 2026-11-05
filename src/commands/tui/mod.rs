@@ -713,6 +713,7 @@ async fn select_message_version(
 
 fn restore_history(app: &mut App, session: &Session) {
     app.session = Some(session.id().clone());
+    app.plan = None;
     let mut plan_calls = std::collections::HashMap::new();
     for message in session.messages() {
         match message {
@@ -733,6 +734,7 @@ fn restore_history(app: &mut App, session: &Session) {
             }
             Message::ToolResult(result) => {
                 if result.content.output.get("error").is_none()
+                    && result.content.output.get("interrupted").is_none()
                     && let Some(arguments) = plan_calls.remove(&result.call_id)
                     && let Ok(plan) = crate::agent::tools::TaskPlan::parse(arguments)
                 {
@@ -759,6 +761,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     restore_history(&mut saved, session);
     let source_changed = app.session != saved.session;
     if !source_changed
+        && app.plan == saved.plan
         && app.messages.len() == saved.messages.len()
         && app
             .messages
@@ -786,6 +789,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
         app.compaction_progress = None;
     }
     app.messages = saved.messages;
+    app.plan = saved.plan;
     app.session = saved.session;
     if let Some(turn) = selected_turn.filter(|_| !source_changed) {
         app.navigation.selected = app
@@ -919,6 +923,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.compacting = false;
             app.compaction_progress = None;
             app.view = Default::default();
+            app.plan = None;
             let boundary = app
                 .messages
                 .iter()
@@ -1416,7 +1421,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(app.messages[2].content, "План · 0/1\n○ Original model text");
+        assert_eq!(
+            app.plan.as_deref(),
+            Some("План · 0/1\n○ Original model text")
+        );
     }
 
     #[test]
@@ -1565,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_updates_append_new_messages() {
+    fn plan_updates_do_not_append_history_messages() {
         let mut app = App::default();
         for status in ["in_progress", "completed"] {
             if status == "completed" {
@@ -1593,12 +1601,95 @@ mod tests {
                 },
             );
         }
-        assert_eq!(app.messages.len(), 3);
-        assert_eq!(app.messages[0].content, "Plan · 0/1\n→ Inspect");
-        assert_eq!(app.messages[1].content, "Inspection finished");
-        assert_eq!(app.messages[2].content, "Plan · 1/1\n✓ Inspect");
-        assert!(matches!(app.messages[0].role, AppMessageRole::Plan));
-        assert!(matches!(app.messages[2].role, AppMessageRole::Plan));
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].content, "Inspection finished");
+        assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+    }
+
+    #[test]
+    fn plan_refresh_restores_latest_successful_update_without_history_changes() {
+        use crate::agent::message::{ToolCall, ToolResult};
+        let mut session = Session::new(SessionId::new("plan-history"));
+        let mut app = App::default();
+        app.input = "unfinished draft".into();
+        for (id, status, output, expected) in [
+            (
+                "1",
+                "pending",
+                serde_json::json!("Plan updated"),
+                "Plan · 0/1\n○ Inspect",
+            ),
+            (
+                "2",
+                "completed",
+                serde_json::json!("Plan updated"),
+                "Plan · 1/1\n✓ Inspect",
+            ),
+            (
+                "3",
+                "pending",
+                serde_json::json!({"error": "failed"}),
+                "Plan · 1/1\n✓ Inspect",
+            ),
+            (
+                "4",
+                "pending",
+                serde_json::json!({"interrupted": true}),
+                "Plan · 1/1\n✓ Inspect",
+            ),
+        ] {
+            session.push(Message::ToolCall(ToolCall {
+                call_id: id.into(),
+                name: "update_plan".into(),
+                arguments: serde_json::json!({"plan": [{"step": "Inspect", "status": status}]}),
+            }));
+            session.push(Message::ToolResult(ToolResult {
+                call_id: id.into(),
+                content: output.into(),
+            }));
+            assert!(refresh_history(&mut app, &session));
+            assert_eq!(app.plan.as_deref(), Some(expected));
+            assert_eq!(
+                app.messages.len(),
+                match id {
+                    "3" => 1,
+                    "4" => 2,
+                    _ => 0,
+                }
+            );
+            assert_eq!(app.input, "unfinished draft");
+            assert!(!refresh_history(&mut app, &session));
+        }
+        let mut restored = App::default();
+        restore_history(&mut restored, &session);
+        assert_eq!(restored.plan, app.plan);
+        assert!(refresh_history(
+            &mut app,
+            &Session::new(SessionId::new("empty"))
+        ));
+        assert!(app.plan.is_none());
+    }
+
+    #[test]
+    fn session_change_and_reset_clear_the_pinned_plan() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [{"step": "Inspect", "status": "pending"}]
+            }))
+            .unwrap(),
+        );
+        show_progress(
+            &mut app,
+            AgentEvent::SessionChanged {
+                session_id: SessionId::new("new"),
+                previous_user_messages: 0,
+            },
+        );
+        assert!(app.plan.is_none());
+        app.plan = Some("Old plan".into());
+        reset_session(&mut app);
+        assert!(app.plan.is_none());
     }
 
     #[test]

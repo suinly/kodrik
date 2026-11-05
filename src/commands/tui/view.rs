@@ -257,7 +257,7 @@ impl View {
         picker: bool,
     ) {
         let resized = self.area != area;
-        if resized || self.picker != picker {
+        if resized || self.history_height != height || self.picker != picker {
             self.clear_selection();
         }
         let width_changed = self.cached_width != area.width;
@@ -630,6 +630,28 @@ mod tests {
     }
 
     #[test]
+    fn changing_plan_height_clears_selection_instead_of_restoring_an_old_footer() {
+        let mut app = App::default();
+        app.push_kodrik_message("alpha beta".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let from = find(&terminal, "alpha");
+        select(&mut app, from, (from.0 + 5, from.1));
+        assert!(app.view.selection_id().is_some());
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [{"step": "Inspect", "status": "pending"}]
+            }))
+            .unwrap(),
+        );
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(app.view.selection_id().is_none());
+        find(&terminal, "Plan · 0/1");
+        find(&terminal, "Inspect");
+        find(&terminal, "Ready");
+    }
+
+    #[test]
     #[ignore = "Local selection rendering profile; run explicitly with --ignored --nocapture"]
     fn selection_render_profile() {
         for width in [160, 320] {
@@ -727,7 +749,7 @@ mod tests {
         for width in [10, 11, 12, 15, 20, 40] {
             let mut app = App::default();
             app.messages.push(AppMessage {
-                role: AppMessageRole::Plan,
+                role: AppMessageRole::Approval,
                 content: content.into(),
             });
             let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();

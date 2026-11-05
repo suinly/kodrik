@@ -72,7 +72,6 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
     let area = buf.area;
     let (icon, color, bg) = match message.role {
         AppMessageRole::User => (">", USER_TEXT_COLOR, Color::Rgb(54, 58, 79)),
-        AppMessageRole::Plan => ("☷", Color::Cyan, Color::default()),
         AppMessageRole::Approval => ("!", Color::Yellow, Color::default()),
         AppMessageRole::Kodrik => ("●", Color::White, Color::default()),
         AppMessageRole::Tool(ToolState::Running) => ("○", Color::Yellow, Color::default()),
@@ -150,9 +149,30 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         input_rows.len().min(6) as u16
     };
     let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
-    let history_height = area
-        .height
-        .saturating_sub(VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3);
+    let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
+    let plan_width = area.width.saturating_sub(3).max(1);
+    let available_plan_height = area.height.saturating_sub(footer_height + 1);
+    let mut plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
+        .style(Style::default().fg(Color::Cyan))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    if plan.line_count(plan_width) > usize::from(available_plan_height)
+        && let Some(content) = &app.plan
+    {
+        let heading = content.lines().next().unwrap_or_default();
+        let current = content.lines().find(|line| line.starts_with("→ "));
+        plan = Paragraph::new(
+            current.map_or_else(|| heading.to_owned(), |step| format!("{heading} · {step}")),
+        )
+        .style(Style::default().fg(Color::Cyan))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    }
+    let plan_height = if app.plan.is_some() {
+        plan.line_count(plan_width)
+            .min(usize::from(available_plan_height)) as u16
+    } else {
+        0
+    };
+    let history_height = area.height.saturating_sub(footer_height + plan_height);
     app.view
         .prepare(&app.messages, area, history_height, &mut app.scroll, false);
     if let Some(index) = app.navigation.focus.take() {
@@ -169,11 +189,22 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
+            Constraint::Length(plan_height),
             Constraint::Length(command_height),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
         .split(footer);
+    frame.render_widget(
+        plan,
+        Rect::new(
+            layout[0].x.saturating_add(3),
+            layout[0].y,
+            layout[0].width.saturating_sub(3),
+            layout[0].height,
+        ),
+    );
+    let layout = &layout[1..];
 
     let (input, input_color) = if app.navigation.selected.is_some() {
         (
@@ -584,8 +615,6 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
                 })
                 .collect::<Vec<_>>(),
         )
-    } else if matches!(message.role, AppMessageRole::Plan) {
-        ratatui::text::Text::from(source)
     } else {
         super::markdown::render(&source, matches!(message.role, AppMessageRole::User))
     }
@@ -1075,25 +1104,117 @@ mod tests {
     }
 
     #[test]
-    fn plan_preserves_separate_lines() {
+    fn plan_stays_above_status_when_history_grows_and_scrolls() {
         let mut app = App::default();
-        app.messages.push(AppMessage {
-            role: AppMessageRole::Plan,
-            content: "Plan · 1/3\n✓ Inspect\n→ Fix\n○ Verify".into(),
-        });
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [
+                    {"step": "Inspect", "status": "completed"},
+                    {"step": "Fix", "status": "in_progress"},
+                    {"step": "Verify", "status": "pending"}
+                ]
+            }))
+            .unwrap(),
+        );
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let rows: Vec<String> = (0..24)
-            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect();
-        let start = rows
-            .iter()
-            .position(|row| row.contains("Plan · 1/3"))
-            .unwrap();
-        for (offset, expected) in ["✓ Inspect", "→ Fix", "○ Verify"].iter().enumerate() {
-            assert_eq!(rows[start + offset + 1].trim(), *expected);
+        for scroll in [0, 15] {
+            for index in 0..30 {
+                app.push_kodrik_message(format!("Output {index}"));
+            }
+            app.scroll = scroll;
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let rows: Vec<String> = (0..24)
+                .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            let status = rows.iter().position(|row| row.contains("Ready")).unwrap();
+            assert_eq!(rows[status - 5].trim(), "Plan · 1/3");
+            for (offset, expected) in ["✓ Inspect", "→ Fix", "○ Verify"].iter().enumerate() {
+                assert_eq!(rows[status - 4 + offset].trim(), *expected);
+            }
         }
+    }
+
+    #[test]
+    fn clearing_plan_restores_history_space_without_moving_input() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [{"step": "Inspect", "status": "pending"}]
+            }))
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let before_cursor = terminal.get_cursor_position().unwrap();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({"plan": []})).unwrap(),
+        );
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert_eq!(terminal.get_cursor_position().unwrap(), before_cursor);
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!text.contains("Plan ·"));
+        assert!(!text.contains("Inspect"));
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn long_plan_wraps_and_keeps_status_and_input_visible_on_small_screens() {
+        let mut app = App::default();
+        app.update_plan(crate::agent::tools::TaskPlan::parse(serde_json::json!({
+            "plan": [{"step": "Inspect the implementation carefully", "status": "in_progress"}],
+            "explanation": "A long explanation that must not displace the input or status".repeat(30)
+        })).unwrap());
+        for (width, height) in [(24, 16), (80, 24), (1, 1), (3, 3), (8, 5)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            if width >= 24 {
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(text.contains("Ready"));
+                assert!(text.contains(" > "));
+                assert!(text.contains("Plan · 0/1"));
+                assert!(text.contains("implementation"));
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_plan_keeps_the_current_step_visible() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": (0..8).map(|index| serde_json::json!({
+                    "step": format!("Step {index}"),
+                    "status": if index == 7 { "in_progress" } else { "completed" }
+                })).collect::<Vec<_>>()
+            }))
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Plan · 7/8"));
+        assert!(text.contains("→ Step 7"));
+        assert!(text.contains("Ready"));
     }
 
     #[test]
