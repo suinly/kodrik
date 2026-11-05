@@ -8,6 +8,8 @@ pub enum Event {
 pub struct IncomingMessage {
     pub source: MessageSource,
     pub request_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) from_tui: bool,
     // Keep ordinary messages small inside nested runtime futures.
     #[serde(skip)]
     pub(crate) callback: Option<Box<SessionCallback>>,
@@ -41,6 +43,7 @@ impl IncomingMessage {
     ) -> Self {
         Self {
             request_id: uuid::Uuid::new_v4().to_string(),
+            from_tui: false,
             callback: None,
             admission: None,
             source: MessageSource {

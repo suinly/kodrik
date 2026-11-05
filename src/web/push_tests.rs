@@ -298,6 +298,68 @@ async fn push_outbox_commits_only_completed_personal_answers_and_survives_reopen
 }
 
 #[tokio::test]
+async fn completion_push_follows_latest_durable_input_channel() {
+    use crate::{
+        agent::inbox::{BusyMode, SubmissionRequest},
+        gateway::{IncomingMessage, InterfaceId},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (name, channels, expected) in [
+        ("local", vec![("cli", false)], 0),
+        ("remote", vec![("web", true)], 0),
+        ("browser", vec![("web", false)], 1),
+        ("remote-to-web", vec![("web", true), ("web", false)], 1),
+        ("web-to-remote", vec![("web", false), ("web", true)], 0),
+    ] {
+        let id = SessionId::new(name);
+        let mut session = Session::new(id.clone());
+        let mut cp = Checkpoint::new(&store, &id, &session);
+        for (interface, from_tui) in channels {
+            let mut message = IncomingMessage::new(InterfaceId(interface.into()), name, "question");
+            message.from_tui = from_tui;
+            let input = store
+                .submit(SubmissionRequest::new(&id, message, BusyMode::Steer))
+                .await
+                .unwrap();
+            cp.record.submission_ids.push(input.id);
+            session.push(Message::User(UserMessage {
+                content: "question".into(),
+                images: vec![],
+                files: vec![],
+            }));
+            cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+        }
+        session.push(Message::Assistant(AssistantMessage {
+            content: "answer".into(),
+        }));
+        cp.save(&session, RunPhase::Completed, None).await.unwrap();
+        let session_id = name.to_owned();
+        let count: i64 = store
+            .with_connection(move |db| {
+                Ok(db.query_row(
+                    "SELECT count(*) FROM web_push_queue WHERE session_id=?1",
+                    [session_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(count, expected, "{name}");
+    }
+}
+
+#[tokio::test]
 async fn push_outbox_includes_explicit_web_messages_once_and_ignores_history_on_subscribe() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open_async(dir.path().into())

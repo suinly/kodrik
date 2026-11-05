@@ -429,6 +429,7 @@ pub(super) async fn edit_message(
             &input.text,
         );
         message.request_id = input.request_id.clone();
+        message.from_tui = !select_in_browser;
         message.files = user.files.clone();
         message.images = user.images.clone();
         let mut request =

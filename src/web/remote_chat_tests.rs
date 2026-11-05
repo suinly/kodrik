@@ -329,6 +329,90 @@ async fn native_submission_status_is_null_for_unknown_request() {
 }
 
 #[tokio::test]
+async fn native_replies_and_edits_do_not_queue_web_completion_pushes() {
+    let (_dir, chat, _state, id) = fixture().await;
+    chat.sessions
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_push_subscriptions VALUES('device','hash','{}','ru')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for command in [
+        ChatCommand::Send {
+            request_id: uuid::Uuid::new_v4(),
+            text: "from remote TUI".into(),
+        },
+        ChatCommand::Edit {
+            request_id: uuid::Uuid::new_v4(),
+            user_turn: 0,
+            text: "edited from remote TUI".into(),
+        },
+    ] {
+        let target = match &command {
+            ChatCommand::Edit { request_id, .. } => SessionId::new(request_id.to_string()),
+            _ => id.clone(),
+        };
+        chat.remote_command(&id, command).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while chat.sessions.session_busy(target.as_str()).await.unwrap()
+                || chat.runs.lock().await.contains(target.as_str())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let session = chat.sessions.load(&target).await.unwrap().unwrap();
+        assert!(matches!(
+            session.messages().last(),
+            Some(Message::Assistant(_))
+        ));
+        let queued: i64 = chat
+            .sessions
+            .with_connection(|db| {
+                Ok(db.query_row("SELECT count(*) FROM web_push_queue", [], |row| row.get(0))?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued, 0, "TUI replies must not notify web subscribers");
+    }
+    // The same conversation must still notify for a subsequent browser message.
+    admit_message(
+        chat.clone(),
+        Input {
+            id: id.as_str().into(),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            text: "from browser".into(),
+        },
+        vec![],
+        false,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while chat.sessions.session_busy(id.as_str()).await.unwrap()
+            || chat.runs.lock().await.contains(id.as_str())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let queued: i64 = chat
+        .sessions
+        .with_connection(|db| {
+            Ok(db.query_row("SELECT count(*) FROM web_push_queue", [], |row| row.get(0))?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued, 1, "browser replies must still notify");
+}
+
+#[tokio::test]
 async fn native_submission_status_finds_send_retries_without_exposing_content() {
     let (_dir, chat, _state, uuid_id) = fixture().await;
     let legacy_id = SessionId::new("telegram:1234");

@@ -789,7 +789,7 @@ async fn admit(
     uploads: Vec<super::chat_upload::Upload>,
 ) -> Result<Response, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
-    admit_message(chat, input, uploads)
+    admit_message(chat, input, uploads, false)
         .await
         .map(|value| Json(value).into_response())
 }
@@ -798,6 +798,7 @@ async fn admit_message(
     chat: Chat,
     input: Input,
     uploads: Vec<super::chat_upload::Upload>,
+    from_tui: bool,
 ) -> Result<Value, Response> {
     if (input.text.trim().is_empty() && uploads.is_empty()) || input.text.len() > 32 * 1024 {
         return Err(error(
@@ -837,6 +838,7 @@ async fn admit_message(
         &input.text,
     );
     message.request_id = input.request_id.clone();
+    message.from_tui = from_tui;
     let directory = chat.attachment_directory.join(&input.id);
     let mut attachments = tokio::task::spawn_blocking(move || {
         super::chat_upload::Attachments::save(&directory, uploads)

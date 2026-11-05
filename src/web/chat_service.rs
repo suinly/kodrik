@@ -414,7 +414,7 @@ impl Chat {
                     request_id: request_id.to_string(),
                     text,
                 };
-                tokio::spawn(admit_message(self.clone(), input, vec![]))
+                tokio::spawn(admit_message(self.clone(), input, vec![], true))
                     .await
                     .map_err(|e| internal(e.into()))?
             }
