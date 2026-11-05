@@ -155,6 +155,145 @@ async fn selected_text_attachments_require_original_request_and_read_file_descri
 }
 
 #[tokio::test]
+async fn owner_migration_preserves_remote_evidence_and_server_attachment_references() {
+    let (_source, store, device, call) =
+        fixture_with_args(json!({"path":"notes.txt","save_attachment":true})).await;
+    let mut manifest = manifest();
+    manifest.tools[0].kind = ToolKind::ReadFile;
+    store
+        .remote_binding(
+            device,
+            call.environment.clone(),
+            call.session_id.clone(),
+            manifest,
+        )
+        .await
+        .unwrap();
+    store.remote_intent(device, call.clone()).await.unwrap();
+    store.remote_dispatch(device, call.clone()).await.unwrap();
+    let mut done = receipt(&call, OperationState::Completed);
+    done.result = Some(json!({"text":"retained migration output"}).into());
+    store.remote_receipt(device, done.clone()).await.unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    drop(store);
+    crate::agent::session::stage_personal_sessions(&[_source.path().into()], destination.path())
+        .unwrap();
+    let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            migrated
+                .remote_operation(&call.run_id, &call.call_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(Some(done)).unwrap()
+    );
+    let file = migrated
+        .with_connection(|db| {
+            Ok(
+                db.query_row("SELECT payload FROM remote_tool_attachments", [], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    let file: crate::agent::FileAttachment = serde_json::from_slice(&file).unwrap();
+    assert_eq!(file.bytes().await.unwrap(), b"retained migration output");
+}
+
+#[tokio::test]
+async fn selected_text_uses_a_safe_download_name_for_valid_unix_paths() {
+    for (path, expected) in [
+        ("line\nbreak.txt".to_owned(), "selected.txt"),
+        (format!("{}.txt", "a".repeat(256)), "selected.txt"),
+        ("/project/.env".to_owned(), ".env"),
+    ] {
+        let (_dir, store, device, call) =
+            fixture_with_args(json!({"path":path,"save_attachment":true})).await;
+        let mut manifest = manifest();
+        manifest.tools[0].kind = ToolKind::ReadFile;
+        store
+            .remote_binding(
+                device,
+                call.environment.clone(),
+                call.session_id.clone(),
+                manifest,
+            )
+            .await
+            .unwrap();
+        store.remote_intent(device, call.clone()).await.unwrap();
+        store.remote_dispatch(device, call.clone()).await.unwrap();
+        let mut done = receipt(&call, OperationState::Completed);
+        done.result = Some(json!({"text":"selected"}).into());
+        store.remote_receipt(device, done).await.unwrap();
+        let file = store
+            .with_connection(|db| {
+                Ok(
+                    db.query_row("SELECT payload FROM remote_tool_attachments", [], |row| {
+                        row.get::<_, Vec<u8>>(0)
+                    })?,
+                )
+            })
+            .await
+            .unwrap();
+        let file: crate::agent::FileAttachment = serde_json::from_slice(&file).unwrap();
+        assert_eq!(file.filename, expected);
+        assert_eq!(file.bytes().await.unwrap(), b"selected");
+    }
+}
+
+#[tokio::test]
+async fn v12_upgrade_adds_attachment_registry_without_changing_remote_evidence() {
+    let (dir, store, device, call) = fixture().await;
+    bind(&store, device, &call).await;
+    let saved = store.remote_intent(device, call.clone()).await.unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(dir.path().join("state.sqlite3")).unwrap();
+    db.execute_batch("DROP TABLE remote_tool_attachments; PRAGMA user_version=12;")
+        .unwrap();
+    drop(db);
+    let store = SqliteSessionStore::open_async(dir.path().into())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(
+            store
+                .remote_operation(&call.run_id, &call.call_id)
+                .await
+                .unwrap()
+        )
+        .unwrap(),
+        serde_json::to_value(Some(saved)).unwrap()
+    );
+    store
+        .with_connection(|db| {
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
+                13
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM remote_tool_attachments", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+                0
+            );
+            assert_eq!(
+                db.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))?,
+                "ok"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(store);
+    SqliteSessionStore::open_async(dir.path().into())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn intent_requires_provenance_and_claims_dispatch_only_once() {
     let (_dir, store, device, call) = fixture().await;
     assert!(store.remote_intent(device, call.clone()).await.is_err());

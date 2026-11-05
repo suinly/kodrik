@@ -83,18 +83,20 @@ fn save_selected_text(
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or("selected.txt");
-    let filename =
-        if crate::agent::file::file_type(filename, Some("text/plain")).is_ok_and(|mime| {
+    let filename = if !filename.is_empty()
+        && filename.len() <= 255
+        && !filename.chars().any(char::is_control)
+        && crate::agent::file::file_type(filename, Some("text/plain")).is_ok_and(|mime| {
             mime.starts_with("text/")
                 || matches!(
                     mime,
                     "application/json" | "application/javascript" | "application/xml"
                 )
         }) {
-            filename.to_owned()
-        } else {
-            "selected.txt".into()
-        };
+        filename.to_owned()
+    } else {
+        "selected.txt".into()
+    };
     let file = crate::agent::FileAttachment::save(
         directory,
         &filename,

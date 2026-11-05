@@ -113,6 +113,22 @@ Installed user skills stay outside the repository in `~/.kodrik/skills/`. There 
 no download installer or catalog reload within an existing session. This implements the basic directory format from the
 [Agent Skills specification](https://agentskills.io/specification).
 
+## Temporary laptop skills
+
+[Remote TUI](remote-tui.md) can expose selected `skill_roots` and the laptop
+project's `AGENTS.md` to one explicitly attached server conversation. This is a
+temporary live catalog, not installation into the server's skills directory or
+replacement of its saved catalog. Same-name skills remain distinct by origin
+and full path. Resource reads and scripts use laptop tools, not matching server
+paths. Full skill text is read on demand; it can reach the server/model and
+remain in history after detachment without retaining authority.
+
+Changed skill or project-instruction contents invalidate the live catalog;
+detach and explicitly attach again to refresh it. Selecting or creating another
+conversation does not transfer access. Disconnect removes the active layer and
+local tools. Local HTTP MCP is selected separately in `remote.toml`; there is
+no remote stdio MCP support. Shell/MCP privileges are not a folder sandbox.
+
 ## Vision
 
 Local image inspection and Telegram photos are documented in [Images and vision](vision.md).

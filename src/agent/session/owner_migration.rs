@@ -64,6 +64,31 @@ pub(crate) fn stage_personal_sessions(
             if version >= 6 {
                 merge_table(&snapshot, &tx, "compaction_jobs", &["session_id"], 5)?;
             }
+            if version >= 12 {
+                merge_table(
+                    &snapshot,
+                    &tx,
+                    "remote_bindings",
+                    &["connection_id", "generation"],
+                    5,
+                )?;
+                merge_table(
+                    &snapshot,
+                    &tx,
+                    "remote_operations",
+                    &["run_id", "call_id"],
+                    6,
+                )?;
+            }
+            if version >= 13 {
+                merge_table(
+                    &snapshot,
+                    &tx,
+                    "remote_tool_attachments",
+                    &["run_id", "call_id"],
+                    3,
+                )?;
+            }
             if version >= 7 {
                 for (table, keys, columns) in [
                     ("web_push_subscriptions", &["endpoint"][..], 4),

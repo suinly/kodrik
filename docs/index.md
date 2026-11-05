@@ -24,6 +24,7 @@ The terminal UI and one-shot CLI share the owner's state. Each Telegram chat has
 | Create a persistent page or dashboard | [Web pages](web-pages.md) |
 | Show native tables, metrics and charts inside chat | [UI documents](ui-documents.md) |
 | Talk to the agent in a browser | [Web chat](web-chat.md) |
+| Connect a laptop to the server agent with temporary local access | [Remote TUI](remote-tui.md) |
 | Switch between English and Russian | [Interface languages](languages.md) |
 | Find state files or back them up | [Storage and backups](storage.md) |
 | Update, rebuild or restart Kodrik | [Updating and running Kodrik](operations.md) |

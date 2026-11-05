@@ -8,6 +8,8 @@ substitute `./target/release/kodrik`.
 | Command | Behavior |
 | --- | --- |
 | `kodrik` | Open the terminal UI |
+| `kodrik connect [--remote-config /path/to/remote.toml]` | Pair a device through the owner's server web profile |
+| `kodrik --remote [--remote-config /path/to/remote.toml]` | Open server chat with laptop access initially detached |
 | `kodrik ask "prompt"` | Run a one-shot conversation and save it on success |
 | `kodrik gateway` | Run Telegram gateways, daily initiative and the enabled web server |
 | `kodrik web set-password` | Set the owner web password interactively and revoke web sessions |
@@ -32,8 +34,19 @@ choice. See [Interface languages](languages.md) for detection and saved preferen
 
 ## Terminal UI
 
-Each running TUI reserves its own conversation slot, so `/sessions`, `/new` and
-message-version switches do not change another instance's selection. Saved
+The following slot/recovery behavior describes standalone TUI. Remote TUI uses
+server history and no local agent; `--remote` conflicts with `--tui-slot` and
+subcommands, including `ask`. See [Remote TUI](remote-tui.md) for setup and limits.
+Its `/attach` discloses access and `/attach yes` explicitly grants it; `/detach`
+revokes it without closing the server conversation. Selection, `/new`, message
+editing and version switching detach the old binding first, with no automatic
+transfer. `/retry` resolves unconfirmed input by its original request ID, and
+`/older` loads earlier server history. Reconnecting history does not reattach or
+resume local work. Remote TUI has no attachment uploader; saved attachment
+references are viewed in server history.
+
+Each running standalone TUI reserves its own conversation slot, so `/sessions`,
+`/new` and message-version switches do not change another instance's selection. Saved
 conversations remain shared. Slots are reused after exit, preserving their last
 selected session and interrupted requests for recovery. The first available slot
 is used on launch; a slot is not tied to a particular terminal window or directory.

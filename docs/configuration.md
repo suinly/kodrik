@@ -1,6 +1,7 @@
 # Configuration reference
 
-Kodrik reads `~/.kodrik/config.toml`. Restart the process after changing it.
+Standalone Kodrik and the gateway read `~/.kodrik/config.toml`. Restart the
+process after changing it.
 Settings are literal TOML values; environment-variable interpolation is not
 implemented. Keep API keys and bot tokens out of the repository.
 
@@ -17,6 +18,17 @@ api_key = "your-key"
 
 `provider.primary` and the `gateway` table are required. An empty gateway table
 allows terminal use without Telegram.
+
+## Remote client configuration
+
+`kodrik connect` and `kodrik --remote` instead read `~/.kodrik/remote.toml` (or
+`--remote-config /path/to/remote.toml`), without loading a local provider or
+gateway. Its top-level fields are `server`, `credential_file`, `label`,
+`allow_shell`, `skill_roots` and `optional_mcp`, plus selected `[mcp.<name>]`
+HTTP providers. Unknown fields are rejected; do not copy `[provider]` or
+`[gateway]` into it. Paths are literal, and relative credential/skill paths
+resolve from that file's directory. See [Remote TUI](remote-tui.md#configure-and-pair)
+for the complete example, defaults, owner pairing/revocation and HTTPS rules.
 
 ## Providers
 
@@ -286,6 +298,12 @@ compaction and restarts, and are inherited by delegated agents. Existing session
 keep their saved instructions, including sessions created before `AGENTS.md`
 support. Use `/new` after adding, editing or removing the file to load the current
 version. Project instructions do not grant extra tool permissions.
+
+For an attached [remote TUI](remote-tui.md#local-skills-mcp-and-data-disclosure),
+the laptop project's `AGENTS.md` is a separate temporary layer (UTF-8, up to
+64 KiB), not the server launch directory's saved instructions. Changes invalidate
+that live catalog and require explicit detach/reattach; `/new` alone does not
+transfer local access. Selected local skills behave the same way.
 
 Edit `SOUL.md` in the current [space directory](storage.md#chat-spaces) to change personality, then start a fresh session.
 The file is created once and preserved on later starts.

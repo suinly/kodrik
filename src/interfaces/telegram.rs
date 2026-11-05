@@ -1306,6 +1306,49 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
+    impl TelegramInterface {
+        pub(crate) async fn private_fixture_input(
+            root: &std::path::Path,
+            chat: i64,
+            sender: u64,
+            text: &str,
+        ) -> Option<crate::gateway::IncomingMessage> {
+            static NEXT_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut interface =
+                Self::new("e2e", "123:fixture", root.join("attachments")).with_access(root.into());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            interface.bot = interface.bot.set_api_url(
+                format!("http://{}", listener.local_addr().unwrap())
+                    .parse()
+                    .unwrap(),
+            );
+            let raw = json!({
+                "update_id":id,
+                "message":{"message_id":id,"date":0,
+                    "chat":{"id":chat,"type":"private","first_name":"Fixture"},
+                    "from":{"id":sender,"is_bot":false,"first_name":"Fixture"},
+                    "text":text}
+            });
+            let update = IncomingUpdate::from_raw(&raw).unwrap();
+            let (tx, mut events) = mpsc::channel(1);
+            // Plain text admission must not need a Telegram API call.
+            tokio::select! {
+                result = interface.process_updates(futures::stream::iter([Ok(update)]), tx, "FixtureBot") => result.unwrap(),
+                _ = listener.accept() => panic!("text admission unexpectedly called Telegram API"),
+            }
+            let message = events.recv().await.map(|event| {
+                let Event::Message(message) = event;
+                message
+            });
+            assert!(
+                events.recv().await.is_none(),
+                "single Telegram update produced extra events"
+            );
+            message
+        }
+    }
+
     #[tokio::test]
     async fn invited_guest_retries_only_after_a_definite_delivery_rejection() {
         for (status, code) in [("400 Bad Request", 400), ("500 Internal Server Error", 500)] {

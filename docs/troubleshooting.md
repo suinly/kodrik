@@ -2,11 +2,45 @@
 
 ## Startup or configuration fails
 
-Check `~/.kodrik/config.toml`, even if you started Kodrik from a different
-directory. The file needs `[gateway]` (which may be empty) and
-`[provider.primary]`. TOML strings containing `${VARIABLE}` are not expanded.
+For standalone/gateway mode, check `~/.kodrik/config.toml`, even if you started
+Kodrik from a different directory. The file needs `[gateway]` (which may be
+empty) and `[provider.primary]`. TOML strings containing `${VARIABLE}` are not expanded.
 Validate companion timezone, hour values and paired recipient fields against
 the [configuration reference](configuration.md).
+
+## Remote TUI cannot connect or use the laptop
+
+- Check `~/.kodrik/remote.toml` or the explicit `--remote-config`, not the local
+  provider configuration. Use a trailing-slash HTTPS base URL (HTTP only on
+  loopback), without credentials/query/fragment. For a proxy prefix, retain the
+  prefix and forward API, SSE and WebSocket routes without redirects.
+- Pair with `kodrik connect`; compare the request UUID/code in the owner's web
+  profile within five minutes. Device credentials expire after 30 days. Revoke
+  an old device in **Device connections**, explicitly remove its credential,
+  then pair again. Never share the credential or retry an uncertain token
+  response blindly. The credential must be a private regular file; its parent
+  directory must also be private and not a symlink.
+- Initial launch, `/new`, selection, edits and version switches leave local
+  access detached. Check the session and project with `/attach`, then use
+  `/attach yes` and approve any new manifest disclosure. Only the owner's same
+  personal conversation can use it from web/Telegram, not guests or groups.
+- After network loss or sleep, chat observation may reconnect but local access
+  does not. Heartbeats are 5 seconds; the lease is 15 seconds. Explicitly attach
+  again for a fresh generation, inspect uncertain effects, then send a new
+  message. A paused run does not automatically resume or replay commands.
+- Use `/retry` for unconfirmed sent/edited input, not a duplicate new message.
+  This checks its original submission ID, not a tool's external outcome.
+- A changed skill or project `AGENTS.md` requires detach/reattach. Required HTTP
+  MCP failure blocks attachment; an explicitly optional MCP can be omitted with
+  a warning. stdio MCP and remote `ask` are unsupported.
+- Preserve `~/.kodrik/remote/` receipts when journal/storage errors occur; do not
+  delete evidence to force a replay. Cleanup is best effort, not rollback. A
+  disconnected local file cannot be fetched from its laptop path; only saved
+  server attachments remain downloadable in Web Chat. Remote TUI cannot upload
+  attachments itself.
+
+See [Remote TUI](remote-tui.md) for configuration, data disclosure, backups and
+the unverified real two-machine/sleep acceptance scenario.
 
 ## Provider rejects requests or images
 

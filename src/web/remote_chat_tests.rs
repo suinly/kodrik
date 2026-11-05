@@ -89,6 +89,205 @@ async fn native_snapshot_reads_shared_history_without_private_snapshots() {
 }
 
 #[tokio::test]
+async fn native_large_pending_approval_preserves_controls_and_exact_arguments() {
+    use crate::agent::{
+        command_audit::CommandAuditMode,
+        run_state::{Checkpoint, RunPhase},
+    };
+    use crate::remote::protocol::{EnvironmentKey, EnvironmentManifest, ToolDescriptor, ToolKind};
+    let (_dir, chat, _state, id) = fixture().await;
+    let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let key = EnvironmentKey {
+        connection_id: uuid::Uuid::new_v4(),
+        generation: uuid::Uuid::new_v4(),
+    };
+    let descriptor = ToolDescriptor {
+        id: "apply_patch".into(),
+        kind: ToolKind::Patch,
+        description: "Patch".into(),
+        parameters: json!({"type":"object"}),
+        deferred: false,
+    };
+    let name = crate::remote::tools::alias(&key, &descriptor);
+    chat.sessions
+        .remote_binding(
+            uuid::Uuid::new_v4(),
+            key.clone(),
+            id.clone(),
+            EnvironmentManifest {
+                label: "Review laptop".into(),
+                project_root: "/laptop-only".into(),
+                tools: vec![descriptor],
+                skills: vec![],
+                project_instructions: None,
+                warnings: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let arguments = json!({"patch":format!("*** Begin Patch\n{}\n*** End Patch", "private-line\n".repeat(4000))});
+    let call = ToolCall {
+        call_id: "large-patch".into(),
+        name,
+        arguments: arguments.clone(),
+    };
+    session.push(Message::ToolCall(call.clone()));
+    let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+    cp.record.pending_calls = vec![call.clone()];
+    cp.save(
+        &session,
+        RunPhase::NeedTool {
+            call_id: call.call_id.clone(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    chat.sessions
+        .set_command_audit_mode(id.as_str(), CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    chat.sessions
+        .record_command_audits(&cp.record, &[(call, "ask".into())])
+        .await
+        .unwrap();
+    let pending = chat
+        .sessions
+        .pending_command_approvals(id.as_str())
+        .await
+        .unwrap();
+    let view = chat.remote_snapshot(&id).await.unwrap();
+    let run = view.run.unwrap();
+    assert_eq!(run["busy"], true);
+    assert_eq!(run["command_audit_mode"], "ask");
+    assert_eq!(run["command_approvals"][0]["id"], pending[0].id);
+    assert_eq!(
+        run["command_approvals"][0]["target"]["environment"],
+        json!(key)
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(
+            run["command_approvals"][0]["arguments_json"]
+                .as_str()
+                .unwrap()
+        )
+        .unwrap(),
+        arguments
+    );
+    assert!(serde_json::to_vec(&run).unwrap().len() < 512 * 1024);
+    chat.remote_command(
+        &id,
+        ChatCommand::DecideApproval {
+            approval_id: pending[0].id.clone(),
+            allow: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        chat.sessions
+            .pending_command_approvals(id.as_str())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn native_oversized_approval_is_explicit_and_never_partial() {
+    use crate::agent::{
+        command_audit::CommandAuditMode,
+        run_state::{Checkpoint, RunPhase},
+    };
+    let (_dir, chat, _state, id) = fixture().await;
+    let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let call = ToolCall {
+        call_id: "oversize".into(),
+        name: "apply_patch".into(),
+        arguments: json!({"patch":"x".repeat(600*1024)}),
+    };
+    session.push(Message::ToolCall(call.clone()));
+    let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+    cp.record.pending_calls = vec![call.clone()];
+    cp.save(
+        &session,
+        RunPhase::NeedTool {
+            call_id: call.call_id.clone(),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    chat.sessions
+        .set_command_audit_mode(id.as_str(), CommandAuditMode::Ask)
+        .await
+        .unwrap();
+    chat.sessions
+        .record_command_audits(&cp.record, &[(call, "ask".into())])
+        .await
+        .unwrap();
+    let approval = chat
+        .sessions
+        .pending_command_approvals(id.as_str())
+        .await
+        .unwrap()
+        .remove(0);
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    let run = snapshot.run.as_ref().unwrap();
+    assert_eq!(run["busy"], true);
+    assert_eq!(run["pending_approval_count"], 1);
+    assert_eq!(run["command_approvals"], json!([]));
+    assert_eq!(run["approval_unavailable"]["id"], approval.id);
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() < 2 * 1024 * 1024);
+    chat.remote_command(
+        &id,
+        ChatCommand::DecideApproval {
+            approval_id: approval.id,
+            allow: false,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn native_large_live_output_keeps_busy_phase_and_stop_controls() {
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        run_view::PartialStatus,
+    };
+    let (_dir, chat, _state, id) = fixture().await;
+    let session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
+    cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
+    chat.sessions
+        .save_live(
+            &cp.record.id,
+            cp.record.model_attempts,
+            "long live text".repeat(20000),
+            PartialStatus::Active,
+        )
+        .await
+        .unwrap();
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    let run = snapshot.run.as_ref().unwrap();
+    assert_eq!(run["busy"], true);
+    assert_eq!(run["phase"], "NeedModel");
+    assert_eq!(run["model"], "test-provider:server-model");
+    assert!(serde_json::to_vec(&snapshot).unwrap().len() < 2 * 1024 * 1024);
+    chat.remote_command(&id, ChatCommand::Stop).await.unwrap();
+    assert!(
+        chat.sessions
+            .load_run(&cp.record.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .0
+            .cancel_requested
+    );
+}
+
+#[tokio::test]
 async fn native_snapshot_reports_server_provider_identity() {
     let (_dir, chat, _state, id) = fixture().await;
     let snapshot = chat.remote_snapshot(&id).await.unwrap();

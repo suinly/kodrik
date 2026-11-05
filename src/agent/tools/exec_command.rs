@@ -53,6 +53,16 @@ pub(crate) async fn execute(
     properties: serde_json::Value,
     supervisor: Option<std::sync::Arc<crate::remote::supervisor::Supervisor>>,
 ) -> anyhow::Result<ToolOutput> {
+    execute_until(properties, supervisor, std::future::pending())
+        .await
+        .map(|(output, _)| output)
+}
+
+pub(crate) async fn execute_until(
+    properties: serde_json::Value,
+    supervisor: Option<std::sync::Arc<crate::remote::supervisor::Supervisor>>,
+    stop: impl std::future::Future<Output = ()>,
+) -> anyhow::Result<(ToolOutput, bool)> {
     let args: ExecCommandArgs = serde_json::from_value(properties)?;
     anyhow::ensure!(!args.cmd.trim().is_empty(), "cmd must not be empty");
     let timeout_ms = args.timeout_ms.unwrap_or(30_000);
@@ -111,17 +121,26 @@ pub(crate) async fn execute(
     let mut stdout = child.stdout.take().context("Shell stdout is unavailable")?;
     let mut stderr = child.stderr.take().context("Shell stderr is unavailable")?;
 
-    let result = tokio::time::timeout_at(deadline, async {
+    let collection = tokio::time::timeout_at(deadline, async {
         tokio::try_join!(
             child.wait(),
             read_limited(&mut stdout, &mut stdout_output),
             read_limited(&mut stderr, &mut stderr_output),
         )
-    })
-    .await;
+    });
+    let (result, interrupted) = tokio::select! {
+        result = collection => (Some(result), false),
+        _ = stop => (None, true),
+    };
     let (status, timed_out) = match result {
-        Ok(result) => (result.context("Failed to collect shell output")?.0, false),
-        Err(_) => {
+        Some(Ok(result)) => (result.context("Failed to collect shell output")?.0, false),
+        _ => {
+            if supervisor.is_some() {
+                group
+                    .terminate()
+                    .await
+                    .context("Failed to terminate remote command")?;
+            }
             group.stop().context("Failed to stop timed-out command")?;
             let status = child
                 .wait()
@@ -139,7 +158,7 @@ pub(crate) async fn execute(
             {
                 result.context("Failed to collect timed-out shell output")?;
             }
-            (status, true)
+            (status, !interrupted)
         }
     };
     group
@@ -149,17 +168,20 @@ pub(crate) async fn execute(
     let stdout_path = stdout_output.persist_if_truncated()?;
     let stderr_path = stderr_output.persist_if_truncated()?;
 
-    Ok(serde_json::json!({
-        "stdout": stdout_output.text(),
-        "stdout_path": stdout_path,
-        "stderr_path": stderr_path,
-        "stderr": stderr_output.text(),
-        "exit_code": status.code(),
-        "timed_out": timed_out,
-        "stdout_truncated": stdout_output.truncated,
-        "stderr_truncated": stderr_output.truncated,
-    })
-    .into())
+    Ok((
+        serde_json::json!({
+            "stdout": stdout_output.text(),
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
+            "stderr": stderr_output.text(),
+            "exit_code": status.code(),
+            "timed_out": timed_out,
+            "stdout_truncated": stdout_output.truncated,
+            "stderr_truncated": stderr_output.truncated,
+        })
+        .into(),
+        interrupted,
+    ))
 }
 
 // /bin/sh is Unix-only; kill its group so cancellation also stops descendants.
@@ -169,6 +191,14 @@ struct ProcessGroup {
 }
 
 impl ProcessGroup {
+    async fn terminate(&mut self) -> std::io::Result<()> {
+        if let Some(pid) = self.pid {
+            crate::remote::supervisor::signal_group(pid as u32, libc::SIGTERM)?;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        Ok(())
+    }
+
     fn stop(&mut self) -> std::io::Result<()> {
         if let Some(pid) = self.pid {
             crate::remote::supervisor::signal_group(pid as u32, libc::SIGKILL)?;

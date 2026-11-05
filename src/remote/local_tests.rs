@@ -807,6 +807,102 @@ async fn repeated_cancel_does_not_exhaust_supervisor_registrations() {
     env.close().await.unwrap();
 }
 
+// Killing the future instead of coordinating TERM loses the flush and the two-second grace.
+#[tokio::test]
+async fn remote_shell_cancellation_preserves_term_grace() {
+    for mode in ["cancel", "deadline", "timeout", "close", "abort"] {
+        for ignores_term in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let env = LocalEnvironment::open(&config(dir.path(), true), dir.path())
+                .await
+                .unwrap();
+            let trap = if ignores_term {
+                "trap '' TERM"
+            } else {
+                "trap 'sleep 0.2; echo flushed > flushed; exit 0' TERM"
+            };
+            let mut call = invocation(
+                "exec_command",
+                json!({"cmd":format!("{trap}; echo $$ > started; while :; do sleep 0.05; done"),
+                    "timeout_ms":if mode == "timeout" { 700 } else { 30_000 }}),
+            );
+            if mode == "deadline" {
+                call.deadline = chrono::Utc::now() + chrono::Duration::milliseconds(700);
+            }
+            env.attach(
+                Uuid::new_v4(),
+                call.environment.clone(),
+                call.session_id.clone(),
+            )
+            .await
+            .unwrap();
+            let task = tokio::spawn({
+                let env = env.clone();
+                let call = call.clone();
+                async move { env.execute(call).await }
+            });
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while std::fs::read_to_string(dir.path().join("started"))
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let pid: i32 = std::fs::read_to_string(dir.path().join("started"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let start = std::time::Instant::now();
+            match mode {
+                "cancel" => env.cancel(&call.run_id, &call.call_id).await.unwrap(),
+                "close" => env.close().await.unwrap(),
+                "abort" => {
+                    task.abort();
+                    env.close().await.unwrap();
+                }
+                _ => {}
+            }
+            let receipt = tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap();
+            let elapsed = start.elapsed();
+            env.close().await.unwrap();
+            // SAFETY: query only the shell PID emitted by this owned fixture.
+            assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "shell survived {mode}");
+            if ignores_term {
+                assert!(
+                    elapsed >= Duration::from_millis(1900),
+                    "{mode} skipped TERM grace: {elapsed:?}"
+                );
+            } else {
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("flushed")).unwrap_or_default(),
+                    "flushed\n",
+                    "TERM trap lost for {mode}"
+                );
+            }
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "{mode} cleanup was unbounded"
+            );
+            if mode != "abort" {
+                let receipt = receipt.unwrap().unwrap();
+                if mode == "timeout" {
+                    assert_eq!(receipt.result.unwrap().output["timed_out"], true);
+                } else {
+                    assert_eq!(receipt.state, OperationState::Unknown);
+                    assert!(receipt.result.is_none());
+                }
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn replaced_empty_journal_cannot_reset_deduplication() {
     let dir = tempfile::tempdir().unwrap();

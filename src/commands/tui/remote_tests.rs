@@ -43,6 +43,41 @@ fn server_projection_preserves_draft_versions_tools_and_live_status() {
 }
 
 #[test]
+fn native_controls_remain_usable_with_large_approval_and_unavailable_review() {
+    let mut view = snapshot();
+    let patch = format!("{}final patch marker", "exact private patch\n".repeat(3000));
+    let arguments = serde_json::to_string(&json!({"patch":patch})).unwrap();
+    view.run.as_mut().unwrap()["command_approvals"] = json!([{"id":"large-call","run_id":"run","call_id":"call","tool_name":"apply_patch","arguments_json":arguments,"cmd":"","workdir":null,"reason":"ask","reason_code":"ask"}]);
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    assert!(matches!(app.status, Status::Working));
+    assert_eq!(app.approval.as_ref().unwrap().id, "large-call");
+    assert_eq!(
+        app.approval.as_ref().unwrap().arguments_json.as_deref(),
+        Some(arguments.as_str())
+    );
+    assert!(
+        app.messages
+            .iter()
+            .any(|row| row.role == AppMessageRole::Approval
+                && row.content.contains("exact private patch")
+                && row.content.contains("final patch marker"))
+    );
+    view.run.as_mut().unwrap()["command_approvals"] = json!([]);
+    view.run.as_mut().unwrap()["approval_unavailable"] =
+        json!({"id":"large-call","tool_name":"apply_patch"});
+    remote::project(&mut app, &view).unwrap();
+    assert!(matches!(app.status, Status::Working));
+    assert!(app.approval.is_none());
+    assert!(
+        app.messages
+            .iter()
+            .any(|row| row.content.contains("/deny large-call")
+                && row.content.contains("Allow is unavailable"))
+    );
+}
+
+#[test]
 fn environment_pause_keeps_ui_writable_and_explains_new_message() {
     let mut snapshot = snapshot();
     snapshot.run = Some(
@@ -329,6 +364,7 @@ async fn terminal_remote_fixture() {
                     if allow { "allowed" } else { "denied" },
                 )
                 .unwrap();
+                eprintln!("fixture-approval-decided");
                 view.run.as_mut().unwrap()["command_approvals"] = json!([]);
                 serde_json::Value::Null
             }
@@ -356,6 +392,12 @@ async fn terminal_remote_fixture() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     if std::env::var("KODRIK_TUI_CASE").is_ok_and(|case| case.starts_with("remote-approval")) {
         state.lock().unwrap().run.as_mut().unwrap()["command_approvals"] = json!([{"id":"approval","run_id":"run","call_id":"call","cmd":"echo hi","workdir":null,"reason":"ask","reason_code":""}]);
+    }
+    if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-approval-unavailable") {
+        let mut view = state.lock().unwrap();
+        view.run.as_mut().unwrap()["command_approvals"] = json!([]);
+        view.run.as_mut().unwrap()["approval_unavailable"] =
+            json!({"id":"approval","tool_name":"apply_patch"});
     }
     let address = listener.local_addr().unwrap();
     let app = Router::new()
@@ -539,6 +581,34 @@ fn lost_send_response_checks_original_id_without_resubmitting_effect() {
             .lines()
             .count(),
         1
+    );
+    terminal.send(b"\x03");
+    wait_clean_exit(dir.path());
+}
+
+#[cfg(unix)]
+#[test]
+fn unavailable_remote_approval_cannot_be_allowed_by_typing_its_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-approval-unavailable");
+    terminal.wait_for(b"Allow is unavailable", 0);
+    terminal.send(b"/approve approval\r");
+    terminal.wait_for(b"Remote action not confirmed", 0);
+    assert!(!dir.path().join("approval-decision").exists());
+    terminal.send(b"/deny approval\r");
+    terminal.wait_for(b"fixture-approval-decided", 0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !dir.path().join("approval-decision").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "unreviewable approval could not be rejected"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("approval-decision")).unwrap(),
+        "denied"
     );
     terminal.send(b"\x03");
     wait_clean_exit(dir.path());

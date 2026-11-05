@@ -317,6 +317,7 @@ impl Remote {
             input if input.starts_with("/approve ")||input.starts_with("/deny ")=>{
                 let mut parts=input.split_whitespace();let allow=parts.next()==Some("/approve");let id=parts.next().context("Approval ID required")?;
                 ensure!(parts.next().is_none(),"Unexpected approval arguments");
+                ensure!(!allow || app.approval.as_ref().is_some_and(|approval|approval.id==id),"Review the complete pending approval with /approvals before allowing it");
                 self.chat.command(&self.session,ChatCommand::DecideApproval{approval_id:id.into(),allow}).await?;
             }
             input if input.starts_with("/audit ")=>{
@@ -733,6 +734,10 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         }
     }
     app.approval = approval;
+    if let Some(id) = run["approval_unavailable"]["id"].as_str() {
+        let id = id.escape_debug().to_string();
+        app.push_kodrik_message(format!("Approval {id} exceeds the terminal review limit. Allow is unavailable; review the complete call in Web Chat or reject with /deny {id}."));
+    }
     app.audit_session = Some(snapshot.session_id.clone());
     if run["phase"].get("EnvironmentPaused").is_some() {
         app.push_kodrik_message(app.language.pick("Laptop disconnected. History is saved; send a new message to continue.","Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.").into());

@@ -273,9 +273,11 @@ impl RemoteClient {
                 }
             }
         }.await;
+        // Let admitted operations finish their bounded shutdown before dropping their jobs.
+        let cleanup = environment.close().await;
         jobs.abort_all();
         while jobs.join_next().await.is_some() {}
-        result
+        result.and(cleanup)
     }
 }
 struct EnvironmentGuard(Option<Arc<LocalEnvironment>>);
@@ -633,3 +635,153 @@ impl ChatEvents {
 #[cfg(test)]
 #[path = "chat_client_tests.rs"]
 mod chat_client_tests;
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn client_shutdown_preserves_remote_shell_term_grace() {
+        for mode in ["detach", "transport", "abort"] {
+            for ignores_term in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let config = RemoteConfig {
+                    server: format!("http://{}/", listener.local_addr().unwrap())
+                        .parse()
+                        .unwrap(),
+                    credential_file: dir.path().join("private/device"),
+                    label: "cancel fixture".into(),
+                    allow_shell: true,
+                    skill_roots: vec![],
+                    mcp: HashMap::new(),
+                    optional_mcp: vec![],
+                };
+                Credential {
+                    device_id: uuid::Uuid::new_v4(),
+                    token: "fixture".into(),
+                }
+                .save(&config.credential_file)
+                .unwrap();
+                let env = LocalEnvironment::open(&config, dir.path()).await.unwrap();
+                let key = EnvironmentKey {
+                    connection_id: uuid::Uuid::new_v4(),
+                    generation: uuid::Uuid::new_v4(),
+                };
+                let session = SessionId::new("cancel-fixture");
+                let trap = if ignores_term {
+                    "trap '' TERM"
+                } else {
+                    "trap 'sleep 0.2; echo flushed > flushed; exit 0' TERM"
+                };
+                let call = Invocation {
+                    environment: key.clone(),
+                    session_id: session.clone(),
+                    run_id: "run".into(),
+                    call_id: "call".into(),
+                    tool_id: "exec_command".into(),
+                    arguments: json!({"cmd":format!("{trap}; echo $$ > started; while :; do sleep 0.05; done")}),
+                    deadline: chrono::Utc::now() + chrono::Duration::seconds(60),
+                };
+                let (disconnect, disconnected) = tokio::sync::oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    socket.next().await.unwrap().unwrap();
+                    for frame in [
+                        ServerFrame::Welcome {
+                            environment: key,
+                            heartbeat_seconds: 5,
+                            lease_seconds: 15,
+                        },
+                        ServerFrame::Invoke { invocation: call },
+                    ] {
+                        socket
+                            .send(Message::Binary(encode_frame(&frame).unwrap().into()))
+                            .await
+                            .unwrap();
+                    }
+                    let mut disconnected = disconnected;
+                    loop {
+                        tokio::select! {
+                            _ = &mut disconnected => break,
+                            frame = socket.next() => {
+                                let Some(Ok(frame)) = frame else { break };
+                                if matches!(decode_frame::<ClientFrame>(&frame.into_data()), Ok(ClientFrame::Close { .. })) { break; }
+                            }
+                        }
+                    }
+                });
+                let mut client = RemoteClient::connect(&config).await.unwrap();
+                client
+                    .attach(session, env.manifest().unwrap())
+                    .await
+                    .unwrap();
+                let (stop, stopped) = tokio::sync::oneshot::channel();
+                let task = tokio::spawn({
+                    let env = env.clone();
+                    async move { client.serve_local_until(env, stopped).await }
+                });
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while std::fs::read_to_string(dir.path().join("started"))
+                        .unwrap_or_default()
+                        .trim()
+                        .is_empty()
+                    {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+                let pid: i32 = std::fs::read_to_string(dir.path().join("started"))
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap();
+                let start = std::time::Instant::now();
+                if mode == "detach" {
+                    stop.send(()).unwrap();
+                } else if mode == "transport" {
+                    disconnect.send(()).unwrap();
+                } else {
+                    task.abort();
+                }
+                let result = tokio::time::timeout(Duration::from_secs(5), task)
+                    .await
+                    .unwrap();
+                if mode == "abort" {
+                    assert!(result.unwrap_err().is_cancelled());
+                } else if mode == "detach" {
+                    result.unwrap().unwrap();
+                } else {
+                    assert!(result.unwrap().is_err());
+                }
+                tokio::time::timeout(Duration::from_secs(5), env.close())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let elapsed = start.elapsed();
+                server.await.unwrap();
+                // SAFETY: query only this fixture's shell, never a service process.
+                assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "shell survived {mode}");
+                if ignores_term {
+                    assert!(
+                        elapsed >= Duration::from_millis(1900),
+                        "{mode} skipped TERM grace: {elapsed:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        std::fs::read_to_string(dir.path().join("flushed")).unwrap_or_default(),
+                        "flushed\n",
+                        "TERM trap lost for {mode}"
+                    );
+                }
+                assert!(
+                    elapsed < Duration::from_secs(5),
+                    "{mode} cleanup was unbounded"
+                );
+            }
+        }
+    }
+}

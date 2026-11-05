@@ -24,6 +24,8 @@ pub(crate) mod client;
 #[cfg(test)]
 mod config_tests;
 #[cfg(test)]
+mod end_to_end_tests;
+#[cfg(test)]
 mod protocol_tests;
 #[cfg(test)]
 mod recovery_tests;

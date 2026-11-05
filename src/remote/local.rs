@@ -217,7 +217,8 @@ impl LocalEnvironment {
         self: &Arc<Self>,
         call: Invocation,
     ) -> anyhow::Result<OperationReceipt> {
-        if call.tool_id == "apply_patch" {
+        if matches!(call.tool_id.as_str(), "apply_patch" | "exec_command") {
+            // The admitted operation owns cleanup even if its transport task is dropped.
             let environment = self.clone();
             tokio::spawn(async move { environment.execute_inner(call).await }).await?
         } else {
@@ -359,52 +360,67 @@ impl LocalEnvironment {
         let timeout = (call.deadline - chrono::Utc::now())
             .to_std()
             .unwrap_or_default();
-        let execution = async {
-            match call.tool_id.as_str() {
-                "exec_command" => {
-                    crate::agent::tools::exec_command::execute(
-                        arguments,
-                        Some(self.supervisor.clone()),
-                    )
-                    .await
+        let (result, stopped) = if call.tool_id == "exec_command" {
+            let mut stopped = false;
+            let stop = async {
+                tokio::select! {
+                    _ = cancel.wait_for(|stop| *stop) => {},
+                    _ = tokio::time::sleep(timeout) => {},
                 }
-                "read_file" | "view_image" => {
-                    let path = PathBuf::from(arguments["path"].as_str().context("Path required")?);
-                    let image = call.tool_id == "view_image";
-                    let bytes = self
-                        .read_artifact(
-                            &call.environment,
-                            path.to_str().context("Non-UTF8 path")?,
-                            if image { 10 * 1024 * 1024 } else { 1024 * 1024 },
-                        )
-                        .await?;
-                    if image {
-                        let image = Image::from_bytes(&bytes)?;
-                        Ok(ToolOutput {
-                            output: json!({"path":path,"width":image.width,"height":image.height}),
-                            images: vec![image],
-                        })
-                    } else {
-                        Ok(json!({"path":path,"text":String::from_utf8(bytes)?,"attachment_requested":arguments.get("save_attachment").and_then(Value::as_bool).unwrap_or(false)}).into())
+                stopped = true;
+            };
+            match crate::agent::tools::exec_command::execute_until(
+                arguments,
+                Some(self.supervisor.clone()),
+                stop,
+            )
+            .await
+            {
+                Ok((output, stopped)) => (Ok(output), stopped),
+                Err(error) => (Err(error), stopped),
+            }
+        } else {
+            let execution = async {
+                match call.tool_id.as_str() {
+                    "read_file" | "view_image" => {
+                        let path =
+                            PathBuf::from(arguments["path"].as_str().context("Path required")?);
+                        let image = call.tool_id == "view_image";
+                        let bytes = self
+                            .read_artifact(
+                                &call.environment,
+                                path.to_str().context("Non-UTF8 path")?,
+                                if image { 10 * 1024 * 1024 } else { 1024 * 1024 },
+                            )
+                            .await?;
+                        if image {
+                            let image = Image::from_bytes(&bytes)?;
+                            Ok(ToolOutput {
+                                output: json!({"path":path,"width":image.width,"height":image.height}),
+                                images: vec![image],
+                            })
+                        } else {
+                            Ok(json!({"path":path,"text":String::from_utf8(bytes)?,"attachment_requested":arguments.get("save_attachment").and_then(Value::as_bool).unwrap_or(false)}).into())
+                        }
+                    }
+                    _ => {
+                        self.tools
+                            .get(&call.tool_id)
+                            .context("Unknown local tool")?
+                            .execute(arguments)
+                            .await
                     }
                 }
-                _ => {
-                    self.tools
-                        .get(&call.tool_id)
-                        .context("Unknown local tool")?
-                        .execute(arguments)
-                        .await
+            };
+            // File writes must finish before close returns; cancelling a blocking patch would hide effects.
+            if call.tool_id == "apply_patch" {
+                (execution.await, false)
+            } else {
+                tokio::select! {
+                    result = execution => (result,false),
+                    _ = cancel.wait_for(|stop|*stop) => (Ok(json!({"interrupted":true,"effects":"unknown"}).into()),true),
+                    _ = tokio::time::sleep(timeout) => (Ok(json!({"interrupted":true,"reason":"deadline","effects":"unknown"}).into()),true),
                 }
-            }
-        };
-        // File writes must finish before close returns; cancelling a blocking patch would hide effects.
-        let (result, stopped) = if call.tool_id == "apply_patch" {
-            (execution.await, false)
-        } else {
-            tokio::select! {
-                result = execution => (result,false),
-                _ = cancel.wait_for(|stop|*stop) => (Ok(json!({"interrupted":true,"effects":"unknown"}).into()),true),
-                _ = tokio::time::sleep(timeout) => (Ok(json!({"interrupted":true,"reason":"deadline","effects":"unknown"}).into()),true),
             }
         };
         let mut saved = saved;
@@ -587,8 +603,6 @@ impl LocalEnvironment {
 
     pub(crate) async fn close(&self) -> anyhow::Result<()> {
         self.stop_admission()?;
-        let supervisor = self.supervisor.clone();
-        let cleanup = tokio::task::spawn_blocking(move || supervisor.stop_all()).await;
         loop {
             let finished = self.finished.notified();
             tokio::pin!(finished);
@@ -604,7 +618,8 @@ impl LocalEnvironment {
             }
             finished.await;
         }
-        cleanup??;
+        let supervisor = self.supervisor.clone();
+        tokio::task::spawn_blocking(move || supervisor.stop_all()).await??;
         Ok(())
     }
 }

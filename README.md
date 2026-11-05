@@ -28,6 +28,8 @@ the browser, with personal history, memory and skills shared across interfaces.
   pinned dialogs and message editing that preserves previous conversation branches.
 - Shared personal dialogs in Telegram and the browser, with a Telegram session picker
   and web sign-in through Telegram or the owner password.
+- Optional remote TUI to the server agent with explicitly attached, temporary
+  laptop files, shell, skills and HTTP MCP; access ends when TUI disconnects.
 - Optional daily Telegram initiative based on saved interests and one-shot reminders.
 - Optional web search through self-hosted SearXNG and page reading with local Obscura.
 
@@ -110,6 +112,12 @@ kodrik ask "What should we explore today?"
 Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
 Multiple terminal UI instances keep independent session selections.
 Launch from the directory where you want shell and file tools to work.
+
+To keep the agent and memory on a server instead, pair the laptop with
+`kodrik connect`, then launch `kodrik --remote`. Local access starts detached and
+requires `/attach` followed by `/attach yes`. See [Remote TUI](docs/remote-tui.md)
+for its separate configuration, data disclosure and cleanup limits; shell/MCP
+are not sandboxed. There is no remote `ask` mode.
 
 The web, TUI and Telegram interfaces support English and Russian. See
 [Interface languages](docs/languages.md) for detection and manual selection.
@@ -218,6 +226,7 @@ Start at the [documentation index](docs/index.md), or go directly to:
 | Install with Homebrew or publish a release | [Homebrew](docs/homebrew.md)                                                         |
 | Configure models or Telegram               | [Configuration](docs/configuration.md)                                               |
 | Find commands and shortcuts                | [Using Kodrik](docs/usage.md)                                                        |
+| Connect a laptop to the server agent        | [Remote TUI](docs/remote-tui.md)                                                      |
 | Understand memory and learning             | [Memory](docs/memory.md) · [Companion](docs/companion.md)                            |
 | Manage sessions and context                | [Sessions](docs/sessions.md)                                                         |
 | Create reusable workflows                  | [Skills](docs/skills.md)                                                             |

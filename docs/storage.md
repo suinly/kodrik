@@ -1,7 +1,10 @@
 # Storage and backups
 
-All runtime state lives under `~/.kodrik/`, independently of the current working
-directory. The repository-local `data/` directory is not used by the runtime.
+Server and standalone runtime state lives under `~/.kodrik/`, independently of
+the current working directory. Remote TUI credentials/configuration and its local
+receipt journal live on the laptop; see the file map and
+[remote backups](#remote-state-and-backups). The repository-local `data/`
+directory is not used by the runtime.
 
 ## Chat spaces
 
@@ -79,7 +82,8 @@ not mistaken for an empty, successfully migrated database.
 | `SOUL.md` | Owner-editable personality; initialized once, limited to 32768 bytes |
 | `memories/USER.md` | Explicit profile and preferences; 1375 Unicode characters |
 | `memories/MEMORY.md` | Explicit environment facts and conventions; 2200 Unicode characters |
-| `sessions/state.sqlite3` | Session JSON payloads, timestamps and active-session pointers in one transactional database |
+| `sessions/state.sqlite3` | Session JSON payloads, active-session pointers, durable run/tool state, remote bindings/operations and selected-text attachment metadata; current schema v13 |
+| `sessions/attachments/` | Immutable attachment bytes referenced by saved `FileAttachment` paths, including explicitly saved remote text; keep referenced source directories after migration |
 | `datasets/state.sqlite3` | Typed record definitions, values, revisions and idempotent write receipts; see [Datasets](datasets.md) |
 | `datasets/state.sqlite3-wal`, `datasets/state.sqlite3-shm` | Dataset SQLite sidecars; include committed WAL data in backups |
 | `datasets/store.lock`, `datasets/init.lock` | Dataset store ownership during migration and serialized initialization |
@@ -97,7 +101,10 @@ not mistaken for an empty, successfully migrated database.
 | `pages/releases/<slug>/<uuid>/document.json` | Native MDC definition, named source queries and frozen published snapshot; browser responses omit query definitions |
 | `pages/manifests/<slug>.json` | Current release and public/private access mode; not served |
 | `pages/locks/<slug>.lock` | Publication transaction file lock |
-| `web/auth.json`, `web/auth.lock` | Owner password hash, hashed session tokens, per-user display names, pending Telegram approvals, discovered public bot names and auth lock; mode 0600 |
+| `web/auth.json`, `web/auth.lock` | Owner password hash, hashed session tokens/invitations/device tokens, device registrations/pairing requests, per-user display names, pending Telegram approvals, discovered public bot names and auth lock; journal mode 0600 |
+| `remote.toml`, `remote/device.json`, `remote/device.grant` | Laptop defaults: provider-free remote configuration, raw device credential (0600) and manifest grant fingerprint; config may override credential path |
+| `remote/receipts.sqlite3`, `remote/receipts.sqlite3-wal`, `remote/receipts.sqlite3-shm` | Laptop operation receipts and ACK evidence, separate from server conversation history |
+| `remote/journal-created` | Laptop receipt identity marker and initialization lock; preserve with the receipt database |
 | `companion.json` | Learned lessons, interests and their evidence |
 | `proactive.json` | Last daily attempt date and last delivered initiative message |
 | `wakeups.json` | Agent instructions, bound source chat/session, UTC deadline, execution/delivery state, saved message and last error; up to 8 MiB, no automatic eviction |
@@ -121,6 +128,13 @@ requests are retained; they expire after five minutes and are redeemed once.
 The public bot link and locally generated QR contain only the request ID.
 Changing the web password revokes pending requests as well as existing sessions.
 
+Remote device pairing is separate from Telegram web-login approval. Device
+registrations retain token hashes, not raw credentials; pending pairings retain
+code/polling-secret hashes and expire after five minutes. Device credentials
+expire after 30 days. Restore the matching auth journal with server state and
+revoke lost devices through the owner controls rather than sharing credential
+backups. See [configuration and pairing](remote-tui.md#configure-and-pair).
+
 ## Session contents
 
 Sessions save messages and snapshots of personality, memory, skills and companion
@@ -136,8 +150,10 @@ the next load can create a fresh conversation. Sessions with unfinished runs
 cannot be deleted. SQLite work runs on blocking workers, outside the async
 executor. Ordinary foreground runs save input, tool intents, results and terminal
 history at transactional checkpoints; see [durable execution](sessions.md#durable-execution-checkpoints).
-Interrupted runs are resumed by the matching client on startup, subject to saved
-permissions, replay policy, cancellation and crash limits.
+Interrupted runs are recovered by the matching client on startup, subject to
+saved permissions, replay policy, cancellation and crash limits. A remote
+`EnvironmentPaused` run is not automatically resumed by reattach/recovery;
+renewed device credentials or a restored binding do not restore local authority.
 
 History search reads user/assistant text from the newest 1000 database sessions within a
 64 MiB payload budget, skipping individual sessions over 16 MiB. It excludes tool
@@ -171,11 +187,22 @@ first run checkpoint. Schema v4 adds `deliveries` with JSON receipts for final a
 Telegram replies. Schema v5 adds a separate `runs.live` partial payload and a transactional view
 revision in schema_meta, advanced by triggers on run/history/inbox/control/delivery/compaction
 changes. Partial flushes do not rewrite Session JSON or checkpoint revisions.
-Opening v1–v5 upgrades to v6 transactionally; run payload version
-remains 1 with backwards-compatible optional fields. Older binaries reject a newer schema.
-Owner migration accepts v1–v6 and carries compaction jobs, submissions, cancellation controls,
-paused inbox state, delivery receipts and live payloads, preserving a revision
-above both source clocks. Receipts survive history deletion.
+The current schema ceiling is **v13**. Opening v1–v12 upgrades transactionally;
+run payload version remains 1 with backwards-compatible optional fields. Older
+binaries reject a newer schema. Schema v6 introduced compaction jobs; v7–v8
+added web-push state/presence; v9–v11 added command audit records/settings/modes;
+v12 adds `remote_bindings` and `remote_operations`; v13 adds
+`remote_tool_attachments` keyed by run/call. Historical v6 rollout measurements
+in [Durable recovery](durable-recovery.md) describe that earlier binary, not the
+current compatibility ceiling.
+
+Owner migration accepts v1–v13 and carries compaction jobs, submissions,
+cancellation controls, paused inbox state, delivery receipts, live payloads,
+web-push/audit state and available remote tables, preserving a revision above
+both source clocks. Earlier audit settings are adapted without changing source
+databases. Remote attachment references are preserved, not relocated; retain
+their source files/directories. Delivery receipts survive history deletion;
+remote operation/attachment metadata follows its run's foreign-key lifetime.
 Run payloads also retain the active-attempt marker, consecutive recovery count,
 interrupted phase for parking, one-shot manual retry allowance, confirmed history
 length for run snapshots, model attempts,
@@ -279,6 +306,39 @@ pre-upgrade backup; deleting SQLite to fall back to old JSON loses newer work.
 The backup includes API credentials, bot tokens, private messages and image
 bytes. Keep it private. No automatic backup or retention policy is provided.
 
+### Remote state and backups
+
+Remote mode keeps history, memory, run intents, remote operations and attachment
+metadata in the server owner's session store; it does not synchronize laptop
+sessions into that store. Remote bindings saved in SQLite are evidence, not a
+live lease. A restore or reattach cannot replay an uncertain local effect.
+
+Explicit `read_file` calls with `save_attachment = true` can persist nonempty
+UTF-8 text (at most 1 MiB) as immutable `FileAttachment` bytes under the session
+store's `attachments/`, with run/call references in `remote_tool_attachments`.
+Ordinary reads do not create downloadable files. Images remain inline data URLs
+in the existing message/output format. There is no separate web-remote
+attachment root. Paths use the existing absolute-path convention: a database
+backup alone does not contain those files, and moving a restore to a different
+root requires validating references. Owner migration retains source attachment
+files rather than rewriting all references or garbage-collecting them.
+
+Stop all writers for a coordinated server backup and preserve the entire state
+root: session databases/sidecars, referenced attachment bytes (including legacy
+source directories), `web/auth.json` and the other journals. An online SQLite
+backup captures committed WAL data, not separate attachment/auth files.
+
+On the laptop preserve `remote.toml`, its configured credential and `.grant`
+fingerprint, and `~/.kodrik/remote/` with the receipt database/sidecars and
+`journal-created` identity marker. Custom config/credential paths may be outside
+`~/.kodrik/`; include them explicitly. The journal is private local execution
+evidence, not a second conversation store. Acknowledged receipts older than
+seven days are pruned on open; unacknowledged evidence is not silently evicted.
+Losing/replacing the journal while its marker remains fails closed: reconcile
+unknown outcomes instead of deleting the marker to bypass the check. Reconcile
+external effects since a backup before authorizing new work. See
+[remote attachments and backups](remote-tui.md#attachments-migration-and-backups).
+
 ## Editing and forgetting
 
 Prefer the memory and companion tools for changes. Before manual edits, stop
@@ -307,8 +367,8 @@ sqlite3 /path/to/restored/state.sqlite3 'PRAGMA integrity_check; PRAGMA user_ver
 ```
 
 Integrity should report `ok`; the binary must support the recorded schema
-(currently v6). This only verifies SQLite structure, not whether an external
-action happened. Include attachment originals and the matching wakeup/delivery
+(currently v13 for session stores). This only verifies SQLite structure, not
+whether an external action happened. Include attachment originals and the matching wakeup/delivery
 state. Before resuming a restored backup, inspect external effects that could
 have occurred after that backup; rollback can otherwise make a past action look
 unfinished again.

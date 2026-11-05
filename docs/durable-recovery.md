@@ -11,6 +11,47 @@ For incident handling use [Operations](operations.md#recovering-after-a-crash),
 [Backups](storage.md#back-up-and-restore) and [Sessions](sessions.md#recovery-and-stopping).
 This page records the tests and measurement methodology for the durable rollout.
 
+## Remote environment recovery
+
+[Remote TUI](remote-tui.md) adds server-side environment bindings and operation
+intents plus a bounded laptop receipt journal. A lost result remains `unknown`,
+not a failed effect safe to repeat. A known result can be reconciled from its
+receipt, but reconnect/reattach never automatically replays remote tool effects
+or resumes paused local work. A dependent attempt enters `EnvironmentPaused`;
+the owner can send a new explicit message and continue without laptop access.
+An environment requires explicit attachment with a fresh generation, and old
+approvals do not carry over. `/retry` in remote TUI resolves uncertain chat input
+by submission ID; it is not a tool-effect retry.
+
+Heartbeats are 5 seconds and lease expiry is 15 seconds. Disconnect, detected
+sleep/resume and closing TUI initiate best-effort cleanup, not rollback or a
+promise of immediate termination. The supervisor sends TERM to owned process
+groups, waits 2 seconds, then sends KILL. Processes escaping with `setsid` or
+double-fork and already-submitted external MCP actions are outside that
+containment guarantee. The OS may run old work after wake before cleanup runs.
+
+The current SQLite session schema is **v13**, not the v6 ceiling described in
+the original storage rollout. Supported older stores upgrade transactionally;
+v12 adds `remote_bindings`/`remote_operations`, and v13 adds
+`remote_tool_attachments`, keyed by run/call. Owner migration preserves those
+records and existing attachment references; it does not relocate or garbage
+collect referenced source files. Newer schemas are rejected by older binaries.
+Keep a pre-upgrade backup and matching binary for downgrade, never edit the
+schema number. Existing legacy JSON import remains one-time and byte-preserving.
+
+Saved `FileAttachment` metadata references separate bytes in the session store's
+`attachments/` directory, such as `owner-sessions/attachments/`. Back up those
+files with a consistent SQLite snapshot and matching auth/journal state; an
+online database backup alone does not include them. Existing absolute attachment
+paths do not support automatic relocation. Laptop receipt state must also be
+preserved when reconciling unknown operations. See the
+[migration and backup details](remote-tui.md#attachments-migration-and-backups).
+
+The historical test counts and measurements below are evidence for the original
+durable rollout, not remote TUI release certification. Real two-machine,
+personal Telegram/web, network-loss, sleep/resume and SIGKILL acceptance has
+not been manually verified for this documentation update.
+
 ## Crash matrix
 
 The process fixtures run against temporary stores with fake providers and a

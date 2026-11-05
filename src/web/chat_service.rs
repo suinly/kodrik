@@ -46,6 +46,12 @@ fn bound_value(value: &mut Value, max: usize) {
     }
 }
 
+fn bound_control_text(value: &mut Value) {
+    if let Some(text) = value.as_str().filter(|text| text.len() > 4096) {
+        *value = json!(format!("{}…", text.chars().take(1024).collect::<String>()));
+    }
+}
+
 pub(super) fn project_group(row: &mut Value, id: &str) {
     let index = row["id"]
         .as_str()
@@ -298,7 +304,36 @@ impl Chat {
             "remote_operations":view.run.as_ref().map(|r| &r.remote_operations),
             "command_approvals":self.sessions.pending_command_approvals(id.as_str()).await.map_err(internal)?,
             "command_audit_mode":self.sessions.command_audit_mode(id.as_str()).await.map_err(internal)?});
-        bound_value(&mut run, 32 * 1024);
+        // Output budgets must never erase busy/phase or silently discard pending controls.
+        for field in ["live", "remote_operations", "compaction"] {
+            bound_value(&mut run[field], 32 * 1024);
+        }
+        for field in ["model", "blocked_reason"] {
+            bound_control_text(&mut run[field]);
+        }
+        if let Some(phase) = run["phase"].as_object_mut() {
+            for value in phase.values_mut() {
+                if let Some(fields) = value.as_object_mut() {
+                    for value in fields.values_mut() {
+                        bound_control_text(value);
+                    }
+                }
+            }
+        }
+        let approvals = run["command_approvals"].as_array_mut().unwrap();
+        let count = approvals.len();
+        approvals.truncate(1); // The TUI reviews one exact invocation at a time.
+        let unavailable = approvals
+            .first()
+            .filter(|approval| {
+                serde_json::to_vec(approval).is_ok_and(|bytes| bytes.len() > 512 * 1024)
+            })
+            .map(|approval| json!({"id":approval["id"],"tool_name":approval["tool_name"]}));
+        if unavailable.is_some() {
+            approvals.clear();
+        }
+        run["pending_approval_count"] = json!(count);
+        run["approval_unavailable"] = json!(unavailable);
         let environment = match self.runner.environments() {
             Some(service) => service.status(id).await,
             None => None,
