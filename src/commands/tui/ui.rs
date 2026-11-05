@@ -151,7 +151,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let command_height = (app.command_suggestions().len() as u16 + 1).max(3);
     let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
     let plan_width = area.width.saturating_sub(3).max(1);
-    let available_plan_height = area.height.saturating_sub(footer_height + 1);
+    let available_plan_height = area.height.saturating_sub(footer_height + 2);
     let mut plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
         .style(Style::default().fg(Color::Cyan))
         .wrap(ratatui::widgets::Wrap { trim: false });
@@ -166,9 +166,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .style(Style::default().fg(Color::Cyan))
         .wrap(ratatui::widgets::Wrap { trim: false });
     }
-    let plan_height = if app.plan.is_some() {
+    let plan_height = if app.plan.is_some() && available_plan_height > 0 {
         plan.line_count(plan_width)
             .min(usize::from(available_plan_height)) as u16
+            + 1
     } else {
         0
     };
@@ -195,13 +196,19 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Length(1),
         ])
         .split(footer);
+    if layout[0].height > 1 {
+        frame.render_widget(
+            Paragraph::new(" ≡").style(Style::default().fg(Color::Cyan).bold()),
+            Rect::new(layout[0].x, layout[0].y + 1, layout[0].width.min(3), 1),
+        );
+    }
     frame.render_widget(
         plan,
         Rect::new(
             layout[0].x.saturating_add(3),
-            layout[0].y,
+            layout[0].y.saturating_add(1),
             layout[0].width.saturating_sub(3),
-            layout[0].height,
+            layout[0].height.saturating_sub(1),
         ),
     );
     let layout = &layout[1..];
@@ -1133,7 +1140,9 @@ mod tests {
                 .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
             let status = rows.iter().position(|row| row.contains("Ready")).unwrap();
-            assert_eq!(rows[status - 5].trim(), "Plan · 1/3");
+            assert_eq!(rows[status - 5].trim(), "≡ Plan · 1/3");
+            assert!(rows[status - 6].trim().is_empty(), "blank line above plan");
+            assert_eq!(buffer[(1, (status - 5) as u16)].symbol(), "≡");
             for (offset, expected) in ["✓ Inspect", "→ Fix", "○ Verify"].iter().enumerate() {
                 assert_eq!(rows[status - 4 + offset].trim(), *expected);
             }
