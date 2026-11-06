@@ -44,6 +44,17 @@ test('message dates use local calendar days and show the year only when needed',
 });
 
 const tool=(id,name='exec_command',url)=>({type:'dynamic-tool',toolCallId:id,toolName:name,state:'output-available',input:{},output:url?{url}: {}});
+test('local tools use origin names and summaries while preserving technical call names',()=>{
+  const name='local__exec__719e6926f958f45893bc00ee50e2e1ae';
+  const local={...tool('local',name),input:{cmd:'cargo test'},origin:{tool_id:'exec_command',label:'macbook-pro'}};
+  for(const state of ['input-available','output-available','output-error']) {
+    assert.equal(toolLabel({...local,state}),'exec_command · macbook-pro');
+    assert.equal(toolSummary({...local,state}),'cargo test');
+  }
+  assert.equal(local.toolName,name);
+  assert.equal(toolLabel({...local,origin:undefined}),name);
+  assert.equal(toolSummary({...local,origin:{...local.origin,tool_id:'apply_patch'},input:{patch:'*** Begin Patch\n*** Update File: src/main.rs\n*** End Patch'}}),'src/main.rs');
+});
 test('unsaved local file notices follow the exact generation rather than another connected device',()=>{
   const origin={label:'Laptop',project_root:'/work',tool_id:'read_file',environment:{connection_id:'connection',generation:'old'}};
   const local={...tool('read','local__read_file'),origin,input:{path:'notes.txt'}};

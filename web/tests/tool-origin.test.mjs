@@ -14,6 +14,16 @@ test('tool history renders literal origin and a stale-generation local-file noti
     });
     const requests=[];page.on('request',request=>requests.push(request.url()));
     await mount();
+    await expect(page.getByRole('heading',{name:`read_file · ${origin.label}`,exact:true})).toBeVisible();
+    await page.evaluate(()=>{
+      props.tools[0].toolName='local__exec__719e6926f958f45893bc00ee50e2e1ae';
+      props.tools[0].origin.tool_id='exec_command';
+      props.tools[0].origin.label='macbook-pro';
+    });
+    await expect(page.getByRole('heading',{name:'exec_command · macbook-pro',exact:true})).toBeVisible();
+    await page.evaluate(origin=>{
+      props.tools[0].toolName='local__read_file';props.tools[0].origin=origin;
+    },origin);
     await expect(page.getByText(origin.label+' · '+origin.project_root,{exact:true})).toBeVisible();
     await expect(page.getByRole('status')).toHaveText('The file remains on the disconnected device.');
     assert.equal(await page.locator('#app img,#app script').count(),0);

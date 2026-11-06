@@ -57,21 +57,23 @@ export function formatMessageTime(value:string,now=new Date()):string {
 export function toolSummary(tool:ToolPart):string {
   if(!tool.input || typeof tool.input!=='object' || Array.isArray(tool.input)) return ''
   const input=tool.input as Record<string,unknown>
+  const name=tool.origin?.tool_id || tool.toolName
   const fields:Record<string,string[]>={
     exec_command:['cmd'],web_search:['query'],web_read:['url'],encyclopedia:['query'],
     session_search:['query','session_id'],view_image:['path'],show_ui:['title'],
     datasets:['action','dataset'],memory:['action','target'],companion:['action','topic'],
     spawn_agent:['task'],send_message:['message'],
   }
-  const summary=tool.toolName==='apply_patch' && typeof input.patch==='string'
+  const summary=name==='apply_patch' && typeof input.patch==='string'
     ? input.patch.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m)?.[1] ?? ''
-    : (Object.hasOwn(fields,tool.toolName) ? fields[tool.toolName]! : []).map(key=>input[key]).filter(value=>typeof value==='string').join(' · ')
+    : (Object.hasOwn(fields,name) ? fields[name]! : []).map(key=>input[key]).filter(value=>typeof value==='string').join(' · ')
   const text=summary.replace(/\s+/g,' ').trim()
   const chars=Array.from(text)
   return chars.length>96 ? `${chars.slice(0,95).join('')}…` : text
 }
 
 export function toolLabel(tool:ToolPart):string {
+  if(tool.origin?.tool_id) return [tool.origin.tool_id,tool.origin.label].filter(Boolean).join(' · ')
   const labels:Record<string,string>={spawn_agent:'Запуск дочерней задачи',send_message:'Уточнение дочерней задачи',
     list_agents:'Проверка дочерних задач',wait_agent:'Ожидание дочерней задачи',stop_agent:'Остановка дочерней задачи'}
   return Object.hasOwn(labels,tool.toolName) ? t(labels[tool.toolName]!) : tool.toolName
