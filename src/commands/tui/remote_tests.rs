@@ -141,10 +141,35 @@ fn remote_history_exposes_origin_and_marks_unsaved_file_from_old_generation() {
         .map(|row| row.content.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("/only-on-laptop/project"));
-    assert!(text.contains("old"));
+    assert!(!text.contains("/only-on-laptop/project"));
+    assert!(!text.contains("old"));
+    assert!(text.contains("read_file · Laptop\\u{1b}[31m"));
     assert!(text.contains("file remains on the disconnected device"));
     assert!(!text.contains('\u{1b}'));
+}
+
+#[test]
+fn remote_tool_display_uses_short_name_and_device_without_internal_ids() {
+    let mut view = snapshot();
+    let part = &mut view.messages[1]["parts"][0];
+    part["toolName"] = json!("local__exec__719e6926f958f45893bc00ee50e2e1ae");
+    part["origin"] = json!({"label":"macbook-pro","project_root":"/Volumes/SamsungT5/Projects/Personal/kodrik","tool_id":"exec_command","environment":{"generation":"27a00aff-d9da-43ee-874d-1174f180c23c"}});
+    part["output"] = json!({"exit_code":0,"stdout":"","stderr":""});
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    let text = app
+        .messages
+        .iter()
+        .map(|row| row.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("exec_command · macbook-pro — exit 0"),
+        "{text}"
+    );
+    for hidden in ["local__", "27a00aff", "/Volumes/", "[Device:"] {
+        assert!(!text.contains(hidden), "{text}");
+    }
 }
 
 #[test]
