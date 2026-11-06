@@ -540,10 +540,31 @@ impl ChatClient {
         session: &SessionId,
         tx: tokio::sync::mpsc::Sender<RemoteChatSnapshot>,
     ) -> anyhow::Result<()> {
+        self.observe_mode(session, tx, false).await
+    }
+
+    pub(crate) async fn observe_incremental(
+        &self,
+        session: &SessionId,
+        tx: tokio::sync::mpsc::Sender<RemoteChatSnapshot>,
+    ) -> anyhow::Result<()> {
+        self.observe_mode(session, tx, true).await
+    }
+
+    async fn observe_mode(
+        &self,
+        session: &SessionId,
+        tx: tokio::sync::mpsc::Sender<RemoteChatSnapshot>,
+        incremental: bool,
+    ) -> anyhow::Result<()> {
+        let mut url = self.url(Some(session), Some("events"))?;
+        if incremental {
+            url.query_pairs_mut().append_pair("incremental", "true");
+        }
         let response = tokio::select! {
             biased;
             _ = tx.closed() => return Ok(()),
-            response = chat_response(self.http.get(self.url(Some(session), Some("events"))?)
+            response = chat_response(self.http.get(url)
                 .header(reqwest::header::ACCEPT, "text/event-stream")) => response?,
         };
         ensure!(
@@ -556,7 +577,10 @@ impl ChatClient {
             "Invalid remote chat event content type"
         );
         let mut stream = response.bytes_stream();
-        let mut parser = ChatEvents::default();
+        let mut parser = ChatEvents {
+            incremental,
+            ..Default::default()
+        };
         loop {
             let chunk = tokio::select! {
                 biased;
@@ -606,6 +630,8 @@ struct ChatEvents {
     data: Vec<u8>,
     skip_lf: bool,
     started: bool,
+    incremental: bool,
+    assembly: super::chat_sync::Assembly,
 }
 
 impl ChatEvents {
@@ -630,10 +656,29 @@ impl ChatEvents {
         }
         let snapshot = if line.is_empty() && !self.data.is_empty() {
             self.data.pop(); // SSE joins data lines with LF and drops the final LF.
-            let snapshot = serde_json::from_slice(&self.data)
-                .map_err(|_| anyhow::anyhow!("Invalid remote chat event snapshot"))?;
+            let snapshot = if self.incremental {
+                let mut frame: super::chat_sync::Frame = serde_json::from_slice(&self.data)
+                    .map_err(|_| anyhow::anyhow!("Invalid remote history frame"))?;
+                let metadata = frame.metadata.take();
+                if self.assembly.apply(frame)? {
+                    let mut metadata = metadata.context("Missing remote history metadata")?;
+                    metadata["messages"] = serde_json::from_str(self.assembly.text())
+                        .map_err(|_| anyhow::anyhow!("Invalid remote history messages"))?;
+                    Some(
+                        serde_json::from_value(metadata)
+                            .map_err(|_| anyhow::anyhow!("Invalid remote chat event snapshot"))?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                Some(
+                    serde_json::from_slice(&self.data)
+                        .map_err(|_| anyhow::anyhow!("Invalid remote chat event snapshot"))?,
+                )
+            };
             self.data.clear();
-            Some(snapshot)
+            snapshot
         } else {
             let (field, value) = line.split_once(':').unwrap_or((line, ""));
             if field == "data" {

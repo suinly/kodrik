@@ -153,7 +153,7 @@ fn session_rows(value: serde_json::Value) -> anyhow::Result<Vec<(SessionId, Stri
 enum Update {
     Snapshot(RemoteChatSnapshot),
     Resynchronized(RemoteChatSnapshot),
-    Disconnected,
+    Disconnected(String),
 }
 pub(super) fn current_observer(expected: u64, received: u64) -> bool {
     expected == received
@@ -166,25 +166,37 @@ fn observe(
 ) -> Observer {
     Observer(tokio::spawn(async move {
         loop {
-            if let Ok(snapshot) = chat.snapshot(&session).await {
-                if updates
-                    .send((epoch, Update::Resynchronized(snapshot)))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                let (tx, mut rx) = mpsc::channel(2);
-                let stream = chat.observe(&session, tx);
-                tokio::pin!(stream);
-                loop {
-                    tokio::select! {
-                        _=&mut stream=>break,
-                        Some(snapshot)=rx.recv()=>{if updates.send((epoch,Update::Snapshot(snapshot))).await.is_err(){return;}}
+            let (tx, mut rx) = mpsc::channel(2);
+            let stream = chat.observe_incremental(&session, tx);
+            tokio::pin!(stream);
+            let mut initial = true;
+            let error = loop {
+                tokio::select! {
+                    result=&mut stream=>break result.err().map(|error| error.to_string()).unwrap_or_else(|| "Event stream closed".into()),
+                    Some(snapshot)=rx.recv()=>{
+                        let update = if initial { Update::Resynchronized(snapshot) } else { Update::Snapshot(snapshot) };
+                        initial = false;
+                        if updates.send((epoch,update)).await.is_err(){return;}
                     }
                 }
+            };
+            // EOF may win select after the client has queued its final complete update.
+            while let Ok(snapshot) = rx.try_recv() {
+                let update = if initial {
+                    Update::Resynchronized(snapshot)
+                } else {
+                    Update::Snapshot(snapshot)
+                };
+                initial = false;
+                if updates.send((epoch, update)).await.is_err() {
+                    return;
+                }
             }
-            if updates.send((epoch, Update::Disconnected)).await.is_err() {
+            if updates
+                .send((epoch, Update::Disconnected(error)))
+                .await
+                .is_err()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -765,9 +777,9 @@ async fn event_loop(
                     let snapshot=with_scrollback(&remote.snapshot,snapshot);
                     if remote.projection.resynchronize(app,&snapshot)? {remote.snapshot=snapshot;}
                 }
-                Update::Disconnected=>{
+                Update::Disconnected(reason)=>{
                     remote.server_connected=false;
-                    app.set_copy_notice("Server disconnected; reconnecting (no local fallback)".into());
+                    app.set_copy_notice(format!("Server disconnected: {reason}; reconnecting (no local fallback)"));
                 }
             }},
             Some(copy)=copies.join_next(),if !copies.is_empty()=>{
@@ -1101,6 +1113,9 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     refresh_history(app, &session);
     app.versions = versions;
     let run = snapshot.run.as_ref().unwrap_or(&serde_json::Value::Null);
+    if let Some(error) = run["history_error"].as_str() {
+        app.set_copy_notice(error.to_owned());
+    }
     if run["clear_completed_plan"] == true && app.plan_completed {
         app.plan = None;
         app.plan_completed = false;

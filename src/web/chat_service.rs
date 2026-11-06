@@ -94,8 +94,28 @@ pub(super) fn project_group(row: &mut Value, id: &str) {
         }
     }
     if serde_json::to_vec(row).is_ok_and(|bytes| bytes.len() > 64 * 1024) {
-        row["parts"] = json!([{"type":"text","text":"Message group truncated","truncated":true,"reference":reference}]);
+        let parts = row["parts"]
+            .as_array_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        row["parts"] = json!([{"type":"text","text":"Earlier message parts truncated","truncated":true,"reference":reference}]);
         row.as_object_mut().unwrap().remove("versions");
+        // Keep the newest work visible instead of replacing every subsequent update with a stub.
+        let mut size = serde_json::to_vec(row).unwrap().len();
+        let mut keep = 0;
+        for part in parts.iter().rev() {
+            let bytes = serde_json::to_vec(part).unwrap().len() + 1;
+            if size + bytes > 64 * 1024 {
+                break;
+            }
+            size += bytes;
+            keep += 1;
+        }
+        let start = parts.len() - keep;
+        row["parts"]
+            .as_array_mut()
+            .unwrap()
+            .extend(parts.into_iter().skip(start));
     }
 }
 
@@ -211,6 +231,13 @@ impl Chat {
         self.remote_page(id, None).await
     }
 
+    pub(crate) async fn remote_complete_snapshot(
+        &self,
+        id: &SessionId,
+    ) -> Result<RemoteChatSnapshot, Response> {
+        self.remote_page_mode(id, None, true).await
+    }
+
     pub(crate) async fn remote_history(
         &self,
         id: &SessionId,
@@ -236,6 +263,15 @@ impl Chat {
         id: &SessionId,
         end: Option<usize>,
     ) -> Result<RemoteChatSnapshot, Response> {
+        self.remote_page_mode(id, end, false).await
+    }
+
+    async fn remote_page_mode(
+        &self,
+        id: &SessionId,
+        end: Option<usize>,
+        complete: bool,
+    ) -> Result<RemoteChatSnapshot, Response> {
         let session = self.session(id.as_str()).await?;
         if session.webhook_instruction.is_some() {
             return Err(error(StatusCode::NOT_FOUND, "Conversation not found"));
@@ -253,20 +289,25 @@ impl Chat {
         let mut messages = Vec::new();
         let mut start = end;
         let mut remaining = HISTORY_BYTES - 64 * 1024;
-        while start > 0 && messages.len() < 200 {
+        while start > 0 && (complete || messages.len() < 200) {
             let group_end = starts
                 .get(start)
                 .copied()
                 .unwrap_or(view.session.messages().len());
             let mut row = history_group(&view.session, starts[start - 1], group_end);
-            project_group(&mut row, id.as_str());
+            if complete {
+                // A growing assistant group keeps its creation time; changing its prefix resends all parts.
+                row["created_at"] = json!(view.session.message_time(starts[start - 1]));
+            } else {
+                project_group(&mut row, id.as_str());
+            }
             let size = serde_json::to_vec(&row)
                 .map_err(|e| internal(e.into()))?
                 .len();
-            if size + 1 > remaining {
+            if !complete && size + 1 > remaining {
                 break;
             }
-            remaining -= size + 1;
+            remaining = remaining.saturating_sub(size + 1);
             messages.push(row);
             start -= 1;
         }
@@ -284,13 +325,16 @@ impl Chat {
             .drain(..)
             .collect();
         for row in &mut messages {
-            project_group(row, id.as_str());
+            if !complete {
+                project_group(row, id.as_str());
+            }
         }
         // Branch metadata counts against the same wire budget as message content.
-        while serde_json::to_vec(&messages)
-            .map_err(|e| internal(e.into()))?
-            .len()
-            > HISTORY_BYTES - 64 * 1024
+        while !complete
+            && serde_json::to_vec(&messages)
+                .map_err(|e| internal(e.into()))?
+                .len()
+                > HISTORY_BYTES - 64 * 1024
         {
             messages.remove(0);
             start += 1;

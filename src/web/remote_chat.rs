@@ -168,6 +168,7 @@ async fn events(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
 ) -> Result<Response, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
     chat.remote_snapshot(&SessionId::new(&id)).await?;
@@ -184,8 +185,8 @@ async fn events(
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response())?;
     let mut shutdown = chat.runner.shutdown_receiver();
     let stream = futures::stream::unfold(
-        (chat, state.auth, token, id, None),
-        |(chat, auth, token, id, mut revision)| async move {
+        (chat, state.auth, token, id, None, String::new()),
+        move |(chat, auth, token, id, mut revision, mut previous)| async move {
             loop {
                 if !device_valid(auth.clone(), token.clone()).await {
                     return None;
@@ -193,18 +194,46 @@ async fn events(
                 let current = chat.sessions.view_revision().await.ok()?;
                 let current = (current, chat.environment_revision());
                 if revision != Some(current) {
-                    let snapshot = chat.remote_snapshot(&SessionId::new(&id)).await.ok()?;
+                    let snapshot = if query.incremental {
+                        chat.remote_complete_snapshot(&SessionId::new(&id))
+                            .await
+                            .ok()?
+                    } else {
+                        chat.remote_snapshot(&SessionId::new(&id)).await.ok()?
+                    };
                     revision = Some((snapshot.revision, snapshot.environment_revision));
-                    let data = serde_json::to_string(&snapshot).ok()?;
+                    let events = if query.incremental {
+                        let mut metadata = serde_json::to_value(&snapshot).ok()?;
+                        let messages = metadata.as_object_mut()?.remove("messages")?;
+                        let mut text = serde_json::to_string(&messages).ok()?;
+                        if text.len() > crate::remote::chat_sync::MAX_HISTORY_BYTES {
+                            metadata["run"]["history_error"] = json!("History exceeds the 64 MiB terminal limit; existing messages are retained. Full history is available in Web Chat.");
+                            text = if previous.is_empty() { "[]".into() } else { previous.clone() };
+                        }
+                        let mut frames = crate::remote::chat_sync::frames(&previous, &text).ok()?;
+                        frames.last_mut()?.metadata = Some(metadata);
+                        previous = text;
+                        frames
+                            .into_iter()
+                            .map(|frame| {
+                                serde_json::to_string(&frame)
+                                    .map(|data| Event::default().data(data))
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                            .ok()?
+                    } else {
+                        vec![Event::default().data(serde_json::to_string(&snapshot).ok()?)]
+                    };
                     return Some((
-                        Ok::<_, Infallible>(Event::default().data(data)),
-                        (chat, auth, token, id, revision),
+                        futures::stream::iter(events.into_iter().map(Ok::<_, Infallible>)),
+                        (chat, auth, token, id, revision, previous),
                     ));
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         },
     )
+    .flatten()
     .take_until(async move {
         let _ = shutdown.wait_for(|stopped| *stopped).await;
     });
@@ -222,4 +251,11 @@ async fn events(
         .headers_mut()
         .insert("x-accel-buffering", "no".parse().unwrap());
     Ok(response)
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventsQuery {
+    #[serde(default)]
+    incremental: bool,
 }

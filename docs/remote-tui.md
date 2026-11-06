@@ -3,7 +3,16 @@
 Remote TUI connects to the owner's running gateway. The agent, model credentials,
 memory, conversations and background tasks stay on the server. The laptop runs
 the terminal client and a temporary local executor, not a second agent. There is
-no history synchronization or automatic project upload.
+no independent local conversation store or automatic project upload.
+
+The TUI loads complete history once, then receives incremental SSE updates
+(`events?incremental=true`). Existing messages remain locally in memory; new
+messages and tool results update them without replacing a large response with a
+truncated tail. UTF-8-safe chunks are assembled atomically and checked against
+the previous history. Run status is sent separately and does not retransmit the
+message history. After a connection loss, displayed history remains visible
+while the new stream initializes a fresh complete history. Assembly is bounded
+to 64 MiB. The legacy paginated snapshot API remains available to older clients.
 
 This mode is owner-only and currently Unix-only. Invited users, guest spaces and
 groups do not receive the laptop environment. The same owner conversation can

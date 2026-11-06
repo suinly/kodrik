@@ -695,6 +695,41 @@ async fn native_snapshot_projects_compaction_from_durable_run_view() {
 }
 
 #[test]
+fn native_large_group_keeps_latest_work_visible_within_budget() {
+    let mut parts = (0..12)
+        .map(|i| {
+            json!({"type":"dynamic-tool","toolCallId":format!("call-{i}"),
+            "toolName":"exec_command","state":"output-available","output":"x".repeat(10000)})
+        })
+        .collect::<Vec<_>>();
+    parts.push(json!({"type":"text","text":"Latest progress"}));
+    let mut row = json!({"id":"session:1","role":"assistant","parts":parts});
+    service::project_group(&mut row, "session");
+    assert_eq!(
+        row["parts"].as_array().unwrap().last().unwrap()["text"],
+        "Latest progress"
+    );
+    assert!(
+        row["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| part["toolCallId"] == "call-11")
+    );
+    assert_eq!(row["parts"][0]["truncated"], true);
+    assert!(serde_json::to_vec(&row).unwrap().len() <= 64 * 1024);
+    row["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"text","text":"Final answer"}));
+    service::project_group(&mut row, "session");
+    assert_eq!(
+        row["parts"].as_array().unwrap().last().unwrap()["text"],
+        "Final answer"
+    );
+}
+
+#[test]
 fn native_group_truncation_preserves_absolute_user_turn() {
     let mut row = json!({"id":"session:30", "role":"user", "user_turn":15,
         "parts":(0..8).map(|_| json!({"type":"text","text":"x".repeat(10000)})).collect::<Vec<_>>()});
@@ -1407,6 +1442,112 @@ async fn saved_local_text_survives_disconnect_and_download_requires_session_auth
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn incremental_events_keep_complete_history_and_transmit_only_changes() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let (dir, chat, state, id) = fixture().await;
+    let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
+    for i in 0..30 {
+        session.push(Message::Assistant(AssistantMessage {
+            content: format!("step {i}: {}", "large progress 🌍".repeat(2000)),
+        }));
+    }
+    chat.sessions.save(&session).await.unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let pairing = state.auth.start_device_pairing("Laptop", now).unwrap();
+    state
+        .auth
+        .approve_device_pairing(pairing.request_id, &pairing.code, &Identity::Owner, now)
+        .unwrap();
+    let crate::web::auth::devices::PairingPoll::Authorized { token, .. } = state
+        .auth
+        .poll_device_pairing(pairing.request_id, &pairing.polling_secret, now)
+        .unwrap()
+    else {
+        panic!()
+    };
+    let app = crate::web::server::router_with_chat(
+        state.settings.clone(),
+        dir.path(),
+        Some(chat.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/kodrik/api/remote/chat/sessions/{}/events?incremental=true",
+                    id.as_str()
+                ))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut stream = response.into_body().into_data_stream();
+    let mut receiver = crate::remote::chat_sync::Assembly::default();
+    async fn receive(
+        stream: &mut (impl futures::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+        receiver: &mut crate::remote::chat_sync::Assembly,
+    ) -> (usize, Value) {
+        let mut bytes = 0;
+        loop {
+            let chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            bytes += chunk.len();
+            let text = std::str::from_utf8(&chunk).unwrap();
+            let mut frame: crate::remote::chat_sync::Frame =
+                serde_json::from_str(text.trim().strip_prefix("data: ").unwrap()).unwrap();
+            let metadata = frame.metadata.take();
+            if receiver.apply(frame).unwrap() {
+                return (bytes, metadata.unwrap());
+            }
+        }
+    }
+    let (initial_bytes, _) = receive(&mut stream, &mut receiver).await;
+    assert!(initial_bytes > 1024 * 1024);
+    let rows: Vec<Value> = serde_json::from_str(receiver.text()).unwrap();
+    assert_eq!(rows[1]["parts"].as_array().unwrap().len(), 30);
+    assert!(!receiver.text().contains("truncated"));
+    session.push(Message::Assistant(AssistantMessage {
+        content: "Newest answer".into(),
+    }));
+    chat.sessions.save(&session).await.unwrap();
+    let (changed_bytes, metadata) = receive(&mut stream, &mut receiver).await;
+    assert!(
+        changed_bytes < 4096,
+        "resent history: {changed_bytes} bytes"
+    );
+    assert_eq!(metadata["session_id"], id.as_str());
+    let rows: Vec<Value> = serde_json::from_str(receiver.text()).unwrap();
+    assert_eq!(rows[1]["parts"].as_array().unwrap().len(), 31);
+    assert_eq!(rows[1]["parts"][30]["text"], "Newest answer");
+    // A result updates an existing call rather than appending a duplicate call.
+    session.push(Message::ToolCall(ToolCall {
+        call_id: "call".into(),
+        name: "test".into(),
+        arguments: json!({}),
+    }));
+    chat.sessions.save(&session).await.unwrap();
+    receive(&mut stream, &mut receiver).await;
+    session.push(Message::ToolResult(ToolResult {
+        call_id: "call".into(),
+        content: json!({"value":42}).into(),
+    }));
+    chat.sessions.save(&session).await.unwrap();
+    let (bytes, _) = receive(&mut stream, &mut receiver).await;
+    assert!(bytes < 4096);
+    let rows: Vec<Value> = serde_json::from_str(receiver.text()).unwrap();
+    let parts = rows[1]["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 32);
+    assert_eq!(parts[31]["output"]["value"], 42);
 }
 
 #[tokio::test]

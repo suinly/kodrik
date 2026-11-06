@@ -488,11 +488,17 @@ async fn terminal_remote_fixture() {
         .route(
             "/api/remote/chat/sessions/{id}/events",
             get(
-                |State(state): State<Arc<Mutex<RemoteChatSnapshot>>>| async move {
-                    let data = serde_json::to_string(&*state.lock().unwrap()).unwrap();
+                |RoutePath(id): RoutePath<String>, State(state): State<Arc<Mutex<RemoteChatSnapshot>>>| async move {
+                    let mut metadata = serde_json::to_value(&*state.lock().unwrap()).unwrap();
+                    metadata["session_id"] = json!(id);
+                    let messages = metadata.as_object_mut().unwrap().remove("messages").unwrap();
+                    let text = serde_json::to_string(&messages).unwrap();
+                    let mut frames = crate::remote::chat_sync::frames("", &text).unwrap();
+                    frames.last_mut().unwrap().metadata = Some(metadata);
+                    let data = frames.into_iter().map(|frame| format!("data: {}\n\n", serde_json::to_string(&frame).unwrap())).collect::<String>();
                     (
                         [("content-type", "text/event-stream")],
-                        format!("data: {data}\n\n"),
+                        data,
                     )
                         .into_response()
                 },

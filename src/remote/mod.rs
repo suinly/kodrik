@@ -20,6 +20,7 @@ mod store_tests;
 #[cfg(test)]
 mod service_tests;
 
+pub(crate) mod chat_sync;
 pub(crate) mod client;
 #[cfg(test)]
 mod config_tests;

@@ -104,6 +104,60 @@ fn json_response(value: Value) -> Response {
 }
 
 #[tokio::test]
+async fn incremental_observer_assembles_large_history_before_publishing_updates() {
+    let mut first = snapshot();
+    first["messages"] =
+        json!([{"role":"assistant","parts":[{"type":"text","text":"old 🌍".repeat(50000)}]}]);
+    let mut second = first.clone();
+    second["revision"] = json!(8);
+    second["messages"][0]["parts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"text","text":"new"}));
+    let mut before = String::new();
+    let mut wire = String::new();
+    for snapshot in [first.clone(), second.clone()] {
+        let mut metadata = snapshot.clone();
+        metadata.as_object_mut().unwrap().remove("messages");
+        let after = serde_json::to_string(&snapshot["messages"]).unwrap();
+        let mut frames = crate::remote::chat_sync::frames(&before, &after).unwrap();
+        frames.last_mut().unwrap().metadata = Some(metadata);
+        for frame in frames {
+            wire.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::to_string(&frame).unwrap()
+            ));
+        }
+        before = after;
+    }
+    let response = Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(Body::from(wire))
+        .unwrap();
+    let mut f = fixture(vec![response]).await;
+    let (tx, mut rx) = mpsc::channel(4);
+    assert!(
+        f.client
+            .observe_incremental(&SessionId::new("session-1"), tx)
+            .await
+            .is_err()
+    );
+    let initial = rx.recv().await.unwrap();
+    assert_eq!(serde_json::to_value(initial).unwrap(), first);
+    let updated = rx.recv().await.unwrap();
+    assert_eq!(serde_json::to_value(updated).unwrap(), second);
+    assert!(rx.recv().await.is_none());
+    assert!(
+        f.requests
+            .recv()
+            .await
+            .unwrap()
+            .1
+            .ends_with("/events?incremental=true")
+    );
+}
+
+#[tokio::test]
 async fn independent_chat_preserves_prefix_auth_cursor_and_command_id() {
     let mut f = fixture(vec![
         json_response(snapshot()),
