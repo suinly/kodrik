@@ -111,7 +111,7 @@ async fn page_sessions(
         let mut rows = statement.query([webhook_events])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
-            if row.get::<_,bool>(3)? || !super::personal_session_id(&id) { continue; }
+            if row.get::<_,bool>(3)? || !super::listed_session_id(&id) { continue; }
             let root: String = row.get(1)?;
             let updated: i64 = row.get(2)?;
             let pinned: bool = row.get(4)?;
@@ -191,7 +191,7 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         .collect();
     let mut groups: HashMap<&str, Vec<&Session>> = HashMap::new();
     for session in sessions.iter().filter(|session| {
-        super::personal_session(session) && session.webhook_instruction.is_some() == search.webhooks
+        super::listed_session(session) && session.webhook_instruction.is_some() == search.webhooks
     }) {
         let id = session.id().as_str();
         groups
@@ -201,7 +201,7 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
     }
     let mut result = vec![];
     for session in sessions.iter().filter(|session| {
-        super::personal_session(session) && session.webhook_instruction.is_some() == search.webhooks
+        super::listed_session(session) && session.webhook_instruction.is_some() == search.webhooks
     }) {
         let id = session.id().as_str();
         let root = roots.get(id).copied().unwrap_or(id);
@@ -261,7 +261,7 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
                 .await
                 .map_err(internal)?;
         let updated = group.iter().filter_map(|s| s.last_message_at()).max();
-        result.push(json!({"id":shown.id().as_str(),"root_id":root,"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown)}));
+        result.push(json!({"id":shown.id().as_str(),"root_id":root,"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
     }
     if let Some(roots) = page_roots {
         result.sort_by_key(|session| {

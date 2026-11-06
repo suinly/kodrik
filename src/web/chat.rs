@@ -333,6 +333,14 @@ impl Chat {
     }
 
     async fn session(&self, id: &str) -> Result<Session, Response> {
+        self.session_access(id, false).await
+    }
+
+    async fn readable_session(&self, id: &str) -> Result<Session, Response> {
+        self.session_access(id, true).await
+    }
+
+    async fn session_access(&self, id: &str, allow_subagent: bool) -> Result<Session, Response> {
         if id.is_empty()
             || id.len() > 256
             || !id
@@ -346,7 +354,10 @@ impl Chat {
             .load(&SessionId::new(id))
             .await
             .map_err(internal)?
-            .filter(|s| s.id().as_str() == id && personal_session(s))
+            .filter(|s| {
+                s.id().as_str() == id
+                    && (personal_session(s) || allow_subagent && listed_session(s))
+            })
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "Conversation not found"))
     }
 
@@ -607,6 +618,14 @@ pub(crate) fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
 
+fn listed_session(session: &Session) -> bool {
+    session.telegram_group().is_none() && listed_session_id(session.id().as_str())
+}
+
+fn listed_session_id(id: &str) -> bool {
+    personal_session_id(id) || id.starts_with(crate::agent::subagents::PREFIX)
+}
+
 fn webhook_source(session: &Session) -> Option<Value> {
     let recorded = session
         .webhook_instruction
@@ -648,7 +667,7 @@ async fn read(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.session(&id).await?;
+    chat.readable_session(&id).await?;
     let view = chat
         .sessions
         .conversation_view(&id)
@@ -661,6 +680,7 @@ async fn read(
     Ok(Json(
         json!({"id":id, "root_id":root, "title_pending":title_pending,
         "title":title, "title_default":title_default,"webhook":webhook_source(session),
+        "subagent":id.starts_with(crate::agent::subagents::PREFIX),
         "updated_at":session.last_message_at(),
         "messages":history(session), "busy":view.busy, "blocked_reason":view.blocked_reason}),
     ))
@@ -916,7 +936,7 @@ async fn attachment(
     use axum::http::header;
     use base64::{Engine, engine::general_purpose::STANDARD};
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let session = chat.session(&id).await?;
+    let session = chat.readable_session(&id).await?;
     let stored = session.messages().get(message);
     let user = match stored {
         Some(crate::agent::message::Message::User(user)) => Some(user),
@@ -1021,7 +1041,7 @@ async fn run_snapshot(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.session(&id).await?;
+    chat.readable_session(&id).await?;
     Ok(Json(chat.snapshot(&id).await.map_err(internal)?))
 }
 
@@ -1031,7 +1051,7 @@ async fn events(
     headers: HeaderMap,
 ) -> Result<Response, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
-    chat.session(&id).await?;
+    chat.readable_session(&id).await?;
     let user_permit = chat
         .streams
         .clone()

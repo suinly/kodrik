@@ -364,6 +364,7 @@ export const en = {
   'Запись сохранена.': 'Record saved.',
   'Сохраняется…': 'Saving…',
   'Сохранение этой формы недоступно.': 'Saving is unavailable for this form.',
+  'Сабагент · только просмотр': 'Subagent · read only',
   'Кодрик — личный AI-компаньон': 'Kodrik — your personal AI companion',
   'Аккаунт и оформление': 'Account and appearance',
   'Личный AI-компаньон': 'Your personal AI companion',

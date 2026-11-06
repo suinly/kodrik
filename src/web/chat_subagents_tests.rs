@@ -2,6 +2,81 @@ use super::*;
 use futures::StreamExt;
 
 #[tokio::test]
+async fn child_sessions_are_listed_searchable_and_read_only() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let id = "companion:subagent:listed";
+    for session_id in [id, "companion:private", "companion:wakeup:hidden"] {
+        let mut session = Session::new(SessionId::new(session_id));
+        session.push(Message::User(crate::agent::UserMessage {
+            content: "Проверить авторизацию".into(),
+            files: vec![],
+            images: vec![],
+        }));
+        store.save(&session).await.unwrap();
+    }
+    let parent = store
+        .load(&SessionId::new("companion:private"))
+        .await
+        .unwrap()
+        .unwrap();
+    let child = json!({"id":id,"parent":parent.id().as_str(),"generation":parent.generation(),"submission":"fixture","status":"completed","task":"Проверить авторизацию","result":null,"error":null});
+    store
+        .with_connection(move |db| {
+            db.execute(
+                "INSERT INTO subagent_sessions VALUES(?1,?2,?3,?4)",
+                rusqlite::params![
+                    id,
+                    child["parent"].as_str().unwrap(),
+                    child["generation"].as_str().unwrap(),
+                    serde_json::to_vec(&child)?
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for path in ["sessions", "sessions?q=авторизацию"] {
+        let entries: Vec<Value> = f
+            .request(reqwest::Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["id"], id);
+        assert_eq!(entries[0]["subagent"], true);
+        assert_eq!(entries[0]["title"], "Проверить авторизацию");
+    }
+    let history = f.history(id).await;
+    assert_eq!(history["subagent"], true);
+    assert_eq!(
+        history["messages"][0]["parts"][0]["text"],
+        "Проверить авторизацию"
+    );
+    assert_eq!(
+        f.request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, "send")
+            .json(&json!({"id":id,"text":"do not start a web worker"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
 async fn child_tasks_stream_live_status_and_stop_only_within_their_parent() {
     let fixture = Fixture::new().await;
     let parent = fixture.create().await;
@@ -135,7 +210,7 @@ async fn child_tasks_stream_live_status_and_stop_only_within_their_parent() {
             .await
             .unwrap()
             .status(),
-        404
+        200
     );
     let stopped: Value = fixture
         .request(reqwest::Method::POST, &path)

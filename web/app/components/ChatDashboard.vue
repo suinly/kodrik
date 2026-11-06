@@ -529,16 +529,17 @@ onMounted(() => {
           @click="select(session)">
           <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="sidebar-icon" />
           <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="sidebar-icon animate-spin" :aria-label="t('Выполняется')" />
-          <UIcon v-if="!session.pinned && !session.busy" :name="session.webhook?'i-lucide-webhook':'i-lucide-message-square'" class="sidebar-icon" />
+          <UIcon v-if="!session.pinned && !session.busy" :name="session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" class="sidebar-icon" />
           <span class="min-w-0 flex-1 text-left">
             <UChatShimmer v-if="session.title_pending" :text="shortConversationTitle(session.title)" data-testid="title-shimmer" :aria-label="t('Создаю название диалога')" class="block truncate motion-reduce:animate-none" />
             <span v-else class="block truncate">{{ shortConversationTitle(conversationTitle(session)) }}</span>
             <span v-if="session.webhook" class="block truncate text-xs font-normal text-muted">{{ session.webhook.name }}</span>
+            <span v-if="session.subagent" class="block truncate text-xs font-normal text-muted">{{ t('Сабагент · только просмотр') }}</span>
             <span v-if="session.snippet" class="block truncate text-xs font-normal text-muted">{{ session.snippet }}</span>
             <time v-else-if="session.updated_at" :datetime="session.updated_at" class="block text-xs font-normal text-muted">{{ dateFormat.format(new Date(session.updated_at)) }}</time>
           </span>
         </UButton>
-        <UDropdownMenu :items="[{label:session.pinned?t('Открепить диалог'):t('Закрепить диалог'),icon:session.pinned?'i-lucide-pin-off':'i-lucide-pin',onSelect:()=>togglePin(session)},{label:t('Переименовать'),icon:'i-lucide-pencil',onSelect:()=>manage(session,'rename')},{label:t('Удалить диалог'),icon:'i-lucide-trash-2',color:'error',disabled:session.busy,onSelect:()=>manage(session,'delete')}]">
+        <UDropdownMenu v-if="!session.subagent" :items="[{label:session.pinned?t('Открепить диалог'):t('Закрепить диалог'),icon:session.pinned?'i-lucide-pin-off':'i-lucide-pin',onSelect:()=>togglePin(session)},{label:t('Переименовать'),icon:'i-lucide-pencil',onSelect:()=>manage(session,'rename')},{label:t('Удалить диалог'),icon:'i-lucide-trash-2',color:'error',disabled:session.busy,onSelect:()=>manage(session,'delete')}]">
           <UButton icon="i-lucide-ellipsis" :aria-label="t('Действия с диалогом «{0}»', conversationTitle(session))" color="neutral" variant="ghost" size="sm" class="sidebar-action sidebar-secondary absolute right-1" />
         </UDropdownMenu>
         </div>

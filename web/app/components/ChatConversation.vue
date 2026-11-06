@@ -44,7 +44,7 @@ const prompt = useTemplateRef('prompt')
 const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
 const transcript = useTemplateRef('transcript')
 const transcriptContent = useTemplateRef('transcriptContent')
-const editorLocked = computed(() => loading.value || submitting.value || props.blocked || authExpired.value)
+const editorLocked = computed(() => loading.value || submitting.value || props.blocked || authExpired.value || !!props.conversation.subagent)
 const locked = computed(() => editorLocked.value || stopping.value || resuming.value || busy.value && !!snapshot.value?.cancel_requested)
 const hasDraft = computed(() => !!draft.value.trim() || !!files.value.length)
 const hasInput = computed(() => hasDraft.value || !!pending)
@@ -592,7 +592,8 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
           </template>
         </UAccordion>
       </div>
-      <UChatPrompt v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
+      <p v-if="conversation.subagent" class="text-center text-sm text-muted">{{ t('Сабагент · только просмотр') }}</p>
+      <UChatPrompt v-else v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
         class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
         @submit="submit">
         <template #body>
@@ -621,7 +622,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
         <p v-if="connection" role="status">{{ t(connection) }}</p>
         <p v-if="stopping || hint" role="status" aria-live="polite">{{ stopping ? t("Останавливаю и сохраняю историю…") : t(hint) }}</p>
       </div>
-      <p class="chat-keyboard-hint hidden text-center text-xs text-muted sm:block"> {{ t("Enter — отправить · Shift + Enter — новая строка") }} </p>
+      <p v-if="!conversation.subagent" class="chat-keyboard-hint hidden text-center text-xs text-muted sm:block"> {{ t("Enter — отправить · Shift + Enter — новая строка") }} </p>
     </div>
     <div v-if="homeView" aria-hidden="true" class="min-h-0" />
     </div>
