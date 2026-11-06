@@ -94,6 +94,43 @@ fn page_size() -> usize {
     30
 }
 
+// Only link parents visible in the same listing category; private parents remain orphans.
+fn session_parents(db: &Connection, webhooks: bool) -> anyhow::Result<HashMap<String, String>> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='subagent_sessions')",
+        [], |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(HashMap::new());
+    }
+    let mut statement = db.prepare("SELECT s.id,coalesce(b.root_id,s.id) FROM sessions s
+        LEFT JOIN web_chat_branches b ON b.session_id=s.id
+        WHERE (json_extract(s.payload,'$.webhook_instruction') IS NOT NULL)=?1
+        AND (json_type(s.payload,'$.telegram_group') IS NULL OR json_type(s.payload,'$.telegram_group')='null')")?;
+    let visible: HashMap<String, String> = statement
+        .query_map([webhooks], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<HashMap<String, String>>>()?
+        .into_iter()
+        .filter(|(id, _)| super::listed_session_id(id))
+        .collect();
+    let mut statement = db.prepare("SELECT id,parent FROM subagent_sessions")?;
+    let mut parents = HashMap::new();
+    for row in statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (child, parent) = row?;
+        if !child.starts_with(crate::agent::subagents::PREFIX) {
+            continue;
+        }
+        if let (Some(child), Some(parent)) = (visible.get(&child), visible.get(&parent)) {
+            if child != parent {
+                parents.insert(child.clone(), parent.clone());
+            }
+        }
+    }
+    Ok(parents)
+}
+
 async fn page_sessions(
     chat: &Chat,
     limit: usize,
@@ -101,6 +138,7 @@ async fn page_sessions(
     webhook_events: bool,
 ) -> anyhow::Result<(Vec<Session>, Vec<String>)> {
     chat.sessions.with_connection(move |db| {
+        let parents = session_parents(db, webhook_events)?;
         let mut groups: HashMap<String,(bool,i64)> = HashMap::new();
         let mut statement = db.prepare("SELECT s.id,coalesce(b.root_id,s.id),s.updated_at,
             json_type(s.payload,'$.telegram_group') IS NOT NULL AND json_type(s.payload,'$.telegram_group')!='null',
@@ -117,14 +155,23 @@ async fn page_sessions(
             let pinned: bool = row.get(4)?;
             groups.entry(root).and_modify(|entry| entry.1=entry.1.max(updated)).or_insert((pinned,updated));
         }
-        let mut groups: Vec<_> = groups.into_iter().collect();
+        let mut families: HashMap<String, (bool, i64)> = HashMap::new();
+        for (root, (pinned, updated)) in &groups {
+            let family = parents.get(root).unwrap_or(root);
+            let family_pinned = groups.get(family).is_some_and(|entry| entry.0);
+            families.entry(family.clone()).and_modify(|entry| entry.1 = entry.1.max(*updated))
+                .or_insert((if family == root { *pinned } else { family_pinned }, *updated));
+        }
+        let mut groups: Vec<_> = families.into_iter().collect();
         groups.sort_by(|(a, av),(b,bv)| bv.cmp(av).then_with(|| a.cmp(b)));
         let roots: Vec<_> = groups.into_iter().skip(offset).take(limit).map(|(id,_)|id).collect();
+        let included: Vec<_> = roots.iter().cloned().chain(parents.iter()
+            .filter(|(_, parent)| roots.contains(parent)).map(|(child, _)| child.clone())).collect();
         let mut statement=db.prepare("SELECT s.id,s.payload FROM sessions s
             LEFT JOIN web_chat_branches b ON b.session_id=s.id
             WHERE coalesce(b.root_id,s.id) IN (SELECT value FROM json_each(?1))
             ORDER BY s.updated_at DESC,s.id")?;
-        let mut rows=statement.query([serde_json::to_string(&roots)?])?;
+        let mut rows=statement.query([serde_json::to_string(&included)?])?;
         let mut sessions=vec![];
         while let Some(row)=rows.next()? {
             let session: Session=serde_json::from_slice(&row.get::<_,Vec<u8>>(1)?)?;
@@ -159,6 +206,11 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
     } else {
         (chat.sessions.list().await.map_err(internal)?, None)
     };
+    let parents = chat
+        .sessions
+        .with_connection(move |db| session_parents(db, search.webhooks))
+        .await
+        .map_err(internal)?;
     let branches = branches(chat).await.map_err(internal)?;
     let titles = chat.conversation_titles().await.map_err(internal)?;
     let pins: HashSet<String> = chat
@@ -261,13 +313,18 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
                 .await
                 .map_err(internal)?;
         let updated = group.iter().filter_map(|s| s.last_message_at()).max();
-        result.push(json!({"id":shown.id().as_str(),"root_id":root,"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
+        result.push(json!({"id":shown.id().as_str(),"root_id":root,"parent_id":parents.get(root),"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
     }
     if let Some(roots) = page_roots {
         result.sort_by_key(|session| {
-            roots
-                .iter()
-                .position(|root| Some(root.as_str()) == session["root_id"].as_str())
+            let root = session["root_id"].as_str().unwrap_or_default();
+            let parent = parents.get(root);
+            (
+                roots
+                    .iter()
+                    .position(|family| family == parent.map(String::as_str).unwrap_or(root)),
+                parent.is_some(),
+            )
         });
     } else {
         result.sort_by_key(|session| !session["pinned"].as_bool().unwrap_or(false));

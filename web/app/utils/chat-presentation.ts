@@ -4,6 +4,26 @@ import type {ChatMessage,MessagePart,EnvironmentStatus} from './api'
 export type ToolPart = Extract<MessagePart,{type:'dynamic-tool'}>
 type MessageBlock = {kind:'tools';tools:ToolPart[]} | {kind:'content';part:Exclude<MessagePart,ToolPart>}
 
+type ConversationLink = {id:string;root_id?:string;parent_id?:string|null}
+export function conversationRows<T extends ConversationLink>(sessions:T[]):(T & {nested:boolean})[] {
+  const ids=new Set(sessions.map(session=>session.root_id ?? session.id))
+  const children=new Map<string,T[]>()
+  for(const session of sessions) {
+    if(session.parent_id && ids.has(session.parent_id)) {
+      const siblings=children.get(session.parent_id) ?? []
+      siblings.push(session)
+      children.set(session.parent_id,siblings)
+    }
+  }
+  return sessions.filter(session=>!session.parent_id || !ids.has(session.parent_id)).flatMap(session=>[
+    {...session,nested:false},
+    ...(children.get(session.root_id ?? session.id) ?? []).map(child=>({...child,nested:true})),
+  ])
+}
+export function conversationPageSize(sessions:ConversationLink[]):number {
+  return conversationRows(sessions).filter(session=>!session.nested).length
+}
+
 export function localFileNotice(tool:ToolPart,environment?:Pick<EnvironmentStatus,'state'|'environment'>|null):string {
   if(tool.origin?.tool_id!=='read_file' || tool.attachment_saved===true) return ''
   const key=tool.origin.environment

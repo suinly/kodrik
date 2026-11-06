@@ -122,6 +122,7 @@ body:has(.chat-viewport) {
 .sidebar-section-header { @apply flex min-h-8 shrink-0 items-center gap-1; }
 .sidebar-item { @apply min-h-14 w-full shrink-0 justify-start gap-2.5 rounded-lg px-3 py-2 text-sm font-normal; }
 .sidebar-item[aria-current='page'] { @apply font-medium; }
+.sidebar-child { margin-inline-start: 1.25rem; border-inline-start: 1px solid var(--ui-border); padding-inline-start: 0.25rem; }
 .sidebar-item-with-actions { padding-inline-end: 2.75rem; }
 .sidebar-icon { @apply size-4 shrink-0 text-muted; }
 .sidebar-action { @apply size-8 justify-center p-0 text-muted; }

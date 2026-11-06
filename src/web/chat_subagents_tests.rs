@@ -2,6 +2,152 @@ use super::*;
 use futures::StreamExt;
 
 #[tokio::test]
+async fn child_session_families_link_branches_and_paginate_without_splitting() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    for id in [
+        "family-root",
+        "family-branch",
+        "other-root",
+        "companion:subagent:direct",
+        "companion:subagent:branch",
+    ] {
+        let mut session = Session::new(SessionId::new(id));
+        session.push(Message::User(crate::agent::UserMessage {
+            content: if id.starts_with("companion:") {
+                "child-only-match"
+            } else {
+                "parent"
+            }
+            .into(),
+            files: vec![],
+            images: vec![],
+        }));
+        store.save(&session).await.unwrap();
+    }
+    store.with_connection(|db| {
+        db.execute("INSERT INTO web_chat_branches VALUES('family-branch','family-root','family-root',0)", [])?;
+        db.execute("INSERT INTO web_chat_selection VALUES('family-root','family-branch')", [])?;
+        for (id, parent) in [("companion:subagent:direct", "family-root"), ("companion:subagent:branch", "family-branch")] {
+            db.execute("INSERT INTO subagent_sessions VALUES(?1,?2,'generation',?3)", rusqlite::params![id, parent, b"{}".as_slice()])?;
+        }
+        db.execute("UPDATE sessions SET updated_at=100", [])?;
+        db.execute("UPDATE sessions SET updated_at=200 WHERE id='other-root'", [])?;
+        db.execute("UPDATE sessions SET updated_at=300 WHERE id LIKE 'companion:subagent:%'", [])?;
+        Ok(())
+    }).await.unwrap();
+    let first: Vec<Value> = f
+        .request(reqwest::Method::GET, "sessions?limit=1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        first.len(),
+        3,
+        "one page must include the complete most-active family"
+    );
+    assert_eq!(first[0]["root_id"], "family-root");
+    assert_eq!(first[0]["id"], "family-branch");
+    assert!(first[0]["parent_id"].is_null());
+    let children: std::collections::HashSet<_> = first[1..]
+        .iter()
+        .map(|row| {
+            assert_eq!(row["parent_id"], "family-root");
+            row["id"].as_str().unwrap()
+        })
+        .collect();
+    assert_eq!(
+        children,
+        std::collections::HashSet::from(["companion:subagent:direct", "companion:subagent:branch"])
+    );
+    let next: Vec<Value> = f
+        .request(reqwest::Method::GET, "sessions?limit=1&offset=1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0]["root_id"], "other-root");
+    let found: Vec<Value> = f
+        .request(reqwest::Method::GET, "sessions?q=child-only-match&limit=1")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0]["parent_id"], "family-root",
+        "search keeps orphan hits linked without adding parents"
+    );
+}
+
+#[tokio::test]
+async fn child_session_links_do_not_cross_webhook_categories() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut parent = Session::new(SessionId::new("webhook-parent"));
+    parent.webhook_instruction = Some("webhook".into());
+    store.save(&parent).await.unwrap();
+    store
+        .save(&Session::new(SessionId::new("companion:subagent:personal")))
+        .await
+        .unwrap();
+    store.with_connection(|db| {
+        db.execute("INSERT INTO subagent_sessions VALUES('companion:subagent:personal','webhook-parent','generation',?1)", [b"{}".as_slice()])?;
+        Ok(())
+    }).await.unwrap();
+    for (path, expected) in [
+        ("sessions?limit=1", "companion:subagent:personal"),
+        ("sessions?webhooks=true&limit=1", "webhook-parent"),
+    ] {
+        let rows: Vec<Value> = f
+            .request(reqwest::Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], expected);
+        assert!(rows[0]["parent_id"].is_null());
+    }
+}
+
+#[tokio::test]
+async fn session_listing_without_subagent_metadata_table_still_works() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    store
+        .with_connection(|db| {
+            db.execute_batch("DROP TABLE subagent_sessions")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let rows: Vec<Value> = f
+        .request(reqwest::Method::GET, "sessions")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], id);
+}
+
+#[tokio::test]
 async fn child_sessions_are_listed_searchable_and_read_only() {
     use crate::agent::session::{Session, SessionId};
     let f = Fixture::new().await;
@@ -49,6 +195,7 @@ async fn child_sessions_are_listed_searchable_and_read_only() {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["id"], id);
         assert_eq!(entries[0]["subagent"], true);
+        assert!(entries[0]["parent_id"].is_null());
         assert_eq!(entries[0]["title"], "Проверить авторизацию");
     }
     let history = f.history(id).await;

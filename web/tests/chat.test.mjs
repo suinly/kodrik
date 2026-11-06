@@ -63,6 +63,53 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('sidebar keeps subagents below their parent with indentation across pagination and search', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.setViewportSize({width:1280,height:900});
+    const parents=Array.from({length:30},(_,index)=>({id:index===0?id:`parent-${index}`,title:`Parent ${index}`,busy:false,updated_at:null}));
+    const child={id:'companion:subagent:sidebar-child',parent_id:id,title:'Child task',subagent:true,busy:false,updated_at:null};
+    const later={id:'later-parent',title:'Older parent',busy:false,updated_at:null};
+    const offsets=[];
+    await page.route('**/api/chat/sessions?*',route=>{
+      const params=new URL(route.request().url()).searchParams;
+      if(params.get('q')) return route.fulfill({json:[child]});
+      const offset=Number(params.get('offset'));offsets.push(offset);
+      return route.fulfill({json:offset===0?[child,...parents]:[later]});
+    });
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    const nav=page.getByRole('navigation',{name:'История диалогов',exact:true});
+    const parent=nav.locator(`[data-conversation-id="${id}"]`);
+    const task=nav.locator(`[data-conversation-id="${child.id}"]`);
+    await expect(task).toBeVisible();
+    assert.deepEqual((await nav.locator('[data-conversation-id]').evaluateAll(nodes=>nodes.map(node=>node.dataset.conversationId))).slice(0,3),[id,child.id,'parent-1']);
+    const parentBox=await parent.boundingBox(),childBox=await task.boundingBox();
+    assert.ok(childBox.x>=parentBox.x+16 && childBox.y>=parentBox.y+parentBox.height);
+    await expect(task).toContainText('Сабагент · только просмотр');
+    await page.screenshot({path:'/tmp/kodrik-sidebar-children-desktop.png',fullPage:true,animations:'disabled'});
+    await nav.getByRole('button',{name:'Показать ещё',exact:true}).click();
+    await expect(nav.locator('[data-conversation-id="later-parent"]')).toBeVisible();
+    assert.ok(offsets.includes(30),JSON.stringify(offsets));
+    assert.ok(!offsets.includes(31),JSON.stringify(offsets));
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
+    await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Child task');
+    await expect(nav.locator('[data-conversation-id]')).toHaveCount(1);
+    await expect(task).toBeVisible();
+    await expect(task.locator('..')).not.toHaveClass(/sidebar-child/);
+    await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('');
+    await expect(parent).toBeVisible();
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await expect(task).toBeVisible();
+    const mobileParent=await parent.boundingBox(),mobileChild=await task.boundingBox();
+    assert.ok(mobileChild.x>=mobileParent.x+16 && mobileChild.y>=mobileParent.y+mobileParent.height);
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kodrik-sidebar-children-mobile.png',fullPage:true,animations:'disabled'});
+  } finally {await browser.close()}
+});
+
 test('chat shows compaction progress and terminal states', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

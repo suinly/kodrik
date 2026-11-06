@@ -2,7 +2,7 @@
 import {createReusableTemplate, useIntervalFn, useMediaQuery} from '@vueuse/core'
 import {locale, t} from '../utils/i18n'
 import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
-import {conversationTitle,shortConversationTitle} from '../utils/chat-presentation'
+import {conversationTitle,shortConversationTitle,conversationRows,conversationPageSize} from '../utils/chat-presentation'
 import {useWebhooks} from '../utils/webhooks'
 import {initializePush, pushEnabled, updatePushPresence, refreshPushPermission} from '../utils/push'
 
@@ -80,7 +80,7 @@ const management = ref<'rename'|'delete'|null>(null)
 const title = ref('')
 const saving = ref(false)
 const drafts = reactive<Record<string,ConversationDraft>>({})
-const visibleSessions = sessions
+const visibleSessions = computed(()=>conversationRows(sessions.value))
 const pageSize=30
 let listQuery=''
 let nextOffset=0
@@ -108,8 +108,9 @@ async function loadSessions(reset=false) {
         if(index<0) items.push(item)
         else items[index]=item
       }
-      offset+=found.length
-      more=found.length===pageSize
+      const count=query ? found.length : conversationPageSize(found)
+      offset+=count
+      more=count===pageSize
     } while(reset && more && offset<target)
     sessions.value=items
     listQuery=queryKey
@@ -520,7 +521,7 @@ onMounted(() => {
       </SidebarSearch>
       <template v-if="section==='chat' || showEvents">
       <nav :aria-label="t(showEvents?'История событий':'История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
-        <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" class="sidebar-row relative flex shrink-0 items-center">
+        <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" :class="{'sidebar-child':session.nested}" :data-parent-id="session.parent_id ?? undefined" class="sidebar-row relative flex shrink-0 items-center">
         <UButton
           :aria-label="conversationTitle(session)" :title="conversationTitle(session)" :data-conversation-id="session.id" color="neutral"
           :variant="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'soft' : 'ghost'"

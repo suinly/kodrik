@@ -2,7 +2,23 @@ import {setLanguage} from '../app/utils/i18n.ts';
 setLanguage('ru');
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody,localFileNotice} from '../app/utils/chat-presentation.ts';
+import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody,localFileNotice,conversationRows,conversationPageSize} from '../app/utils/chat-presentation.ts';
+
+test('sidebar groups child sessions below the selected parent branch without losing orphan search results',()=>{
+  const sessions=[
+    {id:'child',parent_id:'parent',subagent:true},
+    {id:'other'},
+    {id:'branch',root_id:'parent'},
+    {id:'child-two',parent_id:'parent',subagent:true},
+    {id:'orphan',parent_id:'missing',subagent:true},
+  ];
+  assert.deepEqual(conversationRows(sessions).map(row=>[row.id,row.nested]),[
+    ['other',false],['branch',false],['child',true],['child-two',true],['orphan',false],
+  ]);
+  assert.equal(conversationPageSize(sessions),3);
+  assert.equal(conversationPageSize(sessions.slice(0,1)),1);
+  assert.deepEqual(conversationRows([]),[]);
+});
 
 test('webhook code displays JSON with indentation and keeps non-JSON payloads literal',()=>{
   for(const [raw,formatted] of [
