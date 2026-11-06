@@ -73,6 +73,18 @@ impl App {
             std::time::Instant::now() + std::time::Duration::from_secs(3),
         ));
     }
+    pub fn expire_copy_notice(&mut self, now: std::time::Instant) -> bool {
+        if self
+            .copy_notice
+            .as_ref()
+            .is_some_and(|(_, until)| now >= *until)
+        {
+            self.copy_notice = None;
+            return true;
+        }
+        false
+    }
+
     pub fn command_suggestions(&self) -> Vec<(&'static str, &'static str)> {
         if self.remote_grant.is_some()
             || self.approval.is_some()
@@ -610,6 +622,22 @@ pub enum ToolState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_notice_expires_and_replacement_gets_its_own_deadline() {
+        let mut app = App::default();
+        app.set_copy_notice("First copy".into());
+        let first_deadline = app.copy_notice.as_ref().unwrap().1;
+        assert!(!app.expire_copy_notice(first_deadline - std::time::Duration::from_millis(1)));
+        assert!(app.copy_notice.is_some());
+        app.set_copy_notice("Second copy".into());
+        assert!(!app.expire_copy_notice(first_deadline));
+        let second_deadline = app.copy_notice.as_ref().unwrap().1;
+        assert_eq!(app.copy_notice.as_ref().unwrap().0, "Second copy");
+        assert!(app.expire_copy_notice(second_deadline));
+        assert!(app.copy_notice.is_none());
+        assert!(!app.expire_copy_notice(second_deadline));
+    }
 
     fn key(app: &mut App, code: KeyCode) -> Option<String> {
         app.update(KeyEvent::new(code, KeyModifiers::NONE))

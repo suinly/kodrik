@@ -470,10 +470,7 @@ async fn run_session_inner(
             }
             _ = tick.tick() => {
                 redraw |= app.view.tick(&mut app.scroll);
-                if app.copy_notice.as_ref().is_some_and(|(_, until)| std::time::Instant::now() >= *until) {
-                    app.copy_notice = None;
-                    redraw = true;
-                }
+                redraw |= app.expire_copy_notice(std::time::Instant::now());
                 if matches!(app.status, Status::Recovering | Status::Working | Status::Stopping) {
                     app.animation_frame = app.animation_frame.wrapping_add(1);
                     redraw = true;

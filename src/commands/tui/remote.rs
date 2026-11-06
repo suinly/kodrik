@@ -757,6 +757,7 @@ async fn event_loop(
                 None=>std::future::pending().await,
             }}=>remote.receive_sessions(app,result),
             _=tick.tick()=>{
+                app.expire_copy_notice(std::time::Instant::now());
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
                     let _=remote.detach().await;
