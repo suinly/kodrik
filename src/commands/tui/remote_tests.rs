@@ -155,6 +155,7 @@ fn remote_tool_display_uses_short_name_and_device_without_internal_ids() {
     part["toolName"] = json!("local__exec__719e6926f958f45893bc00ee50e2e1ae");
     part["origin"] = json!({"label":"macbook-pro","project_root":"/Volumes/SamsungT5/Projects/Personal/kodrik","tool_id":"exec_command","environment":{"generation":"27a00aff-d9da-43ee-874d-1174f180c23c"}});
     part["output"] = json!({"exit_code":0,"stdout":"","stderr":""});
+    part["input"] = json!({"cmd":"cargo test -q"});
     let mut app = App::default();
     remote::project(&mut app, &view).unwrap();
     let text = app
@@ -164,7 +165,7 @@ fn remote_tool_display_uses_short_name_and_device_without_internal_ids() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        text.contains("exec_command · macbook-pro — exit 0"),
+        text.contains("exec_command · macbook-pro: cargo test -q — exit 0"),
         "{text}"
     );
     for hidden in ["local__", "27a00aff", "/Volumes/", "[Device:"] {

@@ -992,7 +992,10 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             if name == "update_plan" {
                 return true;
             }
-            let detail = match name.as_str() {
+            let detail = match name
+                .split_once(" · ")
+                .map_or(name.as_str(), |(tool, _)| tool)
+            {
                 "exec_command" => arguments.get("cmd"),
                 "apply_patch" => arguments.get("workdir"),
                 "view_image" => arguments.get("path"),

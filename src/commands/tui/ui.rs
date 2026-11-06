@@ -389,11 +389,11 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 Style::default().fg(if app.selected_versions().is_some() {
                     Color::Cyan
                 } else {
-                    Color::DarkGray
+                    Color::Gray
                 }),
             ),
         ]))
-        .style(Style::default().fg(Color::DarkGray)),
+        .style(Style::default().fg(Color::Gray)),
         Rect::new(layout[0].x, layout[0].y + 1, layout[0].width, 1),
     );
 
@@ -811,7 +811,7 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
                 && !removed.is_empty()
             {
                 Line::from(vec![
-                    Span::styled(format!("{path}  "), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("{path}  "), Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("+{added}"),
                         Style::default().fg(Color::Rgb(105, 160, 115)),
@@ -822,7 +822,7 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
                     ),
                 ])
             } else {
-                Line::styled(line.to_owned(), Style::default().fg(Color::DarkGray))
+                Line::styled(line.to_owned(), Style::default().fg(Color::Gray))
             }
         }));
         ratatui::text::Text::from(text)
@@ -852,6 +852,28 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn status_and_command_output_use_readable_secondary_text() {
+        let mut app = App::default();
+        app.push_tool_message("exec_command: pwd\n  stdout │ /work".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for needle in ["Ready", "stdout"] {
+            let y = (0..24)
+                .find(|&y| {
+                    (0..80)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap();
+            let row = (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            let x = row[..row.find(needle).unwrap()].chars().count() as u16;
+            assert_eq!(buffer[(x, y)].fg, Color::Gray, "{needle}");
+        }
+    }
 
     #[test]
     fn remote_footer_shortens_provider_model_prefix() {
