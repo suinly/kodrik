@@ -222,7 +222,6 @@ export const en = {
   'Сообщение превышает 32 KiB текста.': 'Message exceeds 32 KiB of text.',
   'Не удалось сохранить черновик в браузере. Не закрывайте вкладку до отправки.': 'Could not save the draft in your browser. Keep this tab open until you send it.',
   'Очередь приостановлена. Нажмите «Продолжить очередь».': 'Queue paused. Select “Resume queue”.',
-  'Выполнение остановлено. Можно отправить новое сообщение.': 'Run stopped. You can send another message.',
   'Останавливаю и сохраняю историю…': 'Stopping and saving history…',
   'Остановлено': 'Stopped',
   'Агент не смог завершить ответ. История сохранена.': 'The agent could not finish its reply. History has been saved.',

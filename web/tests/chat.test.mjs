@@ -63,6 +63,50 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('opening a child conversation from the sidebar stays read-only without selection errors',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  await request('send',{id,text:'subagents'});
+  let child;
+  await expect.poll(async()=>{
+    const snapshot=await(await request(`sessions/${id}/run`)).json();
+    child=snapshot.subagents?.find(agent=>agent.status==='completed');
+    return !!child;
+  }).toBe(true);
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.setViewportSize({width:1280,height:900});
+    const selections=[];
+    page.on('request',req=>{if(req.url().endsWith(`/sessions/${child.id}/select`)) selections.push(req.url())});
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    await page.locator(`[data-conversation-id="${child.id}"]`).click();
+    await expect(page.locator('.message').getByText('Проверка тестов завершена',{exact:true})).toBeVisible();
+    await expect(page.getByText('Сабагент · только просмотр',{exact:true}).last()).toBeVisible();
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toHaveCount(0);
+    await expect(page.getByText('Диалог удалён или не найден.',{exact:true})).toHaveCount(0);
+    assert.deepEqual(selections,[]);
+    await page.reload();
+    await expect(page.locator('.message').getByText('Проверка тестов завершена',{exact:true})).toBeVisible();
+  } finally {await browser.close()}
+});
+
+test('stopped conversations without queued messages do not show the obsolete run hint',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:'Cancelled',blocked_reason:'Stopped by user',live:{current:null,interrupted:null},plan:null,queued:[],messages:[]};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
+    await expect(page.getByRole('textbox',{name:'Сообщение',exact:true})).toBeEditable();
+    await expect(page.getByText('Выполнение остановлено. Можно отправить новое сообщение.',{exact:true})).toHaveCount(0);
+    snapshot.queued=[{id:'queued',text:'Pending message'}];snapshot.revision++;
+    await page.reload();
+    await expect(page.getByText('Очередь приостановлена. Нажмите «Продолжить очередь».',{exact:true})).toBeVisible();
+  } finally {await browser.close()}
+});
+
 test('sidebar keeps subagents below their parent with indentation across pagination and search', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

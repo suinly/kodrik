@@ -264,7 +264,7 @@ function select(conversation: Conversation, preserveView = false) {
   conversationSearchOpen.value=!!conversationSearch.value
   menu.value = false
   if(!focusAfterMenu) void nextTick(()=>conversationView.value?.focusInput())
-  api(`sessions/${conversation.id}/select`,'POST').catch(reason=>{error.value=messageOf(reason)})
+  if(!conversation.subagent) api(`sessions/${conversation.id}/select`,'POST').catch(reason=>{error.value=messageOf(reason)})
 }
 
 function sidebarCloseFocus(event:Event) {

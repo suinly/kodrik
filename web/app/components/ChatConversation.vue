@@ -182,7 +182,7 @@ function receive(view: Snapshot) {
   }
   busy.value = view.busy
   if (view.cancel_requested || !view.busy) stopping.value = false
-  hint.value = view.blocked_reason ? view.queued.length ? t("Очередь приостановлена. Нажмите «Продолжить очередь».") : t("Выполнение остановлено. Можно отправить новое сообщение.") :
+  hint.value = view.blocked_reason ? view.queued.length ? t("Очередь приостановлена. Нажмите «Продолжить очередь».") : '' :
     view.cancel_requested && view.busy ? t("Останавливаю и сохраняю историю…") :
     view.phase === 'Cancelled' ? t("Остановлено") :
     typeof view.phase === 'object' && view.phase?.Failed ? t("Агент не смог завершить ответ. История сохранена.") :
