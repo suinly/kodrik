@@ -583,7 +583,25 @@ mod tests {
         let reopened = Sandbox::new(root.path().join("group"));
         let catalog = reopened.prepare_input(&mut input).await.unwrap();
         assert!(catalog.contains("GROUP_PROCEDURE"));
-        assert!(catalog.contains("/skills/group-only/SKILL.md"));
+        let skill: serde_json::Value = catalog
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|row| row["name"] == "group-only")
+            .unwrap();
+        let path = Path::new("/skills").join(skill["path"].as_str().unwrap());
+        let output = reopened
+            .execute(
+                "exec_command",
+                json!({"cmd":format!("cat {}", path.display())}),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.output["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("GROUP_PROCEDURE")
+        );
         let other = Sandbox::new(root.path().join("other"));
         assert!(
             !other

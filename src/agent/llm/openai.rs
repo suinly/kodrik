@@ -408,6 +408,15 @@ impl OpenAiLlm {
             })
             .collect();
 
+        // Sizes only: never log prompts, tool arguments or attachment contents.
+        log::debug!(
+            "LLM request context: instructions_bytes={} tools_bytes={} messages_bytes={} tools_count={}",
+            context.instructions.len(),
+            serde_json::to_vec(&api_tools)?.len(),
+            serde_json::to_vec(&input_items)?.len(),
+            api_tools.len(),
+        );
+
         let mut request = CreateResponseArgs::default()
             .model(&self.model)
             .instructions(context.instructions.as_ref())

@@ -75,7 +75,9 @@ impl ContextBuilder {
         if session.companion_snapshot().is_none()
             && let Some(companion) = &self.companion
         {
-            session.initialize_companion_snapshot(companion.snapshot()?);
+            session.initialize_companion_snapshot(
+                companion.snapshot_without_memory(session.memory_snapshot().unwrap_or_default())?,
+            );
         }
         if session.system_prompt().is_none() {
             let mut prompt = self.system_prompt.clone();

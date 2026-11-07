@@ -649,7 +649,10 @@ mod tests {
                 );
                 assert!(outputs[4]["error"].is_string());
                 if isolated {
-                    assert!(instructions.contains("/skills/"));
+                    assert!(
+                        instructions
+                            .contains("Root for relative paths and new user skills: /skills")
+                    );
                     assert!(!instructions.contains(owner.to_str().unwrap()));
                     assert!(
                         !last["tools"]
