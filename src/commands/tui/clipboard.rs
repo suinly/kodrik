@@ -11,6 +11,7 @@ pub enum CopyOutcome {
 #[derive(Default)]
 struct Environment {
     remote: bool,
+    herdr: bool,
     tmux: bool,
     wayland: bool,
     x11: bool,
@@ -18,13 +19,17 @@ struct Environment {
 }
 
 impl Environment {
+    fn can_read_image(&self) -> bool {
+        !self.remote && !self.tmux
+    }
+
     fn detect() -> Self {
         let tmux = std::env::var_os("TMUX").is_some() || std::env::var_os("TMUX_PANE").is_some();
         Self {
             remote: tmux
                 || std::env::var_os("SSH_TTY").is_some()
-                || std::env::var_os("SSH_CONNECTION").is_some()
-                || std::env::var("HERDR_ENV").is_ok_and(|value| value == "1"),
+                || std::env::var_os("SSH_CONNECTION").is_some(),
+            herdr: std::env::var("HERDR_ENV").is_ok_and(|value| value == "1"),
             tmux,
             wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
             x11: std::env::var_os("DISPLAY").is_some(),
@@ -56,7 +61,7 @@ fn osc52(text: &str, tmux: bool) -> io::Result<String> {
 }
 
 fn native_commands(environment: &Environment) -> Vec<(&'static str, &'static [&'static str])> {
-    if environment.remote {
+    if environment.remote || environment.herdr {
         return Vec::new();
     }
     if cfg!(target_os = "macos") {
@@ -150,12 +155,38 @@ mod tests {
     fn remote_sessions_never_write_to_the_servers_native_clipboard() {
         let environment = Environment {
             remote: true,
+            herdr: false,
             tmux: true,
             wayland: true,
             x11: true,
             wsl: true,
         };
         assert!(native_commands(&environment).is_empty());
+    }
+
+    #[test]
+    fn local_herdr_can_read_images_but_ssh_and_tmux_cannot() {
+        let local = Environment {
+            herdr: true,
+            ..Default::default()
+        };
+        assert!(local.can_read_image());
+        assert!(native_commands(&local).is_empty());
+        assert!(
+            !Environment {
+                remote: true,
+                herdr: true,
+                ..Default::default()
+            }
+            .can_read_image()
+        );
+        assert!(
+            !Environment {
+                tmux: true,
+                ..Default::default()
+            }
+            .can_read_image()
+        );
     }
 
     #[cfg(unix)]
@@ -195,4 +226,63 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
+}
+
+pub(super) async fn image_bytes() -> anyhow::Result<Vec<u8>> {
+    use anyhow::{Context, ensure};
+    use tokio::io::AsyncReadExt;
+    let environment = Environment::detect();
+    ensure!(
+        environment.can_read_image(),
+        "Clipboard images are unavailable over SSH/tmux; paste a file path instead"
+    );
+    let mut command;
+    // macOS AppleScript can read PNG clipboard data without an extra dependency.
+    let temporary = tempfile::NamedTempFile::new()?;
+    if cfg!(target_os = "macos") {
+        command = Command::new("osascript");
+        command.args(["-e", "on run argv\nset f to open for access POSIX file (item 1 of argv) with write permission\ntry\nset eof f to 0\nwrite (the clipboard as «class PNGf») to f\nclose access f\non error msg\nclose access f\nerror msg\nend try\nend run", temporary.path().to_str().context("Invalid clipboard path")?]);
+    } else if environment.wayland {
+        command = Command::new("wl-paste");
+        command.args(["--no-newline", "--type", "image/png"]);
+    } else if environment.x11 {
+        command = Command::new("xclip");
+        command.args(["-selection", "clipboard", "-t", "image/png", "-o"]);
+    } else {
+        anyhow::bail!("Use an image file path; native clipboard images are not supported here");
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command.spawn().context("Cannot read image clipboard")?;
+    let operation = async {
+        let mut bytes = Vec::new();
+        child
+            .stdout
+            .take()
+            .context("No clipboard output")?
+            .take((crate::agent::image::MAX_IMAGE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await?;
+        ensure!(
+            bytes.len() <= crate::agent::image::MAX_IMAGE_BYTES,
+            "Clipboard image exceeds 10 MiB"
+        );
+        ensure!(
+            child.wait().await?.success(),
+            "Clipboard contains no PNG image"
+        );
+        if cfg!(target_os = "macos") {
+            let file = tokio::fs::File::open(temporary.path()).await?;
+            file.take((crate::agent::image::MAX_IMAGE_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .await?;
+        }
+        Ok(bytes)
+    };
+    tokio::time::timeout(Duration::from_secs(2), operation)
+        .await
+        .context("Clipboard read timed out")?
 }

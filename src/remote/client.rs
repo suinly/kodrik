@@ -508,7 +508,12 @@ impl ChatClient {
         let bytes =
             serde_json::to_vec(&command).map_err(|_| anyhow::anyhow!("Invalid remote command"))?;
         ensure!(
-            bytes.len() <= MAX_COMMAND_BYTES,
+            bytes.len()
+                <= if matches!(command, ChatCommand::SendImages { .. }) {
+                    super::protocol::MAX_IMAGE_COMMAND_BYTES
+                } else {
+                    MAX_COMMAND_BYTES
+                },
             "Remote command exceeds limit"
         );
         // Never retry here: the caller retains request_id to resolve an uncertain send/edit.

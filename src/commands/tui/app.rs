@@ -17,6 +17,7 @@ pub struct App {
     pub compacting: bool,
     pub compaction_progress: Option<crate::agent::CompactionProgress>,
     pub input: String,
+    pub input_images: Vec<crate::agent::Image>,
     pub input_cursor: usize,
     pub input_width: usize,
     pub commands_dismissed: bool,
@@ -492,13 +493,14 @@ impl App {
             KeyCode::Char('c' | 'C' | 'с' | 'С')
                 if key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                if self.input.is_empty() {
+                if self.input.is_empty() && self.input_images.is_empty() {
                     self.should_quit = true;
                 } else {
                     self.navigation.clear_history();
                     self.commands_dismissed = false;
                     self.command_index = 0;
                     self.input.clear();
+                    self.input_images.clear();
                     self.input_cursor = 0;
                 }
             }
@@ -515,7 +517,7 @@ impl App {
             KeyCode::Enter
                 if (!matches!(self.status, Status::Recovering | Status::Stopping)
                     || super::approvals::is_command(&self.input))
-                    && !self.input.trim().is_empty() =>
+                    && (!self.input.trim().is_empty() || !self.input_images.is_empty()) =>
             {
                 if matches!(self.status, Status::Working)
                     && matches!(self.input.trim(), "/new" | "/sessions")
@@ -548,7 +550,11 @@ impl App {
                 {
                     return Some(command.to_owned());
                 }
-                self.push_user_message(input.clone());
+                self.push_user_message(if self.input_images.is_empty() {
+                    input.clone()
+                } else {
+                    format!("{}\n[Images: {}]", input, self.input_images.len())
+                });
                 if !matches!(self.status, Status::Working) {
                     self.task_started_at = Some(chrono::Utc::now());
                     self.task_finished_at = None;

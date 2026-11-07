@@ -17,7 +17,9 @@ pub(super) fn routes(state: WebState) -> Router<WebState> {
             "/api/remote/chat/sessions/{id}/attachments/{message}/{kind}/{index}",
             get(native_attachment),
         )
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(DefaultBodyLimit::max(
+            crate::remote::protocol::MAX_IMAGE_COMMAND_BYTES,
+        ))
         .route_layer(middleware::from_fn_with_state(state, authorize))
 }
 

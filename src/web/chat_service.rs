@@ -535,6 +535,26 @@ impl Chat {
                     .await
                     .map_err(|e| internal(e.into()))?
             }
+            ChatCommand::SendImages {
+                request_id,
+                text,
+                images,
+            } => {
+                let uploads = tokio::task::spawn_blocking(move || {
+                    crate::web::chat_upload::image_uploads(images)
+                })
+                .await
+                .map_err(|e| internal(e.into()))?
+                .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
+                let input = Input {
+                    id: id.as_str().into(),
+                    request_id: request_id.to_string(),
+                    text,
+                };
+                tokio::spawn(admit_message(self.clone(), input, uploads, true))
+                    .await
+                    .map_err(|e| internal(e.into()))?
+            }
             ChatCommand::New => self.create_conversation().await,
             ChatCommand::Stop => {
                 self.stop_conversation(id.as_str().into()).await?;

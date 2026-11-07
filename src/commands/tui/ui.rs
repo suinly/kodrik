@@ -400,7 +400,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         Paragraph::new(Line::from(vec![
             Span::raw(format!(" {animation_frame} {state}")),
             Span::styled(
-                format!("{done_at}{elapsed}"),
+                format!(
+                    "{done_at}{elapsed}{}",
+                    if app.input_images.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · Images: {} · Ctrl+C clear", app.input_images.len())
+                    }
+                ),
                 Style::default().fg(if app.selected_versions().is_some() {
                     Color::Cyan
                 } else {

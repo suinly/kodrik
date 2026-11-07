@@ -244,3 +244,19 @@ Start at the [documentation index](docs/index.md), or go directly to:
 
 Kodrik is licensed under the [MIT License](LICENSE).
 Third-party components retain their respective licenses.
+
+### Images in TUI
+
+Paste an absolute PNG, JPEG or WebP file path (quoted paths and escaped spaces
+are supported), or press **Ctrl+V** to attach a clipboard image. Add a prompt
+if needed, then press **Enter**; image-only messages also work. The composer
+shows the attachment count; **Ctrl+C** clears the draft and attachments.
+Up to four images are allowed per message, each at most 10 MiB and 32 million
+pixels. Recognition uses the configured model and requires vision support.
+
+Clipboard images use macOS native clipboard access, `wl-paste` on Wayland or
+`xclip` on X11. Over SSH/tmux, or on unsupported platforms, paste an image file
+path instead. In remote TUI, local images are uploaded to the server without
+requiring `/attach`; both client and server need image-capable versions.
+New attachments are not added while editing a previous message (its existing
+attachments remain unchanged).

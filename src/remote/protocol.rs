@@ -186,12 +186,19 @@ pub(crate) struct RemoteChatSnapshot {
     pub environment: Option<EnvironmentStatus>,
 }
 
+pub(crate) const MAX_IMAGE_COMMAND_BYTES: usize = 56 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ChatCommand {
     Send {
         request_id: Uuid,
         text: String,
+    },
+    SendImages {
+        request_id: Uuid,
+        text: String,
+        images: Vec<crate::agent::Image>,
     },
     SubmissionStatus {
         request_id: Uuid,

@@ -2,6 +2,7 @@ mod app;
 mod approvals;
 mod clipboard;
 mod herdr;
+mod images;
 mod instance;
 mod markdown;
 mod navigation;
@@ -215,6 +216,7 @@ async fn run_session_inner(
                         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
                             continue;
                         }
+                        if images::key(key) { images::clipboard(&mut app).await; redraw = true; continue; }
                         match selection_command(&mut app, key) {
                             Some(SelectionCommand::Clear) => { app.navigation.escape = None; redraw = true; continue; }
                             Some(SelectionCommand::Copy(text)) => {
@@ -354,17 +356,17 @@ async fn run_session_inner(
                                 redraw = true;
                                 continue;
                             }
-                            let message=IncomingMessage::new(InterfaceId("cli".into()),session_id.as_str().strip_prefix("cli:").unwrap(),input);
+                            let message=images::message(&app, session_id.as_str(), input);
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
-                                Ok(_)=>{input_tx.send(message)?;},
-                                Err(error)=>{app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
+                                Ok(_)=>{app.input_images.clear();input_tx.send(message)?;},
+                                Err(error)=>{app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
                             }
                         }
                         redraw = true;
                     }
                     Ok(Event::Paste(text)) => {
                         app.view.clear_selection();
-                        if app.sessions.is_none() { app.insert_input(&text); }
+                        images::paste(&mut app, &text).await;
                         redraw = true;
                     }
                     Ok(Event::Mouse(mouse)) => {
@@ -720,7 +722,11 @@ fn restore_history(app: &mut App, session: &Session) {
     app.plan_completed = false;
     for message in session.messages() {
         match message {
-            Message::User(message) => app.push_user_message(message.content.clone()),
+            Message::User(message) => app.push_user_message(if message.images.is_empty() {
+                message.content.clone()
+            } else {
+                format!("{}\n[Images: {}]", message.content, message.images.len())
+            }),
             Message::Assistant(message) => app.push_kodrik_message(message.content.clone()),
             Message::ToolCall(call) => {
                 show_progress(

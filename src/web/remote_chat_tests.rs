@@ -1727,3 +1727,41 @@ async fn native_snapshot_retains_total_run_time_after_completion() {
         chat.remote_snapshot(&id).await.unwrap().run.unwrap()["finished_at"]
     );
 }
+
+#[tokio::test]
+async fn native_image_send_preserves_vision_payload_and_deduplicates() {
+    let (_dir, chat, _state, id) = fixture().await;
+    let command = ChatCommand::SendImages {
+        request_id: uuid::Uuid::new_v4(),
+        text: String::new(),
+        images: vec![
+            crate::agent::Image::from_bytes(&crate::agent::image::tests::sample(
+                image::ImageFormat::Png,
+            ))
+            .unwrap(),
+        ],
+    };
+    let first = chat.remote_command(&id, command.clone()).await.unwrap();
+    let second = chat.remote_command(&id, command).await.unwrap();
+    assert_eq!(first["submission_id"], second["submission_id"]);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while chat.sessions.session_busy(id.as_str()).await.unwrap()
+            || chat.runs.lock().await.contains(id.as_str())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let saved = chat.sessions.load(&id).await.unwrap().unwrap();
+    let images: Vec<_> = saved
+        .messages()
+        .iter()
+        .filter_map(|m| match m {
+            crate::agent::message::Message::User(m) if !m.images.is_empty() => Some(&m.images),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0][0].width, 2);
+}

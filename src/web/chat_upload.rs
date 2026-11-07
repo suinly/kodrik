@@ -157,3 +157,37 @@ impl Drop for Attachments {
         }
     }
 }
+
+pub(super) fn image_uploads(images: Vec<Image>) -> anyhow::Result<Vec<Upload>> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    anyhow::ensure!(
+        !images.is_empty() && images.len() <= 4,
+        "Expected 1–4 images"
+    );
+    images
+        .into_iter()
+        .map(|image| {
+            let (prefix, encoded) = image
+                .data_url
+                .split_once(',')
+                .ok_or_else(|| anyhow::anyhow!("Invalid image data URL"))?;
+            anyhow::ensure!(
+                encoded.len() <= crate::agent::image::MAX_IMAGE_BYTES.div_ceil(3) * 4,
+                "Image exceeds 10 MiB"
+            );
+            let (extension, mime) = match prefix {
+                "data:image/png;base64" => ("png", "image/png"),
+                "data:image/jpeg;base64" => ("jpg", "image/jpeg"),
+                "data:image/webp;base64" => ("webp", "image/webp"),
+                _ => anyhow::bail!("Invalid image data URL"),
+            };
+            let bytes = STANDARD.decode(encoded)?;
+            // Attachments::save validates decoded bytes and derives dimensions, never trusts the client.
+            Ok(Upload {
+                filename: format!("image.{extension}"),
+                mime: Some(mime.into()),
+                bytes,
+            })
+        })
+        .collect()
+}

@@ -421,6 +421,7 @@ impl Remote {
         self.uncertain = None;
         app.cancel_message_navigation();
         app.sessions = None;
+        app.input_images.clear();
         self.projection.accept(app, &self.snapshot)?;
         self.observer = Some(observe(
             self.chat.clone(),
@@ -447,6 +448,12 @@ impl Remote {
                 user_turn: turn,
                 text: text.clone(),
             }
+        } else if !app.input_images.is_empty() {
+            ChatCommand::SendImages {
+                request_id: uuid::Uuid::new_v4(),
+                text: text.clone(),
+                images: app.input_images.clone(),
+            }
         } else {
             ChatCommand::Send {
                 request_id: uuid::Uuid::new_v4(),
@@ -458,6 +465,7 @@ impl Remote {
         match result {
             Ok(response) => {
                 self.uncertain = None;
+                app.input_images.clear();
                 if is_edit {
                     let id =
                         SessionId::new(response["id"].as_str().context("Edit returned no branch")?);
@@ -535,9 +543,9 @@ impl Remote {
             "/retry" => {
                 let command = self.uncertain.clone().context("No unconfirmed input")?;
                 let request_id = match &command {
-                    ChatCommand::Send { request_id, .. } | ChatCommand::Edit { request_id, .. } => {
-                        *request_id
-                    }
+                    ChatCommand::Send { request_id, .. }
+                    | ChatCommand::SendImages { request_id, .. }
+                    | ChatCommand::Edit { request_id, .. } => *request_id,
                     _ => unreachable!(),
                 };
                 let status = self
@@ -577,6 +585,7 @@ impl Remote {
                     }
                 }
                 app.input.clear();
+                app.input_images.clear();
                 app.input_cursor = 0;
             }
             "/approvals" => {
@@ -788,6 +797,7 @@ async fn event_loop(
             },
             event=async {match deferred.pop_front(){Some(event)=>Ok(event),None=>next_terminal_event().await}}=>match event? {
                 Event::Key(key) if matches!(key.kind,KeyEventKind::Press|KeyEventKind::Repeat)=>{
+                    if super::images::key(key) { super::images::clipboard(app).await; continue; }
                     match selection_command(app,key) {
                         Some(SelectionCommand::Clear)=>continue,
                         Some(SelectionCommand::Copy(text))=>{let id=app.view.selection_id();copies.spawn(async move{(id,clipboard::copy(text).await)});continue;},
@@ -833,7 +843,7 @@ async fn event_loop(
                     let Some(operation)=operation else {app.should_quit=true;continue;};
                     if let Err(error)=operation {app.status=Status::Error;app.push_kodrik_message(format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."));}
                 }
-                Event::Paste(text)=>{if app.sessions.is_none() && app.remote_grant.is_none(){app.insert_input(&text);}},
+                Event::Paste(text)=>{super::images::paste(app, &text).await;},
                 Event::Mouse(mouse)=>{
                     if let Some(text)=app.view.mouse(mouse,&mut app.scroll){let id=app.view.selection_id();copies.spawn(async move{(id,clipboard::copy(text).await)});}
                 }
