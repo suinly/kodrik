@@ -107,7 +107,7 @@ export const en = {
   'Работает с файлами и кодом': 'Works with files and code',
   'Читает и редактирует файлы, выполняет команды, помогает писать код. Приглашённые пользователи работают в отдельной песочнице.': 'Reads and edits files, runs commands and helps write code. Invited users work in a separate sandbox.',
   'Ищет и объясняет': 'Finds and explains',
-  'Помогает найти информацию и разобраться в теме. Для поиска и чтения веб-страниц можно подключить SearXNG и Obscura.': 'Helps you find information and understand a topic. Connect SearXNG for web search and Obscura for reading web pages.',
+  'Помогает найти информацию и разобраться в теме. Для поиска можно подключить SearXNG или DeGoog, а для чтения веб-страниц — Obscura.': 'Helps you find information and understand a topic. Connect SearXNG or DeGoog for web search and Obscura for reading web pages.',
   'Документы и изображения': 'Documents and images',
   'Помогает разобраться в документах, извлечь нужные сведения и проанализировать изображения.': 'Helps you understand documents, find the details you need and analyze images.',
   'Дневники и личные страницы': 'Journals and personal pages',

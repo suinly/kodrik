@@ -53,7 +53,7 @@ uses Homebrew's stable `opt/kodrik/bin/kodrik` path. The working directory is
 The service PATH includes `~/.local/bin`, `~/.cargo/bin`, Homebrew bin/sbin and
 system tools. It does not load your interactive shell configuration. For tools
 installed elsewhere, use absolute paths or configure their documented paths,
-such as `research.obscura_path`. Optional Obscura and SearXNG are not installed
+such as `research.obscura_path`. Optional Obscura, SearXNG and DeGoog are not installed
 by the formula.
 
 ## Update and restart

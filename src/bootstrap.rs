@@ -69,7 +69,8 @@ mod research_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async { axum::serve(listener, router).await.unwrap() });
-        for configured in [false, true] {
+        for backend in [None, Some("searxng"), Some("degoog")] {
+            let configured = backend.is_some();
             for isolated in [false, true] {
                 let data = tempfile::tempdir().unwrap();
                 let mut config: Config = toml::from_str(&format!(
@@ -88,7 +89,11 @@ api_base = "{base}"
                 ))
                 .unwrap();
                 if configured {
-                    config.research.searxng_url = Some("http://127.0.0.1:1/prefix/".into());
+                    if backend == Some("degoog") {
+                        config.research.degoog_url = Some("http://127.0.0.1:1/prefix/".into());
+                    } else {
+                        config.research.searxng_url = Some("http://127.0.0.1:1/prefix/".into());
+                    }
                     config.research.obscura_path = "/missing-obscura".into();
                 }
                 let app = build_app_at(&config, data.path(), isolated).await.unwrap();
@@ -168,7 +173,11 @@ pub(crate) async fn build_app_with_access(
     config.companion.validate()?;
     let research_tools = match config.research.search_endpoint()? {
         Some(endpoint) => Some((
-            Arc::new(WebSearchTool::new(endpoint)?),
+            Arc::new(if config.research.degoog_url.is_some() {
+                WebSearchTool::new_degoog(endpoint)?
+            } else {
+                WebSearchTool::new(endpoint)?
+            }),
             Arc::new(WebReadTool::new(config.research.obscura_path.clone())),
         )),
         None => None,

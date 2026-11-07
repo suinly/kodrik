@@ -1,13 +1,13 @@
 # Web research
 
-Kodrik can search the public web through your SearXNG server and read pages with
+Kodrik can search the public web through your SearXNG or DeGoog server and read pages with
 a local Obscura executable. These optional tools work in terminal conversations,
 Telegram chats, wakeups and daily interest research. Wikipedia lookup remains
 available without web-research configuration.
 
 ## Setup
 
-Deploy SearXNG on your server and enable JSON output in its `settings.yml`:
+For SearXNG, deploy it on your server and enable JSON output in its `settings.yml`:
 
 ```yaml
 search:
@@ -38,6 +38,22 @@ searxng_url = "https://search.example.com/"
 obscura_path = "/usr/local/bin/obscura"
 ```
 
+Alternatively, use [DeGoog](https://github.com/degoog-org/degoog) instead of SearXNG:
+
+```toml
+[research]
+degoog_url = "http://127.0.0.1:4444/"
+obscura_path = "/usr/local/bin/obscura"
+```
+
+Configure only one of `searxng_url` and `degoog_url`. DeGoog uses its native
+`GET /api/search` endpoint, not its optional SearX compatibility mode. Kodrik
+maps language and recency to `lang` and `time`, excerpts from `snippet`,
+publication dates from `publishedAt`, and engine failures from `engineTimings`.
+Omitted language (or `all`) uses DeGoog's default. API-key-protected instances
+are not supported by this integration; use a trusted reachable endpoint where
+search does not require a key. Do not put credentials in the URL.
+
 See [configuration defaults and URL rules](configuration.md#web-research).
 Restart Kodrik after changing configuration. Start `/new` to refresh the saved
 conversation prompt. An absolute executable path avoids differences between your
@@ -55,7 +71,7 @@ Ask naturally:
 The agent uses `web_search` to find ranked links and excerpts, then `web_read` to
 obtain page Markdown, including supported JavaScript-generated content. It can
 refine the search and compare sources through its ordinary tool loop. Search
-language and day/month/year recency filters depend on SearXNG's upstream engines.
+language and day/month/year recency filters depend on the backend's upstream engines.
 
 Results include retrieval timestamps. A publication date, when present, comes
 from the search engine and is not independently verified. Reading reports the
@@ -97,7 +113,7 @@ even after navigation; the overall deadline reports a failed read in that case.
 Only HTTP(S) page URLs without credentials are accepted. Obscura receives a clean
 environment and no opt-in to private-network access or shared browser profile.
 Its default network protection also applies to redirects and page subresources.
-The configured SearXNG endpoint is a separate trusted destination and may use a
+The configured search endpoint is a separate trusted destination and may use a
 private address. Local browser execution is not an operating-system sandbox;
 see [Obscura's security model](https://github.com/h4ckf0r0day/obscura/blob/main/SECURITY.md).
 

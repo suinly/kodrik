@@ -363,7 +363,7 @@ The agent chooses tools from your request; these names are not slash commands.
 | `session_search` | Search or browse previous user/assistant messages |
 | `mcp_search` | Find configured external MCP tools by name/description and load matching schemas for the next model request |
 | `encyclopedia_search` | Research topics on English or Russian Wikipedia |
-| `web_search` | Search the configured SearXNG instance for public sources; requires research configuration |
+| `web_search` | Search the configured SearXNG or DeGoog instance for public sources; requires research configuration |
 | `web_read` | Read a public page as Markdown using local Obscura; requires research configuration |
 
 For example: “Find our earlier discussion about cities”, “Show your learned

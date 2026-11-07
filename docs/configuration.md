@@ -234,7 +234,8 @@ for cancellation, budgets and daily-attempt semantics.
 
 ## Web research
 
-Optional search and page reading are enabled together when `searxng_url` is set:
+Optional search and page reading are enabled together when `searxng_url` or
+`degoog_url` is set. Configure exactly one search backend:
 
 ```toml
 [research]
@@ -244,11 +245,13 @@ obscura_path = "/usr/local/bin/obscura"
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `searxng_url` | None | SearXNG HTTP(S) base URL; absent disables both research tools |
+| `searxng_url` | None | SearXNG HTTP(S) base URL; mutually exclusive with `degoog_url` |
+| `degoog_url` | None | DeGoog HTTP(S) base URL; uses its native JSON API |
 | `obscura_path` | `"obscura"` | Local executable path or program name resolved from the service PATH |
 
 Base URLs may include a reverse-proxy path prefix or private-network address.
-Kodrik appends `/search` below that path. Credentials, query strings and fragments
+Kodrik appends `/search` for SearXNG or `/api/search` for DeGoog below that path.
+Without either URL, both research tools are disabled. Credentials, query strings and fragments
 are rejected; search requests do not follow redirects. No authentication headers
 are configured by this integration. `obscura_path` must be nonempty and names one
 executable, not a shell command with arguments. Unknown `[research]` fields are

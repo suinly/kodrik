@@ -54,6 +54,7 @@ pub struct OwnerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ResearchConfig {
     pub searxng_url: Option<String>,
+    pub degoog_url: Option<String>,
     pub obscura_path: PathBuf,
 }
 
@@ -61,6 +62,7 @@ impl Default for ResearchConfig {
     fn default() -> Self {
         Self {
             searxng_url: None,
+            degoog_url: None,
             obscura_path: "obscura".into(),
         }
     }
@@ -72,10 +74,14 @@ impl ResearchConfig {
             !self.obscura_path.as_os_str().is_empty(),
             "research.obscura_path must not be empty"
         );
-        let Some(raw) = &self.searxng_url else {
+        anyhow::ensure!(
+            self.searxng_url.is_none() || self.degoog_url.is_none(),
+            "Configure only one of research.searxng_url and research.degoog_url"
+        );
+        let Some(raw) = self.searxng_url.as_ref().or(self.degoog_url.as_ref()) else {
             return Ok(None);
         };
-        let mut url = reqwest::Url::parse(raw).context("Invalid research.searxng_url")?;
+        let mut url = reqwest::Url::parse(raw).context("Invalid research search URL")?;
         anyhow::ensure!(
             matches!(url.scheme(), "http" | "https")
                 && url.host_str().is_some()
@@ -83,12 +89,17 @@ impl ResearchConfig {
                 && url.password().is_none()
                 && url.query().is_none()
                 && url.fragment().is_none(),
-            "research.searxng_url must be an HTTP(S) base URL without credentials, query or fragment"
+            "Research search URL must be an HTTP(S) base URL without credentials, query or fragment"
         );
-        url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("Invalid SearXNG base path"))?
-            .pop_if_empty()
-            .push("search");
+        let mut path = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("Invalid search base path"))?;
+        path.pop_if_empty();
+        if self.degoog_url.is_some() {
+            path.push("api");
+        }
+        path.push("search");
+        drop(path);
         Ok(Some(url))
     }
 }
@@ -347,6 +358,30 @@ mod tests {
     }
 
     #[test]
+    fn research_degoog_endpoint_and_exclusive_provider() {
+        let research: super::ResearchConfig =
+            toml::from_str("degoog_url = 'http://127.0.0.1:4444/prefix/'").unwrap();
+        assert_eq!(
+            research.search_endpoint().unwrap().unwrap().as_str(),
+            "http://127.0.0.1:4444/prefix/api/search"
+        );
+        let both: super::ResearchConfig =
+            toml::from_str("degoog_url = 'https://host/'\nsearxng_url = 'https://other/'").unwrap();
+        assert!(both.search_endpoint().is_err());
+        for raw in [
+            "",
+            "file:///tmp",
+            "https://u:p@host/",
+            "https://host/?q=x",
+            "https://host/#x",
+        ] {
+            let research: super::ResearchConfig =
+                toml::from_str(&format!("degoog_url = '{raw}'")).unwrap();
+            assert!(research.search_endpoint().is_err(), "{raw}");
+        }
+    }
+
+    #[test]
     fn research_defaults_and_prefixed_endpoint() {
         let config: super::Config = toml::from_str(
             "[gateway]\n[provider.primary]\ntype = 'openai'\nmodel = 'test'\napi_key = 'test'",
@@ -381,6 +416,7 @@ mod tests {
         let settings = super::ResearchConfig {
             searxng_url: Some("https://host/".into()),
             obscura_path: "".into(),
+            ..Default::default()
         };
         assert!(settings.search_endpoint().is_err());
     }

@@ -31,7 +31,7 @@ the browser, with personal history, memory and skills shared across interfaces.
 - Optional remote TUI to the server agent with explicitly attached, temporary
   laptop files, shell, skills and HTTP MCP; access ends when TUI disconnects.
 - Optional daily Telegram initiative based on saved interests and one-shot reminders.
-- Optional web search through self-hosted SearXNG and page reading with local Obscura.
+- Optional web search through self-hosted SearXNG or DeGoog and page reading with local Obscura.
 
 Images and documents are sent to the configured model provider for analysis.
 Images require a vision-capable model; documents require file-input support.
