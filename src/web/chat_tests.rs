@@ -2898,14 +2898,20 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
         assert_eq!(response.status(), 200);
         response.json::<Value>().await.unwrap()
     };
-    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
     let mut session = store.load(&SessionId::new(&id)).await.unwrap().unwrap();
     session.push(Message::Assistant(AssistantMessage {
         content: "first".into(),
     }));
     store.save(&session).await.unwrap();
-    assert_eq!(activity().await["unread"], true);
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":true,"unread_chats":1,"unread_events":0})
+    );
     let listed: Value = f
         .request(reqwest::Method::GET, "sessions")
         .send()
@@ -2939,7 +2945,10 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
             .json(&json!({"revision":revision}))
     };
     assert_eq!(read(revision.into()).send().await.unwrap().status(), 204);
-    assert_eq!(activity().await["unread"], false);
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let listed: Value = f
         .request(reqwest::Method::GET, "sessions")
         .send()
@@ -2961,7 +2970,10 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
     }));
     store.save(&session).await.unwrap();
     assert_eq!(read(revision.into()).send().await.unwrap().status(), 409);
-    assert_eq!(activity().await["unread"], true);
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":true,"unread_chats":1,"unread_events":0})
+    );
     let snapshot: Value = f
         .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
         .send()
@@ -2982,7 +2994,10 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
     drop(store);
     let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
     store.save(&session).await.unwrap();
-    assert_eq!(activity().await["unread"], false);
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let response = f
         .client
         .get(format!("{}api/chat/activity", f.base))
@@ -3108,11 +3123,19 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
     };
     let f = Fixture::new().await;
     let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
-    let mut hidden = Session::new(SessionId::new("companion:private"));
-    hidden.push(Message::Assistant(AssistantMessage {
-        content: "hidden".into(),
-    }));
-    store.save(&hidden).await.unwrap();
+    for id in [
+        "companion:private",
+        "telegram:123:guest",
+        "telegram:bot:-123",
+    ] {
+        let mut hidden = Session::new(SessionId::new(id));
+        hidden.push(Message::Assistant(AssistantMessage {
+            content: "hidden".into(),
+        }));
+        // Private events must not contribute to either category.
+        hidden.webhook_instruction = Some("private event".into());
+        store.save(&hidden).await.unwrap();
+    }
     let activity = || async {
         f.request(reqwest::Method::GET, "activity")
             .send()
@@ -3122,13 +3145,19 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
             .await
             .unwrap()
     };
-    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let mut child = Session::new(SessionId::new("companion:subagent:visible"));
     child.push(Message::Assistant(AssistantMessage {
         content: "child answer".into(),
     }));
     store.save(&child).await.unwrap();
-    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let listed: Value = f
         .request(reqwest::Method::GET, "sessions")
         .send()
@@ -3155,7 +3184,10 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
         .await
         .unwrap();
     assert_eq!(response.status(), 204);
-    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":false,"unread_chats":0,"unread_events":0})
+    );
     let mut webhook = Session::new(SessionId::new("webhook:event"));
     webhook.webhook_instruction = Some("event".into());
     webhook.push(Message::Assistant(AssistantMessage {
@@ -3167,5 +3199,95 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
     }
     let mut cp = Checkpoint::new(&store, webhook.id(), &webhook);
     cp.save(&webhook, RunPhase::NeedModel, None).await.unwrap();
-    assert_eq!(activity().await, json!({"busy":true,"unread":true}));
+    assert_eq!(
+        activity().await,
+        json!({"busy":true,"unread":true,"unread_chats":0,"unread_events":1})
+    );
+}
+
+#[tokio::test]
+async fn activity_counts_unread_roots_in_both_categories_beyond_sidebar_pages() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let activity = || async {
+        f.request(reqwest::Method::GET, "activity")
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    for (id, event) in [
+        ("cli:root", false),
+        ("cli:branch", false),
+        ("cli:other", false),
+        ("cli:event-one", true),
+        ("cli:event-two", true),
+    ] {
+        let mut session = Session::new(SessionId::new(id));
+        session.webhook_instruction = event.then(|| "event".into());
+        // Multiple answers in one session still count as one unread conversation/event.
+        for content in ["first answer", "second answer"] {
+            session.push(Message::Assistant(AssistantMessage {
+                content: content.into(),
+            }));
+        }
+        store.save(&session).await.unwrap();
+    }
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO web_chat_branches VALUES('cli:branch','cli:root','cli:root',0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    // These newer read sessions push the unread chats off the first sidebar page.
+    for _ in 0..35 {
+        f.create().await;
+    }
+    for webhooks in [false, true] {
+        let page: Value = f
+            .request(
+                reqwest::Method::GET,
+                &format!("sessions?limit=1&offset=0&webhooks={webhooks}"),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(page.as_array().unwrap().len(), 1);
+    }
+    assert_eq!(
+        activity().await,
+        json!({"busy":false,"unread":true,"unread_chats":2,"unread_events":2})
+    );
+    // Acknowledging one branch cannot hide another unread branch of the same root.
+    for (id, chats, events) in [
+        ("cli:root", 2, 2),
+        ("cli:branch", 1, 2),
+        ("cli:event-one", 1, 1),
+        ("cli:other", 0, 1),
+        ("cli:event-two", 0, 0),
+    ] {
+        let session = store.load(&SessionId::new(id)).await.unwrap().unwrap();
+        let revision = crate::agent::session::activity::read_revision(&session);
+        let response = f
+            .request(reqwest::Method::POST, &format!("sessions/{id}/read"))
+            .json(&json!({"revision":revision}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
+        assert_eq!(
+            activity().await,
+            json!({"busy":false,"unread":chats+events>0,"unread_chats":chats,"unread_events":events})
+        );
+    }
 }

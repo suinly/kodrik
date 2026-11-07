@@ -46,6 +46,48 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('mobile header hides conversation title and audit text without hiding the control',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const heading=page.locator('.conversation-heading');
+    const audit=page.getByRole('button',{name:/Проверка инструментов:/});
+    await expect(heading).toBeVisible();
+    await expect(audit.locator('[data-slot="label"]')).toBeVisible();
+    await page.setViewportSize({width:320,height:720});
+    await expect(heading).toBeHidden();
+    await expect(audit).toBeVisible();
+    await expect(audit.locator('[data-slot="label"]')).toBeHidden();
+    await audit.click();
+    await expect(page.getByRole('menuitemcheckbox',{name:/Спрашивать всегда/})).toBeVisible();
+    await page.keyboard.press('Escape');
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kod12-mobile-header.png',animations:'disabled'});
+  } finally {await browser.close()}
+});
+
+test('section rail shows unread counts independently of the loaded sidebar and clears zero badges',{timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    let counts={busy:false,unread:true,unread_chats:7,unread_events:123};
+    await page.route('**/api/chat/activity',route=>route.fulfill({json:counts}));
+    await page.goto(new URL('app/chat',base).href);
+    const rail=page.getByRole('navigation',{name:'Разделы',exact:true}).filter({visible:true});
+    await expect(rail.getByRole('button',{name:'Чат · Непрочитанных: 7',exact:true})).toContainText('7');
+    await expect(rail.getByRole('button',{name:'Вебхуки · Непрочитанных: 123',exact:true})).toContainText('99+');
+    await page.screenshot({path:'/tmp/kod13-unread-counts.png',animations:'disabled'});
+    counts={busy:false,unread:false,unread_chats:0,unread_events:0};
+    await expect(rail.getByRole('button',{name:'Чат',exact:true})).toBeVisible({timeout:10000});
+    await expect(rail.getByRole('button',{name:'Вебхуки',exact:true})).not.toContainText('99+');
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await expect(page.getByRole('dialog').getByRole('navigation',{name:'Разделы',exact:true})).toBeVisible();
+  } finally {await browser.close()}
+});
+
 test('token statistics stay compact and show exact details on hover and focus',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

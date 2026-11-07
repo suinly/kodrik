@@ -2,7 +2,7 @@
 import type {CommandAuditMode} from '../utils/api'
 import {t} from '../utils/i18n'
 
-const props=defineProps<{mode:CommandAuditMode;disabled?:boolean;loading?:boolean;profile?:boolean}>()
+const props=defineProps<{mode:CommandAuditMode;disabled?:boolean;loading?:boolean;profile?:boolean;compactMobile?:boolean}>()
 const emit=defineEmits<{select:[mode:CommandAuditMode]}>()
 const commandAuditModes = [
   {value:'trusted',label:'Без проверок',icon:'i-lucide-shield-off',description:'Инструменты выполняются без проверки и подтверждения.'},
@@ -19,6 +19,6 @@ const items=computed(()=>commandAuditModes.map(item=>({
 <template>
   <UDropdownMenu :items="items" :disabled="disabled" :content="{align:'end'}" :ui="{content:'w-72 max-w-[calc(100vw-1rem)]',itemDescription:'whitespace-normal'}">
     <UButton :icon="current.icon" :label="t(current.label)" :aria-label="t(profile ? 'Режим новых диалогов: {0}' : 'Проверка инструментов: {0}',t(current.label))"
-      :disabled="disabled" :loading="loading" trailing-icon="i-lucide-chevron-down" color="neutral" variant="ghost" size="sm" />
+      :disabled="disabled" :loading="loading" :ui="compactMobile ? {label:'hidden sm:inline',trailingIcon:'hidden sm:block'} : undefined" trailing-icon="i-lucide-chevron-down" color="neutral" variant="ghost" size="sm" />
   </UDropdownMenu>
 </template>

@@ -1054,7 +1054,11 @@ async fn activity(Extension(state): Extension<WebState>) -> Result<Json<Value>, 
         .chat_activity(running)
         .await
         .map_err(internal)?;
-    Ok(Json(json!({"busy":busy,"unread":unread})))
+    let (unread_chats, unread_events) =
+        chat.sessions.chat_unread_counts().await.map_err(internal)?;
+    Ok(Json(
+        json!({"busy":busy,"unread":unread,"unread_chats":unread_chats,"unread_events":unread_events}),
+    ))
 }
 
 #[derive(Deserialize)]

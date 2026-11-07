@@ -2,6 +2,7 @@ import {computed, ref} from 'vue'
 import {catalogs, type TranslationKey} from './translations.ts'
 
 const deviceTranslations = {
+  'Непрочитанных: {0}': 'Unread: {0}',
   'Подключения устройств': 'Device connections',
   'UUID запроса подключения': 'Pairing request UUID',
   'Код сравнения': 'Comparison code',

@@ -78,6 +78,29 @@ pub(super) fn migrate(db: &Connection) -> anyhow::Result<()> {
 }
 
 impl SqliteSessionStore {
+    pub(crate) async fn chat_unread_counts(&self) -> anyhow::Result<(i64, i64)> {
+        self.with_connection(|db| {
+            // Filter the activity index first; only unread sessions need category lookup.
+            Ok(db.query_row(
+                "WITH unread AS MATERIALIZED (
+                    SELECT session_id FROM web_chat_activity
+                    WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
+                    AND revision!='' AND revision!=read_revision
+                ), categorized AS (
+                    SELECT coalesce(b.root_id,u.session_id) AS root_id,
+                        json_extract(s.payload,'$.webhook_instruction') IS NOT NULL AS event
+                    FROM unread u JOIN sessions s ON s.id=u.session_id
+                    LEFT JOIN web_chat_branches b ON b.session_id=u.session_id
+                )
+                SELECT count(DISTINCT CASE WHEN NOT event THEN root_id END),
+                    count(DISTINCT CASE WHEN event THEN root_id END) FROM categorized",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .await
+    }
+
     pub(crate) async fn mark_chat_read(&self, id: &str, revision: &str) -> anyhow::Result<bool> {
         let (id, revision) = (id.to_owned(), revision.to_owned());
         self.with_connection(move |db| {

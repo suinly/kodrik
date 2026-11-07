@@ -1,4 +1,4 @@
-export type ChatActivity = {busy:boolean;unread:boolean}
+export type ChatActivity = {busy:boolean;unread:boolean;unread_chats?:number;unread_events?:number}
 
 export function faviconHref(icon:string,activity:ChatActivity,frame:number,reducedMotion=false) {
   const radius=reducedMotion ? 35 : [35,39,44,48,44,39][frame%6]!

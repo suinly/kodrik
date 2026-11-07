@@ -70,6 +70,13 @@ const sections = [
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
 ] as const
 const visibleSections = computed(()=>sections.filter(item=>item.id!=='webhooks' || webhooks.allowed))
+function sectionUnread(id:string) {
+  return id==='chat' ? activity.value.unread_chats ?? 0 : id==='webhooks' ? activity.value.unread_events ?? 0 : 0
+}
+function sectionLabel(id:string,label:string) {
+  const count=sectionUnread(id)
+  return count ? `${t(label)} · ${t('Непрочитанных: {0}',count)}` : t(label)
+}
 const sectionTitle = computed(()=>section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
 const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
@@ -510,9 +517,13 @@ onMounted(() => {
 <template>
   <DefineRail>
       <nav :aria-label="t('Разделы')" class="flex w-full flex-col items-center gap-2">
-        <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :aria-label="t(item.label)" :title="t(item.label)"
+        <UButton v-for="item in visibleSections" :key="item.id" :icon="item.icon" :aria-label="sectionLabel(item.id,item.label)" :title="sectionLabel(item.id,item.label)"
           :aria-current="section===item.id?'page':undefined" :color="section===item.id?'primary':'neutral'" :variant="section===item.id?'soft':'ghost'"
-          :disabled="webhooks.saving" size="lg" class="size-11 justify-center p-0" @click="openSection(item.id)" />
+          :disabled="webhooks.saving" size="lg" class="relative size-11 justify-center p-0" @click="openSection(item.id)">
+          <template #trailing>
+            <span v-if="sectionUnread(item.id)" class="pointer-events-none absolute -right-1 -top-1 flex min-h-4 min-w-4 items-center justify-center rounded-full bg-error px-1 text-[10px] font-semibold leading-4 text-white" aria-hidden="true">{{ sectionUnread(item.id)>99?'99+':sectionUnread(item.id) }}</span>
+          </template>
+        </UButton>
       </nav>
       <div class="mt-auto"><SidebarProfile :active="section==='profile'" :disabled="webhooks.saving" @settings="openSection('profile')" /></div>
   </DefineRail>
@@ -610,7 +621,7 @@ onMounted(() => {
               <UButton icon="i-lucide-arrow-left" :aria-label="t('Вернуться в диалог')" :title="t('Вернуться в диалог')" color="neutral" variant="ghost" @click="closePage" />
               <h1 class="min-w-0 truncate font-semibold text-highlighted">{{ selectedPage.title }}</h1>
             </div>
-            <div v-else-if="viewingConversation" class="conversation-heading flex min-w-0 items-center gap-1.5">
+            <div v-else-if="viewingConversation" class="conversation-heading hidden sm:flex min-w-0 items-center gap-1.5">
               <div class="min-w-0 flex-1 sm:flex sm:items-center sm:gap-1.5">
               <h1 class="min-w-0 truncate font-semibold text-highlighted">
                 <UChatShimmer v-if="selected?.title_pending" :text="selected.title" data-testid="navbar-title-shimmer" :aria-label="t('Создаю название диалога')" class="truncate motion-reduce:animate-none" />
@@ -641,7 +652,7 @@ onMounted(() => {
                   <EnvironmentStatus :status="conversationView.environment" class="w-80 max-w-[calc(100vw-1rem)] p-4 [overflow-wrap:anywhere]" />
                 </template>
               </UPopover>
-              <CommandAuditMenu :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
+              <CommandAuditMenu compact-mobile :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
               <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
             </template>
