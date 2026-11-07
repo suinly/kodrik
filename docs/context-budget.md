@@ -59,3 +59,13 @@ A separate read-only live check successfully searched for `datasets`, loaded its
 schema on the following request and listed an empty test store. Discovery adds
 an extra model round trip when a deferred tool is first needed, so this does not
 promise a 34.8% saving on tool-heavy turns.
+
+## Compact default instructions
+
+The default prompt was rewritten from 11,481 to 7,908 characters (31.1% smaller).
+This pass consolidates repeated trust, permission, verification and recovery
+rules; it does not add a task classifier or move safety rules into optional skills.
+Group/guest attribution, managed-data/page boundaries, research privacy,
+wakeup/subagent restrictions and planning/reporting requirements remain explicit.
+Custom system prompts and frozen sessions are unchanged. This is a text-size
+measurement, not a provider-token or model-behavior benchmark.
