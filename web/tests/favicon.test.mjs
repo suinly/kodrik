@@ -9,19 +9,20 @@ const svg=href=>decodeURIComponent(href.split(',')[1]);
 test('idle favicon preserves the original logo',()=>{
   assert.equal(svg(faviconHref(icon,{busy:false,unread:false},0)),icon);
 });
-test('running pulses without changing the unread marker',()=>{
-  const first=svg(faviconHref(icon,{busy:true,unread:true},0));
-  const next=svg(faviconHref(icon,{busy:true,unread:true},3));
-  assert.notEqual(first,next);
-  assert.match(first,/<g transform=/);
-  assert.match(first,/<circle[^>]+cx="440"[^>]+fill="#f38ba8"/);
-  assert.equal(first.match(/<circle[^>]+cx="440"[^>]+>/)[0],next.match(/<circle[^>]+cx="440"[^>]+>/)[0]);
+test('running pulses a single blue dot on the right',()=>{
+  const first=svg(faviconHref(icon,{busy:true,unread:false},0));
+  assert.match(first,/<circle cx="440" cy="72"[^>]+fill="#89b4fa"/);
+  assert.equal((first.match(/<circle/g)||[]).length,1);
+  assert.notEqual(first,svg(faviconHref(icon,{busy:true,unread:false},3)));
+  assert.doesNotMatch(first,/rotate\(/);
 });
-test('unread stays static and does not imply a running agent',()=>{
-  const first=faviconHref(icon,{busy:false,unread:true},0);
-  assert.equal(first,faviconHref(icon,{busy:false,unread:true},5));
-  assert.equal((svg(first).match(/<circle/g)||[]).length,1);
+test('unread replaces the running dot with a static red dot',()=>{
+  const unread=faviconHref(icon,{busy:false,unread:true},0);
+  assert.equal(unread,faviconHref(icon,{busy:true,unread:true},3));
+  assert.match(svg(unread),/<circle cx="440" cy="72"[^>]+fill="#f38ba8"/);
+  assert.equal((svg(unread).match(/<circle/g)||[]).length,1);
+  assert.doesNotMatch(svg(unread),/#89b4fa/);
 });
-test('reduced motion keeps the running marker static',()=>{
-  assert.equal(faviconHref(icon,{busy:true,unread:true},0,true),faviconHref(icon,{busy:true,unread:true},5,true));
+test('reduced motion keeps the blue dot static',()=>{
+  assert.equal(faviconHref(icon,{busy:true,unread:false},0,true),faviconHref(icon,{busy:true,unread:false},3,true));
 });

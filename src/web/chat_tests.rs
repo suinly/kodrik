@@ -3082,6 +3082,22 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
         content: "child answer".into(),
     }));
     store.save(&child).await.unwrap();
+    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    let listed: Value = f
+        .request(reqwest::Method::GET, "sessions")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let child_row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == child.id().as_str())
+        .unwrap();
+    assert_eq!(child_row["unread"], false);
     let child_revision = crate::agent::session::activity::read_revision(&child);
     let response = f
         .request(

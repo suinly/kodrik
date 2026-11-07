@@ -46,7 +46,7 @@ async function pasteText(input,text) {
   },text);
 }
 
-test('favicon combines activity markers, animates, and respects reduced motion',{timeout:60000},async()=>{
+test('favicon prioritizes unread over running and respects reduced motion',{timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
@@ -56,6 +56,14 @@ test('favicon combines activity markers, animates, and respects reduced motion',
     const href=()=>favicon.getAttribute('href');
     await expect(favicon).toHaveCount(1);
     await expect.poll(async()=>decodeURIComponent(await href()||'')).toContain('cx="440"');
+    await expect.poll(async()=>decodeURIComponent(await href()||'')).toContain('fill="#f38ba8"');
+    const red=await href();
+    await page.waitForTimeout(600);
+    assert.equal(await href(),red);
+    await page.unroute('**/api/chat/activity');
+    await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:true,unread:false}}));
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await expect.poll(async()=>decodeURIComponent(await href()||'')).toContain('fill="#89b4fa"');
     const first=await href();
     await expect.poll(href).not.toBe(first);
     await page.emulateMedia({reducedMotion:'reduce'});
@@ -94,6 +102,9 @@ test('sidebar unread reply opens its branch and clears with favicon only after r
     const marker=row.getByRole('img',{name:'Непрочитанный ответ',exact:true});
     const favicon=page.locator('link[rel="icon"]');
     await expect(marker).toBeVisible();
+    await expect(marker).toHaveClass(/bg-error/);
+    await expect(marker.locator('..')).toHaveClass(/text-muted/);
+    await expect(row.locator('.rounded-full')).toHaveCount(1);
     await expect(row.getByLabel('Закреплённый диалог',{exact:true})).toBeVisible();
     await expect(row.getByLabel('Выполняется',{exact:true})).toBeVisible();
     await expect(page.locator('[data-conversation-id="plain-unread"]').getByRole('img',{name:'Непрочитанный ответ',exact:true})).toBeVisible();

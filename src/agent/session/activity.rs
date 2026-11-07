@@ -98,7 +98,8 @@ impl SqliteSessionStore {
             })?;
             let unread = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM web_chat_activity
-                WHERE listed=1 AND revision!='' AND revision!=read_revision)",
+                WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
+                AND revision!='' AND revision!=read_revision)",
                 [],
                 |row| row.get(0),
             )?;

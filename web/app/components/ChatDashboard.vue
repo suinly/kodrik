@@ -16,7 +16,7 @@ const initializing = ref(true)
 const activity=ref<ChatActivity>({busy:false,unread:false})
 const faviconFrame=ref(0)
 const reducedMotion=useMediaQuery('(prefers-reduced-motion: reduce)')
-useIntervalFn(()=>{if(activity.value.busy && !reducedMotion.value) faviconFrame.value=(faviconFrame.value+1)%6},240)
+useIntervalFn(()=>{if(activity.value.busy && !activity.value.unread && !reducedMotion.value) faviconFrame.value=(faviconFrame.value+1)%6},240)
 // Replace the server-injected link instead of leaving two competing favicons.
 const favicon=document.querySelector<HTMLLinkElement>('link[rel="icon"]')
 const originalFavicon=favicon?.href
@@ -554,10 +554,14 @@ onMounted(() => {
           :aria-current="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'page' : undefined"
           :disabled="creating" class="sidebar-item sidebar-item-with-actions"
           @click="selectSidebar(session)">
-          <span v-if="session.unread" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="size-2 shrink-0 rounded-full bg-primary" />
-          <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="sidebar-icon" />
-          <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="sidebar-icon animate-spin" :aria-label="t('Выполняется')" />
-          <UIcon v-if="!session.pinned && !session.busy" :name="session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" class="sidebar-icon" />
+          <span v-if="session.pinned || !session.busy" class="relative inline-flex shrink-0 text-muted">
+            <UIcon :name="session.pinned?'i-lucide-pin':session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" :aria-label="session.pinned?t('Закреплённый диалог'):undefined" class="size-4 shrink-0" />
+            <span v-if="session.unread" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-error" />
+          </span>
+          <span v-if="session.busy" class="relative inline-flex shrink-0 text-muted">
+            <UIcon name="i-lucide-loader-circle" class="size-4 shrink-0 motion-safe:animate-spin" :aria-label="t('Выполняется')" />
+            <span v-if="session.unread && !session.pinned" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-error" />
+          </span>
           <span class="min-w-0 flex-1 text-left">
             <UChatShimmer v-if="session.title_pending" :text="shortConversationTitle(session.title)" data-testid="title-shimmer" :aria-label="t('Создаю название диалога')" class="block truncate motion-reduce:animate-none" />
             <span v-else class="block truncate">{{ shortConversationTitle(conversationTitle(session)) }}</span>

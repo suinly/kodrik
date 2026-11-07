@@ -239,7 +239,8 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
             Ok(db
                 .prepare(
                     "SELECT session_id FROM web_chat_activity
-            WHERE listed=1 AND revision!='' AND revision!=read_revision",
+            WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
+            AND revision!='' AND revision!=read_revision",
                 )?
                 .query_map([], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?)
