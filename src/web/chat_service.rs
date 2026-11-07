@@ -3,6 +3,41 @@ use crate::remote::protocol::{ChatCommand, RemoteChatSnapshot};
 
 const HISTORY_BYTES: usize = 1024 * 1024;
 
+fn queued_summaries(queued: &[Value]) -> Vec<Value> {
+    let mut summaries = Vec::new();
+    let mut bytes = 0;
+    for row in queued {
+        let mut summary = json!({"text":row["text"], "photos":row["photos"], "files":row["files"]});
+        bound_control_text(&mut summary["text"]);
+        if let Some(files) = summary["files"].as_array_mut() {
+            files.truncate(16);
+            for file in files {
+                bound_control_text(file);
+            }
+        }
+        let size = serde_json::to_vec(&summary).map_or(0, |value| value.len());
+        if bytes + size > 32 * 1024 {
+            summaries.push(json!({"text":format!("[{} more queued messages]", queued.len() - summaries.len())}));
+            break;
+        }
+        bytes += size;
+        summaries.push(summary);
+    }
+    summaries
+}
+
+#[test]
+fn remote_queued_summaries_bound_text_without_losing_attachment_counts() {
+    let queued = vec![
+        json!({"id":"q", "text":"я".repeat(20_000), "photos":2, "files":["x".repeat(20_000)]}),
+    ];
+    let summary = queued_summaries(&queued);
+    assert!(summary[0]["text"].as_str().unwrap().len() < 5000);
+    assert_eq!(summary[0]["photos"], 2);
+    assert!(summary[0]["files"][0].as_str().unwrap().len() < 5000);
+    assert!(serde_json::to_vec(&summary).unwrap().len() < 16 * 1024);
+}
+
 pub(super) fn group_starts(session: &Session) -> Vec<usize> {
     use crate::agent::message::Message;
     let mut starts = Vec::new();
@@ -341,6 +376,7 @@ impl Chat {
         }
         let versions = Value::Null;
         let mut run = json!({"busy":view.busy,"blocked_reason":view.blocked_reason,
+            "queued":queued_summaries(&view.queued),
             "clear_completed_plan":!view.queued.is_empty(),
             "model":self.runner.model_identity(),
             "token_usage":view.session.token_usage(),

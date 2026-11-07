@@ -646,7 +646,7 @@ mod tests {
         );
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         assert!(app.view.selection_id().is_none());
-        find(&terminal, "Plan · 0/1");
+        find(&terminal, "Plan · 1/1");
         find(&terminal, "Inspect");
         find(&terminal, "Ready");
     }

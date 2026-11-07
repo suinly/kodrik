@@ -40,4 +40,4 @@ pub use wakeups::WakeupTool;
 pub use web_read::WebReadTool;
 pub use web_search::WebSearchTool;
 
-pub use update_plan::{TaskPlan, UpdatePlanTool};
+pub use update_plan::{StepStatus, TaskPlan, UpdatePlanTool};

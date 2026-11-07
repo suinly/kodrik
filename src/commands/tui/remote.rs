@@ -9,6 +9,23 @@ use crate::remote::{
 use anyhow::{Context, ensure};
 use std::path::PathBuf;
 
+#[test]
+fn snapshot_waiting_queue_replaces_optimistic_inputs_and_clears_when_consumed() {
+    let mut app = App::default();
+    app.waiting_messages = vec!["optimistic".into()];
+    let mut snapshot: RemoteChatSnapshot = serde_json::from_value(serde_json::json!({
+        "session_id":"queue-session", "revision":1, "environment_revision":0,
+        "messages":[], "previous_cursor":null, "versions":null, "environment":null,
+        "run":{"queued":[{"text":"authoritative", "photos":1}]}
+    }))
+    .unwrap();
+    project(&mut app, &snapshot).unwrap();
+    assert_eq!(app.waiting_messages, ["authoritative\n[Images: 1]"]);
+    snapshot.run.as_mut().unwrap()["queued"] = serde_json::json!([]);
+    project(&mut app, &snapshot).unwrap();
+    assert!(app.waiting_messages.is_empty());
+}
+
 struct Prepared(Option<Arc<LocalEnvironment>>);
 impl Drop for Prepared {
     fn drop(&mut self) {
@@ -465,6 +482,10 @@ impl Remote {
         match result {
             Ok(response) => {
                 self.uncertain = None;
+                if !is_edit {
+                    app.waiting_messages
+                        .push(waiting_summary(&text, app.input_images.len()));
+                }
                 app.input_images.clear();
                 if is_edit {
                     let id =
@@ -1116,6 +1137,10 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     refresh_history(app, &session);
     app.versions = versions;
     let run = snapshot.run.as_ref().unwrap_or(&serde_json::Value::Null);
+    reconcile_waiting(
+        app,
+        run["queued"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+    );
     if let Some(error) = run["history_error"].as_str() {
         app.set_copy_notice(error.to_owned());
     }

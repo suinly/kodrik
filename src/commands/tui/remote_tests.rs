@@ -14,6 +14,103 @@ fn snapshot() -> RemoteChatSnapshot {
 }
 
 #[test]
+fn restored_tool_results_do_not_treat_null_error_as_failure() {
+    use crate::agent::message::{ToolCall, ToolResult};
+
+    for (name, output, failed) in [
+        (
+            "spawn_agent",
+            json!({"id":"companion:subagent:one","status":"running","result":null,"error":null}),
+            false,
+        ),
+        (
+            "wait_agent",
+            json!({"id":"companion:subagent:one","status":"completed","result":"Done","error":null}),
+            false,
+        ),
+        (
+            "spawn_agent",
+            json!({"error":"Maximum active children reached"}),
+            true,
+        ),
+        (
+            "wait_agent",
+            json!({"id":"companion:subagent:one","status":"failed","result":null,"error":"Child request budget exhausted"}),
+            true,
+        ),
+        (
+            "exec_command",
+            json!({"exit_code":2,"timed_out":false,"stderr":"permission denied"}),
+            true,
+        ),
+        (
+            "exec_command",
+            json!({"exit_code":null,"timed_out":true}),
+            true,
+        ),
+    ] {
+        let mut session = Session::new(SessionId::new("tool-history"));
+        session.push(Message::ToolCall(ToolCall {
+            call_id: "tool".into(),
+            name: name.into(),
+            arguments: json!({}),
+        }));
+        session.push(Message::ToolResult(ToolResult {
+            call_id: "tool".into(),
+            content: output.clone().into(),
+        }));
+        let mut app = App::default();
+        restore_history(&mut app, &session);
+        let row = app
+            .messages
+            .iter()
+            .find(|row| matches!(row.role, AppMessageRole::Tool(_)))
+            .unwrap();
+        assert_eq!(
+            matches!(row.role, AppMessageRole::Tool(ToolState::Failed)),
+            failed,
+            "{name}: {output}: {}",
+            row.content
+        );
+        if !failed {
+            assert!(matches!(row.role, AppMessageRole::Tool(ToolState::Success)));
+            assert!(!row.content.contains("Tool error"));
+        }
+        if let Some(error) = output["error"].as_str() {
+            assert!(row.content.contains(error), "{}", row.content);
+        }
+    }
+}
+
+#[test]
+fn remote_projection_preserves_successful_spawn_with_null_error_and_real_errors() {
+    let mut view = snapshot();
+    view.messages[1]["parts"] = json!([
+        {"type":"dynamic-tool","toolCallId":"spawn","toolName":"spawn_agent","state":"output-available","input":{"task":"Inspect"},"output":{"id":"companion:subagent:one","status":"running","result":null,"error":null}},
+        {"type":"dynamic-tool","toolCallId":"failed-spawn","toolName":"spawn_agent","state":"output-error","input":{"task":"Inspect"},"errorText":"Maximum active children reached"}
+    ]);
+    let mut app = App::default();
+    remote::project(&mut app, &view).unwrap();
+    let tools: Vec<_> = app
+        .messages
+        .iter()
+        .filter(|row| matches!(row.role, AppMessageRole::Tool(_)))
+        .collect();
+    assert_eq!(tools.len(), 2);
+    assert!(
+        matches!(tools[0].role, AppMessageRole::Tool(ToolState::Success)),
+        "{}",
+        tools[0].content
+    );
+    assert!(!tools[0].content.contains("Tool error"));
+    assert!(matches!(
+        tools[1].role,
+        AppMessageRole::Tool(ToolState::Failed)
+    ));
+    assert!(tools[1].content.contains("Maximum active children reached"));
+}
+
+#[test]
 fn remote_projection_clears_completed_plan_after_new_user_request() {
     for status in ["pending", "in_progress", "completed"] {
         let mut view = snapshot();

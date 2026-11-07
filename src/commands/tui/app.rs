@@ -33,6 +33,7 @@ pub struct App {
     pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
     pub plan: Option<String>,
+    pub waiting_messages: Vec<String>,
     pub plan_completed: bool,
     pub streaming_message: Option<usize>,
     pub pending_tools: HashMap<String, usize>,
@@ -312,12 +313,32 @@ impl App {
             self.plan = None;
             return;
         }
-        let content = plan.render();
-        let content = if self.language == Language::Ru {
-            content.replacen("Plan ·", "План ·", 1)
-        } else {
-            content
-        };
+        use crate::agent::tools::StepStatus;
+        let current = plan
+            .plan
+            .iter()
+            .enumerate()
+            .find(|(_, step)| step.status == StepStatus::InProgress)
+            .or_else(|| {
+                plan.plan
+                    .iter()
+                    .enumerate()
+                    .find(|(_, step)| step.status == StepStatus::Pending)
+            })
+            .unwrap_or((plan.plan.len() - 1, plan.plan.last().unwrap()));
+        let marker = if self.plan_completed { "✓" } else { "→" };
+        let content = format!(
+            "{} · {}/{} · {marker} {}",
+            self.language.pick("Plan", "План"),
+            current.0 + 1,
+            plan.plan.len(),
+            current
+                .1
+                .step
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
         self.plan = Some(content);
     }
 
@@ -753,8 +774,8 @@ mod tests {
     #[test]
     fn sending_a_request_clears_only_completed_plans() {
         for (status, expected) in [
-            ("pending", Some("Plan · 0/1\n○ Inspect")),
-            ("in_progress", Some("Plan · 0/1\n→ Inspect")),
+            ("pending", Some("Plan · 1/1 · → Inspect")),
+            ("in_progress", Some("Plan · 1/1 · → Inspect")),
             ("completed", None),
         ] {
             let mut app = App::default();
@@ -785,9 +806,9 @@ mod tests {
                 .unwrap(),
             );
             app.insert_input(input);
-            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1 · ✓ Inspect"));
             key(&mut app, KeyCode::Enter);
-            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1 · ✓ Inspect"));
             assert!(app.messages.is_empty());
         }
     }

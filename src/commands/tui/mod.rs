@@ -31,6 +31,8 @@ use tokio::{
     task::JoinSet,
 };
 
+#[cfg(test)]
+use crate::gateway::InterfaceId;
 use crate::{
     agent::{
         AgentEvent,
@@ -39,7 +41,7 @@ use crate::{
     },
     bootstrap::build_app,
     config::{Config, ProviderConfig},
-    gateway::{IncomingMessage, InterfaceId},
+    gateway::IncomingMessage,
     i18n::Language,
 };
 use app::{App, AppMessageRole, Status, ToolState};
@@ -118,6 +120,7 @@ async fn run_session_inner(
     restore_history(&mut app, &session);
     refresh_versions(&mut app, &runner, &session).await?;
     approvals::refresh(&mut app, &runner, &session_id).await?;
+    refresh_waiting(&mut app, &runner, &session_id).await;
 
     let mut tui = Tui::enter()?;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -146,6 +149,7 @@ async fn run_session_inner(
                 .submission_finished(&session_id, &input.request_id)
                 .await?
             {
+                redraw |= refresh_waiting(&mut app, &runner, &session_id).await;
                 continue;
             }
             if let Some(next) = runner.next_input(&session_id).await?
@@ -358,7 +362,7 @@ async fn run_session_inner(
                             }
                             let message=images::message(&app, session_id.as_str(), input);
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
-                                Ok(_)=>{app.input_images.clear();input_tx.send(message)?;},
+                                Ok(_)=>{app.waiting_messages.push(waiting_summary(&message.text, message.images.len()));app.input_images.clear();input_tx.send(message)?;},
                                 Err(error)=>{app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
                             }
                         }
@@ -394,7 +398,9 @@ async fn run_session_inner(
                 }
             }
             Some(event) = progress_rx.recv() => {
+                let queue_changed = matches!(&event, AgentEvent::InputConsumed | AgentEvent::SessionChanged { .. });
                 show_progress(&mut app, event);
+                if queue_changed { refresh_waiting(&mut app, &runner, &session_id).await; }
                 redraw = true;
             }
             Some(result) = copies.join_next(), if !copies.is_empty() => {
@@ -417,6 +423,7 @@ async fn run_session_inner(
                 while let Ok(event) = progress_rx.try_recv() {
                     show_progress(&mut app, event);
                 }
+                refresh_waiting(&mut app, &runner, &session_id).await;
                 app.task_finished_at = Some(chrono::Utc::now());
                 app.compacting = false;
                 if app.compaction_progress.as_ref().is_some_and(|progress| progress.finished_at.is_none()) {
@@ -468,6 +475,7 @@ async fn run_session_inner(
                 }
             }
             _ = approval_tick.tick() => {
+                redraw |= refresh_waiting(&mut app, &runner, &session_id).await;
                 match approvals::refresh(&mut app, &runner, &session_id).await {
                     Ok(changed) => redraw |= changed,
                     Err(error) => log::warn!("Could not refresh command approvals: {error:#}"),
@@ -618,6 +626,89 @@ fn reset_session(app: &mut App) {
     };
 }
 
+fn waiting_summary(text: &str, images: usize) -> String {
+    if images == 0 {
+        text.to_owned()
+    } else {
+        format!("{text}\n[Images: {images}]")
+    }
+}
+
+fn reconcile_waiting(app: &mut App, queued: &[serde_json::Value]) -> bool {
+    let waiting: Vec<_> = queued
+        .iter()
+        .map(|row| {
+            let mut text = waiting_summary(
+                row["text"].as_str().unwrap_or(""),
+                row["photos"].as_u64().unwrap_or(0) as usize,
+            );
+            for file in row["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|file| file.as_str())
+            {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&format!("[Attachment: {file}]"));
+            }
+            text
+        })
+        .collect();
+    if app.waiting_messages == waiting {
+        return false;
+    }
+    app.waiting_messages = waiting;
+    true
+}
+
+async fn refresh_waiting(
+    app: &mut App,
+    runner: &crate::agent::AgentRunner,
+    conversation: &SessionId,
+) -> bool {
+    let Some(store) = runner.sqlite_store() else {
+        return false;
+    };
+    let result = async {
+        let id = store.active_id(conversation).await?;
+        store.conversation_view(id.as_str()).await
+    }
+    .await;
+    match result {
+        Ok(view) => reconcile_waiting(app, &view.queued),
+        Err(error) => {
+            log::warn!("Could not refresh waiting messages: {error:#}");
+            false
+        }
+    }
+}
+
+#[test]
+fn waiting_queue_reconciles_consumed_inputs_and_keeps_attachment_only_inputs() {
+    let mut app = App::default();
+    app.waiting_messages = vec!["accepted locally".into()];
+    reconcile_waiting(
+        &mut app,
+        &[
+            serde_json::json!({"text":"next", "photos":2}),
+            serde_json::json!({"text":"", "files":["notes.txt"]}),
+        ],
+    );
+    assert_eq!(
+        app.waiting_messages,
+        ["next\n[Images: 2]", "[Attachment: notes.txt]"]
+    );
+    reconcile_waiting(&mut app, &[serde_json::json!({"text":"still queued"})]);
+    assert_eq!(app.waiting_messages, ["still queued"]);
+    reconcile_waiting(&mut app, &[]);
+    assert!(app.waiting_messages.is_empty());
+    app.waiting_messages.push("old session".into());
+    reset_session(&mut app);
+    assert!(app.waiting_messages.is_empty());
+}
+
 async fn submit_edit(
     app: &mut App,
     runner: &crate::agent::AgentRunner,
@@ -743,7 +834,11 @@ fn restore_history(app: &mut App, session: &Session) {
                     app,
                     AgentEvent::ToolFinished {
                         call_id: result.call_id.clone(),
-                        failed: result.content.output.get("error").is_some(),
+                        failed: result
+                            .content
+                            .output
+                            .get("error")
+                            .is_some_and(|error| !error.is_null()),
                         output: result.content.output.clone(),
                     },
                 );
@@ -788,6 +883,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
         app.cancel_message_navigation();
     }
     if source_changed {
+        app.waiting_messages.clear();
         app.compacting = false;
         app.compaction_progress = None;
     }
@@ -1431,7 +1527,7 @@ mod tests {
         );
         assert_eq!(
             app.plan.as_deref(),
-            Some("План · 0/1\n○ Original model text")
+            Some("План · 1/1 · → Original model text")
         );
     }
 
@@ -1611,7 +1707,7 @@ mod tests {
         }
         assert_eq!(app.messages.len(), 1);
         assert_eq!(app.messages[0].content, "Inspection finished");
-        assert_eq!(app.plan.as_deref(), Some("Plan · 1/1\n✓ Inspect"));
+        assert_eq!(app.plan.as_deref(), Some("Plan · 1/1 · ✓ Inspect"));
     }
 
     #[test]
@@ -1625,25 +1721,25 @@ mod tests {
                 "1",
                 "pending",
                 serde_json::json!("Plan updated"),
-                "Plan · 0/1\n○ Inspect",
+                "Plan · 1/1 · → Inspect",
             ),
             (
                 "2",
                 "completed",
                 serde_json::json!("Plan updated"),
-                "Plan · 1/1\n✓ Inspect",
+                "Plan · 1/1 · ✓ Inspect",
             ),
             (
                 "3",
                 "pending",
                 serde_json::json!({"error": "failed"}),
-                "Plan · 1/1\n✓ Inspect",
+                "Plan · 1/1 · ✓ Inspect",
             ),
             (
                 "4",
                 "pending",
                 serde_json::json!({"interrupted": true}),
-                "Plan · 1/1\n✓ Inspect",
+                "Plan · 1/1 · ✓ Inspect",
             ),
         ] {
             session.push(Message::ToolCall(ToolCall {
@@ -1717,8 +1813,8 @@ mod tests {
     fn plan_history_clears_completed_plans_at_the_next_user_request() {
         use crate::agent::message::UserMessage;
         for (status, expected) in [
-            ("pending", Some("Plan · 0/1\n○ Inspect")),
-            ("in_progress", Some("Plan · 0/1\n→ Inspect")),
+            ("pending", Some("Plan · 1/1 · → Inspect")),
+            ("in_progress", Some("Plan · 1/1 · → Inspect")),
             ("completed", None),
         ] {
             let mut session = Session::new(SessionId::new("plan-boundary"));
@@ -1740,9 +1836,9 @@ mod tests {
 
             append_plan_update(&mut session, "second", "New task", "pending");
             assert!(refresh_history(&mut app, &session));
-            assert_eq!(app.plan.as_deref(), Some("Plan · 0/1\n○ New task"));
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1 · → New task"));
             app.push_user_message("continue the new plan".into());
-            assert_eq!(app.plan.as_deref(), Some("Plan · 0/1\n○ New task"));
+            assert_eq!(app.plan.as_deref(), Some("Plan · 1/1 · → New task"));
         }
     }
 

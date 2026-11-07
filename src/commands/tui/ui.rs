@@ -189,30 +189,19 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
     let command_height = (app.command_suggestions().len() as u16 + 3).max(3);
     let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
-    let plan_width = area.width.saturating_sub(3).max(1);
     let available_plan_height = area.height.saturating_sub(footer_height + 2);
-    let mut plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
-        .style(Style::default().fg(Color::Cyan))
-        .wrap(ratatui::widgets::Wrap { trim: false });
-    if plan.line_count(plan_width) > usize::from(available_plan_height)
-        && let Some(content) = &app.plan
-    {
-        let heading = content.lines().next().unwrap_or_default();
-        let current = content.lines().find(|line| line.starts_with("→ "));
-        plan = Paragraph::new(
-            current.map_or_else(|| heading.to_owned(), |step| format!("{heading} · {step}")),
-        )
-        .style(Style::default().fg(Color::Cyan))
-        .wrap(ratatui::widgets::Wrap { trim: false });
-    }
+    let plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
+        .style(Style::default().fg(Color::Cyan));
     let plan_height = if app.plan.is_some() && available_plan_height > 0 {
-        plan.line_count(plan_width)
-            .min(usize::from(available_plan_height)) as u16
-            + 1
+        2
     } else {
         0
     };
-    let history_height = area.height.saturating_sub(footer_height + plan_height);
+    let waiting_height =
+        (app.waiting_messages.len() as u16).min(available_plan_height.saturating_sub(plan_height));
+    let history_height = area
+        .height
+        .saturating_sub(footer_height + plan_height + waiting_height);
     app.view
         .prepare(&app.messages, area, history_height, &mut app.scroll, false);
     if let Some(index) = app.navigation.focus.take() {
@@ -229,12 +218,29 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
+            Constraint::Length(waiting_height),
             Constraint::Length(plan_height),
             Constraint::Length(command_height),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
         .split(footer);
+    let waiting = app
+        .waiting_messages
+        .iter()
+        .take(usize::from(waiting_height))
+        .map(|text| {
+            Line::from(format!(
+                " ◷ {}",
+                text.split_whitespace().collect::<Vec<_>>().join(" ")
+            ))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(waiting).style(Style::default().fg(Color::Yellow)),
+        layout[0],
+    );
+    let layout = &layout[1..];
     if layout[0].height > 1 {
         frame.render_widget(
             Paragraph::new(" ≡").style(Style::default().fg(Color::Cyan).bold()),
@@ -384,11 +390,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let elapsed = app
         .task_started_at
         .filter(|_| {
-            app.task_finished_at.is_some()
-                || matches!(
-                    app.status,
-                    Status::Working | Status::Recovering | Status::Stopping
-                )
+            !app.compacting
+                && (app.task_finished_at.is_some()
+                    || matches!(
+                        app.status,
+                        Status::Working | Status::Recovering | Status::Stopping
+                    ))
         })
         .map_or_else(String::new, |start| {
             let seconds = (app.task_finished_at.unwrap_or_else(chrono::Utc::now) - start)
@@ -1340,6 +1347,7 @@ mod tests {
                 .position(|line| line.contains(working))
                 .unwrap();
             let input_row = before.iter().position(|line| line.contains(" > ")).unwrap();
+            app.task_started_at = Some(chrono::Utc::now() - chrono::Duration::seconds(600));
             app.compacting = true;
             app.compaction_progress = Some(crate::agent::CompactionProgress {
                 completed_tokens: 400,
@@ -1362,6 +1370,8 @@ mod tests {
                 "{status}"
             );
             assert!(status.contains("40%"), "{status}");
+            assert!(status.contains("1:15"), "{status}");
+            assert!(!status.contains("10:00"), "only one timer: {status}");
             assert!(status.contains("2/5"), "{status}");
             assert!(
                 status.contains(language.pick("Esc to stop", "Esc для остановки")),
@@ -1632,13 +1642,50 @@ mod tests {
                 .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
             let status = rows.iter().position(|row| row.contains("Ready")).unwrap();
-            assert_eq!(rows[status - 5].trim(), "≡ Plan · 1/3");
-            assert!(rows[status - 6].trim().is_empty(), "blank line above plan");
-            assert_eq!(buffer[(1, (status - 5) as u16)].symbol(), "≡");
-            for (offset, expected) in ["✓ Inspect", "→ Fix", "○ Verify"].iter().enumerate() {
-                assert_eq!(rows[status - 4 + offset].trim(), *expected);
-            }
+            assert_eq!(rows[status - 2].trim(), "≡ Plan · 2/3 · → Fix");
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.contains("Inspect") || row.contains("Verify"))
+            );
         }
+    }
+
+    #[test]
+    fn waiting_messages_stay_above_compact_plan_without_moving_input() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan":[{"step":"Current task", "status":"in_progress"}]
+            }))
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        app.waiting_messages = vec!["First correction".into(), "Second correction".into()];
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let first = rows
+            .iter()
+            .position(|row| row.contains("◷ First correction"))
+            .unwrap();
+        let second = rows
+            .iter()
+            .position(|row| row.contains("◷ Second correction"))
+            .unwrap();
+        let plan = rows
+            .iter()
+            .position(|row| row.contains("Plan · 1/1"))
+            .unwrap();
+        assert!(first < second && second < plan);
+        assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
     }
 
     #[test]
@@ -1690,8 +1737,8 @@ mod tests {
                     .collect::<String>();
                 assert!(text.contains("Ready"));
                 assert!(text.contains(" > "));
-                assert!(text.contains("Plan · 0/1"));
-                assert!(text.contains("implementation"));
+                assert!(text.contains("Plan · 1/1"));
+                assert!(!text.contains("A long explanation"));
             }
         }
     }
@@ -1717,7 +1764,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Plan · 7/8"));
+        assert!(text.contains("Plan · 8/8"));
         assert!(text.contains("→ Step 7"));
         assert!(text.contains("Ready"));
     }
