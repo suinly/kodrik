@@ -5,12 +5,32 @@ import { api, base, checkedFetch, login, messageOf, type Conversation, type Conv
 import {conversationTitle,shortConversationTitle,conversationRows,conversationPageSize} from '../utils/chat-presentation'
 import {useWebhooks} from '../utils/webhooks'
 import {initializePush, pushEnabled, updatePushPresence, refreshPushPermission} from '../utils/push'
+import icon from '../../public/chat/icon.svg?raw'
+import {faviconHref, type ChatActivity} from '../utils/favicon'
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
 const homeConversation: Conversation = {id:'new',title:'',busy:false,updated_at:null}
 const conversationKey = ref(0)
 const initializing = ref(true)
+const activity=ref<ChatActivity>({busy:false,unread:false})
+const faviconFrame=ref(0)
+const reducedMotion=useMediaQuery('(prefers-reduced-motion: reduce)')
+useIntervalFn(()=>{if(activity.value.busy && !reducedMotion.value) faviconFrame.value=(faviconFrame.value+1)%6},240)
+// Replace the server-injected link instead of leaving two competing favicons.
+const favicon=document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+const originalFavicon=favicon?.href
+watchEffect(()=>{if(favicon) favicon.href=faviconHref(icon,activity.value,faviconFrame.value,reducedMotion.value)})
+onBeforeUnmount(()=>{if(favicon && originalFavicon) favicon.href=originalFavicon})
+let activityLoading=false
+async function refreshActivity() {
+  if(activityLoading) return
+  activityLoading=true
+  try {activity.value=await api<ChatActivity>('activity')}
+  catch { /* Keep the last known state while offline. */ }
+  finally {activityLoading=false}
+}
+useIntervalFn(refreshActivity,5000)
 const error = ref('')
 const menu = ref(false)
 const colorMode=useColorMode()
@@ -35,7 +55,7 @@ const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==
 const showEvents = computed(()=>section.value==='webhooks' && webhookTab.value==='events')
 const viewingConversation = computed(()=>section.value==='chat' || showEvents.value && !!selected.value?.webhook)
 const pushConversation = computed(()=>viewingConversation.value && !restoring.value && !locationError.value ? selected.value?.id ?? null : null)
-const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value) }
+const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value); if(!document.hidden) void refreshActivity() }
 watch([pushConversation,pushEnabled],reportPushPresence)
 useIntervalFn(reportPushPresence,15000)
 const webhooks = useWebhooks(computed(()=>section.value==='webhooks' && !showEvents.value))
@@ -445,6 +465,7 @@ async function create(fromHome = false) {
 }
 
 onMounted(() => {
+  void refreshActivity()
   void initializePush().then(reportPushPresence)
   document.addEventListener('visibilitychange',reportPushPresence)
   window.addEventListener('focus',reportPushPresence)
@@ -643,7 +664,7 @@ onMounted(() => {
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @saved="refresh" @navigate="openVersion" @removed="removed" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refreshActivity" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>

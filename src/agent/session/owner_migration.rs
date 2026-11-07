@@ -53,6 +53,26 @@ pub(crate) fn stage_personal_sessions(
                 merge_table(&snapshot, &tx, table, keys, columns)
                     .with_context(|| format!("Owner migration conflict in {} ({table}); back up and reconcile both stores", path.display()))?;
             }
+            if version >= 14 {
+                merge_table(&snapshot, &tx, "web_chat_activity", &["session_id"], 4)?;
+            } else {
+                let payloads = snapshot
+                    .prepare("SELECT payload FROM sessions")?
+                    .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for payload in payloads {
+                    let session: super::Session = serde_json::from_slice(&payload)?;
+                    let exists: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM web_chat_activity WHERE session_id=?1)",
+                        [session.id().as_str()],
+                        |row| row.get(0),
+                    )?;
+                    if !exists {
+                        super::activity::capture(&tx, &session)?;
+                        tx.execute("UPDATE web_chat_activity SET read_revision=revision WHERE session_id=?1", [session.id().as_str()])?;
+                    }
+                }
+            }
             if version >= 5 {
                 let revision: i64 = snapshot.query_row(
                     "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='run_view_revision'",
@@ -329,6 +349,56 @@ pub(crate) fn checkpoint_owner_destination(directory: &Path) -> anyhow::Result<(
 mod tests {
     use super::*;
     use crate::agent::session::{Session, SessionId, SessionStore};
+
+    #[tokio::test]
+    async fn owner_migration_preserves_activity_markers_and_baselines_legacy() {
+        use crate::agent::{AssistantMessage, message::Message};
+        for legacy in [false, true] {
+            let source = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let store = SqliteSessionStore::open(source.path().into()).unwrap();
+            for id in ["cli:read", "cli:unread"] {
+                let mut session = Session::new(SessionId::new(id));
+                session.push(Message::Assistant(AssistantMessage {
+                    content: "answer".into(),
+                }));
+                store.save(&session).await.unwrap();
+                if id == "cli:read" {
+                    assert!(
+                        store
+                            .mark_chat_read(id, &super::super::activity::read_revision(&session))
+                            .await
+                            .unwrap()
+                    );
+                }
+            }
+            if legacy {
+                store
+                    .with_connection(|db| {
+                        db.execute_batch("DROP TABLE web_chat_activity; PRAGMA user_version=13;")?;
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+            }
+            drop(store);
+            stage_personal_sessions(&[source.path().into()], destination.path()).unwrap();
+            let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+            let states = migrated.with_connection(|db| {
+                Ok(db.prepare("SELECT session_id,revision=read_revision FROM web_chat_activity ORDER BY session_id")?
+                    .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,bool>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            }).await.unwrap();
+            assert_eq!(
+                states,
+                vec![("cli:read".into(), true), ("cli:unread".into(), legacy)]
+            );
+            assert_eq!(
+                migrated.chat_activity(vec![]).await.unwrap(),
+                (false, !legacy)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn owner_migration_preserves_webhook_modes_across_old_and_new_schemas() {

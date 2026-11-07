@@ -296,6 +296,9 @@ impl Chat {
         {
             snapshot["messages"] = json!(history(&view.session));
         }
+        snapshot["read_revision"] = json!(crate::agent::session::activity::read_revision(
+            &view.session
+        ));
         snapshot["revision"] = json!(view.revision);
         snapshot["environment"] = json!(match self.runner.environments() {
             Some(service) => service.status(&SessionId::new(id)).await,
@@ -451,6 +454,8 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
                 .delete(push::unsubscribe),
         )
         .route("/api/chat/push/presence", post(push::presence))
+        .route("/api/chat/activity", get(activity))
+        .route("/api/chat/sessions/{id}/read", post(mark_read))
         .route("/api/chat/sessions", get(management::list).post(create))
         .route(
             "/api/chat/sessions/{id}",
@@ -618,7 +623,7 @@ pub(crate) fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
 
-fn listed_session(session: &Session) -> bool {
+pub(crate) fn listed_session(session: &Session) -> bool {
     session.telegram_group().is_none() && listed_session_id(session.id().as_str())
 }
 
@@ -1034,6 +1039,44 @@ async fn attachment(
         bytes,
     )
         .into_response())
+}
+
+async fn activity(Extension(state): Extension<WebState>) -> Result<Json<Value>, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    let running = chat.runs.lock().await.iter().cloned().collect();
+    let (busy, unread) = chat
+        .sessions
+        .chat_activity(running)
+        .await
+        .map_err(internal)?;
+    Ok(Json(json!({"busy":busy,"unread":unread})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadRequest {
+    revision: String,
+}
+
+async fn mark_read(
+    Extension(state): Extension<WebState>,
+    Path(id): Path<String>,
+    Json(input): Json<ReadRequest>,
+) -> Result<StatusCode, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    chat.readable_session(&id).await?;
+    if input.revision.len() > 64 {
+        return Err(error(StatusCode::BAD_REQUEST, "Invalid read revision"));
+    }
+    if !chat
+        .sessions
+        .mark_chat_read(&id, &input.revision)
+        .await
+        .map_err(internal)?
+    {
+        return Err(error(StatusCode::CONFLICT, "Snapshot is stale"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn run_snapshot(

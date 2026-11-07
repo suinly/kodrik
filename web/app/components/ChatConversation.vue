@@ -7,11 +7,12 @@ import { TableKit } from '@tiptap/extension-table'
 import { TaskList, TaskItem } from '@tiptap/extension-list'
 import { CharacterCount } from '@tiptap/extensions/character-count'
 import { Slice } from '@tiptap/pm/model'
+import {useDocumentVisibility, useWindowFocus} from '@vueuse/core'
 
-const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
+const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;active?:boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
 const home = computed(() => !!props.start)
 const homeView = !!props.start
-const emit = defineEmits<{ saved: [];navigate:[id:string];removed:[];'close-search':[] }>()
+const emit = defineEmits<{ saved: [];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
 const matchIndex=ref(0)
@@ -40,6 +41,25 @@ const connection = ref('')
 const hint = ref(pending?.files?.length ? t("Повторно выберите вложения, если предыдущая отправка не была принята.") : '')
 const authExpired = ref(false)
 const snapshot = ref<Snapshot | null>(null)
+const visibility=useDocumentVisibility()
+const focused=useWindowFocus()
+let readRevision:string|undefined
+let markingRead=false
+async function markRead() {
+  const revision=snapshot.value?.read_revision
+  if(markingRead || !props.active || visibility.value!=='visible' || !focused.value || !revision || revision===readRevision) return
+  markingRead=true
+  try {
+    await api(`sessions/${props.conversation.id}/read`,'POST',{revision})
+    readRevision=revision
+    emit('read')
+  } catch { /* Retry on the next snapshot or focus change. */ }
+  finally {
+    markingRead=false
+    if(snapshot.value?.read_revision!==revision) void markRead()
+  }
+}
+watch([()=>snapshot.value,()=>props.active,visibility,focused],()=>{void markRead()},{flush:'post'})
 const prompt = useTemplateRef('prompt')
 const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
 const transcript = useTemplateRef('transcript')

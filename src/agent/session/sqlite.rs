@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 13;
+pub(super) const VERSION: i64 = 14;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -211,6 +211,9 @@ impl SqliteSessionStore {
         if version < 13 {
             crate::remote::store::migrate_attachments(&tx)?;
         }
+        if version < 14 {
+            super::activity::migrate(&tx)?;
+        }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
         // SQLite derives sidecar permissions from the already-private main database.
@@ -376,6 +379,7 @@ pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
                 .context("Session timestamp overflow")?
         ],
     )?;
+    super::activity::capture(db, session)?;
     crate::agent::command_audit::capture_mode(db, session)
 }
 
@@ -472,6 +476,11 @@ pub(super) fn import_files(tx: &Connection, directory: &Path) -> anyhow::Result<
                 tx.execute(
                     "INSERT INTO sessions VALUES (?1,?2,?3)",
                     params![session.id().as_str(), payload, i64::try_from(modified)?],
+                )?;
+                super::activity::capture(tx, &session)?;
+                tx.execute(
+                    "UPDATE web_chat_activity SET read_revision=revision WHERE session_id=?1",
+                    [session.id().as_str()],
                 )?;
                 tx.execute(
                     "INSERT INTO command_audit_modes VALUES (?1,?2,'trusted')",

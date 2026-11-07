@@ -63,6 +63,75 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('favicon combines activity markers, animates, and respects reduced motion',{timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:true,unread:true}}));
+    await page.goto(new URL('app/chat',base).href);
+    const favicon=page.locator('link[rel="icon"]');
+    const href=()=>favicon.getAttribute('href');
+    await expect(favicon).toHaveCount(1);
+    await expect.poll(async()=>decodeURIComponent(await href()||'')).toContain('cx="440"');
+    const first=await href();
+    await expect.poll(href).not.toBe(first);
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await expect.poll(async()=>decodeURIComponent(await href()||'')).toContain('r="35"');
+    const staticHref=await href();
+    await page.waitForTimeout(600);
+    assert.equal(await href(),staticHref);
+    await page.unroute('**/api/chat/activity');
+    await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:false,unread:false}}));
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await expect.poll(async()=>decodeURIComponent(await href()||'')).not.toContain('<circle');
+  } finally {await browser.close()}
+});
+
+test('selected conversation acknowledges the rendered read revision only once',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const reads=[];
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,read_revision:'observed-answer',busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[]};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${id}/read`,r=>{reads.push(r.request().postDataJSON());return r.fulfill({status:204})});
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    await expect.poll(()=>reads.length).toBe(1);
+    assert.deepEqual(reads,[{revision:'observed-answer'}]);
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(1100);
+    assert.equal(reads.length,1);
+  } finally {await browser.close()}
+});
+
+test('a stale in-flight read retries the newer visible answer',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const reads=[];
+    let staleRead;
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,read_revision:'first-answer',busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[]};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${id}/read`,r=>{
+      const {revision}=r.request().postDataJSON();
+      reads.push(revision);
+      if(revision==='first-answer') staleRead=r;
+      else return r.fulfill({status:204});
+    });
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    await expect.poll(()=>reads.length).toBe(1);
+    snapshot.revision++;snapshot.read_revision='newer-answer';
+    await page.waitForRequest(`**/sessions/${id}/run`);
+    await page.waitForTimeout(200);
+    await staleRead.fulfill({status:409,json:{error:'Snapshot is stale'}});
+    await expect.poll(()=>reads).toEqual(['first-answer','newer-answer']);
+  } finally {await browser.close()}
+});
+
 test('opening a child conversation from the sidebar stays read-only without selection errors',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'subagents'});

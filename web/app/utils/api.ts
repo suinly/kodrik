@@ -80,6 +80,7 @@ export type Compaction = {
 };
 export type Snapshot = {
   type: 'snapshot'; session_id: string; run_id: string | null; revision: number;
+  read_revision?: string | null;
   environment?: EnvironmentStatus | null;
   environment_revision?: number;
   title?: string;

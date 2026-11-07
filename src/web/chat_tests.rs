@@ -2810,3 +2810,133 @@ async fn chat_stop_immediately_after_admission_is_durable() {
         assert_eq!(f.idle(&id).await["busy"], false);
     }
 }
+
+#[tokio::test]
+async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_answers() {
+    use crate::agent::session::SessionId;
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let activity = || async {
+        let response = f
+            .request(reqwest::Method::GET, "activity")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        response.json::<Value>().await.unwrap()
+    };
+    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut session = store.load(&SessionId::new(&id)).await.unwrap().unwrap();
+    session.push(Message::Assistant(AssistantMessage {
+        content: "first".into(),
+    }));
+    store.save(&session).await.unwrap();
+    assert_eq!(activity().await["unread"], true);
+    let snapshot: Value = f
+        .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let revision = snapshot["read_revision"]
+        .as_str()
+        .expect("stable read revision");
+    assert!(!revision.is_empty());
+    let read = |revision: String| {
+        f.request(reqwest::Method::POST, &format!("sessions/{id}/read"))
+            .json(&json!({"revision":revision}))
+    };
+    assert_eq!(read(revision.into()).send().await.unwrap().status(), 204);
+    assert_eq!(activity().await["unread"], false);
+    session.push(Message::Assistant(AssistantMessage {
+        content: "second".into(),
+    }));
+    store.save(&session).await.unwrap();
+    assert_eq!(read(revision.into()).send().await.unwrap().status(), 409);
+    assert_eq!(activity().await["unread"], true);
+    let snapshot: Value = f
+        .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        read(snapshot["read_revision"].as_str().unwrap().into())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    // Reopening a store must preserve the shared read marker.
+    drop(store);
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    store.save(&session).await.unwrap();
+    assert_eq!(activity().await["unread"], false);
+    let response = f
+        .client
+        .get(format!("{}api/chat/activity", f.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+}
+
+#[tokio::test]
+async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() {
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        session::{Session, SessionId},
+    };
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut hidden = Session::new(SessionId::new("companion:private"));
+    hidden.push(Message::Assistant(AssistantMessage {
+        content: "hidden".into(),
+    }));
+    store.save(&hidden).await.unwrap();
+    let activity = || async {
+        f.request(reqwest::Method::GET, "activity")
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    let mut child = Session::new(SessionId::new("companion:subagent:visible"));
+    child.push(Message::Assistant(AssistantMessage {
+        content: "child answer".into(),
+    }));
+    store.save(&child).await.unwrap();
+    let child_revision = crate::agent::session::activity::read_revision(&child);
+    let response = f
+        .request(
+            reqwest::Method::POST,
+            "sessions/companion:subagent:visible/read",
+        )
+        .json(&json!({"revision":child_revision}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    assert_eq!(activity().await, json!({"busy":false,"unread":false}));
+    let mut webhook = Session::new(SessionId::new("webhook:event"));
+    webhook.webhook_instruction = Some("event".into());
+    webhook.push(Message::Assistant(AssistantMessage {
+        content: "webhook answer".into(),
+    }));
+    store.save(&webhook).await.unwrap();
+    for _ in 0..35 {
+        f.create().await;
+    }
+    let mut cp = Checkpoint::new(&store, webhook.id(), &webhook);
+    cp.save(&webhook, RunPhase::NeedModel, None).await.unwrap();
+    assert_eq!(activity().await, json!({"busy":true,"unread":true}));
+}
