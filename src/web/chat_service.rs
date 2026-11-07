@@ -349,6 +349,8 @@ impl Chat {
             "context_compaction_threshold":self.runner.context_compaction_threshold(),
             "compaction":view.run.as_ref().and_then(|r| r.compaction.as_ref()),
             "phase":view.run.as_ref().map(|r| &r.run.phase),
+            "started_at":view.run.as_ref().map(|r| r.run.started_at),
+            "finished_at":view.run.as_ref().and_then(|r| r.run.finished_at),
             "live":view.run.as_ref().map(|r| &r.live),
             "remote_operations":view.run.as_ref().map(|r| &r.remote_operations),
             "command_approvals":self.sessions.pending_command_approvals(id.as_str()).await.map_err(internal)?,

@@ -1120,12 +1120,20 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     }
     app.status = if run["busy"] == true {
         Status::Working
+    } else if run["phase"] == "Completed" {
+        Status::Done(String::new())
+    } else if run["phase"].get("Failed").is_some() {
+        Status::Error
     } else if run["phase"] == "Cancelled" {
         Status::Stopped
     } else {
         Status::Ready
     };
-    app.compacting = run["compaction"].is_object();
+    app.task_started_at = serde_json::from_value(run["started_at"].clone()).ok();
+    app.task_finished_at = serde_json::from_value(run["finished_at"].clone()).ok();
+    app.compaction_progress = serde_json::from_value(run["compaction"]["progress"].clone()).ok();
+    app.compacting = run["compaction"]["status"] == "preparing"
+        && run["compaction"]["progress"]["finished_at"].is_null();
     if let Some(live) = run["live"]["current"]
         .as_object()
         .filter(|live| live.get("status").and_then(|v| v.as_str()) != Some("Committed"))

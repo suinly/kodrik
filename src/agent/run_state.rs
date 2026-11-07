@@ -86,6 +86,8 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub overflow_compaction_from: Option<usize>,
     pub started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     pub pending_calls: Vec<ToolCall>,
     #[serde(default)]
     pub submission_ids: Vec<String>,
@@ -153,6 +155,7 @@ impl Checkpoint {
                 overflow_retry_used: false,
                 overflow_compaction_from: None,
                 started_at: chrono::Utc::now(),
+                finished_at: None,
                 pending_calls: vec![],
                 submission_ids: vec![],
                 routing_from: None,
@@ -235,6 +238,7 @@ impl Checkpoint {
             self.record.recovery_attempts = 0;
         }
         self.record.history_len = Some(session.messages().len());
+        self.record.finished_at = phase.terminal().then(chrono::Utc::now);
         self.record.phase = phase;
         self.record.attempt_active =
             !self.record.phase.terminal() && !matches!(self.record.phase, RunPhase::Parked { .. });

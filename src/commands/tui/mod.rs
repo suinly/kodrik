@@ -163,6 +163,8 @@ async fn run_session_inner(
             app.compacting = false;
             app.compaction_progress = None;
             app.status = Status::Working;
+            app.task_started_at = Some(chrono::Utc::now());
+            app.task_finished_at = None;
             redraw = true;
             requests.spawn(async move {
                 let message = input;
@@ -413,6 +415,7 @@ async fn run_session_inner(
                 while let Ok(event) = progress_rx.try_recv() {
                     show_progress(&mut app, event);
                 }
+                app.task_finished_at = Some(chrono::Utc::now());
                 app.compacting = false;
                 if app.compaction_progress.as_ref().is_some_and(|progress| progress.finished_at.is_none()) {
                     app.compaction_progress = None;

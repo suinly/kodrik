@@ -381,11 +381,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         }
     };
 
+    let elapsed = app
+        .task_started_at
+        .filter(|_| {
+            app.task_finished_at.is_some()
+                || matches!(
+                    app.status,
+                    Status::Working | Status::Recovering | Status::Stopping
+                )
+        })
+        .map_or_else(String::new, |start| {
+            let seconds = (app.task_finished_at.unwrap_or_else(chrono::Utc::now) - start)
+                .num_seconds()
+                .max(0);
+            format!(" · {}:{:02}", seconds / 60, seconds % 60)
+        });
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(format!(" {animation_frame} {state}")),
             Span::styled(
-                done_at,
+                format!("{done_at}{elapsed}"),
                 Style::default().fg(if app.selected_versions().is_some() {
                     Color::Cyan
                 } else {
@@ -1256,6 +1271,40 @@ mod tests {
         app.push_kodrik_message("new answer".into());
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         assert_eq!(&terminal.backend().buffer().content[..40 * 13], before);
+    }
+
+    #[test]
+    fn total_task_time_follows_each_status() {
+        for (phase, busy, label) in [
+            (serde_json::json!("NeedModel"), true, "Working"),
+            (serde_json::json!("Completed"), false, "Done"),
+            (serde_json::json!("Cancelled"), false, "Stopped"),
+            (
+                serde_json::json!({"Failed":{"reason":"test"}}),
+                false,
+                "Error",
+            ),
+        ] {
+            let mut app = App::default();
+            let start = chrono::Utc::now() - chrono::Duration::seconds(125);
+            let snapshot = serde_json::from_value(serde_json::json!({
+                "session_id":"timer-test","revision":1,"environment_revision":0,
+                "messages":[],"versions":null,"run":{"busy":busy,"phase":phase,
+                    "started_at":start,"finished_at":if busy {None} else {Some(start + chrono::Duration::seconds(125))}}
+            })).unwrap();
+            super::super::remote::project(&mut app, &snapshot).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(120)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .find(|line| line.contains(label))
+                .unwrap();
+            assert!(text.contains(" · 2:05"), "{text}");
+        }
     }
 
     #[test]

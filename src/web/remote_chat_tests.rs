@@ -1698,3 +1698,32 @@ async fn native_http_requires_bearer_rechecks_revocation_and_keeps_prefix() {
         .unwrap();
     assert_eq!(response.status(), 401);
 }
+
+#[tokio::test]
+async fn native_snapshot_retains_total_run_time_after_completion() {
+    use crate::agent::run_state::{Checkpoint, RunPhase};
+    let (_dir, chat, _state, id) = fixture().await;
+    let session = chat.sessions.load(&id).await.unwrap().unwrap();
+    let mut checkpoint = Checkpoint::new(&chat.sessions, &id, &session);
+    let start = chrono::Utc::now() - chrono::Duration::seconds(125);
+    checkpoint.record.started_at = start;
+    checkpoint
+        .save(&session, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    let active = chat.remote_snapshot(&id).await.unwrap();
+    assert_eq!(active.run.as_ref().unwrap()["started_at"], json!(start));
+    assert!(active.run.as_ref().unwrap()["finished_at"].is_null());
+    checkpoint
+        .save(&session, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let done = chat.remote_snapshot(&id).await.unwrap();
+    let end: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(done.run.as_ref().unwrap()["finished_at"].clone()).unwrap();
+    assert!((end - start).num_seconds() >= 125);
+    assert_eq!(
+        done.run.as_ref().unwrap()["finished_at"],
+        chat.remote_snapshot(&id).await.unwrap().run.unwrap()["finished_at"]
+    );
+}

@@ -1063,3 +1063,27 @@ fn old_observer_cannot_reset_revision_after_same_session_selection() {
     assert!(!remote::current_observer(2, 1));
     assert!(remote::current_observer(2, 2));
 }
+
+#[test]
+fn remote_compaction_only_runs_while_preparing_and_unfinished() {
+    let mut app = App::default();
+    let mut view = snapshot();
+    for (status, finished, active) in [
+        ("preparing", false, true),
+        ("preparing", true, false),
+        ("ready", false, false),
+        ("applied", true, false),
+        ("failed", false, false),
+        ("cancelled", false, false),
+        ("stale", false, false),
+    ] {
+        view.run.as_mut().unwrap()["compaction"] = json!({
+            "status":status,"progress":{"finished_at":if finished {json!("2026-11-07T10:00:00Z")} else {json!(null)}}
+        });
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.compacting, active, "{status}, finished={finished}");
+    }
+    view.run.as_mut().unwrap()["compaction"] = json!(null);
+    remote::project(&mut app, &view).unwrap();
+    assert!(!app.compacting);
+}
