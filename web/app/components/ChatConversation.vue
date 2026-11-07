@@ -277,7 +277,11 @@ function recoverInputFocus(event:KeyboardEvent) {
 const commandAuditMode=computed(()=>snapshot.value?.command_audit_mode ?? 'review')
 const commandAuditDisabled=computed(()=>!snapshot.value || editorLocked.value || savingCommandAudit.value || decidingCommands.value.size > 0)
 const environment=computed(()=>snapshot.value?.environment?.session_id===props.conversation.id ? snapshot.value.environment : null)
-defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment})
+const tokenUsage=computed(()=>snapshot.value?.token_usage)
+const contextTokens=computed(()=>snapshot.value?.context_tokens)
+const contextLimit=computed(()=>snapshot.value?.context_limit)
+const contextCompactionThreshold=computed(()=>snapshot.value?.context_compaction_threshold)
+defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment,tokenUsage,contextTokens,contextLimit,contextCompactionThreshold})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
   if(!editor) return
   // UEditor applies options only at creation; keep its live instance in sync.

@@ -319,15 +319,15 @@ impl super::AgentRunner {
     }
 }
 
-pub(super) async fn collect_generation<F>(
+pub(super) async fn collect_generation<F, U>(
     store: &SqliteSessionStore,
     run: &RunRecord,
     progress: Option<&tokio::sync::mpsc::Sender<super::AgentEvent>>,
     mut events: tokio::sync::mpsc::Receiver<super::AgentEvent>,
     work: F,
-) -> anyhow::Result<(Vec<Message>, Option<u64>)>
+) -> anyhow::Result<(Vec<Message>, U)>
 where
-    F: std::future::Future<Output = anyhow::Result<(Vec<Message>, Option<u64>)>>,
+    F: std::future::Future<Output = anyhow::Result<(Vec<Message>, U)>>,
 {
     store
         .save_live(
@@ -811,7 +811,7 @@ mod tests {
                 tx.send(crate::agent::AgentEvent::TextDelta("tail".into()))
                     .await
                     .unwrap();
-                Ok((vec![], None))
+                Ok((vec![], None::<u64>))
             })
             .await
             .unwrap();
@@ -870,7 +870,7 @@ mod tests {
             tx.send(crate::agent::AgentEvent::TextDelta("partial".into()))
                 .await
                 .unwrap();
-            Ok((vec![], None))
+            Ok((vec![], None::<u64>))
         })
         .await
         .unwrap();

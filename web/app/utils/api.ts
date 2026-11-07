@@ -78,9 +78,17 @@ export type Compaction = {
   status: 'preparing' | 'ready' | 'applied' | 'stale' | 'failed' | 'cancelled';
   progress?: CompactionProgress | null;
 };
+export type TokenUsage = {
+  input_tokens:number;output_tokens:number|null;cached_tokens:number|null;
+  total_tokens:number|null;requests:number;partial:boolean;
+};
 export type Snapshot = {
   type: 'snapshot'; session_id: string; run_id: string | null; revision: number;
   read_revision?: string | null;
+  token_usage?: TokenUsage | null;
+  context_tokens?: number | null;
+  context_limit?: number | null;
+  context_compaction_threshold?: number | null;
   environment?: EnvironmentStatus | null;
   environment_revision?: number;
   title?: string;

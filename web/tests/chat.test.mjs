@@ -46,6 +46,34 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('token statistics stay compact and show exact details on hover and focus',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[],
+      token_usage:{input_tokens:1000,output_tokens:200,cached_tokens:500,total_tokens:1200,requests:2,partial:false},context_tokens:25000,context_limit:100000};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const button=page.getByTestId('token-usage');
+    await expect(button).toContainText('25%');
+    await expect(page.getByTestId('token-usage-details')).toHaveCount(0);
+    await button.hover();
+    const details=page.getByTestId('token-usage-details');
+    await expect(details).toBeVisible();
+    await expect(details).toContainText('Входящие');
+    await expect(details).toContainText('Исходящие');
+    await expect(details).toContainText('500');
+    await expect(details).toContainText('Кэш входит');
+    await page.mouse.move(0,0);
+    await page.setViewportSize({width:390,height:844});
+    await button.focus();
+    await expect(details).toBeVisible();
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  } finally {await browser.close()}
+});
+
 test('favicon prioritizes unread over running and respects reduced motion',{timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {

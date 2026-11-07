@@ -7,6 +7,6 @@ tokio::task_local! {
 }
 
 pub use openai::OpenAiLlm;
-pub use provider::LlmProvider;
+pub use provider::{GenerationUsage, LlmProvider};
 
 pub use provider::{ContextOverflow, GenerationRetry};

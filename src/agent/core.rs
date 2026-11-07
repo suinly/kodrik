@@ -115,6 +115,13 @@ impl Agent {
         }
     }
 
+    pub(crate) fn context_compaction_threshold(&self) -> Option<u64> {
+        self.compactor
+            .as_ref()
+            .map(|c| c.threshold)
+            .filter(|n| *n > 0)
+    }
+
     pub(crate) fn with_compaction(mut self, llm: Arc<dyn LlmProvider>, threshold: u64) -> Self {
         self.compactor = Some(super::compact::Compactor { llm, threshold });
         self
@@ -602,9 +609,9 @@ impl Agent {
                         },
                         result = async {
                             if checkpoint.is_some() {
-                                self.llm.generate_attempt(&context, &tools, model_progress).await
+                                self.llm.generate_attempt_with_usage(&context, &tools, model_progress).await
                             } else {
-                                self.llm.generate(&context, &tools, model_progress).await
+                                self.llm.generate_with_usage(&context, &tools, model_progress).await
                             }
                         } => result,
                     }
@@ -623,6 +630,11 @@ impl Agent {
                 {
                     continue;
                 }
+                // Charge completed calls even when fresh input supersedes their output.
+                if let Ok((_, usage)) = &generated {
+                    session.record_token_usage(*usage);
+                    session.input_tokens = usage.input_tokens;
+                }
                 // Input can win the race after the provider finishes, before its output is committed.
                 if generated.is_ok()
                     && (if let Some(cp) = checkpoint.as_ref() {
@@ -636,7 +648,7 @@ impl Agent {
                     }
                     continue;
                 }
-                let (mut messages, input_tokens) = match generated {
+                let (mut messages, usage) = match generated {
                     Ok(output) => {
                         overflow_retry_used = false;
                         if let Some(cp) = checkpoint.as_deref_mut() {
@@ -701,9 +713,9 @@ impl Agent {
                         }
                     }
                 }
-                session.input_tokens = input_tokens;
+                session.input_tokens = usage.input_tokens;
                 if let Some(tx) = progress {
-                    let _ = tx.try_send(AgentEvent::ContextTokens(input_tokens));
+                    let _ = tx.try_send(AgentEvent::ContextTokens(usage.input_tokens));
                 }
                 let has_tool_calls = messages
                     .iter()

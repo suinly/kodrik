@@ -1,5 +1,18 @@
 // Russian source phrases are stable keys; document content never goes through this catalog.
 export const en = {
+  'Статистика токенов': 'Token statistics',
+  'Только текущая ветка, без сабагентов, названий и сжатия. Не включает прерванные запросы без usage.': 'Current branch only, excluding subagents, titles and compaction. Interrupted requests without usage are not included.',
+  'Токены за диалог': 'Conversation tokens',
+  'Входящие': 'Input',
+  'Исходящие': 'Output',
+  'Из кэша': 'Cached input',
+  'Всего': 'Total',
+  'Вызовы модели': 'Model calls',
+  'Контекст последнего запроса': 'Last request context',
+  'Лимит контекста модели неизвестен.': 'The model context limit is unknown.',
+  'Порог сжатия: {0} токенов': 'Compaction threshold: {0} tokens',
+  'Кэш входит во входящие токены, а не прибавляется к ним.': 'Cached tokens are included in input, not added to it.',
+  'Учёт неполный: старые вызовы или данные провайдера могут отсутствовать.': 'Incomplete tracking: older calls or provider data may be missing.',
   'Без проверок': 'No checks',
   'Проверка ИИ': 'AI review',
   'Спрашивать всегда': 'Always ask',

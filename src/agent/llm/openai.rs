@@ -54,6 +54,26 @@ struct ResponseOutput {
 #[derive(Deserialize)]
 struct ResponseUsage {
     input_tokens: u64,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    input_tokens_details: Option<CacheUsage>,
+}
+#[derive(Deserialize)]
+struct CacheUsage {
+    cached_tokens: Option<u64>,
+}
+impl ResponseUsage {
+    fn generation_usage(&self) -> super::GenerationUsage {
+        super::GenerationUsage {
+            input_tokens: Some(self.input_tokens),
+            output_tokens: self.output_tokens,
+            total_tokens: self.total_tokens,
+            cached_tokens: self
+                .input_tokens_details
+                .as_ref()
+                .and_then(|details| details.cached_tokens),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -293,7 +313,7 @@ impl OpenAiLlm {
         context: &LlmContext<'_>,
         tools: &[&dyn Tool],
         progress: Option<&mpsc::Sender<AgentEvent>>,
-    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+    ) -> anyhow::Result<(Vec<Message>, super::GenerationUsage)> {
         let file_bytes = context
             .messages
             .iter()
@@ -463,8 +483,12 @@ impl OpenAiLlm {
         if self.compaction {
             response.validate_compaction()?;
         }
-        let input_tokens = response.usage.as_ref().map(|usage| usage.input_tokens);
-        Ok((response.into_messages()?, input_tokens))
+        let usage = response
+            .usage
+            .as_ref()
+            .map(ResponseUsage::generation_usage)
+            .unwrap_or_default();
+        Ok((response.into_messages()?, usage))
     }
 }
 
@@ -480,6 +504,28 @@ impl LlmProvider for OpenAiLlm {
         tools: &[&dyn Tool],
         progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        let (messages, usage) = self
+            .generate_attempt_with_usage(context, tools, progress)
+            .await?;
+        Ok((messages, usage.input_tokens))
+    }
+
+    async fn generate(
+        &self,
+        context: &LlmContext<'_>,
+        tools: &[&dyn Tool],
+        progress: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        let (messages, usage) = self.generate_with_usage(context, tools, progress).await?;
+        Ok((messages, usage.input_tokens))
+    }
+
+    async fn generate_attempt_with_usage(
+        &self,
+        context: &LlmContext<'_>,
+        tools: &[&dyn Tool],
+        progress: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, super::GenerationUsage)> {
         self.check_access()?;
         RETRY_AFTER
             .scope(std::cell::Cell::new(None), async {
@@ -501,12 +547,12 @@ impl LlmProvider for OpenAiLlm {
             .await
     }
 
-    async fn generate(
+    async fn generate_with_usage(
         &self,
         context: &LlmContext<'_>,
         tools: &[&dyn Tool],
         progress: Option<&mpsc::Sender<AgentEvent>>,
-    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+    ) -> anyhow::Result<(Vec<Message>, super::GenerationUsage)> {
         let mut retries = 0;
         loop {
             self.check_access()?;
@@ -652,6 +698,26 @@ mod tests {
                 code == "context_length_exceeded"
             );
             server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn token_usage_preserves_missing_fields_and_cached_subset() {
+        for (body, output, cached, total) in [
+            (
+                r#"{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}"#,
+                Some(20),
+                Some(40),
+                Some(120),
+            ),
+            (r#"{"input_tokens":100}"#, None, None, None),
+        ] {
+            let usage: ResponseUsage = serde_json::from_str(body).unwrap();
+            let usage = usage.generation_usage();
+            assert_eq!(usage.input_tokens, Some(100));
+            assert_eq!(usage.output_tokens, output);
+            assert_eq!(usage.cached_tokens, cached);
+            assert_eq!(usage.total_tokens, total);
         }
     }
 

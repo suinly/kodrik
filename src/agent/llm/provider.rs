@@ -1,6 +1,15 @@
 use crate::agent::{AgentEvent, LlmContext, message::Message, tools::Tool};
 use tokio::sync::mpsc;
 
+/// Counts reported for one completed provider call; cache reads are a subset of input.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GenerationUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     fn identity(&self) -> String {
@@ -14,6 +23,38 @@ pub trait LlmProvider: Send + Sync {
         progress: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
         self.generate(context, tools, progress).await
+    }
+
+    async fn generate_attempt_with_usage(
+        &self,
+        context: &LlmContext<'_>,
+        tools: &[&dyn Tool],
+        progress: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, GenerationUsage)> {
+        let (messages, input_tokens) = self.generate_attempt(context, tools, progress).await?;
+        Ok((
+            messages,
+            GenerationUsage {
+                input_tokens,
+                ..Default::default()
+            },
+        ))
+    }
+
+    async fn generate_with_usage(
+        &self,
+        context: &LlmContext<'_>,
+        tools: &[&dyn Tool],
+        progress: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, GenerationUsage)> {
+        let (messages, input_tokens) = self.generate(context, tools, progress).await?;
+        Ok((
+            messages,
+            GenerationUsage {
+                input_tokens,
+                ..Default::default()
+            },
+        ))
     }
 
     async fn generate(

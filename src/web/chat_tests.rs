@@ -3055,6 +3055,52 @@ async fn activity_sidebar_points_to_unread_branch_without_changing_selection() {
 }
 
 #[tokio::test]
+async fn token_usage_is_exposed_by_snapshot_and_run_after_reload() {
+    use crate::agent::{llm::GenerationUsage, session::SessionId};
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut session = store.load(&SessionId::new(&id)).await.unwrap().unwrap();
+    session.record_token_usage(GenerationUsage {
+        input_tokens: Some(100),
+        output_tokens: Some(20),
+        cached_tokens: Some(40),
+        total_tokens: Some(120),
+    });
+    session.input_tokens = Some(100);
+    store.save(&session).await.unwrap();
+    for value in [
+        {
+            let mut response = f
+                .request(reqwest::Method::GET, &format!("sessions/{id}/events"))
+                .send()
+                .await
+                .unwrap();
+            let chunk = response.chunk().await.unwrap().unwrap();
+            let text = String::from_utf8(chunk.to_vec()).unwrap();
+            let data = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data:"))
+                .unwrap();
+            serde_json::from_str::<Value>(data.trim()).unwrap()
+        },
+        f.request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(value["token_usage"]["total_tokens"], 120);
+        assert_eq!(value["token_usage"]["cached_tokens"], 40);
+        assert_eq!(value["token_usage"]["requests"], 1);
+        assert_eq!(value["context_tokens"], 100);
+        assert!(value["context_limit"].is_null());
+    }
+}
+
+#[tokio::test]
 async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() {
     use crate::agent::{
         run_state::{Checkpoint, RunPhase},

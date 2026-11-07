@@ -22,6 +22,28 @@ struct Compaction {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub requests: u64,
+    pub partial: bool,
+}
+impl Default for TokenUsage {
+    fn default() -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: Some(0),
+            cached_tokens: Some(0),
+            total_tokens: Some(0),
+            requests: 0,
+            partial: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Session {
     #[serde(default)]
     generation: String,
@@ -53,6 +75,8 @@ pub struct Session {
     compaction: Option<Compaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) input_tokens: Option<u64>,
+    #[serde(default)]
+    token_usage: Option<TokenUsage>,
 }
 
 impl Session {
@@ -72,9 +96,41 @@ impl Session {
             messages: Vec::new(),
             compaction: None,
             input_tokens: None,
+            token_usage: Some(TokenUsage::default()),
             last_message_at: None,
             message_times: Vec::new(),
         }
+    }
+
+    pub(crate) fn token_usage(&self) -> TokenUsage {
+        self.token_usage.clone().unwrap_or(TokenUsage {
+            input_tokens: 0,
+            output_tokens: None,
+            cached_tokens: None,
+            total_tokens: None,
+            requests: 0,
+            partial: true,
+        })
+    }
+
+    pub(crate) fn record_token_usage(&mut self, usage: crate::agent::llm::GenerationUsage) {
+        let mut total = self.token_usage();
+        total.input_tokens = total
+            .input_tokens
+            .saturating_add(usage.input_tokens.unwrap_or(0));
+        let add = |known: Option<u64>, next: Option<u64>| match (known, next) {
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+            (a, b) => a.or(b),
+        };
+        total.output_tokens = add(total.output_tokens, usage.output_tokens);
+        total.cached_tokens = add(total.cached_tokens, usage.cached_tokens);
+        total.total_tokens = add(total.total_tokens, usage.total_tokens);
+        total.requests = total.requests.saturating_add(1);
+        total.partial |= usage.input_tokens.is_none()
+            || usage.output_tokens.is_none()
+            || usage.cached_tokens.is_none()
+            || usage.total_tokens.is_none();
+        self.token_usage = Some(total);
     }
 
     pub(crate) fn generation(&self) -> &str {
@@ -142,6 +198,7 @@ impl Session {
             branch.compaction = None;
         }
         branch.input_tokens = None;
+        branch.token_usage = Some(TokenUsage::default());
         Ok(branch)
     }
 
@@ -307,6 +364,53 @@ impl Session {
 mod tests {
     use super::*;
     use crate::agent::message::{ToolCall, ToolResult};
+
+    #[test]
+    fn token_usage_accumulates_and_survives_reload_without_inheritance() {
+        use crate::agent::llm::GenerationUsage;
+        let mut session = Session::new(SessionId::new("usage"));
+        session.push(Message::User(crate::agent::UserMessage {
+            content: "hi".into(),
+            images: vec![],
+            files: vec![],
+        }));
+        let usage = GenerationUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            cached_tokens: Some(40),
+            total_tokens: Some(120),
+        };
+        session.record_token_usage(usage);
+        session.record_token_usage(usage);
+        let saved = serde_json::to_value(&session).unwrap();
+        assert_eq!(
+            saved["token_usage"],
+            serde_json::json!({"input_tokens":200,"output_tokens":40,"cached_tokens":80,"total_tokens":240,"requests":2,"partial":false})
+        );
+        let restored: Session = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored.token_usage()).unwrap(),
+            saved["token_usage"]
+        );
+        let branch = restored.fork_before(SessionId::new("branch"), 0).unwrap();
+        assert_eq!(branch.token_usage().requests, 0);
+        assert!(!branch.token_usage().partial);
+        let mut legacy = saved;
+        legacy.as_object_mut().unwrap().remove("token_usage");
+        let mut legacy: Session = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.token_usage().partial);
+        assert_eq!(legacy.token_usage().output_tokens, None);
+        legacy.record_token_usage(usage);
+        assert!(legacy.token_usage().partial);
+        assert_eq!(legacy.token_usage().output_tokens, Some(20));
+        session.record_token_usage(GenerationUsage {
+            input_tokens: Some(7),
+            ..Default::default()
+        });
+        assert_eq!(session.token_usage().input_tokens, 207);
+        assert_eq!(session.token_usage().output_tokens, Some(40));
+        assert!(session.token_usage().partial);
+    }
 
     #[test]
     fn edited_branch_keeps_prompt_snapshots_but_discards_future_compaction() {

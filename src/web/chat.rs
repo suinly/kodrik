@@ -299,6 +299,11 @@ impl Chat {
         snapshot["read_revision"] = json!(crate::agent::session::activity::read_revision(
             &view.session
         ));
+        snapshot["token_usage"] = json!(view.session.token_usage());
+        snapshot["context_tokens"] = json!(view.session.input_tokens);
+        snapshot["context_limit"] = Value::Null;
+        snapshot["context_compaction_threshold"] =
+            json!(self.runner.context_compaction_threshold());
         snapshot["revision"] = json!(view.revision);
         snapshot["environment"] = json!(match self.runner.environments() {
             Some(service) => service.status(&SessionId::new(id)).await,

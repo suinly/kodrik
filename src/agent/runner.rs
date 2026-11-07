@@ -38,6 +38,10 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
+    pub(crate) fn context_compaction_threshold(&self) -> Option<u64> {
+        self.agent.context_compaction_threshold()
+    }
+
     pub(crate) fn model_identity(&self) -> String {
         self.agent.model_identity()
     }

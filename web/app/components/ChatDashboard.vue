@@ -631,6 +631,7 @@ onMounted(() => {
               <UButton :to="selectedPage.url" external target="_blank" rel="noopener noreferrer" icon="i-lucide-external-link" :aria-label="t('Открыть в новой вкладке')" :title="t('Открыть в новой вкладке')" color="neutral" variant="ghost" />
             </template>
             <template v-else-if="viewingConversation && selected">
+              <ChatTokenUsage :key="selected.id" :usage="conversationView?.tokenUsage" :context="conversationView?.contextTokens" :limit="conversationView?.contextLimit" :threshold="conversationView?.contextCompactionThreshold" />
               <UPopover v-if="conversationView?.environment" :content="{align:'end'}">
                 <UButton :icon="conversationView.environment.state==='connected' ? 'i-lucide-monitor-dot' : 'i-lucide-monitor-off'"
                   :color="conversationView.environment.state==='connected' ? 'success' : 'neutral'" variant="ghost" size="sm"
