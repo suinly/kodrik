@@ -127,8 +127,9 @@ api_base = "{base}"
                             "configured={configured} isolated={isolated}: {names:?}"
                         );
                     }
-                    assert!(names.contains(&"encyclopedia_search"));
-                    assert_eq!(names.contains(&"datasets"), foreground);
+                    assert_eq!(names.contains(&"encyclopedia_search"), !foreground);
+                    assert_eq!(names.contains(&"mcp_search"), foreground);
+                    assert!(!names.contains(&"datasets"));
                     for name in [
                         "spawn_agent",
                         "send_message",
@@ -329,7 +330,7 @@ pub(crate) async fn build_app_with_access(
                 .without_retries(),
         ))
     };
-    let mut agent = Agent::new(llm, tools, context)
+    let mut agent = Agent::new(llm, tools.with_deferred_builtin_schemas(), context)
         .with_command_auditor(tool_auditor())
         .with_compaction(
             Arc::new(make_llm(provider).for_compaction()),

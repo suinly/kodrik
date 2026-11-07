@@ -18,7 +18,7 @@ async fn wakeups_run_without_telegram_and_stop_with_the_application() {
     };
     use chrono::{Timelike, Utc};
     let router = Router::new().route("/responses", post(|Json(body): Json<Value>| async move {
-        assert!(body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "wakeups"));
+        assert!(body["tools"].as_array().unwrap().iter().any(|t| t["name"] == "mcp_search"));
         let response = json!({"output":[{"type":"message","content":[{"type":"output_text","text":"{\"message\":\"Scheduled result\"}"}]}]});
         if body["stream"] == true {
             ([("content-type", "text/event-stream")], format!("data: {}\n\ndata: [DONE]\n\n", json!({"type":"response.completed","response":response}))).into_response()
@@ -102,6 +102,15 @@ async fn owner_tools_are_identical_across_foreground_interfaces() {
         .unwrap();
     let expected = rx.recv().await.unwrap();
     for name in [
+        "mcp_search",
+        "memory",
+        "exec_command",
+        "web_search",
+        "web_read",
+    ] {
+        assert!(expected.iter().any(|n| n == name), "{name}: {expected:?}");
+    }
+    for name in [
         "wakeups",
         "telegram_reply",
         "telegram_results",
@@ -109,10 +118,11 @@ async fn owner_tools_are_identical_across_foreground_interfaces() {
         "messages",
         "show_ui",
         "publish_page",
-        "web_search",
-        "web_read",
     ] {
-        assert!(expected.iter().any(|n| n == name), "{name}: {expected:?}");
+        assert!(
+            !expected.iter().any(|n| n == name),
+            "schema should be deferred: {name}"
+        );
     }
     app.agent_runner.run_once("hello").await.unwrap();
     assert_eq!(rx.recv().await.unwrap(), expected, "one-shot CLI");

@@ -42,6 +42,7 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    deferred_builtins: HashSet<String>,
 }
 
 impl ToolRegistry {
@@ -52,13 +53,41 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
+    pub(crate) fn with_deferred_builtin_schemas(mut self) -> Self {
+        // Keep execution/introspection unchanged; only model schema advertisement is lazy.
+        self.deferred_builtins.extend(
+            [
+                "datasets",
+                "show_ui",
+                "ui_components",
+                "publish_page",
+                "companion",
+                "wakeups",
+                "webhooks",
+                "telegram_reply",
+                "telegram_results",
+                "messages",
+                "encyclopedia_search",
+            ]
+            .into_iter()
+            .filter(|name| self.tools.contains_key(*name))
+            .map(str::to_owned),
+        );
+        self.with_mcp_search()
+    }
+
+    fn schema_deferred(&self, tool: &dyn Tool) -> bool {
+        tool.deferred() || self.deferred_builtins.contains(&tool.name())
+    }
+
     pub(crate) fn with_mcp_search(mut self) -> Self {
         let catalog = self
             .tools
             .values()
-            .filter(|tool| tool.deferred())
+            .filter(|tool| self.schema_deferred(tool.as_ref()))
             .cloned()
             .collect::<Vec<_>>();
+        self.tools.remove(super::mcp_search::NAME);
         if !catalog.is_empty() {
             self.tools.insert(
                 super::mcp_search::NAME.into(),
@@ -69,6 +98,7 @@ impl ToolRegistry {
     }
     pub(crate) fn without(&self, names: &[&str]) -> Self {
         Self {
+            deferred_builtins: self.deferred_builtins.clone(),
             tools: self
                 .tools
                 .iter()
@@ -76,6 +106,7 @@ impl ToolRegistry {
                 .map(|(name, tool)| (name.clone(), tool.clone()))
                 .collect(),
         }
+        .with_mcp_search()
     }
 
     pub fn list(&self) -> Vec<&dyn Tool> {
@@ -90,7 +121,11 @@ impl ToolRegistry {
     }
 
     pub(crate) fn for_model(&self, messages: &[Message]) -> anyhow::Result<Vec<&dyn Tool>> {
-        let mut tools = self.list();
+        let mut tools = self
+            .list()
+            .into_iter()
+            .filter(|tool| !self.schema_deferred(*tool))
+            .collect::<Vec<_>>();
         anyhow::ensure!(
             tools.len() <= 128,
             "More than 128 non-deferred tools; reduce the advertised catalog"
@@ -101,8 +136,8 @@ impl ToolRegistry {
                 || !self
                     .tools
                     .values()
-                    .any(|tool| tool.deferred() && tool.available()),
-            "Non-deferred tools leave no capacity for MCP discovery; reduce the advertised catalog"
+                    .any(|tool| self.schema_deferred(tool.as_ref()) && tool.available()),
+            "Non-deferred tools leave no capacity for tool discovery; reduce the advertised catalog"
         );
         let mut selected = VecDeque::new();
         let mut searches = HashSet::new();
@@ -130,11 +165,9 @@ impl ToolRegistry {
                             .rev()
                             .filter_map(|v| v.as_str())
                         {
-                            let Some(tool) = self
-                                .tools
-                                .get(name)
-                                .filter(|tool| tool.deferred() && tool.available())
-                            else {
+                            let Some(tool) = self.tools.get(name).filter(|tool| {
+                                self.schema_deferred(tool.as_ref()) && tool.available()
+                            }) else {
                                 continue;
                             };
                             selected.retain(|selected| *selected != name);

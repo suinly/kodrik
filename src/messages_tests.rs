@@ -139,14 +139,14 @@ api_base = "{base}"
             .unwrap()
             .iter()
             .any(|t| t["name"] == "messages");
-        assert_eq!(available, !isolated);
+        assert!(!available, "messages schema is deferred");
         assert_eq!(
             tools
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|tool| tool["name"] == "webhooks"),
-            !isolated
+            false
         );
         let sessions = app
             .agent_runner

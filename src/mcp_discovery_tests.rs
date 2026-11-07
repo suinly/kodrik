@@ -83,14 +83,7 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
         assert!(!request.to_string().contains("PRIVATE_MCP_TOKEN"));
         let tools = request["tools"].as_array().unwrap();
         assert!(tools.len() <= 128, "model received {} tools", tools.len());
-        for native in [
-            "show_ui",
-            "ui_components",
-            "wakeups",
-            "web_search",
-            "web_read",
-            "mcp_search",
-        ] {
+        for native in ["web_search", "web_read", "mcp_search"] {
             assert!(
                 tools.iter().any(|tool| tool["name"] == native),
                 "{native} missing"

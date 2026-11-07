@@ -217,7 +217,7 @@ api_base = "{base}"
                     .unwrap()
                     .iter()
                     .any(|tool| tool["name"] == "webhooks"),
-                available
+                false
             );
             if available {
                 assert_eq!(result["name"], "Monitor");

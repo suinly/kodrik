@@ -275,3 +275,48 @@ async fn mcp_discovery_recovery_loads_the_saved_selection_before_resuming_the_mo
         "mcp__rustrak__group0_tool00"
     );
 }
+
+#[tokio::test]
+async fn builtin_discovery_loads_schemas_only_after_search_and_keeps_execution_policy() {
+    let registry = ToolRegistry::default()
+        .register(Arc::new(Function {
+            name: "datasets".into(),
+            deferred: false,
+        }))
+        .register(Arc::new(Function {
+            name: "exec_command".into(),
+            deferred: false,
+        }))
+        .with_deferred_builtin_schemas();
+    assert_eq!(names(&registry, &[]), ["exec_command", "mcp_search"]);
+    // Introspection still sees installed tools; schema deferral is not authorization.
+    assert!(registry.list().iter().any(|tool| tool.name() == "datasets"));
+    assert_eq!(registry.replay_policy("datasets"), ReplayPolicy::Never);
+    let mut history = Vec::new();
+    discover(&registry, &mut history, "datasets", 1).await;
+    assert_eq!(
+        names(&registry, &history),
+        ["datasets", "exec_command", "mcp_search"]
+    );
+    assert_eq!(names(&registry, &[]), ["exec_command", "mcp_search"]);
+    assert_eq!(
+        registry
+            .execute("datasets", json!({}))
+            .await
+            .unwrap()
+            .output["name"],
+        "datasets"
+    );
+    let restored: Vec<Message> =
+        serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+    assert_eq!(names(&registry, &restored), names(&registry, &history));
+    let filtered = registry.without(&["datasets"]);
+    assert!(!names(&filtered, &history).contains(&"datasets".into()));
+    assert!(filtered.execute("datasets", json!({})).await.is_err());
+    assert!(
+        filtered
+            .execute("mcp_search", json!({"query":"datasets","limit":1}))
+            .await
+            .is_err()
+    );
+}

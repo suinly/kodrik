@@ -58,7 +58,7 @@ impl Tool for McpSearchTool {
     }
 
     fn description(&self) -> String {
-        "Find and load MCP tools for connected external services. Search before calling an MCP tool that is not currently advertised. query: concise keywords from the server/tool name or description (English names/keywords usually work best); use an exact mcp__server__tool name to find that function. limit: 1–16, null defaults to 8. Matches are ranked and their schemas become callable on the NEXT model request; call their exact names then. At most 32 recently discovered MCP tools remain advertised; search again to reload an older tool. All configured tools remain searchable. This tool only searches local metadata; it does not execute remote actions. A failed or empty search does not grant new capabilities.".into()
+        "Find and load deferred built-in and MCP tools. Search before using an unadvertised tool. Built-in groups: datasets (records/trackers), show_ui/ui_components (pages/charts/forms), publish_page (legacy HTML), companion (learned facts/interests), wakeups (follow-ups), webhooks, telegram_reply/telegram_results (media/polls), messages (cross-channel), encyclopedia_search. Query concise English keywords or an exact tool name, including mcp__server__tool for connected services. limit: 1–16, null defaults to 8. Matches are ranked and their schemas become callable on the NEXT model request; call their exact names then. At most 32 recently discovered tools remain advertised; search again to reload an older tool. All configured tools remain searchable. This tool only searches local metadata; it does not execute remote actions. A failed or empty search does not grant new capabilities.".into()
     }
 
     fn parameters(&self) -> Value {

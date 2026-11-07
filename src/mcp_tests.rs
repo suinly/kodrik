@@ -123,7 +123,7 @@ X-Tenant = "test-tenant"
         let data = tempfile::tempdir().unwrap();
         let app = build_app_at(&config, data.path(), isolated).await.unwrap();
         app.agent_runner.run_once("list issues").await.unwrap();
-        let request_count = if isolated { 2 } else { 3 };
+        let request_count = 3;
         for call in 0..request_count {
             let request = rx.recv().await.unwrap();
             assert!(!request.to_string().contains("PRIVATE_MCP_TOKEN"));
@@ -132,10 +132,7 @@ X-Tenant = "test-tenant"
                 .iter()
                 .find(|tool| tool["name"] == "mcp__rustrak__list_issues");
             assert_eq!(mcp_tool.is_some(), !isolated && call > 0);
-            assert_eq!(
-                tools.iter().any(|tool| tool["name"] == "mcp_search"),
-                !isolated
-            );
+            assert_eq!(tools.iter().any(|tool| tool["name"] == "mcp_search"), true);
             assert_eq!(
                 tools.iter().find(|tool| tool["name"] == "memory").unwrap()["strict"],
                 true

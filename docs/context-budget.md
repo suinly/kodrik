@@ -35,3 +35,27 @@ before/after provider measurements.
 Further work should follow these measurements: deferred built-in tool schemas and
 task-specific instruction modules need behavior checks for tool discovery, chat,
 nutrition, coding, pages and GUI. They are not part of this first reduction.
+
+## Deferred built-in schemas
+
+Foreground agents now load heavy built-in schemas through the existing
+`mcp_search` mechanism. Its description lists exact built-in names and purposes.
+Record/page, companion, wakeup/webhook, messaging/media and encyclopedia schemas
+are deferred. Shell, patch, image viewing, memory, session search, planning,
+web research and child-agent controls remain directly advertised.
+
+Deferral affects model advertisement only, not authorization, auditing or replay.
+Removed tools are also removed from discovery; owner-only tools remain absent in
+isolated/invited registries. Recent selections are reconstructed from paired
+successful search calls/results in session history, bounded to 32 tools. A
+compacted-away selection can be searched again. Remote scope discovery uses the
+same catalog and still checks live lease availability.
+
+With the same copied local profile and identical one-shot prompt, provider input
+usage changed from 12,248 to 7,988 tokens (34.8% lower, neither request cached).
+Tool schema bytes fell from 41,796 to 14,947 (64.2% lower); initial tool count fell
+from 25 to 14. The small instruction change is included in this comparison.
+A separate read-only live check successfully searched for `datasets`, loaded its
+schema on the following request and listed an empty test store. Discovery adds
+an extra model round trip when a deferred tool is first needed, so this does not
+promise a 34.8% saving on tool-heavy turns.
