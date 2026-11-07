@@ -70,6 +70,72 @@ test('favicon combines activity markers, animates, and respects reduced motion',
   } finally {await browser.close()}
 });
 
+test('sidebar unread reply opens its branch and clears with favicon only after read succeeds',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const branch='unread-branch';
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    let unread=true,pendingRead;
+    const reads=[];
+    const snapshot={type:'snapshot',session_id:branch,run_id:null,revision:1,read_revision:'committed-answer',busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'answer',role:'assistant',parts:[{type:'text',text:'Committed branch reply'}]}]};
+    await page.route('**/api/chat/sessions?*',route=>route.fulfill({json:[
+      {id,root_id:id,title:'Unread grouped chat',busy:true,pinned:true,updated_at:null,unread,unread_session_id:unread?branch:null},
+      {id:'plain-unread',title:'Plain unread chat',busy:false,updated_at:null,unread:true,unread_session_id:null},
+      {id:'read-chat',title:'Read chat',busy:false,updated_at:null,unread:false,unread_session_id:null},
+    ]}));
+    await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:false,unread}}));
+    await page.route(`**/sessions/${branch}/select`,route=>route.fulfill({status:204}));
+    await page.route(`**/sessions/${branch}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${branch}/run`,route=>route.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${branch}/read`,route=>{reads.push(route.request().postDataJSON());pendingRead=route});
+    await page.goto(new URL('app/chat',base).href);
+    const row=page.locator(`[data-conversation-id="${id}"]`);
+    const marker=row.getByRole('img',{name:'Непрочитанный ответ',exact:true});
+    const favicon=page.locator('link[rel="icon"]');
+    await expect(marker).toBeVisible();
+    await expect(row.getByLabel('Закреплённый диалог',{exact:true})).toBeVisible();
+    await expect(row.getByLabel('Выполняется',{exact:true})).toBeVisible();
+    await expect(page.locator('[data-conversation-id="plain-unread"]').getByRole('img',{name:'Непрочитанный ответ',exact:true})).toBeVisible();
+    await expect(page.locator('[data-conversation-id="read-chat"]').getByRole('img',{name:'Непрочитанный ответ',exact:true})).toHaveCount(0);
+    await expect.poll(async()=>decodeURIComponent(await favicon.getAttribute('href')||'')).toContain('cx="440"');
+    await row.click();
+    await expect(page).toHaveURL(new URL(`app/chat/${branch}`,base).href);
+    await expect(page.locator('.message').getByText('Committed branch reply',{exact:true})).toBeVisible();
+    await expect.poll(()=>reads).toEqual([{revision:'committed-answer'}]);
+    await expect(marker).toBeVisible();
+    unread=false;
+    await pendingRead.fulfill({status:204});
+    await expect(marker).toHaveCount(0,{timeout:1500});
+    await expect.poll(async()=>decodeURIComponent(await favicon.getAttribute('href')||''),{timeout:1500}).not.toContain('cx="440"');
+  } finally {await browser.close()}
+});
+
+test('sidebar search matches take precedence over an unread branch',{timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    const match='search-match-branch';
+    const snapshot={type:'snapshot',session_id:match,run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'match-message',role:'assistant',parts:[{type:'text',text:'Needle in matched reply'}]}]};
+    await page.route('**/api/chat/sessions?*',route=>{
+      const searching=!!new URL(route.request().url()).searchParams.get('q');
+      return route.fulfill({json:[{id:searching?match:'group-root',root_id:'group-root',title:'Searchable chat',busy:false,updated_at:null,unread:true,unread_session_id:'different-unread-branch',snippet:searching?'Needle in matched reply':null,match_message:searching?'match-message':null}]});
+    });
+    await page.route(`**/sessions/${match}/select`,route=>route.fulfill({status:204}));
+    await page.route(`**/sessions/${match}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${match}/run`,route=>route.fulfill({json:snapshot}));
+    await page.goto(new URL('app/chat',base).href);
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
+    await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Needle');
+    const row=page.locator(`[data-conversation-id="${match}"]`);
+    await expect(row.getByRole('img',{name:'Непрочитанный ответ',exact:true})).toBeVisible();
+    await row.click();
+    await expect(page).toHaveURL(new URL(`app/chat/${match}`,base).href);
+    await expect(page.getByRole('textbox',{name:'Поиск в диалоге',exact:true})).toHaveValue('Needle');
+    await expect(page.locator('.message.search-match')).toContainText('Needle in matched reply');
+  } finally {await browser.close()}
+});
+
 test('selected conversation acknowledges the rendered read revision only once',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});

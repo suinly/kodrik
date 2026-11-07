@@ -3,6 +3,19 @@ use crate::agent::message::Message;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
+// Collect active IDs once, not a history scan for every listed conversation.
+const BUSY_SQL: &str = "SELECT EXISTS(
+    SELECT 1 FROM web_chat_activity WHERE listed=1 AND session_id IN (
+        SELECT value FROM json_each(?1)
+        UNION ALL SELECT session_id FROM runs WHERE terminal=0
+        UNION ALL SELECT coalesce(s.session_id,active.session_id,s.conversation_id)
+            FROM submissions s LEFT JOIN active_sessions active ON active.conversation_id=s.conversation_id
+            WHERE s.status='Queued'
+            AND NOT EXISTS(SELECT 1 FROM inbox_controls c WHERE c.conversation_id=s.conversation_id)
+        UNION ALL SELECT r.session_id FROM deliveries d JOIN runs r ON r.id=d.run_id
+            WHERE json_extract(d.payload,'$.status') IN ('Pending','Sending')
+    ))";
+
 // Only committed assistant text changes the read token; user messages and live deltas do not.
 pub(crate) fn read_revision(session: &Session) -> String {
     let messages: Vec<_> = session
@@ -80,20 +93,18 @@ impl SqliteSessionStore {
 
     pub(crate) async fn chat_activity(&self, running: Vec<String>) -> anyhow::Result<(bool, bool)> {
         self.with_connection(move |db| {
-            let busy = db.query_row("SELECT EXISTS(
-                SELECT 1 FROM web_chat_activity a WHERE a.listed=1 AND (
-                    a.session_id IN (SELECT value FROM json_each(?1))
-                    OR EXISTS(SELECT 1 FROM runs r WHERE r.session_id=a.session_id AND r.terminal=0)
-                    OR EXISTS(SELECT 1 FROM submissions s LEFT JOIN active_sessions active ON active.conversation_id=s.conversation_id
-                        WHERE s.status='Queued' AND coalesce(s.session_id,active.session_id,s.conversation_id)=a.session_id
-                        AND NOT EXISTS(SELECT 1 FROM inbox_controls c WHERE c.conversation_id=s.conversation_id))
-                    OR EXISTS(SELECT 1 FROM deliveries d JOIN runs r ON r.id=d.run_id
-                        WHERE r.session_id=a.session_id AND json_extract(d.payload,'$.status') IN ('Pending','Sending'))
-                ))", [serde_json::to_string(&running)?], |row| row.get(0))?;
-            let unread = db.query_row("SELECT EXISTS(SELECT 1 FROM web_chat_activity
-                WHERE listed=1 AND revision!='' AND revision!=read_revision)", [], |row| row.get(0))?;
+            let busy = db.query_row(BUSY_SQL, [serde_json::to_string(&running)?], |row| {
+                row.get(0)
+            })?;
+            let unread = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM web_chat_activity
+                WHERE listed=1 AND revision!='' AND revision!=read_revision)",
+                [],
+                |row| row.get(0),
+            )?;
             Ok((busy, unread))
-        }).await
+        })
+        .await
     }
 }
 
@@ -104,6 +115,30 @@ mod tests {
         AssistantMessage,
         session::{SessionId, SessionStore},
     };
+
+    #[tokio::test]
+    async fn activity_checks_history_once_instead_of_once_per_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        for i in 0..100 {
+            store
+                .save(&Session::new(SessionId::new(format!("cli:{i}"))))
+                .await
+                .unwrap();
+        }
+        store.with_connection(|db| {
+            db.execute_batch("WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<99)
+                INSERT INTO runs(id,conversation_id,session_id,payload,terminal,revision) SELECT 'run:'||i,'cli:'||i,'cli:'||i,'{}',1,1 FROM n;
+                INSERT INTO deliveries SELECT id,id,conversation_id,'{\"status\":\"Delivered\"}' FROM runs;
+                INSERT INTO submissions(id,conversation_id,request_id,payload_hash,sequence,payload,status)
+                    SELECT id,conversation_id,id,'hash',1,zeroblob(65536),'Done' FROM runs;")?;
+            let mut query = db.prepare(BUSY_SQL)?;
+            assert!(!query.query_row(["[]"], |row| row.get::<_,bool>(0))?);
+            let steps = query.get_status(rusqlite::StatementStatus::VmStep);
+            assert!(steps < 50_000, "Activity must not repeatedly scan historical runs: {steps} VM steps");
+            Ok(())
+        }).await.unwrap();
+    }
 
     #[tokio::test]
     async fn activity_migration_is_idempotent_and_preserves_unread_markers() {

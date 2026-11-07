@@ -233,6 +233,19 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         })
         .await
         .map_err(internal)?;
+    let unread: HashSet<String> = chat
+        .sessions
+        .with_connection(|db| {
+            Ok(db
+                .prepare(
+                    "SELECT session_id FROM web_chat_activity
+            WHERE listed=1 AND revision!='' AND revision!=read_revision",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .await
+        .map_err(internal)?;
     // shortcut: search scans saved histories, add an index when archive latency warrants it.
     let runs = chat.runs.lock().await;
     let jobs = chat.title_jobs.lock().await;
@@ -313,7 +326,11 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
                 .await
                 .map_err(internal)?;
         let updated = group.iter().filter_map(|s| s.last_message_at()).max();
-        result.push(json!({"id":shown.id().as_str(),"root_id":root,"parent_id":parents.get(root),"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
+        let unread_session = std::iter::once(shown)
+            .chain(group.iter().copied())
+            .find(|s| unread.contains(s.id().as_str()))
+            .map(|s| s.id().as_str());
+        result.push(json!({"id":shown.id().as_str(),"root_id":root,"parent_id":parents.get(root),"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"unread":unread_session.is_some(),"unread_session_id":unread_session,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
     }
     if let Some(roots) = page_roots {
         result.sort_by_key(|session| {

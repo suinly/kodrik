@@ -30,6 +30,7 @@ export const en = {
   'Отклонить': 'Reject',
   'Подтверждение команды больше не ожидается. Обновите историю.': 'This command approval is no longer pending. Refresh the conversation.',
   'Уведомления': 'Notifications',
+  'Непрочитанный ответ': 'Unread reply',
   'Push о готовых ответах и новых сообщениях агента, даже когда чат закрыт. Текст переписки в уведомлениях не показывается.': 'Push notifications for completed replies and new agent messages, even when chat is closed. Conversation contents stay private.',
   'На iPhone и iPad сначала добавьте Kodrik на домашний экран через меню «Поделиться».': 'On iPhone and iPad, first add Kodrik to your Home Screen using the Share menu.',
   'Этот браузер не поддерживает push. Откройте Kodrik в совместимом браузере или установленном приложении.': 'This browser does not support push. Open Kodrik in a compatible browser or installed web app.',

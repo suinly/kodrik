@@ -2906,6 +2906,22 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
     }));
     store.save(&session).await.unwrap();
     assert_eq!(activity().await["unread"], true);
+    let listed: Value = f
+        .request(reqwest::Method::GET, "sessions")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .unwrap();
+    assert_eq!(row["unread"], true);
+    assert_eq!(row["unread_session_id"], id);
     let snapshot: Value = f
         .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
         .send()
@@ -2924,6 +2940,22 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
     };
     assert_eq!(read(revision.into()).send().await.unwrap().status(), 204);
     assert_eq!(activity().await["unread"], false);
+    let listed: Value = f
+        .request(reqwest::Method::GET, "sessions")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .unwrap();
+    assert_eq!(row["unread"], false);
+    assert!(row["unread_session_id"].is_null());
     session.push(Message::Assistant(AssistantMessage {
         content: "second".into(),
     }));
@@ -2958,6 +2990,68 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
         .await
         .unwrap();
     assert_eq!(response.status(), 401);
+}
+
+#[tokio::test]
+async fn activity_sidebar_points_to_unread_branch_without_changing_selection() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut branch = Session::new(SessionId::new("unread-branch"));
+    branch.push(Message::Assistant(AssistantMessage {
+        content: "branch answer".into(),
+    }));
+    store.save(&branch).await.unwrap();
+    let root = id.clone();
+    store
+        .with_connection(move |db| {
+            db.execute(
+                "INSERT INTO web_chat_branches VALUES('unread-branch',?1,?1,0)",
+                [&root],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for path in ["sessions", "sessions?q=branch"] {
+        let listed: Value = f
+            .request(reqwest::Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let row = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["root_id"] == id)
+            .unwrap();
+        assert_eq!(row["unread"], true);
+        assert_eq!(row["unread_session_id"], "unread-branch");
+        if path == "sessions" {
+            assert_eq!(row["id"], id);
+        }
+    }
+    let revision = crate::agent::session::activity::read_revision(&branch);
+    assert!(
+        store
+            .mark_chat_read("unread-branch", &revision)
+            .await
+            .unwrap()
+    );
+    let listed: Value = f
+        .request(reqwest::Method::GET, "sessions")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed[0]["unread"], false);
+    assert!(listed[0]["unread_session_id"].is_null());
 }
 
 #[tokio::test]

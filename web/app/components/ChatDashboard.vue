@@ -10,7 +10,7 @@ import {faviconHref, type ChatActivity} from '../utils/favicon'
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
-const homeConversation: Conversation = {id:'new',title:'',busy:false,updated_at:null}
+const homeConversation: Conversation = {id:'new',title:'',busy:false,unread:false,unread_session_id:null,updated_at:null}
 const conversationKey = ref(0)
 const initializing = ref(true)
 const activity=ref<ChatActivity>({busy:false,unread:false})
@@ -265,6 +265,11 @@ async function openWebhookConversation(id:string) {
     if(revision!==navigationRevision) return
     select(conversation);await refresh()
   } catch(reason) {if(revision===navigationRevision) error.value=messageOf(reason)}
+}
+
+function selectSidebar(conversation:Conversation) {
+  const id=!search.value.trim() && conversation.unread && conversation.unread_session_id || conversation.id
+  select({...conversation,id,root_id:conversation.root_id ?? conversation.id})
 }
 
 function select(conversation: Conversation, preserveView = false) {
@@ -548,7 +553,8 @@ onMounted(() => {
           :variant="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'soft' : 'ghost'"
           :aria-current="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'page' : undefined"
           :disabled="creating" class="sidebar-item sidebar-item-with-actions"
-          @click="select(session)">
+          @click="selectSidebar(session)">
+          <span v-if="session.unread" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="size-2 shrink-0 rounded-full bg-primary" />
           <UIcon v-if="session.pinned" name="i-lucide-pin" :aria-label="t('Закреплённый диалог')" class="sidebar-icon" />
           <UIcon v-if="session.busy" name="i-lucide-loader-circle" class="sidebar-icon animate-spin" :aria-label="t('Выполняется')" />
           <UIcon v-if="!session.pinned && !session.busy" :name="session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" class="sidebar-icon" />
@@ -664,7 +670,7 @@ onMounted(() => {
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refreshActivity" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>
