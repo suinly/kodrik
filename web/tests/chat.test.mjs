@@ -1,28 +1,15 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { startFixture, stopFixture } from './fixture-process.mjs';
 import { once } from 'node:events';
 import { mkdtemp, rm, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { chromium, expect } from '@playwright/test';
 
 let server, base, cookie, storage;
 async function start(listen) {
-  server = spawn('cargo', ['test', 'web::chat_tests::browser_fixture', '--', '--ignored', '--nocapture'], {
-    cwd: fileURLToPath(new URL('../../', import.meta.url)), env: {...process.env, CHAT_TEST_DATA:storage, ...(listen ? {CHAT_TEST_LISTEN:listen}: {})}, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  base = await new Promise((resolve, reject) => {
-    let output = '';
-    const timer = setTimeout(() => reject(new Error(`Fixture startup timed out:\n${output}`)), 60000);
-    for (const stream of [server.stdout, server.stderr]) stream.on('data', data => {
-      output += data;
-      const match = output.match(/CHAT_TEST_URL=(http:\/\/\S+)/);
-      if (match) { clearTimeout(timer); resolve(match[1]); }
-    });
-    server.once('exit', code => { clearTimeout(timer); reject(new Error(`Fixture exited ${code}:\n${output}`)); });
-  });
+  ({ server, url: base } = await startFixture({ storage, listen }));
 }
 before(async () => {
   storage=await mkdtemp(join(tmpdir(),'kodrik-web-test-'));
@@ -35,12 +22,8 @@ before(async () => {
   cookie = response.headers.get('set-cookie').split(';')[0];
 });
 after(async () => {
-  if (server?.pid) {
-    const exited = once(server, 'exit');
-    try { process.kill(-server.pid, 'SIGTERM'); } catch {}
-    await exited;
-  }
-  await rm(storage,{recursive:true,force:true});
+  await stopFixture(server);
+  if (storage) await rm(storage,{recursive:true,force:true});
 });
 
 async function request(path, body) {
@@ -528,7 +511,7 @@ test('page access indicators stay visible beside long addresses on desktop and t
 test('Telegram owner opens the catalog and private pages after one chat login', {timeout:60000},async()=>{
   // Give this additional sign-in its own login rate-limit window.
   const listen=new URL(base).host;
-  const exited=once(server,'exit');process.kill(-server.pid,'SIGTERM');await exited;
+  await stopFixture(server);
   await start(listen);
   const {id}=await(await request('sessions',{})).json();
   await request('send',{id,text:'ui'});
@@ -4350,6 +4333,7 @@ test('backend process restart restores the same run and attached browser', {time
     const before=await (await request(`sessions/${id}/run`)).json();
     const listen=new URL(base).host;
     const exited=once(server,'exit');process.kill(-server.pid,'SIGKILL');await exited;
+    await stopFixture(server);
     await page.getByText('Соединение потеряно, работа продолжается',{exact:true}).waitFor();
     await start(listen);
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1,{timeout:15000});
@@ -4566,7 +4550,7 @@ test('profile saves the current user name across reload and keeps guest password
 test('profile password form validates input and signs out all sessions after a change', {timeout:60000},async()=>{
   // Isolate the shared login budget from the other browser sign-in scenarios.
   const listen=new URL(base).host;
-  const exited=once(server,'exit');process.kill(-server.pid,'SIGTERM');await exited;
+  await stopFixture(server);
   await start(listen);
   const browser=await chromium.launch({headless:true});
   const changed='browser replacement passphrase';

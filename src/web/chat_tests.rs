@@ -341,17 +341,34 @@ impl LlmProvider for FakeLlm {
         if text == "subagents" {
             let first = context.messages.iter().find_map(|message| {
                 if let Message::ToolResult(result) = message {
-                    result.content.output["id"].as_str().map(str::to_owned)
+                    (result.call_id == "child-0")
+                        .then(|| result.content.output["id"].as_str())
+                        .flatten()
                 } else {
                     None
                 }
             });
             let messages = if let Some(id) = first {
-                if context.messages.iter().any(|message| matches!(message,Message::ToolResult(result) if result.content.output["status"]=="stopped")) {
-                    vec![Message::Assistant(AssistantMessage {content:"Дочерняя задача остановлена".into()})]
+                let status = context
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| match message {
+                        Message::ToolResult(result) if result.content.output["id"] == id => {
+                            result.content.output["status"].as_str()
+                        }
+                        _ => None,
+                    });
+                if status == Some("running") {
+                    vec![Message::ToolCall(ToolCall {
+                        call_id: format!("wait-{}", context.messages.len()),
+                        name: "wait_agent".into(),
+                        arguments: json!({"agent_id":id,"timeout_ms":10000}),
+                    })]
                 } else {
-                    vec![Message::ToolCall(ToolCall {call_id:format!("wait-{}",context.messages.len()),name:"wait_agent".into(),
-                        arguments:json!({"agent_id":id,"timeout_ms":10000})})]
+                    vec![Message::Assistant(AssistantMessage {
+                        content: "Дочерняя задача остановлена".into(),
+                    })]
                 }
             } else {
                 ["Проверить авторизацию", "Проверить тесты"]
@@ -710,6 +727,47 @@ impl LlmProvider for FakeLlm {
 }
 
 struct SlowTool(std::path::PathBuf);
+#[tokio::test]
+async fn fake_subagents_waits_for_running_child_not_first_completed_result() {
+    use crate::agent::message::ToolResult;
+    let messages = vec![
+        Message::User(crate::agent::UserMessage {
+            content: "subagents".into(),
+            images: vec![],
+            files: vec![],
+        }),
+        Message::ToolResult(ToolResult {
+            call_id: "child-1".into(),
+            content: json!({"id":"completed-child", "status":"completed"}).into(),
+        }),
+        Message::ToolResult(ToolResult {
+            call_id: "child-0".into(),
+            content: json!({"id":"running-child", "status":"running"}).into(),
+        }),
+    ];
+    let context = LlmContext {
+        instructions: "".into(),
+        messages: messages.into(),
+    };
+    let (messages, _) = FakeLlm.generate(&context, &[], None).await.unwrap();
+    let Message::ToolCall(call) = &messages[0] else {
+        panic!("expected wait_agent")
+    };
+    assert_eq!(call.name, "wait_agent");
+    assert_eq!(call.arguments["agent_id"], "running-child");
+    let mut messages = context.messages.into_owned();
+    messages.push(Message::ToolResult(ToolResult {
+        call_id: "wait".into(),
+        content: json!({"id":"running-child", "status":"stopped"}).into(),
+    }));
+    let context = LlmContext {
+        instructions: "".into(),
+        messages: messages.into(),
+    };
+    let (messages, _) = FakeLlm.generate(&context, &[], None).await.unwrap();
+    assert!(matches!(&messages[0], Message::Assistant(_)));
+}
+
 #[async_trait::async_trait]
 impl Tool for SlowTool {
     fn name(&self) -> String {
@@ -2548,6 +2606,21 @@ async fn chat_provider_failure_still_saves_user_message() {
 #[tokio::test]
 #[ignore = "Local fake-model server for frontend and browser tests"]
 async fn browser_fixture() {
+    if let Ok(parent) = std::env::var("CHAT_TEST_PARENT_PID") {
+        let parent: i32 = parent.parse().expect("Invalid CHAT_TEST_PARENT_PID");
+        assert!(parent > 1, "Invalid CHAT_TEST_PARENT_PID");
+        // A detached test server must not survive a killed browser-test controller.
+        std::thread::spawn(move || {
+            loop {
+                if unsafe { libc::kill(parent, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    std::process::exit(0);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        });
+    }
     let root = std::env::var_os("CHAT_TEST_DATA").map(std::path::PathBuf::from);
     let listen = std::env::var("CHAT_TEST_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into());
     let f = Fixture::configured(root.as_deref(), &listen).await;
