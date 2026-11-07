@@ -527,6 +527,11 @@ async fn terminal_remote_fixture() {
                 )
                 .unwrap();
                 eprintln!("fixture-approval-decided");
+                if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-approval-unavailable")
+                {
+                    // Exercise PTY backpressure after the parent has observed the decision.
+                    eprintln!("{}", " ".repeat(128 * 1024));
+                }
                 view.run.as_mut().unwrap()["command_approvals"] = json!([]);
                 serde_json::Value::Null
             }
@@ -684,14 +689,7 @@ fn remote_pty_loads_server_history_sends_steers_stops_and_exits_without_provider
     terminal.send(b"\x1b");
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"\x03");
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !dir.path().join("remote-clean-exit").exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "remote TUI did not clean up"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    terminal.wait_for(b"remote-clean-exit", 0);
 }
 
 #[cfg(unix)]
@@ -715,7 +713,7 @@ fn first_remote_grant_uses_picker_before_sharing_and_is_cached() {
     assert!(dir.path().join("remote/device.grant").exists());
     assert!(dir.path().join("last-hello").exists());
     terminal.send(b"\x03");
-    wait_clean_exit(dir.path());
+    terminal.wait_for(b"remote-clean-exit", 0);
     assert!(dir.path().join("local-detached").exists());
 }
 
@@ -739,15 +737,6 @@ fn remote_start_attaches_and_switch_transfers_binding_without_confirmation() {
 }
 
 #[cfg(unix)]
-fn wait_clean_exit(dir: &Path) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !dir.join("remote-clean-exit").exists() {
-        assert!(std::time::Instant::now() < deadline, "cleanup timed out");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-#[cfg(unix)]
 #[test]
 fn failed_environment_attachment_keeps_server_chat_and_terminal_usable() {
     let dir = tempfile::tempdir().unwrap();
@@ -758,7 +747,7 @@ fn failed_environment_attachment_keeps_server_chat_and_terminal_usable() {
     terminal.send(b"still online\r");
     terminal.wait_for(b"remote echo: still online", 0);
     terminal.send(b"\x03");
-    wait_clean_exit(dir.path());
+    terminal.wait_for(b"remote-clean-exit", 0);
 }
 
 #[cfg(unix)]
@@ -778,7 +767,7 @@ fn rejected_remote_edit_preserves_editor_and_original_draft() {
     terminal.send(b"\x1b");
     terminal.wait_for(b"original draft", 0);
     terminal.send(b"\x03\x03");
-    wait_clean_exit(dir.path());
+    terminal.wait_for(b"remote-clean-exit", 0);
 }
 
 #[cfg(unix)]
@@ -799,7 +788,7 @@ fn lost_send_response_checks_original_id_without_resubmitting_effect() {
         1
     );
     terminal.send(b"\x03");
-    wait_clean_exit(dir.path());
+    terminal.wait_for(b"remote-clean-exit", 0);
 }
 
 #[cfg(unix)]
@@ -827,7 +816,7 @@ fn unavailable_remote_approval_cannot_be_allowed_by_typing_its_id() {
         "denied"
     );
     terminal.send(b"\x03");
-    wait_clean_exit(dir.path());
+    terminal.wait_for(b"remote-clean-exit", 0);
 }
 
 #[cfg(unix)]
