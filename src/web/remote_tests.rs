@@ -318,6 +318,153 @@ async fn fixture() -> Fixture {
     }
 }
 
+#[tokio::test]
+async fn same_device_websockets_keep_distinct_sessions_isolated() {
+    use std::time::Duration;
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn send(socket: &mut Socket, frame: ClientFrame) {
+        socket
+            .send(Message::Binary(encode_frame(&frame).unwrap().into()))
+            .await
+            .unwrap();
+    }
+    async fn heartbeat(socket: &mut Socket, key: &EnvironmentKey) {
+        send(
+            socket,
+            ClientFrame::Heartbeat {
+                environment: key.clone(),
+            },
+        )
+        .await;
+        let reply = socket.next().await.unwrap().unwrap();
+        let ServerFrame::HeartbeatAck { environment } = decode_frame(&reply.into_data()).unwrap()
+        else {
+            panic!("expected heartbeat acknowledgement for live binding")
+        };
+        assert_eq!(&environment, key);
+    }
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut fixture = fixture().await;
+        let store = SqliteSessionStore::open(fixture._dir.path().join("sessions")).unwrap();
+        let second_session = SessionId::new(Uuid::new_v4().to_string());
+        store
+            .save(&Session::new(second_session.clone()))
+            .await
+            .unwrap();
+        let credential =
+            crate::remote::client::Credential::load(&fixture.config.credential_file).unwrap();
+        assert_eq!(credential.device_id, fixture.device);
+        let url = crate::remote::client::endpoint(&fixture.config.server).unwrap();
+        let request = || {
+            let mut request = url.as_str().into_client_request().unwrap();
+            request.headers_mut().insert(
+                "Authorization",
+                format!("Bearer {}", credential.token).parse().unwrap(),
+            );
+            request
+        };
+        let manifest = EnvironmentManifest {
+            label: "fixture".into(),
+            project_root: "/project".into(),
+            tools: vec![ToolDescriptor {
+                id: "exec_command".into(),
+                kind: ToolKind::Exec,
+                description: "shell".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                deferred: false,
+            }],
+            skills: vec![],
+            project_instructions: None,
+            warnings: vec![],
+        };
+        let (mut second, _) = connect_async(request()).await.unwrap();
+        send(
+            &mut second,
+            ClientFrame::Hello {
+                session_id: second_session.clone(),
+                manifest: manifest.clone(),
+            },
+        )
+        .await;
+        let reply = second.next().await.unwrap().unwrap();
+        let ServerFrame::Welcome {
+            environment: second_key,
+            ..
+        } = decode_frame(&reply.into_data()).unwrap()
+        else {
+            panic!("second session on the same device must attach")
+        };
+        assert_ne!(fixture.key.connection_id, second_key.connection_id);
+        assert_ne!(fixture.key.generation, second_key.generation);
+
+        // Both sockets remain usable while the other binding is live.
+        tokio::join!(
+            heartbeat(&mut fixture.socket, &fixture.key),
+            heartbeat(&mut second, &second_key),
+        );
+
+        // A competing binding for the first session must not replace its owner.
+        let (mut duplicate, _) = connect_async(request()).await.unwrap();
+        send(
+            &mut duplicate,
+            ClientFrame::Hello {
+                session_id: fixture.session.clone(),
+                manifest,
+            },
+        )
+        .await;
+        match duplicate.next().await {
+            None | Some(Err(_)) => {}
+            Some(Ok(message)) => assert!(message.is_close(), "duplicate must be rejected"),
+        }
+        tokio::join!(
+            heartbeat(&mut fixture.socket, &fixture.key),
+            heartbeat(&mut second, &second_key),
+        );
+        for (session, key) in [
+            (&fixture.session, &fixture.key),
+            (&second_session, &second_key),
+        ] {
+            let status = fixture.service.status(session).await.unwrap();
+            assert_eq!(status.state, "connected");
+            assert_eq!(status.environment.as_ref(), Some(key));
+        }
+
+        send(
+            &mut second,
+            ClientFrame::Close {
+                environment: second_key,
+            },
+        )
+        .await;
+        while let Some(Ok(message)) = second.next().await {
+            if message.is_close() {
+                break;
+            }
+        }
+        assert_eq!(
+            fixture.service.status(&second_session).await.unwrap().state,
+            "disconnected"
+        );
+        heartbeat(&mut fixture.socket, &fixture.key).await;
+        assert_eq!(
+            fixture
+                .service
+                .status(&fixture.session)
+                .await
+                .unwrap()
+                .state,
+            "connected"
+        );
+    })
+    .await
+    .expect("concurrent WebSocket isolation test timed out");
+}
+
 async fn pending_call(fixture: &Fixture) -> Invocation {
     pending_with_args(fixture, serde_json::json!({"cmd":"echo once"})).await
 }

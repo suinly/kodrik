@@ -41,8 +41,10 @@ Its `/attach` discloses access and `/attach yes` explicitly grants it; `/detach`
 revokes it without closing the server conversation. Selection, `/new`, message
 editing and version switching detach the old binding first, with no automatic
 transfer. `/retry` resolves unconfirmed input by its original request ID, and
-`/older` loads earlier server history. Reconnecting history does not reattach or
-resume local work. Remote TUI has no attachment uploader; saved attachment
+`/older` loads earlier server history. After local transport loss, the TUI retries attachment up to fifteen times to the same
+conversation with the original explicit grant and unchanged catalog, using a fresh
+generation. Changed catalogs require `/attach` approval. Detach and session changes
+cancel retries. Reconnection never resumes or replays interrupted local work. Remote TUI has no attachment uploader; saved attachment
 references are viewed in server history.
 
 Each running standalone TUI reserves its own conversation slot, so `/sessions`,

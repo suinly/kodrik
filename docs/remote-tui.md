@@ -252,9 +252,12 @@ Cancelling an HTTP MCP call cannot prove that its external service stopped.
 Already-written files, commits, installations or external actions are **not
 rolled back**. Killing a process is not proof that it caused no effects.
 
-Chat observation reconnects and refreshes server history automatically, but the
-local environment does not: `/attach` and `/attach yes` establish a **fresh
-generation**. Neither reconnect nor reattach automatically resumes paused local
+Chat observation reconnects and refreshes server history automatically. After
+local transport loss, attachment is retried up to fifteen times, every two seconds,
+for the same session and unchanged catalog under the original explicit grant.
+Each attachment establishes a **fresh generation**. `/detach` and session changes
+cancel pending retries; catalog or grant changes stop automatic reconnect and
+require `/attach` review. Neither reconnect nor reattach automatically resumes paused local
 work. A dependent run enters `EnvironmentPaused`; saved results remain available
 and a new explicit message can continue the discussion or request new work.
 

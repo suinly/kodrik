@@ -62,6 +62,39 @@ pub(super) fn audit_mode(
     mode.parse()
 }
 
+#[derive(Debug)]
+struct ReconnectAccessChanged;
+impl std::fmt::Display for ReconnectAccessChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Local catalog or grant changed; use /attach to review access")
+    }
+}
+impl std::error::Error for ReconnectAccessChanged {}
+
+fn reconnect_terminal(error: &anyhow::Error) -> bool {
+    if error.is::<ReconnectAccessChanged>() {
+        return true;
+    }
+    matches!(error.downcast_ref::<tokio_tungstenite::tungstenite::Error>(),
+        Some(tokio_tungstenite::tungstenite::Error::Http(response))
+        if matches!(response.status().as_u16(), 401 | 403))
+}
+
+async fn prepare_reconnect(
+    config: &RemoteConfig,
+    root: &std::path::Path,
+    original: &crate::remote::protocol::EnvironmentManifest,
+) -> anyhow::Result<Prepared> {
+    let prepared = Prepared(Some(LocalEnvironment::open(config, root).await?));
+    let manifest = prepared.0.as_ref().unwrap().manifest()?;
+    if serde_json::to_value(&manifest)? != serde_json::to_value(original)?
+        || !config.manifest_authorized(&manifest)?
+    {
+        return Err(ReconnectAccessChanged.into());
+    }
+    Ok(prepared)
+}
+
 struct Binding {
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -136,6 +169,37 @@ impl Binding {
             }
         }
     }
+}
+
+struct Reconnect(tokio::task::JoinHandle<anyhow::Result<Binding>>);
+impl Drop for Reconnect {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+fn reconnect(
+    config: RemoteConfig,
+    root: PathBuf,
+    session: SessionId,
+    manifest: crate::remote::protocol::EnvironmentManifest,
+) -> Reconnect {
+    Reconnect(tokio::spawn(async move {
+        for attempt in 0..15 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Rebuild only the previously granted catalog; never prompt or grant in a retry.
+            let result = async {
+                let prepared = prepare_reconnect(&config, &root, &manifest).await?;
+                Binding::open(&config, prepared, session.clone()).await
+            }
+            .await;
+            match result {
+                Ok(binding) => return Ok(binding),
+                Err(error) if attempt == 14 || reconnect_terminal(&error) => return Err(error),
+                Err(error) => log::debug!("Local reconnect failed: {error:#}"),
+            }
+        }
+        unreachable!()
+    }))
 }
 
 struct Observer(tokio::task::JoinHandle<()>);
@@ -232,6 +296,7 @@ struct Remote {
     chat: ChatClient,
     session: SessionId,
     binding: Option<Binding>,
+    reconnect: Option<Reconnect>,
     pending: Option<Prepared>,
     server_connected: bool,
     binding_failed: bool,
@@ -316,6 +381,7 @@ impl Remote {
     }
 
     async fn attach(&mut self, app: &mut App) -> anyhow::Result<()> {
+        self.reconnect.take();
         if self.binding.is_some() || self.pending.is_some() {
             return Ok(());
         }
@@ -418,6 +484,7 @@ impl Remote {
         Ok(())
     }
     async fn detach(&mut self) -> anyhow::Result<()> {
+        self.reconnect.take();
         self.pending.take();
         self.binding_failed = false;
         if let Some(binding) = self.binding.as_mut() {
@@ -713,6 +780,7 @@ pub(crate) async fn run_with(
         chat,
         session,
         binding: None,
+        reconnect: None,
         pending: None,
         server_connected: true,
         binding_failed: false,
@@ -803,13 +871,29 @@ async fn event_loop(
                 Some(request)=>(&mut request.task).await,
                 None=>std::future::pending().await,
             }}=>remote.receive_sessions(app,result),
+            result=async {match remote.reconnect.as_mut() {
+                Some(retry)=>(&mut retry.0).await,
+                None=>std::future::pending().await,
+            }}=>{
+                remote.reconnect.take();
+                match result.map_err(anyhow::Error::from).and_then(|result|result) {
+                    Ok(binding)=>{
+                        remote.binding=Some(binding);
+                        remote.binding_failed=false;
+                        app.push_kodrik_message("Local environment reconnected with a fresh generation; interrupted work was not replayed or resumed.".into());
+                    },
+                    Err(error)=>app.push_kodrik_message(format!("Automatic local reconnect stopped: {error}; use /attach to review access.")),
+                }
+            },
             _=tick.tick()=>{
                 app.expire_copy_notice(std::time::Instant::now());
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
+                    let manifest=remote.binding.as_ref().unwrap().environment.manifest()?;
                     let result=remote.detach().await;
                     remote.binding_failed=true;
                     report_disconnect(app,result);
+                    remote.reconnect=Some(reconnect(remote.config.clone(),remote.root.clone(),remote.session.clone(),manifest));
                 }
             },
             Some((epoch,update))=updates.recv()=>{
@@ -899,12 +983,132 @@ fn report_disconnect(app: &mut App, result: anyhow::Result<()>) {
         Err(error) => format!("{error:#}"),
     };
     let reason: String = reason.chars().flat_map(char::escape_debug).collect();
-    app.push_kodrik_message(format!("Local environment disconnected: {reason}; use /attach to reconnect. Server chat remains available."));
+    app.push_kodrik_message(format!("Local environment disconnected: {reason}; reconnecting if the original grant remains valid (or use /attach). Server chat remains available."));
 }
 
 #[cfg(test)]
 mod binding_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reconnect_opens_fresh_binding_and_drop_cancels_pending_retry() {
+        use crate::remote::protocol::*;
+        use futures::{SinkExt, StreamExt};
+        let directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = RemoteConfig {
+            server: format!("http://{}/", listener.local_addr().unwrap())
+                .parse()
+                .unwrap(),
+            credential_file: directory.path().join("private/device"),
+            label: "test".into(),
+            allow_shell: false,
+            skill_roots: vec![],
+            mcp: Default::default(),
+            optional_mcp: vec![],
+        };
+        crate::remote::client::Credential {
+            device_id: uuid::Uuid::new_v4(),
+            token: "fixture".into(),
+        }
+        .save(&config.credential_file)
+        .unwrap();
+        let environment = LocalEnvironment::open(&config, directory.path())
+            .await
+            .unwrap();
+        let manifest = environment.manifest().unwrap();
+        config.authorize_manifest(&manifest, || Ok(true)).unwrap();
+        environment.close().await.unwrap();
+        let cancelled = reconnect(
+            config.clone(),
+            directory.path().into(),
+            SessionId::new("same"),
+            manifest.clone(),
+        );
+        drop(cancelled);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(2200), listener.accept())
+                .await
+                .is_err()
+        );
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let hello = socket.next().await.unwrap().unwrap().into_data();
+            assert!(
+                matches!(decode_frame::<ClientFrame>(&hello).unwrap(), ClientFrame::Hello { session_id, .. } if session_id.as_str()=="same")
+            );
+            let key = EnvironmentKey {
+                connection_id: uuid::Uuid::new_v4(),
+                generation: uuid::Uuid::new_v4(),
+            };
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Binary(
+                    encode_frame(&ServerFrame::Welcome {
+                        environment: key,
+                        heartbeat_seconds: 5,
+                        lease_seconds: 15,
+                    })
+                    .unwrap()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(frame)) = socket.next().await {
+                if matches!(
+                    decode_frame::<ClientFrame>(&frame.into_data()),
+                    Ok(ClientFrame::Close { .. })
+                ) {
+                    break;
+                }
+            }
+        });
+        let mut retry = reconnect(
+            config,
+            directory.path().into(),
+            SessionId::new("same"),
+            manifest,
+        );
+        let mut binding = tokio::time::timeout(Duration::from_secs(8), &mut retry.0)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        binding.close().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconnect_rejects_catalog_changes_without_granting_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = RemoteConfig {
+            server: "http://localhost/".parse().unwrap(),
+            credential_file: directory.path().join("remote/device.json"),
+            label: "test".into(),
+            allow_shell: false,
+            skill_roots: vec![],
+            mcp: Default::default(),
+            optional_mcp: vec![],
+        };
+        let environment = LocalEnvironment::open(&config, directory.path())
+            .await
+            .unwrap();
+        let original = environment.manifest().unwrap();
+        config.authorize_manifest(&original, || Ok(true)).unwrap();
+        environment.close().await.unwrap();
+        std::fs::write(directory.path().join("AGENTS.md"), "changed instructions").unwrap();
+        let result = prepare_reconnect(&config, directory.path(), &original).await;
+        assert!(result.is_err());
+        let changed = LocalEnvironment::open(&config, directory.path())
+            .await
+            .unwrap();
+        assert!(
+            !config
+                .manifest_authorized(&changed.manifest().unwrap())
+                .unwrap()
+        );
+        changed.close().await.unwrap();
+    }
 
     #[test]
     fn disconnect_reports_error_chain_without_terminal_controls() {
