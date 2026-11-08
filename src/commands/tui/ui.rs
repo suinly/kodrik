@@ -194,7 +194,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let command_height = (app.command_suggestions().len() as u16 + 3).max(3);
     let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
     let available_plan_height = area.height.saturating_sub(footer_height + 2);
-    let plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
+    let summary = app.plan.as_deref().unwrap_or_default();
+    let summary = if app.view.plan_expanded {
+        summary.split(" · ").take(2).collect::<Vec<_>>().join(" · ")
+    } else {
+        summary.to_owned()
+    };
+    let plan = Paragraph::new(summary)
         .style(Style::default().fg(Color::Cyan))
         .wrap(Wrap { trim: false });
     let summary_height = plan
@@ -261,7 +267,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let layout = &layout[1..];
     app.view.plan_area = Rect::new(
         layout[1].x,
-        layout[1].y.saturating_add(1),
+        layout[1].y,
         layout[1].width,
         layout[1].height.saturating_sub(1),
     );
@@ -273,14 +279,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                 " ≡"
             })
             .style(Style::default().fg(Color::Cyan).bold()),
-            Rect::new(layout[1].x, layout[1].y + 1, layout[1].width.min(3), 1),
+            Rect::new(layout[1].x, layout[1].y, layout[1].width.min(3), 1),
         );
     }
     frame.render_widget(
         plan,
         Rect::new(
             layout[1].x.saturating_add(3),
-            layout[1].y.saturating_add(1),
+            layout[1].y,
             layout[1].width.saturating_sub(3),
             summary_height.min(layout[1].height.saturating_sub(1)),
         ),
@@ -291,7 +297,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             details,
             Rect::new(
                 layout[1].x.saturating_add(3),
-                layout[1].y.saturating_add(1).saturating_add(summary_height),
+                layout[1].y.saturating_add(summary_height),
                 layout[1].width.saturating_sub(3),
                 layout[1]
                     .height
@@ -1804,12 +1810,52 @@ mod tests {
                 status < plan && plan < input,
                 "expected status, plan, input: {rows:?}"
             );
+            assert_eq!(plan, status + 2, "one blank row above plan: {rows:?}");
+            assert!(rows[plan - 1].trim().is_empty());
+            assert!(rows[plan + 1].trim().is_empty());
             assert!(
                 !rows
                     .iter()
                     .any(|row| row.contains("Inspect") || row.contains("Verify"))
             );
         }
+    }
+
+    #[test]
+    fn expanded_plan_shows_current_step_only_in_details_with_blank_rows_around_it() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [
+                    {"step": "Inspect", "status": "completed"},
+                    {"step": "Fix", "status": "in_progress"},
+                    {"step": "Verify", "status": "pending"}
+                ]
+            }))
+            .unwrap(),
+        );
+        app.view.plan_expanded = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(80)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let status = rows.iter().position(|row| row.contains("Ready")).unwrap();
+        let plan = rows
+            .iter()
+            .position(|row| row.contains("Plan · 2/3"))
+            .unwrap();
+        assert_eq!(rows[plan].trim(), "▾ Plan · 2/3");
+        assert_eq!(rows.iter().filter(|row| row.contains("Fix")).count(), 1);
+        assert_eq!(plan, status + 2, "one blank row above plan: {rows:?}");
+        assert!(rows[plan - 1].trim().is_empty());
+        let last_step = rows.iter().position(|row| row.contains("Verify")).unwrap();
+        assert!(rows[last_step + 1].trim().is_empty());
+        assert!(rows[last_step + 2].trim().is_empty());
     }
 
     #[test]
