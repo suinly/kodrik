@@ -86,6 +86,38 @@ async fn terminal_recovery_fixture() {
         .await
         .unwrap();
     let id = SessionId::new("cli:main");
+    if case == "draft-startup" {
+        let mut previous = Session::new(id.clone());
+        previous.push(Message::User(UserMessage {
+            content: "previous conversation".into(),
+            files: vec![],
+            images: vec![],
+        }));
+        store.save(&previous).await.unwrap();
+        let runner = Arc::new(AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(EchoModel),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            Arc::new(store.clone()),
+        ));
+        run_session(
+            runner,
+            id.clone(),
+            1,
+            "test-model".into(),
+            Language::En,
+            &directory.join("language"),
+        )
+        .await
+        .unwrap();
+        let active = store.active_id(&id).await.unwrap();
+        assert!(store.load(&active).await.unwrap().is_some());
+        assert_eq!(store.list().await.unwrap().len(), 2);
+        std::fs::write(directory.join("clean-exit"), b"1").unwrap();
+        return;
+    }
     let mut session = Session::new(id.clone());
     session.initialize_system_prompt("test");
     for index in 0..30 {
@@ -146,16 +178,20 @@ async fn terminal_recovery_fixture() {
             drop(scan);
         });
     }
-    run_session(
-        runner,
+    // These scenarios exercise explicit resumption/recovery, not a fresh startup.
+    let mut reporter = herdr::Reporter::start(1);
+    run_session_inner(
+        runner.clone(),
         id.clone(),
-        1,
         "test-model".into(),
         Language::En,
         &directory.join("language"),
+        &mut reporter,
     )
     .await
     .unwrap();
+    reporter.finish().await;
+    runner.finish_learning().await;
     let runs = store.unfinished_runs().await.unwrap();
     assert_eq!(
         runs.len(),
@@ -220,7 +256,7 @@ pub(super) struct PrivateTerminal {
     pub(super) output: Vec<u8>,
 }
 
-fn screen_text(output: &[u8]) -> String {
+pub(super) fn screen_text(output: &[u8]) -> String {
     let text = String::from_utf8_lossy(output);
     let mut chars = text.chars().peekable();
     let mut screen = vec![vec![' '; 80]; 24];
@@ -794,4 +830,36 @@ fn escape_before_checkpoint_creation_prevents_queued_model_execution() {
     terminal.send(b"\x03");
     terminal.wait_for(b"test result: ok", 0);
     assert!(!directory.path().join("model-started").exists());
+}
+
+#[test]
+fn startup_and_new_remain_drafts_until_the_first_message() {
+    use crate::agent::session::SqliteSessionStore;
+    let directory = tempfile::tempdir().unwrap();
+    let mut terminal = PrivateTerminal::start_case(directory.path(), "draft-startup");
+    terminal.wait_for(b"Ready", 0);
+    assert!(!screen_text(&terminal.output).contains("previous conversation"));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let store = SqliteSessionStore::open(directory.path().join("sessions")).unwrap();
+    let id = SessionId::new("cli:main");
+    let first = runtime.block_on(store.active_id(&id)).unwrap();
+    assert_ne!(first, id);
+    assert!(runtime.block_on(store.load(&first)).unwrap().is_none());
+    for _ in 0..2 {
+        let since = terminal.output.len();
+        terminal.send(b"/new\r");
+        terminal.wait_for(b"New session", since);
+        assert_eq!(runtime.block_on(store.list()).unwrap().len(), 1);
+        let active = runtime.block_on(store.active_id(&id)).unwrap();
+        assert!(runtime.block_on(store.load(&active)).unwrap().is_none());
+    }
+    terminal.send(b"hello\r");
+    terminal.wait_for(b"edited reply: hello", 0);
+    terminal.wait_for(b"Done", 0);
+    terminal.send(b"/sessions\r");
+    terminal.wait_for(b"previous conversation", 0);
+    terminal.send(b"\x1b[27u");
+    terminal.send(b"\x03");
+    terminal.wait_for(b"test result: ok", 0);
+    assert!(directory.path().join("clean-exit").exists());
 }

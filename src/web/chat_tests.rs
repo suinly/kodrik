@@ -888,6 +888,7 @@ async fn dashboard_links_survive_owner_login_redirect() {
 }
 
 struct Fixture {
+    sessions: SqliteSessionStore,
     data: tempfile::TempDir,
     base: String,
     origin: String,
@@ -955,6 +956,7 @@ impl Fixture {
                 .await
                 .unwrap();
         }
+        let sessions = SqliteSessionStore::open(root.join("owner-sessions")).unwrap();
         let mut app =
             super::server::router_with_resources(settings, root, Some(owner), Some(datasets));
         if storage.is_some() {
@@ -972,6 +974,7 @@ impl Fixture {
         }
         let server = tokio::spawn(serve(listener, app));
         Self {
+            sessions,
             data,
             base,
             origin,
@@ -996,10 +999,18 @@ impl Fixture {
             .await
             .unwrap();
         assert_eq!(response.status(), 201);
-        response.json::<Value>().await.unwrap()["id"]
+        let id = response.json::<Value>().await.unwrap()["id"]
             .as_str()
             .unwrap()
-            .to_owned()
+            .to_owned();
+        // Most fixtures seed existing conversations; draft admission has its own tests.
+        self.sessions
+            .save(&crate::agent::session::Session::new(
+                crate::agent::session::SessionId::new(&id),
+            ))
+            .await
+            .unwrap();
+        id
     }
     async fn history(&self, id: &str) -> Value {
         self.request(reqwest::Method::GET, &format!("sessions/{id}"))
@@ -1922,6 +1933,13 @@ async fn default_titles_are_marked_without_relabeling_user_authored_titles() {
         .unwrap();
     assert_eq!(created["title_default"], true);
     let id = created["id"].as_str().unwrap();
+    fixture
+        .sessions
+        .save(&crate::agent::session::Session::new(
+            crate::agent::session::SessionId::new(id),
+        ))
+        .await
+        .unwrap();
     for expected_default in [true, false] {
         if !expected_default {
             assert_eq!(

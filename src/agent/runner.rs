@@ -825,6 +825,19 @@ impl AgentRunner {
             .await
     }
 
+    pub(crate) async fn prepare_session(
+        &self,
+        conversation: &SessionId,
+    ) -> anyhow::Result<Session> {
+        let _guard = self.lock_conversation(conversation).await?;
+        crate::agent::run_state::CURRENT_EXECUTION
+            .scope(
+                _guard.ownership.clone(),
+                self.sessions.prepare_session(conversation),
+            )
+            .await
+    }
+
     pub(crate) async fn new_session(&self, conversation: &SessionId) -> anyhow::Result<Session> {
         let _guard = self.lock_conversation(conversation).await?;
         crate::agent::run_state::CURRENT_EXECUTION

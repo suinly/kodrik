@@ -400,3 +400,32 @@ async fn sqlite_cancelled_worker_keeps_migration_lock_until_write_finishes() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn preparing_session_keeps_history_unchanged_until_first_save() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    let conversation = SessionId::new("chat");
+    let original = sample("old");
+    store.save(&original).await.unwrap();
+    store.select(&conversation, original.id()).await.unwrap();
+    let draft = store.prepare_session(&conversation).await.unwrap();
+    assert_ne!(draft.id(), original.id());
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert!(store.load(draft.id()).await.unwrap().is_none());
+    drop(store);
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    assert_eq!(store.active_id(&conversation).await.unwrap(), *draft.id());
+    let mut draft = draft;
+    draft.push(crate::agent::message::Message::User(
+        crate::agent::UserMessage {
+            content: "hello".into(),
+            images: vec![],
+            files: vec![],
+        },
+    ));
+    store.save(&draft).await.unwrap();
+    assert_eq!(store.list().await.unwrap().len(), 2);
+    store.delete(draft.id()).await.unwrap();
+    assert_eq!(store.active_id(&conversation).await.unwrap(), conversation);
+}

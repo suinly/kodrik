@@ -52,6 +52,16 @@ impl SessionStore for JsonSessionStore {
         Ok(session)
     }
 
+    async fn prepare_session(&self, conversation: &SessionId) -> anyhow::Result<Session> {
+        let session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+        write_atomic(
+            self.active_path(conversation),
+            serde_json::to_vec(session.id())?,
+        )
+        .await?;
+        Ok(session)
+    }
+
     async fn list(&self) -> anyhow::Result<Vec<Session>> {
         let mut entries = match tokio::fs::read_dir(&self.dir).await {
             Ok(entries) => entries,
@@ -144,6 +154,21 @@ async fn write_atomic(path: PathBuf, data: Vec<u8>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::agent::{UserMessage, message::Message};
+
+    #[tokio::test]
+    async fn draft_selection_survives_restart_without_saving_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonSessionStore::new(dir.path());
+        let conversation = SessionId::new("cli:main");
+        let draft = store.prepare_session(&conversation).await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
+        let reopened = JsonSessionStore::new(dir.path());
+        assert_eq!(
+            reopened.active_id(&conversation).await.unwrap(),
+            *draft.id()
+        );
+        assert!(reopened.load(draft.id()).await.unwrap().is_none());
+    }
 
     #[tokio::test]
     async fn lists_and_selects_saved_sessions_without_losing_history() {

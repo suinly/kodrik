@@ -271,7 +271,7 @@ async fn v12_upgrade_adds_attachment_registry_without_changing_remote_evidence()
         .with_connection(|db| {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
-                14
+                15
             );
             assert_eq!(
                 db.query_row("SELECT count(*) FROM remote_tool_attachments", [], |row| {
@@ -729,7 +729,7 @@ async fn v11_migration_is_atomic_and_preserves_run_and_history() {
         .with_connection(|db| {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-                14
+                15
             );
             assert_eq!(
                 db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))?,

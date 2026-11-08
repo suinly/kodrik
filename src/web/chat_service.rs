@@ -241,8 +241,19 @@ impl Chat {
     }
 
     pub(super) async fn create_conversation(&self) -> Result<Value, Response> {
-        let session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
-        self.sessions.save(&session).await.map_err(internal)?;
+        let id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let session = Session::new(id.clone());
+        let id = id.as_str().to_owned();
+        self.sessions
+            .with_connection(move |db| {
+                db.execute(
+                    "INSERT INTO active_sessions(conversation_id,session_id) VALUES(?1,?1)",
+                    [&id],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(internal)?;
         Ok(
             json!({"id":session.id().as_str(), "title":"Новый диалог", "title_default":true, "busy":false, "updated_at":null}),
         )

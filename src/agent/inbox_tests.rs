@@ -413,6 +413,8 @@ async fn inbox_control_survives_restart_and_new_is_idempotent() {
     use super::session::SessionStore;
     let first = store.active_id(&SessionId::new("cli:main")).await.unwrap();
     assert_ne!(first.as_str(), "cli:main");
+    assert!(store.list().await.unwrap().is_empty());
+    assert!(store.load(&first).await.unwrap().is_none());
     runner
         .apply_control(&SessionId::new("cli:main"), &message)
         .await
@@ -422,6 +424,19 @@ async fn inbox_control_survives_restart_and_new_is_idempotent() {
         store.active_id(&SessionId::new("cli:main")).await.unwrap()
     );
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    runner
+        .run(
+            SessionId::new("cli:main"),
+            IncomingMessage::new(InterfaceId("cli".into()), "main", "hello"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    let saved = store.load(&first).await.unwrap().unwrap();
+    assert!(
+        matches!(&saved.messages()[0], super::message::Message::User(message) if message.content == "hello")
+    );
 }
 
 #[tokio::test]

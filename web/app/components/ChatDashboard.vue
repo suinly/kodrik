@@ -458,6 +458,21 @@ function removed() {
   refresh()
 }
 
+function newDraft() {
+  if(creating.value) return
+  section.value='chat'
+  selected.value=null
+  conversationKey.value++
+  conversationSearch.value=''
+  conversationSearchOpen.value=false
+  menu.value=false
+  const draft=draftFor('new')
+  Object.assign(draft,{text:'',files:[],missingFiles:[],revision:draft.revision+1})
+  sessionStorage.removeItem('kodrik.draft.new')
+  writeLocation()
+  void nextTick(()=>conversationView.value?.focusInput())
+}
+
 async function create(fromHome = false) {
   if (creating.value) return
   const revision=navigationRevision
@@ -547,7 +562,7 @@ onMounted(() => {
             <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
               :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
           </template>
-          <UButton v-if="!showEvents" :label="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :loading="creating" @click="create()" />
+          <UButton v-if="!showEvents" :label="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :loading="creating" @click="newDraft()" />
       </SidebarSearch>
       <SidebarSearch v-else-if="section==='webhooks' && webhooks.allowed" v-model="webhookSearch" :title="sectionTitle" :label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')">
           <template #title>
@@ -686,7 +701,7 @@ onMounted(() => {
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" @new="newDraft" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>

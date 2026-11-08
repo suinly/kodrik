@@ -869,7 +869,10 @@ impl GatewayRunner {
                     let confirmation = match agent_runner.apply_control(&session_id, &message).await
                     {
                         Ok(_) => language
-                            .pick("New session created.", "Новый диалог создан.")
+                            .pick(
+                                "Ready for a new conversation.",
+                                "Можно начинать новый диалог.",
+                            )
                             .to_owned(),
                         Err(error) => format!(
                             "{}: {error:#}",
@@ -2048,7 +2051,7 @@ mod tests {
                 "answer",
             ),
             (group_message("/stop"), "The agent is not running."),
-            (group_message("/new"), "New session created."),
+            (group_message("/new"), "Ready for a new conversation."),
         ] {
             gateway
                 .handle_event(Event::Message(message), None, None)
@@ -2463,7 +2466,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(replies.recv().await.unwrap(), "New session created.");
+        assert_eq!(
+            replies.recv().await.unwrap(),
+            "Ready for a new conversation."
+        );
         assert_ne!(
             first
                 .load_session(SessionId::new("test:-1"))
@@ -3802,6 +3808,12 @@ mod tests {
         ) -> anyhow::Result<crate::agent::session::Session> {
             self.inner.new_session(id).await
         }
+        async fn prepare_session(
+            &self,
+            id: &SessionId,
+        ) -> anyhow::Result<crate::agent::session::Session> {
+            self.inner.prepare_session(id).await
+        }
         async fn list(&self) -> anyhow::Result<Vec<crate::agent::session::Session>> {
             self.inner.list().await
         }
@@ -3906,7 +3918,10 @@ mod tests {
                         "initial + first correction + second correction"
                     );
                 } else if command == Some("/new") {
-                    assert_eq!(replies.recv().await.unwrap(), "New session created.");
+                    assert_eq!(
+                        replies.recv().await.unwrap(),
+                        "Ready for a new conversation."
+                    );
                 }
                 task.await.unwrap().unwrap();
                 assert!(replies.try_recv().is_err());
@@ -4023,7 +4038,10 @@ mod tests {
                 tx.send(event(command)).await.unwrap();
                 assert_eq!(messages.recv().await.unwrap(), "Agent stopped.");
                 if command == "/new" {
-                    assert_eq!(messages.recv().await.unwrap(), "New session created.");
+                    assert_eq!(
+                        messages.recv().await.unwrap(),
+                        "Ready for a new conversation."
+                    );
                 }
                 let session = runner.load_session(conversation.clone()).await.unwrap();
                 if command == "/new" {

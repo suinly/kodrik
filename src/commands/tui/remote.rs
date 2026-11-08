@@ -685,20 +685,12 @@ impl Remote {
 
 pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
     let chat = ChatClient::new(config)?;
-    let sessions = chat.sessions().await?;
-    let session = match sessions
-        .as_array()
-        .and_then(|rows| rows.first())
-        .and_then(|row| row["id"].as_str())
-    {
-        Some(id) => SessionId::new(id),
-        None => SessionId::new(
-            chat.command(&SessionId::new("new"), ChatCommand::New)
-                .await?["id"]
-                .as_str()
-                .context("Server returned no session ID")?,
-        ),
-    };
+    let session = SessionId::new(
+        chat.command(&SessionId::new("new"), ChatCommand::New)
+            .await?["id"]
+            .as_str()
+            .context("Server returned no session ID")?,
+    );
     let snapshot = chat.snapshot(&session).await?;
     let (tx, mut rx) = mpsc::channel(4);
     let mut remote = Remote {

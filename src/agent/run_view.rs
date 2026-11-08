@@ -184,8 +184,14 @@ impl SqliteSessionStore {
             use rusqlite::OptionalExtension;
             let tx=db.transaction()?;
             let revision=tx.query_row("SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='run_view_revision'",[],|r|r.get(0))?;
-            let bytes:Vec<u8>=tx.query_row("SELECT payload FROM sessions WHERE id=?1",[&id],|r|r.get(0))?;
-            let session:Session=serde_json::from_slice(&bytes)?;
+            let bytes:Option<Vec<u8>>=tx.query_row("SELECT payload FROM sessions WHERE id=?1",[&id],|r|r.get(0)).optional()?;
+            let session:Session=if let Some(bytes)=bytes {
+                serde_json::from_slice(&bytes)?
+            } else {
+                let draft:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM active_sessions WHERE conversation_id=?1 AND session_id=?1)",[&id],|r|r.get(0))?;
+                ensure!(draft,"Conversation not found");
+                Session::new(super::session::SessionId::new(&id))
+            };
             let run_id:Option<String>=tx.query_row("SELECT id FROM runs WHERE session_id=?1 ORDER BY terminal,rowid DESC LIMIT 1",[&id],|r|r.get(0)).optional()?;
             let run=run_id.map(|id|read_run_view(&tx,&id)).transpose()?;
             let busy=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE session_id=?1 AND terminal=0) OR EXISTS(SELECT 1 FROM submissions s LEFT JOIN active_sessions a ON a.conversation_id=s.conversation_id WHERE s.status='Queued' AND coalesce(s.session_id,a.session_id,s.conversation_id)=?1 AND NOT EXISTS(SELECT 1 FROM inbox_controls c WHERE c.conversation_id=s.conversation_id))",[&id],|r|r.get(0))?;
@@ -454,6 +460,41 @@ mod tests {
                 "{status}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn draft_view_projects_the_first_queued_message_without_saving_history() {
+        use crate::agent::inbox::{BusyMode, SubmissionRequest};
+        use crate::agent::session::SessionStore;
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open_async(dir.path().into())
+            .await
+            .unwrap();
+        let draft = SessionId::new("draft");
+        store
+            .with_connection(|db| {
+                db.execute("INSERT INTO active_sessions VALUES('draft','draft')", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let view = store.conversation_view("draft").await.unwrap();
+        assert!(!view.busy);
+        assert!(view.session.messages().is_empty());
+        let message = crate::gateway::IncomingMessage::new(
+            crate::gateway::InterfaceId("web".into()),
+            "draft",
+            "first message",
+        );
+        store
+            .submit(SubmissionRequest::new(&draft, message, BusyMode::FollowUp))
+            .await
+            .unwrap();
+        let view = store.conversation_view("draft").await.unwrap();
+        assert!(view.busy);
+        assert_eq!(view.queued[0]["text"], "first message");
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(store.conversation_view("unknown").await.is_err());
     }
 
     #[tokio::test]

@@ -414,7 +414,10 @@ mod tests {
             );
             assert_eq!(
                 sent[2].1,
-                language.pick("New session created.", "Новый диалог создан.")
+                language.pick(
+                    "Ready for a new conversation.",
+                    "Можно начинать новый диалог."
+                )
             );
             assert_eq!(
                 sent[3].1,

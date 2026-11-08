@@ -12,7 +12,7 @@ import {useDocumentVisibility, useWindowFocus} from '@vueuse/core'
 const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;active?:boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
 const home = computed(() => !!props.start)
 const homeView = !!props.start
-const emit = defineEmits<{ saved: [];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
+const emit = defineEmits<{ saved: [];new:[];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
 const matchIndex=ref(0)
@@ -365,6 +365,11 @@ async function fingerprints(selected: File[]) {
 
 async function submit() {
   if (locked.value || !hasInput.value) return
+  if(draft.value.trim()==='/new' && !files.value.length) {
+    draft.value=''
+    emit('new')
+    return
+  }
   submitting.value = true
   prompt.value?.editor?.view.focus()
   const text = draft.value

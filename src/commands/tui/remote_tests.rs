@@ -545,10 +545,17 @@ async fn terminal_remote_fixture() {
             }
             ChatCommand::New => {
                 assert!(
-                    std::path::Path::new("local-detached").exists(),
+                    !std::path::Path::new("last-hello").exists()
+                        || std::path::Path::new("local-detached").exists(),
                     "New dispatched before detach"
                 );
-                json!({"id":"new-session"})
+                if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-draft-startup") {
+                    view.messages.clear();
+                    view.run = None;
+                }
+                let subsequent = std::path::Path::new("new-requested").exists();
+                std::fs::write("new-requested", b"1").unwrap();
+                json!({"id": if subsequent { "next-session" } else { "new-session" }})
             }
             ChatCommand::Select { session_id } => {
                 std::fs::write("selected-session", session_id.as_str()).unwrap();
@@ -769,12 +776,13 @@ fn remote_start_attaches_and_switch_transfers_binding_without_confirmation() {
     terminal.wait_for(b"Local environment attached", 0);
     terminal.send(b"\x1b");
     terminal.wait_for(b"Stopped", 0);
+    let since = terminal.output.len();
     terminal.send(b"/new\r");
-    terminal.wait_for(b"fixture-attached-new-session", 0);
+    terminal.wait_for(b"fixture-attached-next-session", since);
     assert!(dir.path().join("local-detached").exists());
     let hello: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("last-hello")).unwrap()).unwrap();
-    assert_eq!(hello["session_id"], "new-session");
+    assert_eq!(hello["session_id"], "next-session");
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }
@@ -1215,4 +1223,20 @@ fn remote_compaction_only_runs_while_preparing_and_unfinished() {
     view.run.as_mut().unwrap()["compaction"] = json!(null);
     remote::project(&mut app, &view).unwrap();
     assert!(!app.compacting);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_start_requests_a_new_draft_instead_of_resuming_the_last_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal =
+        startup_tests::PrivateTerminal::start_case(dir.path(), "remote-draft-startup");
+    terminal.wait_for(b"fixture-attached-new-session", 0);
+    assert!(!startup_tests::screen_text(&terminal.output).contains("server answer"));
+    assert!(dir.path().join("new-requested").exists());
+    let hello: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("last-hello")).unwrap()).unwrap();
+    assert_eq!(hello["session_id"], "new-session");
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
 }

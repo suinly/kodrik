@@ -330,21 +330,9 @@ async fn session_picker_new_button_is_durable_and_duplicate_safe() {
             .await
             .unwrap();
     }
-    assert_eq!(store.list().await.unwrap().len(), 1);
-    assert!(
-        store
-            .load(
-                &store
-                    .active_id(&SessionId::new("telegram:test:42"))
-                    .await
-                    .unwrap()
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .messages()
-            .is_empty()
-    );
+    assert!(store.list().await.unwrap().is_empty());
+    let draft = store.active_id(&SessionId::new("telegram:test:42")).await.unwrap();
+    assert!(store.load(&draft).await.unwrap().is_none());
     assert_eq!(sent.lock().unwrap().len(), 1);
     assert_eq!(callbacks.lock().unwrap().len(), 2);
     assert!(
@@ -358,6 +346,6 @@ async fn session_picker_new_button_is_durable_and_duplicate_safe() {
             .last()
             .unwrap()
             .1
-            .contains("Новый диалог создан")
+            .contains("Можно начинать новый диалог")
     );
 }

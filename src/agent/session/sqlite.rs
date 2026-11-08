@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 14;
+pub(super) const VERSION: i64 = 15;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -213,6 +213,20 @@ impl SqliteSessionStore {
         }
         if version < 14 {
             super::activity::migrate(&tx)?;
+        }
+        if version < 15 {
+            tx.execute_batch(
+                "DROP TRIGGER IF EXISTS delete_active_session;
+                 CREATE TABLE active_sessions_draft (
+                    conversation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL);
+                 INSERT INTO active_sessions_draft SELECT * FROM active_sessions;
+                 DROP TABLE active_sessions;
+                 ALTER TABLE active_sessions_draft RENAME TO active_sessions;
+                 CREATE TRIGGER delete_active_session AFTER DELETE ON sessions BEGIN
+                    DELETE FROM active_sessions WHERE session_id=OLD.id;
+                 END;
+                 PRAGMA user_version=15;",
+            )?;
         }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
@@ -556,6 +570,18 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn prepare_session(&self, conversation: &SessionId) -> anyhow::Result<Session> {
+        let conversation = conversation.clone();
+        self.with_connection(move |db| {
+            let session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            select(&tx, conversation.as_str(), session.id().as_str())?;
+            tx.commit()?;
+            Ok(session)
+        })
+        .await
+    }
+
     async fn list(&self) -> anyhow::Result<Vec<Session>> {
         self.with_connection(|db| {
             let mut query =
@@ -800,7 +826,7 @@ impl SqliteSessionStore {
             let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id=?1 AND terminal=0)",[conversation],|r|r.get(0))?;
             ensure!(!live,"Control waits for active run cancellation");
             if record.request.message.text.trim()=="/new" {
-                let session=Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));save(&tx,&session)?;select(&tx,conversation,session.id().as_str())?;
+                let session=Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));select(&tx,conversation,session.id().as_str())?;
                 record.session_id=Some(session.id().as_str().into());
             }
             record.status=crate::agent::inbox::SubmissionStatus::Done;

@@ -74,6 +74,50 @@ async fn fixture() -> (tempfile::TempDir, Chat, WebState, SessionId) {
 }
 
 #[tokio::test]
+async fn new_remote_chat_is_a_draft_until_first_message() {
+    let (_dir, chat, _, original) = fixture().await;
+    let created = chat
+        .remote_command(&original, ChatCommand::New)
+        .await
+        .unwrap();
+    let id = SessionId::new(created["id"].as_str().unwrap());
+    assert!(chat.sessions.load(&id).await.unwrap().is_none());
+    assert_eq!(chat.sessions.list().await.unwrap().len(), 1);
+    assert!(
+        chat.session(&uuid::Uuid::new_v4().to_string())
+            .await
+            .is_err()
+    );
+    assert!(chat.remote_snapshot(&id).await.unwrap().messages.is_empty());
+    let accepted = chat
+        .remote_command(
+            &id,
+            ChatCommand::Send {
+                request_id: uuid::Uuid::new_v4(),
+                text: "first draft message".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted["status"], "Queued");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if chat.sessions.load(&id).await.unwrap().is_some_and(|s| {
+                s.messages()
+                    .iter()
+                    .any(|m| matches!(m, Message::Assistant(_)))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(chat.sessions.list().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn native_sessions_pages_validate_bounds_and_default_to_thirty() {
     use axum::{
         body::{Body, to_bytes},

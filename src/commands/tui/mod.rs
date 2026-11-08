@@ -79,6 +79,7 @@ async fn run_session(
     language: Language,
     language_path: &Path,
 ) -> anyhow::Result<()> {
+    runner.prepare_session(&session_id).await?;
     let mut reporter = herdr::Reporter::start(slot);
     let result = run_session_inner(
         runner.clone(),
@@ -344,7 +345,7 @@ async fn run_session_inner(
                                 continue;
                             }
                             if input == "/new" {
-                                match runner.new_session(&session_id).await {
+                                match runner.prepare_session(&session_id).await {
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);

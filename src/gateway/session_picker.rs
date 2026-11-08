@@ -356,7 +356,10 @@ impl GatewayRunner {
                 runner.apply_control(&conversation, &control).await?;
                 notice = Some(
                     language
-                        .pick("New session created.", "Новый диалог создан.")
+                        .pick(
+                            "Ready for a new conversation.",
+                            "Можно начинать новый диалог.",
+                        )
                         .into(),
                 );
                 close_menu = true;

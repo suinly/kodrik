@@ -838,7 +838,7 @@ impl AgentRunner {
     ) -> anyhow::Result<()> {
         let Some(store) = self.sessions.runtime_store() else {
             if message.text.trim() == "/new" {
-                self.new_session(conversation).await?;
+                self.prepare_session(conversation).await?;
             }
             return Ok(());
         };
