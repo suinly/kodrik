@@ -82,7 +82,7 @@ impl Agent {
             "wakeups",
             "webhooks",
         ]);
-        agent.limits = Some((16, None));
+        agent.limits = None;
         agent
     }
 
@@ -1982,7 +1982,7 @@ mod tests {
     struct LongTaskLlm;
 
     #[tokio::test]
-    async fn child_agents_allow_large_contexts_but_keep_the_request_budget() {
+    async fn child_agents_allow_large_contexts_and_more_than_sixteen_requests() {
         let agent = Agent::new(
             Arc::new(LongTaskLlm),
             ToolRegistry::default().register(Arc::new(UpdatePlanTool)),
@@ -1990,7 +1990,7 @@ mod tests {
         )
         .child_agent();
         let mut session = Session::new(SessionId::new("child-large-context"));
-        let error = agent
+        let answer = agent
             .run(
                 &mut session,
                 UserMessage {
@@ -2002,15 +2002,15 @@ mod tests {
                 None,
             )
             .await
-            .unwrap_err();
-        assert_eq!(error.to_string(), "Background request budget exhausted");
+            .unwrap();
+        assert_eq!(answer.content, "done");
         assert_eq!(
             session
                 .messages()
                 .iter()
                 .filter(|message| matches!(message, Message::ToolResult(_)))
                 .count(),
-            16
+            30
         );
     }
 

@@ -400,9 +400,9 @@ Other statuses are `completed`, `stopped`, `failed` and `interrupted`.
 
 Tasks/messages must contain 1–16384 UTF-8 bytes. Up to three children can run
 concurrently per application worker, with sixteen child sessions per parent
-session. Each child turn has sixteen model attempts, five minutes and a bounded
-input context. Returned results/errors are limited to 16384 characters; the full
-history remains in SQLite. Children cannot delegate, reply directly to the user,
+session. Each child turn has a five-minute deadline and no model-call cap.
+Returned results/errors are limited to 16384 characters; the full history remains
+in SQLite. Children cannot delegate, reply directly to the user,
 schedule wakeups, manage webhooks or run automatic learning reviews.
 
 Active children stop when the parent's current run completes, fails or is

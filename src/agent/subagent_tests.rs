@@ -1221,7 +1221,7 @@ impl LlmProvider for RetryingModel {
 }
 
 #[tokio::test]
-async fn child_model_budget_charges_retry_attempts() {
+async fn child_retry_attempts_are_not_capped_at_sixteen() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open_async(dir.path().join("sessions"))
         .await
@@ -1245,7 +1245,7 @@ async fn child_model_budget_charges_retry_attempts() {
         finished: receiver,
     };
     let child = manager
-        .spawn(&parent, "retry within budget".into())
+        .spawn(&parent, "retry beyond sixteen attempts".into())
         .await
         .unwrap();
     let outcome = manager
@@ -1253,7 +1253,7 @@ async fn child_model_budget_charges_retry_attempts() {
         .await
         .unwrap();
     assert_eq!(outcome.status, Status::Failed, "{outcome:?}");
-    assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 16);
+    assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 101);
 }
 
 #[tokio::test]
