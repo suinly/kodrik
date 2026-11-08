@@ -10,6 +10,9 @@ struct Cli {
     /// Remote client configuration (default ~/.kodrik/remote.toml)
     #[arg(long, requires = "remote")]
     remote_config: Option<std::path::PathBuf>,
+    /// Resume a server conversation in remote TUI
+    #[arg(long, requires = "remote")]
+    remote_session: Option<String>,
     /// Restore a specific TUI conversation slot
     #[arg(long)]
     tui_slot: Option<std::num::NonZeroU64>,
@@ -79,7 +82,11 @@ async fn main() -> anyhow::Result<()> {
         return commands::connect::run(remote_config.as_deref()).await;
     }
     if cli.remote {
-        return commands::connect::remote_tui(cli.remote_config.as_deref()).await;
+        return commands::connect::remote_tui(
+            cli.remote_config.as_deref(),
+            cli.remote_session.as_deref(),
+        )
+        .await;
     }
     let config = Config::load()?;
 
@@ -123,6 +130,25 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn remote_session_requires_remote_mode_and_preserves_custom_config() {
+        let cli = Cli::try_parse_from([
+            "kodrik",
+            "--remote",
+            "--remote-session",
+            "server-session",
+            "--remote-config",
+            "client config.toml",
+        ])
+        .unwrap();
+        assert_eq!(cli.remote_session.as_deref(), Some("server-session"));
+        assert_eq!(
+            cli.remote_config.as_deref(),
+            Some(std::path::Path::new("client config.toml"))
+        );
+        assert!(Cli::try_parse_from(["kodrik", "--remote-session", "server-session"]).is_err());
     }
 
     #[test]

@@ -14,6 +14,37 @@ fn snapshot() -> RemoteChatSnapshot {
 }
 
 #[test]
+fn remote_context_tokens_follow_server_snapshots() {
+    let mut app = App::default();
+    let mut view = snapshot();
+    for tokens in [12_000, 24_000, 0] {
+        view.run.as_mut().unwrap()["context_tokens"] = json!(tokens);
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.context_tokens, Some(tokens));
+    }
+}
+
+#[test]
+fn remote_context_tokens_clear_when_server_value_is_unavailable() {
+    for run in [
+        Some(json!({"context_tokens": null})),
+        Some(json!({})),
+        Some(json!({"context_tokens": "12000"})),
+        Some(json!({"context_tokens": -1})),
+        None,
+    ] {
+        let mut app = App {
+            context_tokens: Some(12_000),
+            ..Default::default()
+        };
+        let mut view = snapshot();
+        view.run = run;
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.context_tokens, None, "run: {:?}", view.run);
+    }
+}
+
+#[test]
 fn remote_accepted_input_moves_through_queued_and_committed_snapshots_once() {
     let mut app = App::default();
     let mut view = snapshot();
@@ -720,7 +751,31 @@ async fn terminal_remote_fixture() {
             .unwrap();
     }
     environment.close().await.unwrap();
-    remote::run(&config).await.unwrap();
+    if std::env::var("KODRIK_TUI_CASE").as_deref() == Ok("remote-herdr") {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = dir.join("herdr-test");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nprintf '%s\n' \"$@\" >> \"${0}.log\"\nprintf '\n' >> \"${0}.log\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // This environment belongs only to the private PTY subprocess.
+        unsafe {
+            std::env::set_var("HERDR_BIN_PATH", &binary);
+            std::env::set_var("HERDR_PANE_ID", "remote-pane");
+            std::env::set_var("HERDR_SOCKET_PATH", dir.join("herdr.sock"));
+        }
+        remote::run_with(
+            &config,
+            Some(&dir.join("client config.toml")),
+            Some("resumed-session"),
+        )
+        .await
+        .unwrap();
+    } else {
+        remote::run(&config).await.unwrap();
+    }
     std::fs::write(dir.join("remote-clean-exit"), b"1").unwrap();
     println!("remote-clean-exit");
     server.abort();
@@ -1239,4 +1294,30 @@ fn remote_start_requests_a_new_draft_instead_of_resuming_the_last_session() {
     assert_eq!(hello["session_id"], "new-session");
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_herdr_reports_and_resumes_without_creating_a_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote-herdr");
+    terminal.wait_for(b"server answer", 0);
+    terminal.wait_for(b"fixture-attached-resumed-session", 0);
+    terminal.send(b"hello\r");
+    terminal.wait_for(b"remote echo: hello", 0);
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+    assert!(!dir.path().join("new-requested").exists());
+    let log = std::fs::read_to_string(dir.path().join("herdr-test.log")).unwrap();
+    assert!(log.contains("report-agent\nremote-pane\n"), "{log}");
+    assert!(
+        log.contains("--agent-session-id\nresumed-session\n"),
+        "{log}"
+    );
+    assert!(
+        log.contains("--\nkodrik\n--remote\n--remote-session\nresumed-session\n--remote-config\n"),
+        "{log}"
+    );
+    assert!(log.contains("client config.toml\n"), "{log}");
+    assert!(log.contains("release-agent\nremote-pane\n"), "{log}");
 }

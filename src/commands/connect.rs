@@ -19,13 +19,13 @@ pub async fn run(path: Option<&Path>) -> anyhow::Result<()> {
     pair(&config).await
 }
 
-pub async fn remote_tui(path: Option<&Path>) -> anyhow::Result<()> {
+pub async fn remote_tui(path: Option<&Path>, session: Option<&str>) -> anyhow::Result<()> {
     let config = config(path)?;
     ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         "Remote TUI requires an interactive terminal"
     );
-    super::tui::remote::run(&config).await
+    super::tui::remote::run_with(&config, path, session).await
 }
 
 async fn response(request: reqwest::RequestBuilder) -> anyhow::Result<serde_json::Value> {

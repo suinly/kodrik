@@ -19,6 +19,21 @@ groups do not receive the laptop environment. The same owner conversation can
 be opened in Web Chat or the owner's personal Telegram chat. Selecting another
 conversation in one interface does not move the environment to it.
 
+The footer shows the server-reported context token count when available. It is
+cleared when switching to a session without a context estimate.
+
+When launched inside Herdr, remote TUI reports working, approval-blocked and idle
+states and releases the pane on exit. Herdr's restart command preserves remote
+mode, the selected server session and an explicit `--remote-config` path. The
+same session can also be reopened manually:
+
+```sh
+kodrik --remote --remote-session SESSION_ID --remote-config /path/to/remote.toml
+```
+
+Without `--remote-session`, startup opens a new draft as usual. Resuming a session
+does not bypass the existing local-environment consent checks.
+
 ## Configure and pair
 
 On the server, configure the model and enabled web server as usual and keep

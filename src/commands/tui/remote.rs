@@ -683,14 +683,27 @@ impl Remote {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
+    run_with(config, None, None).await
+}
+
+pub(crate) async fn run_with(
+    config: &RemoteConfig,
+    config_path: Option<&Path>,
+    resume: Option<&str>,
+) -> anyhow::Result<()> {
     let chat = ChatClient::new(config)?;
-    let session = SessionId::new(
-        chat.command(&SessionId::new("new"), ChatCommand::New)
-            .await?["id"]
-            .as_str()
-            .context("Server returned no session ID")?,
-    );
+    let session = if let Some(id) = resume {
+        SessionId::new(id)
+    } else {
+        SessionId::new(
+            chat.command(&SessionId::new("new"), ChatCommand::New)
+                .await?["id"]
+                .as_str()
+                .context("Server returned no session ID")?,
+        )
+    };
     let snapshot = chat.snapshot(&session).await?;
     let (tx, mut rx) = mpsc::channel(4);
     let mut remote = Remote {
@@ -720,10 +733,12 @@ pub(crate) async fn run(config: &RemoteConfig) -> anyhow::Result<()> {
     };
     remote.projection.accept(&mut app, &remote.snapshot)?;
     let mut tui = Tui::enter()?;
-    let result = event_loop(&mut remote, &mut app, &mut tui, &mut rx).await;
+    let mut reporter = herdr::Reporter::start_remote(config_path);
+    let result = event_loop(&mut remote, &mut app, &mut tui, &mut rx, &mut reporter).await;
     remote.observer.take();
     let cleanup = remote.detach().await;
     let terminal = tui.exit();
+    reporter.finish().await;
     result.and(cleanup).and(terminal)
 }
 
@@ -732,6 +747,7 @@ async fn event_loop(
     app: &mut App,
     tui: &mut Tui,
     updates: &mut mpsc::Receiver<(u64, Update)>,
+    reporter: &mut herdr::Reporter,
 ) -> anyhow::Result<()> {
     let mut tick = tokio::time::interval(Duration::from_millis(80));
     let mut copies = JoinSet::new();
@@ -739,6 +755,7 @@ async fn event_loop(
     let shutdown = crate::commands::shutdown_signal();
     tokio::pin!(shutdown);
     remote.connection_status(app);
+    reporter.update(app);
     tui.draw(app)?;
     let startup = {
         let attach = remote.attach(app);
@@ -778,6 +795,7 @@ async fn event_loop(
             remote.load_sessions(app, false);
         }
         remote.connection_status(app);
+        reporter.update(app);
         tui.draw(app)?;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
@@ -1171,6 +1189,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         app.plan_completed = false;
     }
     app.model = run["model"].as_str().unwrap_or("server agent").into();
+    app.context_tokens = run["context_tokens"].as_u64();
     if app.remote_environment.is_none() {
         app.remote_environment = Some(String::new());
         app.remote_connection = Some("detached");

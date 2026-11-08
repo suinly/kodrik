@@ -5,6 +5,11 @@ use tokio::{process::Command, sync::watch, task::JoinHandle};
 use super::app::{App, Status};
 use crate::agent::session::SessionId;
 
+enum Resume {
+    Local(u64),
+    Remote(Option<std::path::PathBuf>),
+}
+
 struct Environment {
     binary: OsString,
     pane: OsString,
@@ -43,6 +48,14 @@ pub(super) struct Reporter {
 
 impl Reporter {
     pub fn start(slot: u64) -> Self {
+        Self::start_with(Resume::Local(slot))
+    }
+
+    pub fn start_remote(config: Option<&std::path::Path>) -> Self {
+        Self::start_with(Resume::Remote(config.map(std::path::Path::to_path_buf)))
+    }
+
+    fn start_with(resume: Resume) -> Self {
         if std::env::var("HERDR_ENV").as_deref() != Ok("1") {
             return Self::default();
         }
@@ -54,28 +67,40 @@ impl Reporter {
         ) else {
             return Self::default();
         };
-        Self::spawn(
+        Self::spawn_with(
             Environment {
                 binary,
                 pane,
                 socket,
             },
-            slot,
+            resume,
         )
     }
 
+    #[cfg(test)]
     fn spawn(environment: Environment, slot: u64) -> Self {
+        Self::spawn_with(environment, Resume::Local(slot))
+    }
+
+    #[cfg(test)]
+    fn spawn_remote(environment: Environment, config: Option<std::path::PathBuf>) -> Self {
+        Self::spawn_with(environment, Resume::Remote(config))
+    }
+
+    fn spawn_with(environment: Environment, resume: Resume) -> Self {
         let (updates, mut receiver) = watch::channel(None::<Report>);
         let worker = tokio::spawn(async move {
             let mut sequence = 0;
             let mut reported = false;
             while receiver.changed().await.is_ok() {
                 let report = receiver.borrow_and_update().clone();
-                environment.send(report.as_ref(), slot, &mut sequence).await;
+                environment
+                    .send(report.as_ref(), &resume, &mut sequence)
+                    .await;
                 reported = true;
             }
             if reported {
-                environment.send(None, slot, &mut sequence).await;
+                environment.send(None, &resume, &mut sequence).await;
             }
         });
         Self {
@@ -106,7 +131,7 @@ impl Reporter {
 }
 
 impl Environment {
-    async fn send(&self, report: Option<&Report>, slot: u64, sequence: &mut u64) {
+    async fn send(&self, report: Option<&Report>, resume: &Resume, sequence: &mut u64) {
         *sequence = chrono::Utc::now()
             .timestamp_micros()
             .unsigned_abs()
@@ -137,9 +162,21 @@ impl Environment {
             if let Some(session) = &report.session {
                 command.args(["--agent-session-id", session.as_str()]);
             }
-            command
-                .args(["--", "kodrik", "--tui-slot"])
-                .arg(slot.to_string());
+            command.args(["--", "kodrik"]);
+            match resume {
+                Resume::Local(slot) => {
+                    command.arg("--tui-slot").arg(slot.to_string());
+                }
+                Resume::Remote(config) => {
+                    command.arg("--remote");
+                    if let Some(session) = &report.session {
+                        command.arg("--remote-session").arg(session.as_str());
+                    }
+                    if let Some(config) = config {
+                        command.arg("--remote-config").arg(config);
+                    }
+                }
+            }
         }
         let _ = tokio::time::timeout(Duration::from_secs(1), command.status()).await;
     }
@@ -242,6 +279,50 @@ mod tests {
             .map(|call| value(call, "--seq").parse().unwrap())
             .collect();
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[tokio::test]
+    async fn remote_reports_resume_the_current_server_session_with_its_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reporter = Reporter::spawn_remote(
+            executable(dir.path(), ""),
+            Some("/tmp/client config.toml".into()),
+        );
+        let mut app = App {
+            session: Some(SessionId::new("server-session")),
+            status: Status::Working,
+            ..Default::default()
+        };
+        reporter.update(&app);
+        wait_for(|| reports(dir.path()).len() == 1).await;
+        app.session = Some(SessionId::new("selected-server-session"));
+        app.status = Status::Ready;
+        reporter.update(&app);
+        reporter.finish().await;
+        let calls = reports(dir.path());
+        assert_eq!(calls.len(), 3);
+        for (call, id) in calls
+            .iter()
+            .zip(["server-session", "selected-server-session"])
+        {
+            let resume = call.iter().position(|arg| arg == "--").unwrap();
+            assert_eq!(
+                &call[resume..],
+                [
+                    "--",
+                    "kodrik",
+                    "--remote",
+                    "--remote-session",
+                    id,
+                    "--remote-config",
+                    "/tmp/client config.toml"
+                ]
+            );
+            assert_eq!(value(call, "--agent-session-id"), id);
+        }
+        assert_eq!(value(&calls[0], "--state"), "working");
+        assert_eq!(value(&calls[1], "--state"), "idle");
+        assert_eq!(calls[2][1], "release-agent");
     }
 
     #[test]
