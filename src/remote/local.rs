@@ -470,10 +470,13 @@ impl LocalEnvironment {
             } else {
                 self.root.join(path)
             };
-            ensure!(
-                path.canonicalize()?.starts_with(&self.root),
-                "workdir must stay within selected project"
-            );
+            // Shell already has process-wide access; only file patches are project-scoped.
+            if call.tool_id == "apply_patch" {
+                ensure!(
+                    path.canonicalize()?.starts_with(&self.root),
+                    "workdir must stay within selected project"
+                );
+            }
             args["workdir"] = json!(path);
         } else if matches!(call.tool_id.as_str(), "read_file" | "view_image") {
             ensure!(

@@ -31,6 +31,46 @@ fn invocation(tool: &str, args: serde_json::Value) -> Invocation {
 }
 
 #[tokio::test]
+async fn shell_external_workdir_and_missing_directory_return_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let env = LocalEnvironment::open(&config(dir.path(), true), dir.path())
+        .await
+        .unwrap();
+    let mut call = invocation(
+        "exec_command",
+        json!({"cmd":"pwd", "workdir":outside.path()}),
+    );
+    env.attach(
+        Uuid::new_v4(),
+        call.environment.clone(),
+        call.session_id.clone(),
+    )
+    .await
+    .unwrap();
+    let receipt = env.execute(call.clone()).await.unwrap();
+    assert_eq!(receipt.state, OperationState::Completed);
+    let output = receipt.result.unwrap().output;
+    assert_eq!(output["exit_code"], 0);
+    assert_eq!(
+        output["stdout"].as_str().unwrap().trim(),
+        outside.path().canonicalize().unwrap().to_str().unwrap()
+    );
+    call.call_id = "missing-directory".into();
+    call.arguments["workdir"] = json!(outside.path().join("missing"));
+    let receipt = env.execute(call.clone()).await.unwrap();
+    assert_eq!(receipt.state, OperationState::Completed);
+    assert!(receipt.result.unwrap().output["error"].is_string());
+    call.call_id = "after-missing-directory".into();
+    call.arguments["workdir"] = serde_json::Value::Null;
+    assert_eq!(
+        env.execute(call).await.unwrap().result.unwrap().output["exit_code"],
+        0
+    );
+    env.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn selected_text_artifact_requires_scoped_invocation_and_current_generation() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("report.txt"), "selected output").unwrap();
