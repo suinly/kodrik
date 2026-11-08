@@ -222,6 +222,8 @@ pub struct InputRows<'a> {
 
 #[derive(Default)]
 pub struct View {
+    pub plan_expanded: bool,
+    pub plan_area: Rect,
     document: Document,
     selection: Option<Selection>,
     area: Rect,
@@ -520,6 +522,14 @@ impl View {
 
     pub fn mouse(&mut self, event: MouseEvent, scroll: &mut usize) -> Option<String> {
         let pointer = Position::new(event.column, event.row);
+        if !self.picker
+            && self.plan_area.contains(pointer)
+            && event.kind == MouseEventKind::Down(MouseButton::Left)
+        {
+            self.clear_selection();
+            self.plan_expanded = !self.plan_expanded;
+            return None;
+        }
         match event.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !self.picker => {
                 *scroll = if event.kind == MouseEventKind::ScrollUp {

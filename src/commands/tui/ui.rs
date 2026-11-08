@@ -99,6 +99,10 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
 }
 
 pub fn render(app: &mut App, frame: &mut Frame) {
+    app.view.plan_area = Rect::default();
+    if app.plan.is_none() {
+        app.view.plan_expanded = false;
+    }
     let area = frame.area();
     let language = app.language;
     if app.remote_grant.is_some() {
@@ -193,8 +197,20 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
         .style(Style::default().fg(Color::Cyan))
         .wrap(Wrap { trim: false });
+    let summary_height = plan
+        .line_count(area.width.saturating_sub(3).max(1))
+        .min(u16::MAX as usize) as u16;
+    let details = Paragraph::new(app.plan_details.as_str()).wrap(Wrap { trim: false });
+    let details_height = if app.view.plan_expanded {
+        details
+            .line_count(area.width.saturating_sub(3).max(1))
+            .min(u16::MAX as usize) as u16
+    } else {
+        0
+    };
     let plan_height = if app.plan.is_some() && available_plan_height > 0 {
-        (plan.line_count(area.width.saturating_sub(3).max(1)) as u16)
+        summary_height
+            .saturating_add(details_height)
             .saturating_add(1)
             .min(available_plan_height)
     } else {
@@ -235,30 +251,56 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .direction(Direction::Vertical)
         .constraints(vec![
             Constraint::Length(waiting_height),
-            Constraint::Length(plan_height),
             Constraint::Length(command_height),
+            Constraint::Length(plan_height),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
         .split(footer);
     frame.render_widget(waiting, layout[0]);
     let layout = &layout[1..];
-    if layout[0].height > 1 {
+    app.view.plan_area = Rect::new(
+        layout[1].x,
+        layout[1].y.saturating_add(1),
+        layout[1].width,
+        layout[1].height.saturating_sub(1),
+    );
+    if layout[1].height > 1 {
         frame.render_widget(
-            Paragraph::new(" ≡").style(Style::default().fg(Color::Cyan).bold()),
-            Rect::new(layout[0].x, layout[0].y + 1, layout[0].width.min(3), 1),
+            Paragraph::new(if app.view.plan_expanded {
+                " ▾"
+            } else {
+                " ≡"
+            })
+            .style(Style::default().fg(Color::Cyan).bold()),
+            Rect::new(layout[1].x, layout[1].y + 1, layout[1].width.min(3), 1),
         );
     }
     frame.render_widget(
         plan,
         Rect::new(
-            layout[0].x.saturating_add(3),
-            layout[0].y.saturating_add(1),
-            layout[0].width.saturating_sub(3),
-            layout[0].height.saturating_sub(1),
+            layout[1].x.saturating_add(3),
+            layout[1].y.saturating_add(1),
+            layout[1].width.saturating_sub(3),
+            summary_height.min(layout[1].height.saturating_sub(1)),
         ),
     );
-    let layout = &layout[1..];
+
+    if app.view.plan_expanded {
+        frame.render_widget(
+            details,
+            Rect::new(
+                layout[1].x.saturating_add(3),
+                layout[1].y.saturating_add(1).saturating_add(summary_height),
+                layout[1].width.saturating_sub(3),
+                layout[1]
+                    .height
+                    .saturating_sub(1)
+                    .saturating_sub(summary_height),
+            ),
+        );
+    }
+    let layout = [layout[0], layout[2], layout[3]];
 
     let (input, input_color) = if app.navigation.selected.is_some() {
         (
@@ -483,7 +525,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         layout[1].x.saturating_add(3),
         layout[1].y.saturating_add(1),
         layout[1].width.saturating_sub(3),
-        layout[1].height.saturating_sub(2),
+        layout[1]
+            .height
+            .saturating_sub(1)
+            .saturating_sub(summary_height),
     );
     let cursor_x = cursor_x.min(u16::MAX as usize) as u16;
     let cursor_y = cursor_y.min(u16::MAX as usize) as u16;
@@ -1722,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_stays_above_status_when_history_grows_and_scrolls() {
+    fn plan_stays_between_status_and_input_when_history_grows_and_scrolls() {
         let mut app = App::default();
         app.update_plan(
             crate::agent::tools::TaskPlan::parse(serde_json::json!({
@@ -1747,13 +1792,114 @@ mod tests {
                 .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
             let status = rows.iter().position(|row| row.contains("Ready")).unwrap();
-            assert_eq!(rows[status - 2].trim(), "≡ Plan · 2/3 · → Fix");
+            let plan = rows
+                .iter()
+                .position(|row| row.contains("Plan · 2/3"))
+                .unwrap();
+            let input = rows
+                .iter()
+                .position(|row| row.contains("Ask Kodrik"))
+                .unwrap();
+            assert!(
+                status < plan && plan < input,
+                "expected status, plan, input: {rows:?}"
+            );
             assert!(
                 !rows
                     .iter()
                     .any(|row| row.contains("Inspect") || row.contains("Verify"))
             );
         }
+    }
+
+    #[test]
+    fn clicking_plan_expands_and_collapses_its_steps_and_explanation() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::default();
+        app.insert_input("Keep my draft");
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "explanation": "Check the result carefully",
+                "plan": [
+                    {"step": "Inspect", "status": "completed"},
+                    {"step": "Fix", "status": "in_progress"},
+                    {"step": "Verify", "status": "pending"}
+                ]
+            }))
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        for expanded in [true, false] {
+            let y = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(80)
+                .position(|row| {
+                    row.iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>()
+                        .contains("Plan ·")
+                })
+                .unwrap() as u16;
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                assert!(
+                    app.view
+                        .mouse(
+                            MouseEvent {
+                                kind,
+                                column: 5,
+                                row: y,
+                                modifiers: KeyModifiers::NONE
+                            },
+                            &mut app.scroll
+                        )
+                        .is_none()
+                );
+            }
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert_eq!(text.contains("Inspect"), expanded);
+            assert_eq!(text.contains("Verify"), expanded);
+            assert_eq!(text.contains("Check the result carefully"), expanded);
+            assert!(text.contains("Ready"));
+            assert_eq!(app.input, "Keep my draft");
+            assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+        }
+        app.view.plan_expanded = true;
+        for (width, height) in [(24, 16), (1, 1), (3, 3), (8, 5)] {
+            let mut small = Terminal::new(TestBackend::new(width, height)).unwrap();
+            small.draw(|frame| render(&mut app, frame)).unwrap();
+            if width >= 24 {
+                let text = small
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(text.contains("Ready"));
+                assert!(text.contains("Keep my draft"));
+                assert!(text.contains("Plan ·"));
+            }
+        }
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({"plan": []})).unwrap(),
+        );
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(!app.view.plan_expanded);
+        assert!(app.view.plan_area.is_empty());
     }
 
     #[test]
