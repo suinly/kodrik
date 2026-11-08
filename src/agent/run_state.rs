@@ -99,6 +99,14 @@ pub(crate) struct RunRecord {
     pub command_audit: bool,
     #[serde(default)]
     pub cancel_requested: bool,
+    #[serde(default)]
+    pub pending_handoff: Option<super::tools::session_switch::HandoffRequest>,
+    #[serde(default)]
+    pub handoff_hops: u32,
+    #[serde(default)]
+    pub handoff_sources: Vec<String>,
+    #[serde(default)]
+    pub handoff_inputs: Vec<super::UserMessage>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ToolExecution {
@@ -162,6 +170,10 @@ impl Checkpoint {
                 isolated: None,
                 command_audit: false,
                 cancel_requested: false,
+                pending_handoff: None,
+                handoff_hops: 0,
+                handoff_sources: vec![],
+                handoff_inputs: vec![],
             },
         }
     }

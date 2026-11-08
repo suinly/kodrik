@@ -81,6 +81,7 @@ impl Agent {
             "telegram_results",
             "wakeups",
             "webhooks",
+            "switch_session",
         ]);
         agent.limits = Some((16, None));
         agent
@@ -379,10 +380,13 @@ impl Agent {
     ) -> anyhow::Result<AssistantMessage> {
         // Dropping this sender also stops children when the parent future is cancelled.
         let (_children, child_lifetime) = tokio::sync::watch::channel(false);
-        let audit_context = crate::audit::Context::current_or(session.id().as_str(), "message");
+        let mut audit_context = crate::audit::Context::current_or(session.id().as_str(), "message");
         if let Some(mut input) = input {
             self.prepare_input(session, &mut input).await?;
             self.context.initialize_session(session)?;
+            if let Some(cp) = checkpoint.as_deref_mut() {
+                cp.record.handoff_inputs.push(input.clone());
+            }
             session.push(Message::User(input));
         }
         let mut requests = 0;
@@ -394,6 +398,29 @@ impl Agent {
             .and_then(|cp| cp.record.overflow_compaction_from);
 
         loop {
+            if let Some(cp) = checkpoint.as_deref_mut()
+                && cp.record.pending_handoff.is_some()
+                && cp.record.pending_calls.is_empty()
+            {
+                let previous_user_messages = session
+                    .messages()
+                    .iter()
+                    .filter(|m| matches!(m, Message::User(_)))
+                    .count();
+                if let Some(target) = cp.apply_handoff(session, &self.context).await? {
+                    *session = target;
+                    overflow_retry_used = false;
+                    overflow_compaction_from = None;
+                    audit_context = crate::audit::Context::new(session.id().as_str(), "message")
+                        .with_run_id(&cp.record.id);
+                    if let Some(tx) = progress {
+                        let _ = tx.try_send(AgentEvent::SessionChanged {
+                            session_id: session.id().clone(),
+                            previous_user_messages,
+                        });
+                    }
+                }
+            }
             let mut input_consumed = false;
             if let Some(cp) = checkpoint.as_deref_mut()
                 && cp.record.pending_calls.is_empty()
@@ -406,6 +433,7 @@ impl Agent {
                         images: message.images,
                     };
                     self.prepare_input(session, &mut input).await?;
+                    cp.record.handoff_inputs.push(input.clone());
                     session.push(Message::User(input));
                     cp.record.submission_ids.push(record.id);
                     input_consumed = true;
@@ -415,6 +443,9 @@ impl Agent {
                 while let Ok(mut input) = incoming.try_recv() {
                     if let Some(sandbox) = &self.sandbox {
                         sandbox.prepare_input(&mut input).await?;
+                    }
+                    if let Some(cp) = checkpoint.as_deref_mut() {
+                        cp.record.handoff_inputs.push(input.clone());
                     }
                     session.push(Message::User(input));
                     input_consumed = true;
@@ -905,30 +936,75 @@ impl Agent {
                                     ))
                                 }
                             }
+                            Permission::Allowed
+                                if call.name == "switch_session"
+                                    && registry.contains("switch_session") =>
+                            {
+                                if self.isolated() {
+                                    Err(anyhow::anyhow!("Isolated agents cannot switch sessions"))
+                                } else if let Some(cp) = checkpoint.as_deref_mut() {
+                                    match super::tools::session_switch::validate(
+                                        cp,
+                                        session,
+                                        call.arguments.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok((request, output)) => {
+                                            cp.record.pending_handoff = Some(request);
+                                            Ok(output)
+                                        }
+                                        Err(error) => Err(error),
+                                    }
+                                } else {
+                                    Err(anyhow::anyhow!(
+                                        "Session switching requires durable execution"
+                                    ))
+                                }
+                            }
                             Permission::Allowed => {
-                                super::delivery::CURRENT_DELIVERY
+                                super::run_state::CURRENT_EXECUTION
                                     .scope(
-                                        delivery,
-                                        super::run_state::CURRENT_TOOL.scope(
-                                            identity,
-                                            super::subagents::CURRENT_PARENT.scope(
-                                                matches!(
-                                                    call.name.as_str(),
-                                                    "spawn_agent"
-                                                        | "send_message"
-                                                        | "list_agents"
-                                                        | "wait_agent"
-                                                        | "stop_agent"
-                                                )
-                                                .then(|| super::subagents::ParentContext {
-                                                    session: session.clone(),
-                                                    finished: child_lifetime.clone(),
-                                                }),
-                                                crate::remote::tools::CURRENT_SCOPE.scope(
-                                                    environment.clone(),
-                                                    registry.execute(
-                                                        &call.name,
-                                                        call.arguments.clone(),
+                                        checkpoint
+                                            .as_ref()
+                                            .and_then(|cp| cp.ownership.clone())
+                                            .or_else(super::run_state::execution_ownership),
+                                        super::delivery::CURRENT_DELIVERY.scope(
+                                            delivery,
+                                            super::run_state::CURRENT_TOOL.scope(
+                                                identity,
+                                                super::subagents::CURRENT_PARENT.scope(
+                                                    matches!(
+                                                        call.name.as_str(),
+                                                        "spawn_agent"
+                                                            | "send_message"
+                                                            | "list_agents"
+                                                            | "wait_agent"
+                                                            | "stop_agent"
+                                                    )
+                                                    .then(|| super::subagents::ParentContext {
+                                                        session: session.clone(),
+                                                        finished: child_lifetime.clone(),
+                                                    }),
+                                                    crate::remote::tools::CURRENT_SCOPE.scope(
+                                                        environment.clone(),
+                                                        super::reminders::WAKEUP_CONTEXT.scope(
+                                                            super::reminders::WAKEUP_CONTEXT
+                                                                .try_with(Clone::clone)
+                                                                .ok()
+                                                                .flatten()
+                                                                .map(|mut context| {
+                                                                    context.session = session
+                                                                        .id()
+                                                                        .as_str()
+                                                                        .to_owned();
+                                                                    context
+                                                                }),
+                                                            registry.execute(
+                                                                &call.name,
+                                                                call.arguments.clone(),
+                                                            ),
+                                                        ),
                                                     ),
                                                 ),
                                             ),
@@ -2146,3 +2222,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tools/session_switch_tests.rs"]
+mod session_switch_tests;

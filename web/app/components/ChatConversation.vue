@@ -184,6 +184,11 @@ function clearPending() {
 
 function receive(view: Snapshot) {
   if (!mounted || view.session_id !== props.conversation.id) return
+  if (view.handoff_session_id && view.handoff_session_id !== props.conversation.id) {
+    emit('saved')
+    emit('navigate',view.handoff_session_id)
+    return
+  }
   connection.value = ''
   loading.value = false
   if(snapshot.value && (view.environment_revision ?? 0) > (snapshot.value.environment_revision ?? 0)) {

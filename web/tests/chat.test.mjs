@@ -4841,3 +4841,20 @@ test('composer focus does not steal a subsequent table input selection', {timeou
     await expect(page.getByRole('table')).not.toContainText('Lunch');
   } finally {await browser.close();}
 });
+
+test('session handoff navigates to the target conversation',{timeout:60000},async()=>{
+  const source=await(await request('sessions',{})).json();
+  const target=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US'});
+    await page.route(`**/sessions/${source.id}/run`,route=>route.fulfill({json:{
+      type:'snapshot',session_id:source.id,handoff_session_id:target.id,run_id:null,revision:1,
+      busy:false,cancel_requested:false,phase:null,blocked_reason:null,messages:[],queued:[],
+      live:{current:null,interrupted:null},plan:null,subagents:[],command_approvals:[],
+    }}));
+    await page.goto(new URL(`app/chat/${source.id}`,base).href);
+    await expect(page).toHaveURL(new RegExp(`/app/chat/${target.id}$`));
+    await expect(page.getByTestId('chat-composer')).toBeVisible();
+  } finally {await browser.close();}
+});

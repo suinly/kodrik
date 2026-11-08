@@ -254,6 +254,9 @@ pub(crate) async fn build_app_with_access(
     };
     let mut tools = ToolRegistry::default()
         .register(Arc::new(UpdatePlanTool))
+        .register(Arc::new(
+            crate::agent::tools::session_switch::SwitchSessionTool,
+        ))
         .register(Arc::new(MemoryTool::new(data.join("memories"))))
         .register(Arc::new(DatasetsTool::new(
             datasets.clone(),

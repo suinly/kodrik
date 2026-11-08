@@ -399,7 +399,14 @@ async fn run_session_inner(
             }
             Some(event) = progress_rx.recv() => {
                 let queue_changed = matches!(&event, AgentEvent::InputConsumed | AgentEvent::SessionChanged { .. });
+                let switched = match &event { AgentEvent::SessionChanged { session_id, .. } => Some(session_id.clone()), _ => None };
                 show_progress(&mut app, event);
+                if let Some(id) = switched {
+                    match runner.load_session(id).await {
+                        Ok(session) => { refresh_history(&mut app, &session); },
+                        Err(error) => log::warn!("Could not reload switched TUI session: {error:#}"),
+                    }
+                }
                 if queue_changed { refresh_waiting(&mut app, &runner, &session_id).await; }
                 redraw = true;
             }
@@ -1041,8 +1048,8 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.push_kodrik_message(
                 app.language
                     .pick(
-                        "New topic — started a new session.",
-                        "Новая тема — начат новый сеанс.",
+                        "Switched to the session for this topic.",
+                        "Перешёл в сеанс по этой теме.",
                     )
                     .into(),
             );
@@ -1558,6 +1565,32 @@ mod tests {
         assert_eq!(app.context_tokens, None);
         assert_eq!(app.session.as_ref().unwrap().as_str(), "new-session");
         assert!(app.navigation.selected.is_none());
+    }
+
+    #[test]
+    fn switched_session_refresh_restores_target_history_and_request() {
+        let mut app = App::default();
+        app.push_user_message("source request".into());
+        app.input = "unfinished draft".into();
+        show_progress(
+            &mut app,
+            AgentEvent::SessionChanged {
+                session_id: SessionId::new("target"),
+                previous_user_messages: 1,
+            },
+        );
+        let mut target = Session::new(SessionId::new("target"));
+        for content in ["target history", "source request"] {
+            target.push(Message::User(crate::agent::UserMessage {
+                content: content.into(),
+                images: vec![],
+                files: vec![],
+            }));
+        }
+        assert!(refresh_history(&mut app, &target));
+        assert_eq!(app.messages[0].content, "target history");
+        assert_eq!(app.messages[1].content, "source request");
+        assert_eq!(app.input, "unfinished draft");
     }
 
     #[test]

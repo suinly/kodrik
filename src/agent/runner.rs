@@ -471,22 +471,83 @@ impl AgentRunner {
 
                 // Classify only at turn boundaries; incoming steering stays with this run.
                 let mut routing_stopped = false;
-                let mut switch =
-                    if is_webhook || submission.as_ref().is_some_and(|r| r.session_id.is_some()) {
-                        false
-                    } else if let Some(router) = &self.session_router {
-                        if let Some(cancel) = cancel.as_mut() {
-                            tokio::select! {
-                                biased;
-                                _ = cancel => { routing_stopped = true; false },
-                                decision = router.should_start_new(&session, &input) => decision,
-                            }
-                        } else {
-                            router.should_start_new(&session, &input).await
+                use super::session_router::SessionRoute;
+                let mut route = if is_webhook
+                    || self.agent.isolated()
+                    || submission.as_ref().is_some_and(|r| r.session_id.is_some())
+                {
+                    SessionRoute::Continue
+                } else if let Some(router) = &self.session_router {
+                    let classify = async {
+                        if !router.eligible_turn(&session, &input) {
+                            return Ok::<_, anyhow::Error>(SessionRoute::Continue);
+                        }
+                        let candidates = self.routing_candidates(&session).await?;
+                        Ok(router.route(&session, &input, &candidates).await)
+                    };
+                    let decision = if let Some(cancel) = cancel.as_mut() {
+                        tokio::select! {
+                            biased;
+                            _ = cancel => { routing_stopped = true; Ok(SessionRoute::Continue) },
+                            decision = classify => decision,
                         }
                     } else {
-                        false
+                        classify.await
                     };
+                    decision.unwrap_or_else(|error| {
+                        log::warn!(
+                            "Session candidates unavailable; keeping current session: {error:#}"
+                        );
+                        SessionRoute::Continue
+                    })
+                } else {
+                    SessionRoute::Continue
+                };
+                // Lock and reload before changing selection; a busy target never creates a new session.
+                let mut selected = None;
+                if let SessionRoute::Existing(id) = &route {
+                    let target = async {
+                        let lock = if let Some(store) = self.sessions.runtime_store() {
+                            Some(store.execution_lock("session", id.as_str()).await?)
+                        } else {
+                            None
+                        };
+                        let target = self
+                            .sessions
+                            .load(id)
+                            .await?
+                            .ok_or_else(|| anyhow::anyhow!("Routing target disappeared"))?;
+                        anyhow::ensure!(
+                            super::session::handoff::eligible(&session, &target),
+                            "Routing target is not accessible"
+                        );
+                        if let Some(store) = self.sessions.runtime_store() {
+                            let target_id = id.as_str().to_owned();
+                            store
+                                .with_connection(move |db| {
+                                    anyhow::ensure!(
+                                        !super::inbox::session_busy_in(db, &target_id)?,
+                                        "Routing target is busy"
+                                    );
+                                    Ok(())
+                                })
+                                .await?;
+                        }
+                        Ok::<_, anyhow::Error>((target, lock))
+                    }
+                    .await;
+                    match target {
+                        Ok((target, lock)) => {
+                            ownership.extend(lock);
+                            selected = Some(target);
+                        }
+                        Err(error) => {
+                            log::warn!("Cannot reuse session; keeping current session: {error:#}");
+                            route = SessionRoute::Continue;
+                        }
+                    }
+                }
+                let mut switch = route != SessionRoute::Continue;
                 let previous_user_messages = session
                     .messages()
                     .iter()
@@ -513,12 +574,18 @@ impl AgentRunner {
                 if switch {
                     // Finish persistence outside cancellation: never abandon an active-id write.
                     let group = session.telegram_group().cloned();
-                    session = if submission.is_some() {
+                    let reusing = selected.is_some();
+                    session = if let Some(target) = selected {
+                        if submission.is_none() {
+                            self.sessions.select(&session_id, target.id()).await?;
+                        }
+                        target
+                    } else if submission.is_some() {
                         Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()))
                     } else {
                         self.sessions.new_session(&session_id).await?
                     };
-                    if let Some(store) = self.sessions.runtime_store() {
+                    if !reusing && let Some(store) = self.sessions.runtime_store() {
                         ownership.push(
                             store
                                 .execution_lock("session", session.id().as_str())
@@ -716,6 +783,19 @@ impl AgentRunner {
             .await?
             .into_iter()
             .filter(|s| !s.id().as_str().starts_with("companion:"))
+            .collect())
+    }
+
+    async fn routing_candidates(&self, source: &Session) -> anyhow::Result<Vec<Session>> {
+        let sessions = if let Some(store) = self.sessions.runtime_store() {
+            store.search_sessions(None).await?.sessions
+        } else {
+            self.sessions.list().await?
+        };
+        Ok(sessions
+            .into_iter()
+            .filter(|target| super::session::handoff::eligible(source, target))
+            .take(32)
             .collect())
     }
 
@@ -982,6 +1062,93 @@ mod tests {
                 assert!(!text.contains("Интересуется"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn routing_reuses_existing_session_and_followups_stay_there() {
+        use crate::agent::{
+            session::SqliteSessionStore, session_router::SessionRouter, system_one::SystemOne,
+        };
+        struct ChooseExisting(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl LlmProvider for ChooseExisting {
+            async fn generate(
+                &self,
+                _: &LlmContext<'_>,
+                _: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                let choice = if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    "new"
+                } else {
+                    "session_0"
+                };
+                Ok((
+                    vec![Message::Assistant(AssistantMessage {
+                        content: format!("{{\"choice\":\"{choice}\"}}"),
+                    })],
+                    None,
+                ))
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            SqliteSessionStore::open_async(directory.path().into())
+                .await
+                .unwrap(),
+        );
+        let conversation = SessionId::new("cli:main");
+        let original: Session = serde_json::from_value(serde_json::json!({
+            "id":"cli:main", "last_message_at":"2000-01-01T00:00:00Z",
+            "messages":[{"User":{"content":"old topic"}}]
+        }))
+        .unwrap();
+        let mut target = Session::new(SessionId::new("nutrition"));
+        target.push(Message::User(user("nutrition history")));
+        store.save(&original).await.unwrap();
+        store.save(&target).await.unwrap();
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(ReplyLlm {
+                    reply: "done",
+                    fail: false,
+                    calls: Default::default(),
+                }),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            store.clone(),
+        )
+        .with_session_router(SessionRouter::new(
+            SystemOne::new(Arc::new(ChooseExisting(Default::default()))),
+            30,
+        ));
+        for text in ["nutrition question", "followup"] {
+            runner
+                .run(
+                    conversation.clone(),
+                    IncomingMessage::new(InterfaceId("cli".into()), "main", text),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(store.active_id(&conversation).await.unwrap(), *target.id());
+        }
+        assert_eq!(
+            store
+                .load(original.id())
+                .await
+                .unwrap()
+                .unwrap()
+                .messages()
+                .len(),
+            1
+        );
+        let saved = store.load(target.id()).await.unwrap().unwrap();
+        assert_eq!(saved.messages().len(), 5);
+        assert!(
+            matches!(&saved.messages()[0], Message::User(m) if m.content == "nutrition history")
+        );
     }
 
     #[tokio::test]

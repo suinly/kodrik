@@ -1202,7 +1202,7 @@ impl GatewayRunner {
                             compaction = None;
                             compaction_message = None;
                             compaction_sent = None;
-                            if let Err(error) = interface.send(conversation_id, language.pick("New topic — started a new session.", "Новая тема — начат новый диалог.")).await {
+                            if let Err(error) = interface.send(conversation_id, language.pick("Switched to the session for this topic.", "Перешёл в диалог по этой теме.")).await {
                                 log::warn!("Failed to announce session change: {error}");
                             }
                             continue;

@@ -688,6 +688,9 @@ impl SqliteSessionStore {
                 )?;
                 ensure!(!live, "Unfinished run owns this conversation or session; recovery required");
                 let active: Option<String> = tx.query_row("SELECT session_id FROM active_sessions WHERE conversation_id=?1", [&run.conversation_id], |r|r.get(0)).optional()?;
+                if run.routing_from.is_some() {
+                    ensure!(!crate::agent::inbox::session_busy_in(&tx, &run.session_id)?, "Routing target is busy");
+                }
                 let expected_active=run.routing_from.as_deref().unwrap_or(&run.session_id);
                 let prebound=if let Some(id)=run.submission_ids.first() {crate::agent::inbox::read_record(&tx,id)?.and_then(|r|r.session_id).is_some_and(|id|id==run.session_id)} else {false};
                 ensure!(prebound || active.as_deref().unwrap_or(&run.conversation_id) == expected_active, "Active session changed before run");
@@ -709,7 +712,12 @@ impl SqliteSessionStore {
                 crate::agent::command_audit::check_execution(&tx, &run, &tool.call)?;
             }
             save(&tx, &session)?;
-            if previous.is_none() && run.routing_from.is_some(){select(&tx,&run.conversation_id,&run.session_id)?;}
+            if previous.is_none() && run.routing_from.is_some(){
+                select(&tx,&run.conversation_id,&run.session_id)?;
+                super::branches::init_branches(&tx)?;
+                let root = super::branches::root(&tx, &run.session_id)?;
+                super::branches::select_branch(&tx, &root, &run.session_id)?;
+            }
             tx.execute("INSERT INTO runs(id,conversation_id,session_id,revision,terminal,payload) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,terminal=excluded.terminal,payload=excluded.payload",
                 params![run.id,run.conversation_id,run.session_id,run.revision,run.phase.terminal(),payload])?;
             if let Some(tool) = &tool {
@@ -726,8 +734,10 @@ impl SqliteSessionStore {
             crate::agent::inbox::checkpoint_submissions(&tx,&run,&session)?;
             crate::agent::delivery::checkpoint_final(&tx,&run,&session)?;
             crate::web::push_store::checkpoint(&tx,&run,&session)?;
-            let approval_owner: Option<String> = tx.query_row("SELECT session_id FROM command_audits WHERE run_id=?1 LIMIT 1", [&run.id], |row| row.get(0)).optional()?;
-            if let Some(owner) = approval_owner {
+            let approval_owners = tx.prepare("SELECT DISTINCT session_id FROM command_audits WHERE run_id=?1")?
+                .query_map([&run.id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for owner in approval_owners {
                 crate::agent::command_audit::notify_pending_approvals(&tx, &owner)?;
             }
             crate::agent::run_view::checkpoint_live(&tx,&run,history_advanced,interrupted_attempt)?;

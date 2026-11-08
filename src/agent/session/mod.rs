@@ -1,6 +1,8 @@
 pub(crate) mod activity;
 pub(crate) mod branches;
 mod core;
+pub(crate) mod handoff;
+
 #[cfg(test)]
 mod json;
 mod owner_migration;

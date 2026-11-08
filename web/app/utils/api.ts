@@ -84,6 +84,7 @@ export type TokenUsage = {
 };
 export type Snapshot = {
   type: 'snapshot'; session_id: string; run_id: string | null; revision: number;
+  handoff_session_id?: string | null;
   read_revision?: string | null;
   token_usage?: TokenUsage | null;
   context_tokens?: number | null;

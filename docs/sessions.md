@@ -4,8 +4,9 @@ Kodrik checks whether a new turn belongs to the active conversation only after
 at least 30 minutes since the last user or assistant message, before the main
 agent answers. During an active conversation there is no session-routing call;
 [group participation](usage.md#telegram) is decided separately for each message.
-A clearly unrelated, self-contained topic starts a new
-session. Follow-ups, corrections, answers, acknowledgements and related topics
+For a clearly unrelated, self-contained topic, System One first looks for a
+suitable existing personal session; it creates a new session only when none fits.
+Follow-ups, corrections, answers, acknowledgements and related topics
 continue the current one. Ambiguous decisions also keep the current session.
 
 ## System One decisions
@@ -41,7 +42,14 @@ budget. Tool calls, tool outputs and image payloads are excluded; image captions
 remain. Personality, skills and memory snapshots are not included in the decision
 request. Empty sessions and incoming messages without text bypass classification.
 
-The model chooses `continue`, `new` or `uncertain`. One request has a 15-second
+The first decision chooses `continue`, `new` or `uncertain`. After `new`, a second
+decision may select an existing session, create a new one, or keep the current
+session on uncertainty. Candidates are restricted to the same user’s accessible
+personal sessions (not groups, guests, internal, one-shot or webhook sessions).
+The candidate list uses up to 32 recent sessions and at most eight 512-character
+user/assistant excerpts per candidate. A bounded history scan may omit very large
+or older sessions; the main agent can use history search for a more targeted choice.
+Candidate-selection failures retain the current session. Each request has a 15-second
 provider deadline, at most 128 output tokens and no retries. The same deadline
 applies to System One decisions about group participation. The response must be
 exactly a JSON object such as `{"choice":"new"}`; unknown values, extra fields,
@@ -55,8 +63,10 @@ main agent's answer. No numeric confidence is invented by the model.
 
 Switching preserves the previous session and uses the existing active-session
 mapping. Fresh sessions reload personality, memory, interests and skills. TUI
-and Telegram show a brief switch notification. The TUI clears the previous
-history while preserving the new message, queued corrections and the input draft.
+and Telegram show a brief switch notification. The TUI reloads the selected
+session's saved history and preserves the input draft; accepted queued corrections
+remain in the durable inbox. The web chat navigates to the handoff target, including
+successive handoffs within the same run.
 Personal sessions are shared per user across Telegram and web; CLI/TUI always uses
 the configured owner. Each interface and each running TUI instance keeps its own
 active-session selection. TUI instances reserve separate reusable slots for their
@@ -73,6 +83,25 @@ Once a persistent session transition starts, it is allowed to finish before
 handling cancellation. Proactive messages are not classified; they enter the
 normal history and are visible when classifying the owner's next reply. One-shot
 CLI requests already create their own sessions and need no routing.
+
+The web chat continues to use its explicitly opened conversation rather than
+running the idle classifier. Agent-directed handoffs are supported there as below.
+
+## Agent-directed handoff
+
+The foreground agent can use `switch_session(session_id, context)` to continue a
+running task in an existing personal session without waiting for the idle threshold.
+The context should name the task, decisions, progress, and effects already performed.
+The original request and accepted steering, including attachments, accompany the task;
+whole histories are not merged. The target history becomes the working context and
+subsequent messages use the new active selection. Source history remains saved.
+
+Handoff occurs only at a completed tool-batch boundary. The source history, target
+history, run binding and active selection are persisted together. A target owned by
+another worker or with unfinished work cannot be entered. Children, isolated runs,
+group/guest conversations and background wakeups cannot use this capability.
+At most four handoffs are allowed per run to prevent routing loops. A switch does
+not authorize replaying completed effects or expanding the task’s permissions.
 
 ## Model evaluation
 
