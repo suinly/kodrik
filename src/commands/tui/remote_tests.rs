@@ -14,6 +14,49 @@ fn snapshot() -> RemoteChatSnapshot {
 }
 
 #[test]
+fn remote_accepted_input_moves_through_queued_and_committed_snapshots_once() {
+    let mut app = App::default();
+    let mut view = snapshot();
+    view.messages.clear();
+    view.run = Some(json!({"busy":true,"queued":[]}));
+    remote::project(&mut app, &view).unwrap();
+    for index in 0..2 {
+        app.insert_input("same question");
+        assert_eq!(
+            app.update(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .as_deref(),
+            Some("same question")
+        );
+        assert_eq!(app.messages.len(), index);
+        assert_eq!(app.waiting_messages, ["same question"]);
+        view.run = Some(json!({"busy":true,"queued":[{"text":"same question"}]}));
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(app.waiting_messages, ["same question"]);
+        assert_eq!(app.messages.len(), index);
+        view.messages
+            .push(json!({"role":"user", "parts":[{"type":"text", "text":"same question"}]}));
+        view.run = Some(json!({"busy":true,"queued":[]}));
+        remote::project(&mut app, &view).unwrap();
+        assert!(app.waiting_messages.is_empty());
+        assert_eq!(app.messages.len(), index + 1);
+        remote::project(&mut app, &view).unwrap();
+        assert_eq!(
+            app.messages.len(),
+            index + 1,
+            "reloading must be idempotent"
+        );
+    }
+    assert_eq!(
+        app.messages.len(),
+        2,
+        "intentional repeated prompts must survive"
+    );
+}
+
+#[test]
 fn restored_tool_results_do_not_treat_null_error_as_failure() {
     use crate::agent::message::{ToolCall, ToolResult};
 

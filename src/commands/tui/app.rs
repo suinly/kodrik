@@ -296,6 +296,22 @@ impl App {
         }
     }
 
+    pub fn consume_pending_inputs(&mut self) -> bool {
+        let pending = std::mem::take(&mut self.waiting_messages);
+        let changed = !pending.is_empty();
+        for content in pending {
+            self.push_user_message(content);
+        }
+        changed
+    }
+
+    pub fn discard_pending_input(&mut self, text: &str, images: usize) {
+        let summary = super::waiting_summary(text, images);
+        if self.waiting_messages.last() == Some(&summary) {
+            self.waiting_messages.pop();
+        }
+    }
+
     pub fn push_user_message(&mut self, content: String) {
         if self.plan_completed {
             self.plan = None;
@@ -571,7 +587,11 @@ impl App {
                 {
                     return Some(command.to_owned());
                 }
-                self.push_user_message(if self.input_images.is_empty() {
+                if self.plan_completed {
+                    self.plan = None;
+                    self.plan_completed = false;
+                }
+                self.waiting_messages.push(if self.input_images.is_empty() {
                     input.clone()
                 } else {
                     format!("{}\n[Images: {}]", input, self.input_images.len())
@@ -655,6 +675,19 @@ pub enum ToolState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_submission_removes_only_its_own_pending_input() {
+        let mut app = App::default();
+        app.waiting_messages = vec!["earlier".into(), "failed\n[Images: 1]".into()];
+        app.discard_pending_input("failed", 1);
+        assert_eq!(app.waiting_messages, ["earlier"]);
+        app.discard_pending_input("unrelated", 0);
+        assert_eq!(app.waiting_messages, ["earlier"]);
+        app.waiting_messages.push("earlier".into());
+        app.discard_pending_input("earlier", 0);
+        assert_eq!(app.waiting_messages, ["earlier"]);
+    }
 
     #[test]
     fn copy_notice_expires_and_replacement_gets_its_own_deadline() {
@@ -766,7 +799,7 @@ mod tests {
         let mut app = App::default();
         app.insert_input(pasted);
         assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some(pasted));
-        assert_eq!(app.messages.last().unwrap().content, pasted);
+        assert_eq!(app.waiting_messages.last().unwrap(), pasted);
         app.insert_input("  /audit ask  ");
         assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/audit ask"));
     }
@@ -791,7 +824,7 @@ mod tests {
                 Some("next request")
             );
             assert_eq!(app.plan.as_deref(), expected, "{status}");
-            assert_eq!(app.messages.last().unwrap().content, "next request");
+            assert_eq!(app.waiting_messages.last().unwrap(), "next request");
         }
     }
 
@@ -1273,7 +1306,8 @@ mod tests {
         key(&mut app, KeyCode::End);
         let expected = "Привет\nмир\n三\nновый !";
         assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some(expected));
-        assert_eq!(app.messages[0].content, expected);
+        assert!(app.messages.is_empty());
+        assert_eq!(app.waiting_messages, [expected]);
         assert!(app.input.is_empty());
         assert_eq!(app.input_cursor, 0);
         assert!(matches!(app.status, Status::Working));

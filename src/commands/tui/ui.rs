@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Widget},
+    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Widget, Wrap},
 };
 
 use super::app::{App, AppMessage, AppMessageRole, Status, ToolState};
@@ -191,14 +191,30 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let footer_height = VIEWPORT_HEIGHT + input_lines - 1 + command_height - 3;
     let available_plan_height = area.height.saturating_sub(footer_height + 2);
     let plan = Paragraph::new(app.plan.as_deref().unwrap_or_default())
-        .style(Style::default().fg(Color::Cyan));
+        .style(Style::default().fg(Color::Cyan))
+        .wrap(Wrap { trim: false });
     let plan_height = if app.plan.is_some() && available_plan_height > 0 {
-        2
+        (plan.line_count(area.width.saturating_sub(3).max(1)) as u16)
+            .saturating_add(1)
+            .min(available_plan_height)
     } else {
         0
     };
-    let waiting_height =
-        (app.waiting_messages.len() as u16).min(available_plan_height.saturating_sub(plan_height));
+    let waiting = Paragraph::new(
+        app.waiting_messages
+            .iter()
+            .map(|text| {
+                Line::from(format!(
+                    " ◷ {}",
+                    text.split_whitespace().collect::<Vec<_>>().join(" ")
+                ))
+            })
+            .collect::<Vec<_>>(),
+    )
+    .style(Style::default().fg(Color::Yellow))
+    .wrap(Wrap { trim: false });
+    let waiting_height = (waiting.line_count(area.width.max(1)) as u16)
+        .min(available_plan_height.saturating_sub(plan_height));
     let history_height = area
         .height
         .saturating_sub(footer_height + plan_height + waiting_height);
@@ -225,21 +241,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Constraint::Length(1),
         ])
         .split(footer);
-    let waiting = app
-        .waiting_messages
-        .iter()
-        .take(usize::from(waiting_height))
-        .map(|text| {
-            Line::from(format!(
-                " ◷ {}",
-                text.split_whitespace().collect::<Vec<_>>().join(" ")
-            ))
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        Paragraph::new(waiting).style(Style::default().fg(Color::Yellow)),
-        layout[0],
-    );
+    frame.render_widget(waiting, layout[0]);
     let layout = &layout[1..];
     if layout[0].height > 1 {
         frame.render_widget(
@@ -881,6 +883,109 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn submitted_user_is_shown_once_while_waiting_for_assistant() {
+        let mut app = App::default();
+        app.insert_input("unique newly submitted question");
+        let submitted = app
+            .update(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .unwrap();
+        assert_eq!(submitted, "unique newly submitted question");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(text.matches("unique newly submitted question").count(), 1);
+    }
+
+    #[test]
+    fn long_plan_renders_every_word_without_clipping() {
+        let mut app = App::default();
+        app.update_plan(crate::agent::tools::TaskPlan::parse(serde_json::json!({
+            "plan": [{"step": "Inspect the implementation carefully before changing behavior", "status": "in_progress"}]
+        })).unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(26, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = (0..24)
+            .map(|y| (3..26).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        for word in [
+            "Inspect",
+            "the",
+            "implementation",
+            "carefully",
+            "before",
+            "changing",
+            "behavior",
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|row| row.split_whitespace().any(|part| part == word)),
+                "missing or split word {word}: {rows:?}"
+            );
+        }
+        assert!(rows.iter().any(|row| row.contains("Ready")));
+    }
+
+    #[test]
+    fn queued_user_message_wraps_every_word_without_clipping() {
+        let mut app = App::default();
+        app.waiting_messages
+            .push("alpha bravo charlie delta echo foxtrot golf hotel india juliet".into());
+        let mut terminal = Terminal::new(TestBackend::new(20, 30)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = (0..30)
+            .map(|y| (0..20).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        for word in [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            "juliet",
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|row| row.split_whitespace().any(|part| part == word)),
+                "missing or split word {word}: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn user_and_assistant_messages_wrap_words_and_keep_the_last_line() {
+        for role in [AppMessageRole::User, AppMessageRole::Kodrik] {
+            let message = AppMessage {
+                role,
+                content: "alpha bravo charlie delta echo foxtrot golf hotel india juliet".into(),
+            };
+            let paragraph =
+                Paragraph::new(message_text(&message)).wrap(ratatui::widgets::Wrap { trim: false });
+            let height = message_height(&message, &paragraph, 20);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 20, height));
+            render_message(&message, &paragraph, &mut buffer);
+            let rows = (0..height)
+                .map(|y| (3..20).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows.iter()
+                    .flat_map(|row| row.split_whitespace())
+                    .collect::<Vec<_>>(),
+                [
+                    "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+                    "india", "juliet"
+                ]
+            );
+        }
+    }
 
     #[test]
     fn status_and_command_output_use_readable_secondary_text() {
