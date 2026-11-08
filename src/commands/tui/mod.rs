@@ -362,8 +362,8 @@ async fn run_session_inner(
                             }
                             let message=images::message(&app, session_id.as_str(), input);
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
-                                Ok(_)=>{app.waiting_messages.push(waiting_summary(&message.text, message.images.len()));app.input_images.clear();input_tx.send(message)?;},
-                                Err(error)=>{app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
+                                Ok(_)=>{app.input_images.clear();input_tx.send(message)?;},
+                                Err(error)=>{app.discard_pending_input(&message.text, message.images.len());app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
                             }
                         }
                         redraw = true;
@@ -683,6 +683,47 @@ async fn refresh_waiting(
             false
         }
     }
+}
+
+#[test]
+fn local_accepted_input_moves_from_queue_to_history_without_duplicates() {
+    let mut session = Session::new(SessionId::new("local-queue-cycle"));
+    let mut app = App::default();
+    restore_history(&mut app, &session);
+    for _ in 0..2 {
+        app.insert_input("same question");
+        assert_eq!(
+            app.update(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ))
+            .as_deref(),
+            Some("same question")
+        );
+        assert_eq!(app.messages.len(), session.messages().len());
+        assert_eq!(app.waiting_messages, ["same question"]);
+        reconcile_waiting(&mut app, &[serde_json::json!({"text":"same question"})]);
+        assert_eq!(app.waiting_messages, ["same question"]);
+        session.push(Message::User(crate::agent::UserMessage {
+            content: "same question".into(),
+            images: vec![],
+            files: vec![],
+        }));
+        refresh_history(&mut app, &session);
+        reconcile_waiting(&mut app, &[]);
+        assert!(app.waiting_messages.is_empty());
+        assert_eq!(app.messages.len(), session.messages().len());
+        assert!(
+            app.messages
+                .iter()
+                .all(|row| row.content == "same question")
+        );
+    }
+    assert_eq!(
+        app.messages.len(),
+        2,
+        "intentional repeated prompts must survive"
+    );
 }
 
 #[test]
@@ -1009,9 +1050,10 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
                         *pending -= 1;
                     }
                 }
+                app.consume_pending_inputs();
                 return true;
             }
-            return false;
+            return app.consume_pending_inputs();
         }
         AgentEvent::SessionChanged {
             session_id,
@@ -1049,6 +1091,9 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         }
         AgentEvent::PlanUpdated(plan) => app.update_plan(plan),
         AgentEvent::TextDelta(delta) => {
+            if app.streaming_message.is_none() {
+                app.consume_pending_inputs();
+            }
             let index = match app.streaming_message {
                 Some(index) => index,
                 None => {
@@ -1060,7 +1105,12 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             };
             app.messages[index].content.push_str(&delta);
         }
-        AgentEvent::Message(message) => app.finish_stream(message.content),
+        AgentEvent::Message(message) => {
+            if app.streaming_message.is_none() {
+                app.consume_pending_inputs();
+            }
+            app.finish_stream(message.content);
+        }
         // shortcut: progress events carry English text; use typed statuses if these formats change.
         AgentEvent::Retrying(message) => {
             let message = if app.language == Language::Ru {

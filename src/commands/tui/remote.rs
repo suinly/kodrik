@@ -451,10 +451,14 @@ impl Remote {
         Ok(())
     }
     async fn send(&mut self, app: &mut App, text: String) -> anyhow::Result<()> {
-        ensure!(
-            self.uncertain.is_none(),
-            "Previous input is unconfirmed; use /retry to check the same request ID first"
-        );
+        if self.uncertain.is_some() {
+            app.discard_pending_input(&text, app.input_images.len());
+            app.input = text;
+            app.input_cursor = app.input.len();
+            anyhow::bail!(
+                "Previous input is unconfirmed; use /retry to check the same request ID first"
+            );
+        }
         let editing = app.navigation.editing.as_ref();
         let is_edit = editing.is_some();
         let command = if let Some(edit) = editing {
@@ -482,10 +486,6 @@ impl Remote {
         match result {
             Ok(response) => {
                 self.uncertain = None;
-                if !is_edit {
-                    app.waiting_messages
-                        .push(waiting_summary(&text, app.input_images.len()));
-                }
                 app.input_images.clear();
                 if is_edit {
                     let id =
@@ -496,6 +496,7 @@ impl Remote {
                 Ok(())
             }
             Err(error) => {
+                app.discard_pending_input(&text, app.input_images.len());
                 app.input = text;
                 app.input_cursor = app.input.len();
                 Err(error)
