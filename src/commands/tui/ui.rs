@@ -222,26 +222,25 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     } else {
         0
     };
-    let waiting = Paragraph::new(
-        app.waiting_messages
+    let history_height = area.height.saturating_sub(footer_height + plan_height);
+    // Pending inputs use the same layout as confirmed messages to avoid a jump on acceptance.
+    let messages;
+    let history = if app.waiting_messages.is_empty() {
+        &app.messages
+    } else {
+        messages = app
+            .messages
             .iter()
-            .map(|text| {
-                Line::from(format!(
-                    " ◷ {}",
-                    text.split_whitespace().collect::<Vec<_>>().join(" ")
-                ))
-            })
-            .collect::<Vec<_>>(),
-    )
-    .style(Style::default().fg(Color::Yellow))
-    .wrap(Wrap { trim: false });
-    let waiting_height = (waiting.line_count(area.width.max(1)) as u16)
-        .min(available_plan_height.saturating_sub(plan_height));
-    let history_height = area
-        .height
-        .saturating_sub(footer_height + plan_height + waiting_height);
+            .cloned()
+            .chain(app.waiting_messages.iter().map(|text| AppMessage {
+                role: AppMessageRole::User,
+                content: text.clone(),
+            }))
+            .collect::<Vec<_>>();
+        &messages
+    };
     app.view
-        .prepare(&app.messages, area, history_height, &mut app.scroll, false);
+        .prepare(history, area, history_height, &mut app.scroll, false);
     if let Some(index) = app.navigation.focus.take() {
         app.view.focus_message(index, &mut app.scroll);
     }
@@ -256,15 +255,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(vec![
-            Constraint::Length(waiting_height),
             Constraint::Length(command_height),
             Constraint::Length(plan_height),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
         .split(footer);
-    frame.render_widget(waiting, layout[0]);
-    let layout = &layout[1..];
     app.view.plan_area = Rect::new(
         layout[1].x,
         layout[1].y,
@@ -934,6 +930,33 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn consuming_submitted_message_keeps_history_layout_and_style() {
+        for (width, text) in [
+            (80, "unique newly submitted question"),
+            (
+                26,
+                "First line\nSecond line with enough words to wrap across several rows",
+            ),
+        ] {
+            let mut app = App::default();
+            app.push_kodrik_message("Earlier answer".into());
+            app.insert_input(text);
+            app.update(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let before = terminal.backend().buffer().clone();
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert!(app.consume_pending_inputs());
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            assert_eq!(terminal.backend().buffer(), &before);
+            assert_eq!(terminal.get_cursor_position().unwrap(), cursor);
+        }
+    }
 
     #[test]
     fn submitted_user_is_shown_once_while_waiting_for_assistant() {
@@ -1971,11 +1994,11 @@ mod tests {
             .collect::<Vec<_>>();
         let first = rows
             .iter()
-            .position(|row| row.contains("◷ First correction"))
+            .position(|row| row.contains("First correction"))
             .unwrap();
         let second = rows
             .iter()
-            .position(|row| row.contains("◷ Second correction"))
+            .position(|row| row.contains("Second correction"))
             .unwrap();
         let plan = rows
             .iter()

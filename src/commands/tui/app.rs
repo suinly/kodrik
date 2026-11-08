@@ -666,6 +666,7 @@ impl App {
     }
 }
 
+#[derive(Clone)]
 pub struct AppMessage {
     pub role: AppMessageRole,
     pub content: String,
