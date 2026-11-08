@@ -93,7 +93,7 @@ impl Binding {
                 "Local environment needs approval"
             );
             let mut client = RemoteClient::connect(config).await?;
-            client.attach(session, manifest).await?;
+            let key = client.attach(session, manifest).await?;
             let (stop, receiver) = oneshot::channel();
             let (ready, started) = oneshot::channel();
             let local = environment.clone();
@@ -101,6 +101,12 @@ impl Binding {
                 client
                     .serve_local_until_ready(local, receiver, Some(ready))
                     .await
+                    .with_context(|| {
+                        format!(
+                            "connection_id={} generation={}",
+                            key.connection_id, key.generation
+                        )
+                    })
             });
             let binding = Self {
                 stop: Some(stop),
@@ -790,9 +796,9 @@ async fn event_loop(
                 app.expire_copy_notice(std::time::Instant::now());
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
-                    let _=remote.detach().await;
+                    let result=remote.detach().await;
                     remote.binding_failed=true;
-                    app.push_kodrik_message("Local environment disconnected; use /attach to reconnect. Server chat remains available.".into());
+                    report_disconnect(app,result);
                 }
             },
             Some((epoch,update))=updates.recv()=>{
@@ -876,9 +882,32 @@ async fn event_loop(
     Ok(())
 }
 
+fn report_disconnect(app: &mut App, result: anyhow::Result<()>) {
+    let reason = match result {
+        Ok(()) => "Connection ended without an error".into(),
+        Err(error) => format!("{error:#}"),
+    };
+    let reason: String = reason.chars().flat_map(char::escape_debug).collect();
+    app.push_kodrik_message(format!("Local environment disconnected: {reason}; use /attach to reconnect. Server chat remains available."));
+}
+
 #[cfg(test)]
 mod binding_tests {
     use super::*;
+
+    #[test]
+    fn disconnect_reports_error_chain_without_terminal_controls() {
+        let mut app = App::default();
+        report_disconnect(
+            &mut app,
+            Err(anyhow::anyhow!("socket failed\u{1b}[31m").context("transport stopped")),
+        );
+        let text = &app.messages.last().unwrap().content;
+        assert!(text.contains("transport stopped"), "{text}");
+        assert!(text.contains("socket failed"), "{text}");
+        assert!(!text.contains('\u{1b}'), "terminal control leaked");
+        assert!(text.contains("/attach"));
+    }
 
     #[test]
     fn session_pages_validate_rows_and_escape_titles() {

@@ -79,7 +79,7 @@ async fn upgrade(
         .max_write_buffer_size(2 * MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             if let Err(error) = serve(socket, device, service).await {
-                log::debug!("Remote environment disconnected: {error}");
+                log::warn!("Remote environment disconnected: {error:#}");
             }
         })
 }
@@ -176,5 +176,12 @@ async fn serve(
     peer.close();
     let cleanup = service.disconnect(&key).await;
     let _ = tokio::time::timeout(Duration::from_millis(250), socket.close()).await;
-    result.and(cleanup)
+    result.and(cleanup).with_context(|| {
+        format!(
+            "session_id={} connection_id={} generation={}",
+            session_id.as_str(),
+            key.connection_id,
+            key.generation
+        )
+    })
 }
