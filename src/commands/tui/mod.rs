@@ -859,6 +859,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     let source_changed = app.session != saved.session;
     if !source_changed
         && app.plan == saved.plan
+        && app.plan_details == saved.plan_details
         && app.plan_completed == saved.plan_completed
         && app.messages.len() == saved.messages.len()
         && app
@@ -889,6 +890,10 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     }
     app.messages = saved.messages;
     app.plan = saved.plan;
+    app.plan_details = saved.plan_details;
+    if source_changed {
+        app.view.plan_expanded = false;
+    }
     app.plan_completed = saved.plan_completed;
     app.session = saved.session;
     if let Some(turn) = selected_turn.filter(|_| !source_changed) {

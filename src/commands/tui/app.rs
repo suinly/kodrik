@@ -33,6 +33,7 @@ pub struct App {
     pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
     pub plan: Option<String>,
+    pub plan_details: String,
     pub waiting_messages: Vec<String>,
     pub plan_completed: bool,
     pub streaming_message: Option<usize>,
@@ -339,6 +340,19 @@ impl App {
                 .collect::<Vec<_>>()
                 .join(" ")
         );
+        let mut details = Vec::new();
+        if let Some(explanation) = plan.explanation {
+            details.push(explanation);
+        }
+        details.extend(plan.plan.iter().map(|step| {
+            let marker = match step.status {
+                StepStatus::Completed => "✓",
+                StepStatus::InProgress => "→",
+                StepStatus::Pending => "○",
+            };
+            format!("{marker} {}", step.step)
+        }));
+        self.plan_details = details.join("\n");
         self.plan = Some(content);
     }
 
