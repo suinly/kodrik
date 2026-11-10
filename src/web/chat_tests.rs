@@ -1105,6 +1105,85 @@ async fn chat_slow_multipart_upload_outlives_text_request_timeout() {
 }
 
 #[tokio::test]
+async fn selecting_a_new_draft_does_not_save_history_or_fail_before_first_send() {
+    let f = Fixture::new().await;
+    let created = f
+        .request(reqwest::Method::POST, "sessions")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let id = created.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = crate::agent::session::SessionId::new(&id);
+    assert!(f.sessions.load(&session).await.unwrap().is_none());
+    for _ in 0..2 {
+        let selected = f
+            .request(reqwest::Method::POST, &format!("sessions/{id}/select"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(selected.status(), 204, "{}", selected.text().await.unwrap());
+        assert!(f.sessions.load(&session).await.unwrap().is_none());
+        let list = f
+            .request(reqwest::Method::GET, "sessions")
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert!(list.as_array().unwrap().is_empty());
+        let snapshot = f
+            .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(snapshot.status(), 200);
+        assert!(
+            snapshot.json::<Value>().await.unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let accepted = f
+        .request(reqwest::Method::POST, "send")
+        .json(&json!({"id":id,"text":"first draft input","request_id":uuid::Uuid::new_v4()}))
+        .send()
+        .await
+        .unwrap();
+    assert!(accepted.status().is_success());
+    let history = f.idle(&id).await;
+    assert_eq!(
+        history["messages"][0]["parts"][0]["text"],
+        "first draft input"
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, &format!("sessions/{id}/select"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(f.sessions.list().await.unwrap().len(), 1);
+    assert_eq!(
+        f.request(
+            reqwest::Method::POST,
+            &format!("sessions/{}/select", uuid::Uuid::new_v4())
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        404
+    );
+}
+
+#[tokio::test]
 async fn chat_nuxt_assets_use_configured_prefix_and_script_nonce() {
     let f = Fixture::new().await;
     let response = f

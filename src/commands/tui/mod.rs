@@ -734,6 +734,91 @@ fn local_accepted_input_moves_from_queue_to_history_without_duplicates() {
     );
 }
 
+#[tokio::test]
+async fn first_input_stays_visible_while_local_model_has_not_replied() {
+    use crate::agent::{
+        Agent, AgentRunner, ContextBuilder, session::SqliteSessionStore, tools::ToolRegistry,
+    };
+    struct Waiting(tokio::sync::Notify);
+    #[async_trait::async_trait]
+    impl crate::agent::llm::LlmProvider for Waiting {
+        async fn generate(
+            &self,
+            _: &crate::agent::LlmContext<'_>,
+            _: &[&dyn crate::agent::tools::Tool],
+            _: Option<&mpsc::Sender<AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(SqliteSessionStore::open(dir.path().join("sessions")).unwrap());
+    let model = Arc::new(Waiting(tokio::sync::Notify::new()));
+    let runner = Arc::new(AgentRunner::new(
+        Arc::new(Agent::new(
+            model.clone(),
+            ToolRegistry::default(),
+            ContextBuilder::new("test"),
+        )),
+        store.clone(),
+    ));
+    let conversation = SessionId::new("cli:main");
+    runner.prepare_session(&conversation).await.unwrap();
+    let mut app = App::default();
+    restore_history(
+        &mut app,
+        &runner.load_session(conversation.clone()).await.unwrap(),
+    );
+    assert!(store.list().await.unwrap().is_empty());
+    app.insert_input("first question");
+    app.update(crossterm::event::KeyEvent::new(
+        KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let message = IncomingMessage::new(InterfaceId("cli".into()), "main", "first question");
+    runner
+        .submit(crate::agent::inbox::SubmissionRequest::new(
+            &conversation,
+            message.clone(),
+            crate::agent::inbox::BusyMode::Steer,
+        ))
+        .await
+        .unwrap();
+    refresh_waiting(&mut app, &runner, &conversation).await;
+    assert_eq!(app.waiting_messages, ["first question"]);
+    let (cancel, cancelled) = oneshot::channel();
+    let task = tokio::spawn({
+        let runner = runner.clone();
+        let conversation = conversation.clone();
+        async move {
+            runner
+                .run_with_cancel(conversation, message, None, Some(cancelled), None)
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), model.0.notified())
+        .await
+        .unwrap();
+    refresh_waiting(&mut app, &runner, &conversation).await;
+    assert!(app.waiting_messages.is_empty());
+    assert_eq!(
+        app.messages
+            .iter()
+            .filter(|m| m.role == AppMessageRole::User)
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>(),
+        ["first question"]
+    );
+    assert!(matches!(app.status, Status::Working));
+    show_progress(&mut app, AgentEvent::TextDelta("partial answer".into()));
+    refresh_waiting(&mut app, &runner, &conversation).await;
+    assert_eq!(app.messages.len(), 2);
+    assert_eq!(app.messages[1].content, "partial answer");
+    cancel.send(()).unwrap();
+    assert!(task.await.unwrap().is_err());
+}
+
 #[test]
 fn waiting_queue_reconciles_consumed_inputs_and_keeps_attachment_only_inputs() {
     let mut app = App::default();
