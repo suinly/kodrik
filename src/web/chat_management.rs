@@ -421,6 +421,10 @@ pub(super) async fn select(
     let chat = state.chat().map_err(IntoResponse::into_response)?;
     let _runs = chat.runs.lock().await;
     chat.session(&id).await?;
+    // A draft has no persisted branch to select yet.
+    if chat.sessions.is_draft(&id).await.map_err(internal)? {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     chat.sessions
         .with_connection(move |db| {
             let tx = db.transaction()?;

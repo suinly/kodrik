@@ -685,7 +685,36 @@ async fn refresh_waiting(
     }
     .await;
     match result {
-        Ok(view) => reconcile_waiting(app, &view.queued),
+        Ok(view) => {
+            // Routing can notify the UI before the new active selection is committed.
+            if app.session.as_ref() != Some(view.session.id()) {
+                return false;
+            }
+            // Queue consumption and its saved user messages must be projected together.
+            let shown = app
+                .messages
+                .iter()
+                .filter(|m| m.role == AppMessageRole::User)
+                .count();
+            let mut changed = false;
+            for user in view
+                .session
+                .messages()
+                .iter()
+                .filter_map(|message| {
+                    if let Message::User(user) = message {
+                        Some(user)
+                    } else {
+                        None
+                    }
+                })
+                .skip(shown)
+            {
+                app.push_user_message(waiting_summary(&user.content, user.images.len()));
+                changed = true;
+            }
+            reconcile_waiting(app, &view.queued) | changed
+        }
         Err(error) => {
             log::warn!("Could not refresh waiting messages: {error:#}");
             false
@@ -815,6 +844,19 @@ async fn first_input_stays_visible_while_local_model_has_not_replied() {
     refresh_waiting(&mut app, &runner, &conversation).await;
     assert_eq!(app.messages.len(), 2);
     assert_eq!(app.messages[1].content, "partial answer");
+    assert!(!refresh_waiting(&mut app, &runner, &conversation).await);
+    assert_eq!(app.streaming_message, Some(1));
+    show_progress(&mut app, AgentEvent::TextDelta(" continues".into()));
+    assert_eq!(app.messages[1].content, "partial answer continues");
+    app.session = Some(SessionId::new("routing-target"));
+    app.messages.clear();
+    app.waiting_messages.push("new topic".into());
+    assert!(!refresh_waiting(&mut app, &runner, &conversation).await);
+    assert!(
+        app.messages.is_empty(),
+        "old source history must not leak into the target"
+    );
+    assert_eq!(app.waiting_messages, ["new topic"]);
     cancel.send(()).unwrap();
     assert!(task.await.unwrap().is_err());
 }
