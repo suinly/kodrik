@@ -64,9 +64,13 @@ export function toolSummary(tool:ToolPart):string {
     datasets:['action','dataset'],memory:['action','target'],companion:['action','topic'],
     spawn_agent:['task'],send_message:['message'],
   }
+  const primary=['cmd','query','url','path','title','task','message','agent_id','action']
+    .find(key=>typeof input[key]==='string' && (input[key] as string).trim())
+  const value=primary ? input[primary] : Object.values(input).find(value=>value!=null && (typeof value!=='string' || value.trim()))
+  const fallback=typeof value==='string' ? value : value==null ? '' : JSON.stringify(value)
   const summary=name==='apply_patch' && typeof input.patch==='string'
     ? input.patch.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m)?.[1] ?? ''
-    : (Object.hasOwn(fields,name) ? fields[name]! : []).map(key=>input[key]).filter(value=>typeof value==='string').join(' · ')
+    : Object.hasOwn(fields,name) ? fields[name]!.map(key=>input[key]).filter(value=>typeof value==='string').join(' · ') : fallback
   const text=summary.replace(/\s+/g,' ').trim()
   const chars=Array.from(text)
   return chars.length>96 ? `${chars.slice(0,95).join('')}…` : text

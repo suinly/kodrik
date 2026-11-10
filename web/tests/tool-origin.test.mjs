@@ -10,11 +10,11 @@ test('tool history renders literal origin and a stale-generation local-file noti
   try {
     await page.evaluate(()=>{
       const {h}=VueForTests;
-      app.component('UChatTool',{props:['text'],setup:(props,{slots})=>()=>h('section',[h('h3',props.text),slots.default?.()])});
+      app.component('UChatTool',{props:['text','suffix'],setup:(props,{slots})=>()=>h('section',[h('h3',props.text+(props.suffix || '')),slots.default?.()])});
     });
     const requests=[];page.on('request',request=>requests.push(request.url()));
     await mount();
-    await expect(page.getByRole('heading',{name:`read_file · ${origin.label}`,exact:true})).toBeVisible();
+    await expect(page.getByRole('heading',{name:`read_file · ${origin.label} · /work/private.txt`,exact:true})).toBeVisible();
     await page.evaluate(()=>{
       props.tools[0].toolName='local__exec__719e6926f958f45893bc00ee50e2e1ae';
       props.tools[0].origin.tool_id='exec_command';

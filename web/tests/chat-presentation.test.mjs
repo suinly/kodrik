@@ -87,12 +87,30 @@ test('tool summaries show a compact primary argument without dumping payloads',(
     ['view_image',{path:'/tmp/image.png'},'/tmp/image.png'],
     ['spawn_agent',{task:'Проверить\n авторизацию'},'Проверить авторизацию'],
     ['send_message',{agent_id:'internal-id',message:'Проверь обновление токена'},'Проверь обновление токена'],
-    ['unknown',{payload:'large payload'},''],
-    ['constructor',{cmd:'hidden'},''],
+    ['unknown',{payload:'large payload'},'large payload'],
+    ['constructor',{cmd:'command'},'command'],
     ['exec_command',null,''],
     ['exec_command',{cmd:{nested:'value'}},''],
   ]) assert.equal(toolSummary({...tool('a',name),input}),expected);
   assert.equal(toolSummary({...tool('a'),input:{cmd:'я'.repeat(200)}}),'я'.repeat(95)+'…');
+});
+test('all tools summarize their main argument, including remote and structured inputs',()=>{
+  for(const [name,input,expected] of [
+    ['read_file',{path:'/work/notes.md',save_attachment:false},'/work/notes.md'],
+    ['mcp_search',{limit:8,query:'calendar events'},'calendar events'],
+    ['mcp__calendar__search',{limit:10,query:'meeting'},'meeting'],
+    ['mcp__files__read',{timeout_ms:1000,path:'/work/report.txt'},'/work/report.txt'],
+    ['wait_agent',{agent_id:'agent-123',timeout_ms:1000},'agent-123'],
+    ['custom',{optional:null,empty:'  ',count:0},'0'],
+    ['custom',{enabled:false},'false'],
+    ['custom',{options:{mode:'fast'}},'{"mode":"fast"}'],
+    ['update_plan',{explanation:null,plan:[{step:'Run tests',status:'pending'}]},'[{"step":"Run tests","status":"pending"}]'],
+    ['custom',{},''],
+    ['custom',{optional:null,empty:'\n '},''],
+    ['custom',[],''],
+  ]) assert.equal(toolSummary({...tool('a',name),input}),expected);
+  assert.equal(toolSummary({...tool('local','local__read__opaque'),origin:{tool_id:'read_file'},input:{path:'/work/local.md'}}),'/work/local.md');
+  assert.equal(toolSummary({...tool('a','custom'),input:{value:'😀'.repeat(100)}}),'😀'.repeat(95)+'…');
 });
 test('conversation search finds user and assistant text without searching tool payloads',()=>{
   const messages=[{id:'a',role:'user',parts:[{type:'text',text:'Планы НА завтра'}]},
