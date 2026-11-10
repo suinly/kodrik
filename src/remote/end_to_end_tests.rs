@@ -412,15 +412,6 @@ async fn close_tui_revokes_but_keeps_server_alive() {
     std::fs::write(server_dir.path().join("MEMORY.md"), MEMORY).unwrap();
     std::fs::write(local_dir.path().join("local.txt"), LOCAL).unwrap();
     let store = Arc::new(SqliteSessionStore::open(server_dir.path().join("sessions")).unwrap());
-    let session = SessionId::new(Uuid::new_v4().to_string());
-    store.save(&Session::new(session.clone())).await.unwrap();
-    store
-        .set_command_audit_mode(
-            session.as_str(),
-            crate::agent::command_audit::CommandAuditMode::Trusted,
-        )
-        .await
-        .unwrap();
     let auth = AuthStore::new(server_dir.path());
     auth.configure_owner(Some(42)).unwrap();
     let now = chrono::Utc::now().timestamp();
@@ -476,6 +467,15 @@ async fn close_tui_revokes_but_keeps_server_alive() {
     .unwrap();
     let config = RemoteConfig::load(&local_dir.path().join("remote.toml")).unwrap();
     let native = ChatClient::new(&config).unwrap();
+    let created = native
+        .command(&SessionId::new("new"), ChatCommand::New)
+        .await
+        .unwrap();
+    let session = SessionId::new(created["id"].as_str().unwrap());
+    store
+        .set_default_command_audit_mode(crate::agent::command_audit::CommandAuditMode::Trusted)
+        .await
+        .unwrap();
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -483,6 +483,11 @@ async fn close_tui_revokes_but_keeps_server_alive() {
     let mut worker = Worker::spawn(local_dir.path(), &session);
     let original: EnvironmentKey =
         serde_json::from_str(&wait_file(&local_dir.path().join("attached.json")).await).unwrap();
+    let snapshot = native.snapshot(&session).await.unwrap();
+    assert_eq!(snapshot.environment.unwrap().state, "connected");
+    assert!(snapshot.messages.is_empty());
+    assert!(store.load(&session).await.unwrap().is_none());
+    assert!(store.list().await.unwrap().is_empty());
     native
         .command(
             &session,

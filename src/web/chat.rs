@@ -385,7 +385,7 @@ impl Chat {
             .load(&SessionId::new(id))
             .await
             .map_err(internal)?;
-        let session = if saved.is_none() && self.is_draft(id).await.map_err(internal)? {
+        let session = if saved.is_none() && self.sessions.is_draft(id).await.map_err(internal)? {
             Some(Session::new(SessionId::new(id)))
         } else {
             saved
@@ -396,13 +396,6 @@ impl Chat {
                     && (personal_session(s) || allow_subagent && listed_session(s))
             })
             .ok_or_else(|| error(StatusCode::NOT_FOUND, "Conversation not found"))
-    }
-
-    async fn is_draft(&self, id: &str) -> anyhow::Result<bool> {
-        let id = id.to_owned();
-        self.sessions.with_connection(move |db| {
-            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM active_sessions WHERE conversation_id=?1 AND session_id=?1) AND NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&id], |r| r.get(0))?)
-        }).await
     }
 
     async fn display_title(&self, session: &Session) -> anyhow::Result<(String, bool)> {

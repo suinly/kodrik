@@ -31,6 +31,13 @@ pub(crate) struct SearchSessions {
 }
 
 impl SqliteSessionStore {
+    pub(crate) async fn is_draft(&self, id: &str) -> anyhow::Result<bool> {
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM active_sessions WHERE conversation_id=?1 AND session_id=?1) AND NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&id], |r| r.get(0))?)
+        }).await
+    }
+
     pub(crate) async fn select_idle_session(
         &self,
         conversation: &SessionId,

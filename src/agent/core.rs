@@ -470,6 +470,12 @@ impl Agent {
                 .ok()
                 .flatten()
             {
+                if let Some(cp) = checkpoint.as_deref_mut()
+                    && cp.store.is_draft(session.id().as_str()).await?
+                {
+                    // The first input must exist before its local tool provenance and approvals.
+                    cp.save(session, RunPhase::NeedModel, None).await?;
+                }
                 service.step_scope(session.id()).await?
             } else {
                 None

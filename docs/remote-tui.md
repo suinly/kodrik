@@ -117,6 +117,11 @@ grant, the TUI first shows the server, project and capabilities with an
 Enter; Esc rejects. Rejection keeps server chat available without local access.
 An unchanged saved grant needs no further confirmation.
 
+The environment can connect to a new draft before its first message. A confirmed
+attachment shows `connected`, while the empty draft stays out of saved history.
+Its operation provenance is journaled before local tools and approvals are exposed, after
+the first message saves the conversation; attaching alone does not save it.
+
 | Remote TUI input | Action |
 | --- | --- |
 | `/sessions` | Select a saved server conversation; load 30 at a time without blocking keyboard input |

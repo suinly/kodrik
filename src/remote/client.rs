@@ -138,6 +138,14 @@ impl RemoteClient {
         )
         .await?;
         let frame = tokio::time::timeout(HEARTBEAT, receive(socket)).await??;
+        if let ServerFrame::Error { message } = &frame {
+            let message: String = message
+                .chars()
+                .flat_map(char::escape_debug)
+                .take(1024)
+                .collect();
+            anyhow::bail!("Environment attachment rejected: {message}");
+        }
         let ServerFrame::Welcome {
             environment,
             heartbeat_seconds,

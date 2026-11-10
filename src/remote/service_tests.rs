@@ -68,6 +68,117 @@ fn invocation(key: EnvironmentKey, id: SessionId) -> Invocation {
     }
 }
 
+#[tokio::test]
+async fn registered_draft_connects_without_saving_history_or_allowing_invocations() {
+    let (_dir, service, store, auth, device, _) = fixture(true).await;
+    let draft = SessionId::new(Uuid::new_v4().to_string());
+    let selected = draft.as_str().to_owned();
+    store
+        .with_connection(move |db| {
+            db.execute(
+                "INSERT INTO active_sessions(conversation_id,session_id) VALUES(?1,?1)",
+                [&selected],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let key = service
+        .attach(device.clone(), draft.clone(), manifest())
+        .await
+        .unwrap();
+    assert_eq!(service.status(&draft).await.unwrap().state, "connected");
+    service.heartbeat(&key).await.unwrap();
+    assert!(store.load(&draft).await.unwrap().is_none());
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert!(
+        service
+            .authorize(&invocation(key.clone(), draft.clone()))
+            .await
+            .is_err()
+    );
+    assert!(
+        EnvironmentService::new(store.clone(), auth, true)
+            .status(&draft)
+            .await
+            .is_none()
+    );
+    service.disconnect(&key).await.unwrap();
+    assert_eq!(service.status(&draft).await.unwrap().state, "disconnected");
+    let fresh = service
+        .attach(device, draft.clone(), manifest())
+        .await
+        .unwrap();
+    assert_ne!(fresh, key);
+    assert!(store.load(&draft).await.unwrap().is_none());
+    store.save(&Session::new(draft.clone())).await.unwrap();
+    service.step_scope(&draft).await.unwrap().unwrap();
+    let alias = super::tools::alias(&fresh, &manifest().tools[0]);
+    let id = draft.as_str().to_owned();
+    let target = store
+        .with_connection(move |db| super::tools::saved_target(db, &id, &alias))
+        .await
+        .unwrap();
+    assert_eq!(
+        target.unwrap().environment,
+        fresh,
+        "provenance must exist before command approval, not just dispatch"
+    );
+}
+
+#[tokio::test]
+async fn draft_binding_rejects_unknown_nonpersonal_and_indirect_selections() {
+    let (_dir, service, store, _, device, _) = fixture(true).await;
+    for id in [
+        Uuid::new_v4().to_string(),
+        "companion:wakeup".into(),
+        "telegram:main:-42".into(),
+        "telegram:main:42:guest".into(),
+        "subagent:probe".into(),
+    ] {
+        assert!(
+            service
+                .attach(device.clone(), SessionId::new(&id), manifest())
+                .await
+                .is_err()
+        );
+        let selected = id.clone();
+        store
+            .with_connection(move |db| {
+                db.execute("INSERT INTO active_sessions VALUES(?1,?1)", [&selected])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        if Uuid::parse_str(&id).is_err() {
+            assert!(
+                service
+                    .attach(device.clone(), SessionId::new(id), manifest())
+                    .await
+                    .is_err()
+            );
+        }
+    }
+    let id = Uuid::new_v4().to_string();
+    let selected = id.clone();
+    store
+        .with_connection(move |db| {
+            db.execute(
+                "INSERT INTO active_sessions VALUES('telegram:main:42',?1)",
+                [&selected],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        service
+            .attach(device, SessionId::new(id), manifest())
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn lease_expires_at_fifteen_seconds_and_heartbeat_renews_only_live_generation() {
     let (_dir, service, _store, _auth, device, id) = fixture(true).await;

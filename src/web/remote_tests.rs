@@ -319,6 +319,38 @@ async fn fixture() -> Fixture {
 }
 
 #[tokio::test]
+async fn attachment_rejection_reports_reason_instead_of_resetting_socket() {
+    let fixture = fixture().await;
+    let mut client = crate::remote::client::RemoteClient::connect(&fixture.config)
+        .await
+        .unwrap();
+    let error = client
+        .attach(
+            SessionId::new(Uuid::new_v4().to_string()),
+            EnvironmentManifest {
+                label: "fixture".into(),
+                project_root: "/project".into(),
+                tools: vec![ToolDescriptor {
+                    id: "exec".into(),
+                    kind: ToolKind::Exec,
+                    description: "shell".into(),
+                    parameters: serde_json::json!({"type":"object"}),
+                    deferred: false,
+                }],
+                skills: vec![],
+                project_instructions: None,
+                warnings: vec![],
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Conversation not found"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
 async fn same_device_websockets_keep_distinct_sessions_isolated() {
     use std::time::Duration;
     type Socket = tokio_tungstenite::WebSocketStream<
@@ -417,10 +449,11 @@ async fn same_device_websockets_keep_distinct_sessions_isolated() {
             },
         )
         .await;
-        match duplicate.next().await {
-            None | Some(Err(_)) => {}
-            Some(Ok(message)) => assert!(message.is_close(), "duplicate must be rejected"),
-        }
+        let rejected = duplicate.next().await.unwrap().unwrap();
+        let ServerFrame::Error { message } = decode_frame(&rejected.into_data()).unwrap() else {
+            panic!("duplicate must be rejected with a reason");
+        };
+        assert!(message.contains("already has an environment"));
         tokio::join!(
             heartbeat(&mut fixture.socket, &fixture.key),
             heartbeat(&mut second, &second_key),

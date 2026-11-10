@@ -208,7 +208,12 @@ impl EnvironmentService {
     ) -> anyhow::Result<EnvironmentKey> {
         ensure!(self.owner, "Owner environment service required");
         validate_manifest(&manifest)?;
-        self.personal(&session).await?;
+        let draft = Uuid::parse_str(session.as_str())
+            .is_ok_and(|id| id.to_string() == session.as_str())
+            && self.store.is_draft(session.as_str()).await?;
+        if !draft {
+            self.personal(&session).await?;
+        }
         let allowed = self.prune().await?;
         ensure!(
             allowed.contains(&device.device_id),
@@ -225,14 +230,16 @@ impl EnvironmentService {
             connection_id: Uuid::new_v4(),
             generation: Uuid::new_v4(),
         };
-        self.store
-            .remote_binding(
-                device.device_id,
-                key.clone(),
-                session.clone(),
-                manifest.clone(),
-            )
-            .await?;
+        if !draft {
+            self.store
+                .remote_binding(
+                    device.device_id,
+                    key.clone(),
+                    session.clone(),
+                    manifest.clone(),
+                )
+                .await?;
+        }
         bindings.insert(
             session,
             Binding {
@@ -379,6 +386,20 @@ impl EnvironmentService {
     ) -> anyhow::Result<Option<super::tools::EnvironmentScope>> {
         self.prune().await?;
         let bindings = self.bindings.lock().await;
+        if let Some(binding) = bindings.get(session)
+            && !self.closed.load(Ordering::SeqCst)
+        {
+            self.personal(session).await?;
+            // A draft's first message must save provenance before tools and approvals exist.
+            self.store
+                .remote_binding(
+                    binding.device,
+                    binding.key.clone(),
+                    session.clone(),
+                    binding.manifest.clone(),
+                )
+                .await?;
+        }
         Ok(bindings
             .get(session)
             .filter(|_| !self.closed.load(Ordering::SeqCst))

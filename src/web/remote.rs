@@ -104,16 +104,34 @@ async fn serve(
     device: DeviceIdentity,
     service: Arc<EnvironmentService>,
 ) -> anyhow::Result<()> {
-    let ClientFrame::Hello {
-        session_id,
-        manifest,
-    } = tokio::time::timeout(HEARTBEAT, receive(&mut socket)).await??
-    else {
-        anyhow::bail!("Expected environment hello")
+    let attachment = async {
+        let ClientFrame::Hello {
+            session_id,
+            manifest,
+        } = tokio::time::timeout(HEARTBEAT, receive(&mut socket)).await??
+        else {
+            anyhow::bail!("Expected environment hello")
+        };
+        let key = service
+            .attach(device.clone(), session_id.clone(), manifest)
+            .await?;
+        Ok::<_, anyhow::Error>((session_id, key))
+    }
+    .await;
+    let (session_id, key) = match attachment {
+        Ok(attached) => attached,
+        Err(error) => {
+            let message = error
+                .to_string()
+                .chars()
+                .flat_map(char::escape_debug)
+                .take(1024)
+                .collect();
+            let _ = send(&mut socket, &ServerFrame::Error { message }).await;
+            let _ = tokio::time::timeout(Duration::from_millis(250), socket.close()).await;
+            return Err(error);
+        }
     };
-    let key = service
-        .attach(device.clone(), session_id.clone(), manifest)
-        .await?;
     let (peer, mut outgoing) = Peer::new();
     let result=async {
         service.bind_peer(&key,peer.clone()).await?;
