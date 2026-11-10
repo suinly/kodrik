@@ -1,5 +1,6 @@
 pub(crate) mod apply_patch;
 mod companion;
+mod context_read;
 mod datasets;
 mod encyclopedia;
 pub(crate) mod exec_command;
@@ -25,6 +26,7 @@ pub(crate) mod webhooks;
 
 pub use apply_patch::ApplyPatchTool;
 pub use companion::CompanionTool;
+pub use context_read::ContextReadTool;
 pub use datasets::DatasetsTool;
 pub use encyclopedia::EncyclopediaTool;
 pub use exec_command::ExecCommandTool;

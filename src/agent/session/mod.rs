@@ -16,6 +16,7 @@ pub(crate) use runtime::ExecutionOwnership;
 pub(crate) use sqlite::save as save_in_transaction;
 pub(crate) use sqlite::{ownership_lock, select as select_active};
 
+pub(crate) use core::CompactionBlock;
 pub use core::{Session, SessionId};
 #[cfg(test)]
 pub use json::JsonSessionStore;

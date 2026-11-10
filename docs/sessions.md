@@ -131,29 +131,63 @@ your endpoint's actual window. A single oversized input can still exceed that
 window; this is not an exact tokenizer. Confirmed context overflow has one limited
 recovery attempt, described below.
 
-Old messages become a summary of goals, constraints, decisions, relevant facts,
-tool outcomes and pending work. The recent suffix targets one quarter of the
+Old messages become independent summaries of completed source ranges, retaining
+goals, constraints, decisions, relevant facts, tool outcomes and pending work.
+Each new chunk is summarized independently, rather than repeatedly rewriting the
+entire previous digest. Source ranges are half-open, zero-based message indices;
+tool calls and results each count as messages. The recent suffix targets one quarter of the
 threshold. At least the last message/tool group remains verbatim; parallel tool
 calls and their results are never split. Very long tool runs may summarize the
 original user request, retaining its goal and constraints in the summary.
 
-The summary is supplied as historical assistant context, not system instructions.
+The summaries are supplied as historical assistant context, not system instructions.
 Personality, memory, skills and system instructions keep their existing snapshots.
 The full transcript and attachments remain in session storage for history, search,
-learning and session routing. Summary plus covered-message offset is persisted;
-legacy sessions start uncompacted. Invalid saved offsets fall back to full history.
+learning and session routing. Summary blocks, their covered-message ranges and the
+active digest are persisted. When more than eight root blocks accumulate, or their
+estimated text exceeds one eighth of the threshold, they are consolidated into a
+parent summary. Original leaf blocks are retained as flat children for provenance;
+intermediate parent digests are not nested indefinitely. A single
+large summary is accepted if it reduces context; this budget is a consolidation
+trigger, not a hard cap on model output. All new blocks are applied atomically only
+after generation succeeds. This is semantic, lossy summarization, not lossless
+encoding; exact evidence comes from the original transcript.
+Legacy flat summaries remain readable and become a source-linked block on the next
+compaction; old ready jobs can still apply their flat summary. Invalid saved offsets
+or block ranges fall back to full history. Forks retain only compaction wholly before
+the edit and render source links using the new session's identity.
+
+### Reading original evidence
+
+`session_search` continues searching user/assistant text only; each result also
+returns a generation. `context_read` reads one original message selected by
+`message_index`, or a tool result by `call_id`, from the same scoped session store.
+Its pages contain text/data rather than executable historical tool calls, with
+source identity, timestamps and pagination. It does not expose system prompts,
+memory/personality snapshots or attachment bytes. Supply the returned generation
+when paging so a reset cannot silently redirect an old reference. Continue using
+the returned `message_index`, not `call_id`: nonzero offsets with `call_id` are
+rejected, since a pending call may acquire a result without a generation change. Old sessions may
+have no per-message timestamps. Original tool-output JSON is rendered as text;
+character offsets apply to that rendered representation.
+
+The summary wrapper supplies the session ID, generation and source message range;
+the model can use `context_read` when precise details or outcome verification matter.
+Retrieval does not authorize repeating completed effects, and models are not
+guaranteed to request it automatically. Full originals remain stored; this change
+does not add embeddings, a cross-session semantic index or an external proxy.
 
 Tool results in model requests are limited to approximately 10,000 tokens
 (30,000 UTF-8 bytes of serialized output). Oversized results retain their beginning
 and end with an explicit truncation marker. This applies to ordinary requests and
 compaction, including existing sessions; stored results and image attachments are
-unchanged. Full command output remains available through `stdout_path`/`stderr_path`
+unchanged. The original result can be paged with `context_read`. Full command output remains available through `stdout_path`/`stderr_path`
 when the command's own capture limit was exceeded.
 
 Compaction uses the primary model without tools or streamed summary output, with
 a 300-second deadline per call and no transient retries. Large histories are
-summarized in chunks targeting half the configured threshold, carrying the
-previous summary forward. A single complete message/tool
+summarized independently in chunks targeting half the configured threshold, with
+an additional model call when old root blocks need consolidation. A single complete message/tool
 group can exceed that target and is still attempted after tool-output truncation.
 This adds model calls, cost and latency.
 TUI shows an animated compaction status without interrupting the streamed reply.
@@ -179,11 +213,11 @@ response statuses and provider refusals are rejected. Cancellation or any error
 preserves the previous summary and the complete transcript. The current turn
 reports an error on failed compaction; it does not silently drop history or send
 a known-large context anyway. If the summarizer returns a structured context
-overflow, compaction removes the oldest complete message/tool group from its
-temporary request and retries, preserving call/result pairs. The final history
-group is never discarded; an overflow there fails compaction. Other provider
+overflow, compaction retries a smaller complete source prefix, preserving
+call/result pairs and summarizing the remainder in subsequent chunks. No source
+group is discarded; overflow of a single group or consolidation fails safely. Other provider
 errors are not retried this way. Each attempt is accounted for separately, with
-unknown usage for rejected attempts. Truncated output and omitted old groups may
+unknown usage for rejected attempts. Truncated output may
 lose details from the summary; the original history remains in storage.
 
 ### One recovery attempt after context overflow

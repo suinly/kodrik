@@ -454,12 +454,12 @@ async fn durable_steering_saved_before_compaction_model_request() {
     let mut session = Session::new(SessionId::new("test:chat"));
     for _ in 0..10 {
         session.push(Message::User(UserMessage {
-            content: "history ".repeat(15),
+            content: "history ".repeat(1500),
             images: vec![],
             files: vec![],
         }));
     }
-    session.input_tokens = Some(1000);
+    session.input_tokens = Some(9000);
     store.save(&session).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = Arc::new(CompactionCheck {
@@ -471,7 +471,7 @@ async fn durable_steering_saved_before_compaction_model_request() {
         ToolRegistry::default(),
         ContextBuilder::new("test"),
     )
-    .with_compaction(provider, 500);
+    .with_compaction(provider, 8000);
     let r = AgentRunner::new(Arc::new(agent), store);
     let (tx, mut rx) = mpsc::unbounded_channel();
     tx.send(UserMessage {

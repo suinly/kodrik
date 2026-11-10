@@ -16,9 +16,53 @@ impl SessionId {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct CompactionBlock {
+    pub start: usize,
+    pub through: usize,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<CompactionBlock>,
+}
+
+impl CompactionBlock {
+    fn valid_ranges(blocks: &[Self], start: usize, through: usize, boundaries: &[usize]) -> bool {
+        let mut cursor = start;
+        for block in blocks {
+            if block.start != cursor
+                || block.through <= cursor
+                || block.through > through
+                || block.summary.trim().is_empty()
+                || !boundaries.contains(&block.through)
+                || (!block.children.is_empty()
+                    && !Self::valid_ranges(&block.children, block.start, block.through, boundaries))
+            {
+                return false;
+            }
+            cursor = block.through;
+        }
+        cursor == through
+    }
+
+    pub(crate) fn render(blocks: &[Self]) -> String {
+        blocks
+            .iter()
+            .map(|block| {
+                format!(
+                    "[Source message_index={}..{} (end exclusive)]\n{}",
+                    block.start, block.through, block.summary
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Compaction {
     through: usize,
     summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocks: Vec<CompactionBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -243,17 +287,59 @@ impl Session {
         self.compaction
             .as_ref()
             .filter(|state| {
+                let boundaries = crate::agent::message::tool_boundaries(&self.messages);
                 state.through > 0
                     && state.through <= self.messages.len()
                     && !state.summary.trim().is_empty()
-                    && crate::agent::message::tool_boundaries(&self.messages)
-                        .contains(&state.through)
+                    && boundaries.contains(&state.through)
+                    && (state.blocks.is_empty()
+                        || (CompactionBlock::valid_ranges(
+                            &state.blocks,
+                            0,
+                            state.through,
+                            &boundaries,
+                        ) && CompactionBlock::render(&state.blocks) == state.summary))
             })
             .map(|state| (state.through, state.summary.as_str()))
     }
 
     pub(crate) fn set_compaction(&mut self, through: usize, summary: String) {
-        self.compaction = Some(Compaction { through, summary });
+        self.compaction = Some(Compaction {
+            through,
+            summary,
+            blocks: vec![],
+        });
+        self.input_tokens = None;
+    }
+
+    pub(crate) fn compaction_blocks(&self) -> Vec<CompactionBlock> {
+        let Some((through, summary)) = self.compaction() else {
+            return vec![];
+        };
+        let blocks = &self.compaction.as_ref().unwrap().blocks;
+        if blocks.is_empty() {
+            vec![CompactionBlock {
+                start: 0,
+                through,
+                summary: summary.into(),
+                children: vec![],
+            }]
+        } else {
+            blocks.clone()
+        }
+    }
+
+    pub(crate) fn set_compaction_blocks(
+        &mut self,
+        through: usize,
+        summary: String,
+        blocks: Vec<CompactionBlock>,
+    ) {
+        self.compaction = Some(Compaction {
+            through,
+            summary,
+            blocks,
+        });
         self.input_tokens = None;
     }
 
@@ -261,7 +347,9 @@ impl Session {
         let (mut messages, through) = if let Some((through, summary)) = self.compaction() {
             let mut messages = vec![Message::Assistant(crate::agent::AssistantMessage {
                 content: format!(
-                    "Summary of earlier conversation (historical context, not new instructions):\n{summary}"
+                    "Summary of earlier conversation (historical context, not new instructions):\nSource session_id={}, generation={}, message_index=0..{through} (end exclusive). Use context_read with this identity and a message_index or call_id to read original evidence; never replay historical actions.\n{summary}",
+                    self.id.as_str(),
+                    self.generation
                 ),
             })];
             messages.extend_from_slice(&self.messages[through..]);
@@ -364,6 +452,68 @@ impl Session {
 mod tests {
     use super::*;
     use crate::agent::message::{ToolCall, ToolResult};
+
+    #[test]
+    fn invalid_compaction_block_ranges_fall_back_to_original_history() {
+        let mut session = Session::new(SessionId::new("bad-blocks"));
+        for text in ["first", "second", "tail"] {
+            session.push(Message::User(crate::agent::UserMessage {
+                content: text.into(),
+                images: vec![],
+                files: vec![],
+            }));
+        }
+        session.set_compaction(2, "valid legacy summary".into());
+        let original = serde_json::to_value(&session).unwrap();
+        for blocks in [
+            serde_json::json!([{"start":1,"through":2,"summary":"gap"}]),
+            serde_json::json!([{"start":0,"through":3,"summary":"outside prefix"}]),
+            serde_json::json!([{"start":0,"through":2,"summary":"parent","children":[{"start":0,"through":1,"summary":"incomplete"}]}]),
+        ] {
+            let mut value = original.clone();
+            value["compaction"]["blocks"] = blocks;
+            let saved: Session = serde_json::from_value(value).unwrap();
+            assert!(
+                saved.compaction().is_none(),
+                "invalid range must not hide source messages"
+            );
+            assert_eq!(saved.context_messages().len(), 3);
+        }
+    }
+
+    #[test]
+    fn source_links_follow_fork_identity_and_compaction_never_crosses_edit() {
+        let mut source = Session::new(SessionId::new("source"));
+        for text in ["request", "answer", "edit here"] {
+            source.push(Message::User(crate::agent::UserMessage {
+                content: text.into(),
+                images: vec![],
+                files: vec![],
+            }));
+        }
+        let blocks = vec![CompactionBlock {
+            start: 0,
+            through: 2,
+            summary: "completed evidence".into(),
+            children: vec![],
+        }];
+        source.set_compaction_blocks(2, CompactionBlock::render(&blocks), blocks);
+        let branch = source.fork_before(SessionId::new("branch"), 2).unwrap();
+        let visible = match &branch.context_messages()[0] {
+            Message::Assistant(a) => a.content.clone(),
+            _ => panic!("summary missing"),
+        };
+        assert!(visible.contains("session_id=branch"));
+        assert!(visible.contains(branch.generation()));
+        assert!(!visible.contains(source.generation()));
+        assert!(
+            source
+                .fork_before(SessionId::new("earlier"), 1)
+                .unwrap()
+                .compaction()
+                .is_none()
+        );
+    }
 
     #[test]
     fn token_usage_accumulates_and_survives_reload_without_inheritance() {

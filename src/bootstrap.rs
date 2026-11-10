@@ -26,9 +26,10 @@ use crate::{
         session_router::SessionRouter,
         system_one::SystemOne,
         tools::{
-            ApplyPatchTool, CompanionTool, DatasetsTool, EncyclopediaTool, ExecCommandTool,
-            MemoryTool, PublishPageTool, SessionSearchTool, TelegramReplyTool, TelegramResultsTool,
-            ToolRegistry, UpdatePlanTool, ViewImageTool, WakeupTool, WebReadTool, WebSearchTool,
+            ApplyPatchTool, CompanionTool, ContextReadTool, DatasetsTool, EncyclopediaTool,
+            ExecCommandTool, MemoryTool, PublishPageTool, SessionSearchTool, TelegramReplyTool,
+            TelegramResultsTool, ToolRegistry, UpdatePlanTool, ViewImageTool, WakeupTool,
+            WebReadTool, WebSearchTool,
         },
     },
     config::{Config, ProviderConfig, data_dir},
@@ -270,7 +271,8 @@ pub(crate) async fn build_app_with_access(
         .register(Arc::new(CompanionTool::new(data)))
         .register(Arc::new(WakeupTool::new(data)))
         .register(Arc::new(EncyclopediaTool))
-        .register(Arc::new(SessionSearchTool::new(data.join("sessions"))));
+        .register(Arc::new(SessionSearchTool::new(data.join("sessions"))))
+        .register(Arc::new(ContextReadTool::new(data.join("sessions"))));
     if !isolated
         && access.is_none()
         && let Some(settings) = crate::web::Settings::from_config(&config.web)?
@@ -351,7 +353,8 @@ pub(crate) async fn build_app_with_access(
 
     let mut proactive_tools = ToolRegistry::default()
         .register(Arc::new(EncyclopediaTool))
-        .register(Arc::new(SessionSearchTool::new(data.join("sessions"))));
+        .register(Arc::new(SessionSearchTool::new(data.join("sessions"))))
+        .register(Arc::new(ContextReadTool::new(data.join("sessions"))));
     if let Some((search, read)) = research_tools {
         proactive_tools = proactive_tools.register(search).register(read);
     }
@@ -524,9 +527,12 @@ mod tests {
             .unwrap();
         let restored = store.load(&id).await.unwrap().unwrap();
         assert_eq!(restored.messages().len(), 10);
-        assert_eq!(
-            restored.compaction().unwrap().1,
-            "Saved task summary ".repeat(500)
+        assert!(
+            restored
+                .compaction()
+                .unwrap()
+                .1
+                .ends_with(&"Saved task summary ".repeat(500))
         );
         let requests = requests.lock().unwrap();
         let main = requests.last().unwrap();
@@ -579,6 +585,7 @@ mod tests {
                     ("exec_command", json!({"cmd":format!("cat '{}'", secret.display())})),
                     ("session_search", json!({"session_id":"private-history","query":null})),
                     ("publish_page", json!({"slug":"private"})),
+                    ("context_read", json!({"session_id":"private-history","message_index":0})),
                 ];
                 let output = if let Some((name, args)) = calls.get(count) {
                     json!({"type":"function_call","name":name,"call_id":format!("call-{count}"),"arguments":args.to_string()})
@@ -652,6 +659,18 @@ mod tests {
                     isolated
                 );
                 assert!(outputs[4]["error"].is_string());
+                if isolated {
+                    assert!(outputs[5]["error"].is_string());
+                } else {
+                    assert_eq!(outputs[5]["text"], "PRIVATE_SENTINEL");
+                }
+                assert!(
+                    last["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|tool| tool["name"] == "context_read")
+                );
                 if isolated {
                     assert!(
                         instructions
