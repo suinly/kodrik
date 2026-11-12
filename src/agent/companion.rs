@@ -1278,8 +1278,7 @@ mod tests {
         assert_eq!(
             catalog
                 .lines()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .filter(|row| row["name"] == "verified-check")
+                .filter(|line| line.starts_with("- verified-check ("))
                 .count(),
             1
         );

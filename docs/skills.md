@@ -11,6 +11,11 @@ message of each new session. This works in CLI, TUI and Telegram. Use `/new`
 after adding, removing or changing skill metadata. Existing sessions keep
 their saved catalog; older sessions without one load it on their next request.
 
+The prompt catalog uses compact `name (path): quoted description` bullets instead
+of repeating JSON field names. Descriptions retain escaped quotes and newlines;
+the catalog is reference data, not instructions. Skill files and tool payloads
+keep their existing formats.
+
 In isolated chats, skills are available at `/skills` inside Bashkit. Only that
 chat's on-disk skills are imported; skills created through the virtual shell stay
 in its persistent snapshot. Host skill files act as seeds and overwrite matching

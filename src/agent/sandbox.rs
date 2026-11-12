@@ -583,12 +583,12 @@ mod tests {
         let reopened = Sandbox::new(root.path().join("group"));
         let catalog = reopened.prepare_input(&mut input).await.unwrap();
         assert!(catalog.contains("GROUP_PROCEDURE"));
-        let skill: serde_json::Value = catalog
+        let path = catalog
             .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|row| row["name"] == "group-only")
-            .unwrap();
-        let path = Path::new("/skills").join(skill["path"].as_str().unwrap());
+            .find_map(|line| line.strip_prefix("- group-only (")?.split_once("): "))
+            .unwrap()
+            .0;
+        let path = Path::new("/skills").join(path);
         let output = reopened
             .execute(
                 "exec_command",
