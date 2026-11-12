@@ -28,6 +28,10 @@ impl Tool for SwitchSessionTool {
     fn parameters(&self) -> serde_json::Value {
         schema_for!(HandoffRequest).to_value()
     }
+    fn strict_schema(&self) -> bool {
+        // Session creation omits session_id; strict mode requires every property.
+        false
+    }
     fn replay_policy(&self) -> ReplayPolicy {
         ReplayPolicy::Safe
     }
@@ -84,6 +88,15 @@ mod tests {
         run_state::Checkpoint,
         session::{Session, SessionId, SessionStore, SqliteSessionStore},
     };
+
+    #[test]
+    fn advertised_schema_supports_optional_handoff_fields() {
+        let tool = SwitchSessionTool;
+        let schema = tool.parameters();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], serde_json::json!(["context"]));
+        assert!(!tool.strict_schema());
+    }
 
     #[tokio::test]
     async fn creation_request_is_validated_without_creating_until_commit() {
