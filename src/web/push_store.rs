@@ -67,17 +67,18 @@ pub(crate) fn checkpoint(
     {
         if let Some(id) = run.submission_ids.last() {
             // Use the latest input, not the session or attached environment: channels can switch.
-            let from_tui = db
+            let suppress_push = db
                 .query_row(
                     "SELECT coalesce(json_extract(payload,'$.request.message.from_tui'),0)=1
                     OR json_extract(payload,'$.request.message.source.interface')='cli'
+                    OR json_extract(payload,'$.request.message.source.interface') GLOB 'telegram:*'
                  FROM submissions WHERE id=?1",
                     [id],
                     |row| row.get::<_, bool>(0),
                 )
                 .optional()?
                 .unwrap_or(false);
-            if from_tui {
+            if suppress_push {
                 return Ok(());
             }
         }

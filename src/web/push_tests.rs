@@ -321,6 +321,18 @@ async fn completion_push_follows_latest_durable_input_channel() {
         ("browser", vec![("web", false)], 1),
         ("remote-to-web", vec![("web", true), ("web", false)], 1),
         ("web-to-remote", vec![("web", false), ("web", true)], 0),
+        ("telegram", vec![("telegram:main", false)], 0),
+        ("telegram-other", vec![("telegram:other", false)], 0),
+        (
+            "telegram-to-web",
+            vec![("telegram:main", false), ("web", false)],
+            1,
+        ),
+        (
+            "web-to-telegram",
+            vec![("web", false), ("telegram:main", false)],
+            0,
+        ),
     ] {
         let id = SessionId::new(name);
         let mut session = Session::new(id.clone());
