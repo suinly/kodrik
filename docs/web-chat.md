@@ -455,8 +455,11 @@ Multipart sends have a 300-second request timeout; other requests retain the
 Documents are limited to 20 MB each, photos to 10 MiB. Supported files use the
 agent's existing allowlist: PDF, documents, presentations, spreadsheets, text and
 code. Photos support PNG, JPEG and WebP and are decoded for validation. Voice
-and replacing existing attachments during an edit are not supported. Web sessions are selected explicitly; automatic
-topic switching does not apply.
+and replacing existing attachments during an edit are not supported. The opened
+web session is the initial selection. For an unrelated incoming topic, the agent
+must search for a suitable personal dialogue and hand off to it, or create a new
+one when none fits. The browser follows the handoff target; there is no separate
+System One topic classifier. See [Sessions](sessions.md#agent-directed-handoff).
 
 History lives in the authenticated user's `~/.kodrik/users/<telegram-user-id>/sessions/`
 store, shared with private Telegram chats. The configured owner also shares CLI/TUI

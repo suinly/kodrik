@@ -29,7 +29,6 @@ pub struct AgentRunner {
     pub(super) agent: Arc<Agent>,
     pub(super) sessions: Arc<dyn SessionStore>,
     learning: Option<Arc<super::learning::LearningService>>,
-    session_router: Option<super::session_router::SessionRouter>,
     group_decider: Option<super::system_one::SystemOne>,
     pub(super) restart_limit: u32,
     pub(super) shutdown: tokio::sync::watch::Sender<bool>,
@@ -93,7 +92,6 @@ impl AgentRunner {
             sessions,
             learning: None,
             restart_limit: 5,
-            session_router: None,
             group_decider: None,
             conversations: Default::default(),
             shutdown: tokio::sync::watch::channel(false).0,
@@ -113,14 +111,6 @@ impl AgentRunner {
 
     pub(crate) fn with_group_decider(mut self, decider: super::system_one::SystemOne) -> Self {
         self.group_decider = Some(decider);
-        self
-    }
-
-    pub(crate) fn with_session_router(
-        mut self,
-        router: super::session_router::SessionRouter,
-    ) -> Self {
-        self.session_router = Some(router);
         self
     }
 
@@ -417,7 +407,7 @@ impl AgentRunner {
         session_id: SessionId,
         message: IncomingMessage,
         progress: Option<mpsc::Sender<AgentEvent>>,
-        mut cancel: Option<oneshot::Receiver<()>>,
+        cancel: Option<oneshot::Receiver<()>>,
         mut incoming: Option<&mut mpsc::UnboundedReceiver<UserMessage>>,
         submission: Option<super::inbox::SubmissionRecord>,
     ) -> anyhow::Result<AssistantMessage> {
@@ -455,7 +445,6 @@ impl AgentRunner {
                     };
                 session.merge_telegram_group(message.telegram_group.as_ref());
 
-                let is_webhook = message.source.interface.0 == "webhook";
                 let mut wakeup_context = super::reminders::WakeupContext::for_message(
                     &session_id,
                     session.id(),
@@ -469,137 +458,6 @@ impl AgentRunner {
                     images: message.images,
                 };
 
-                // Classify only at turn boundaries; incoming steering stays with this run.
-                let mut routing_stopped = false;
-                use super::session_router::SessionRoute;
-                let mut route = if is_webhook
-                    || self.agent.isolated()
-                    || submission.as_ref().is_some_and(|r| r.session_id.is_some())
-                {
-                    SessionRoute::Continue
-                } else if let Some(router) = &self.session_router {
-                    let classify = async {
-                        if !router.eligible_turn(&session, &input) {
-                            return Ok::<_, anyhow::Error>(SessionRoute::Continue);
-                        }
-                        let candidates = self.routing_candidates(&session).await?;
-                        Ok(router.route(&session, &input, &candidates).await)
-                    };
-                    let decision = if let Some(cancel) = cancel.as_mut() {
-                        tokio::select! {
-                            biased;
-                            _ = cancel => { routing_stopped = true; Ok(SessionRoute::Continue) },
-                            decision = classify => decision,
-                        }
-                    } else {
-                        classify.await
-                    };
-                    decision.unwrap_or_else(|error| {
-                        log::warn!(
-                            "Session candidates unavailable; keeping current session: {error:#}"
-                        );
-                        SessionRoute::Continue
-                    })
-                } else {
-                    SessionRoute::Continue
-                };
-                // Lock and reload before changing selection; a busy target never creates a new session.
-                let mut selected = None;
-                if let SessionRoute::Existing(id) = &route {
-                    let target = async {
-                        let lock = if let Some(store) = self.sessions.runtime_store() {
-                            Some(store.execution_lock("session", id.as_str()).await?)
-                        } else {
-                            None
-                        };
-                        let target = self
-                            .sessions
-                            .load(id)
-                            .await?
-                            .ok_or_else(|| anyhow::anyhow!("Routing target disappeared"))?;
-                        anyhow::ensure!(
-                            super::session::handoff::eligible(&session, &target),
-                            "Routing target is not accessible"
-                        );
-                        if let Some(store) = self.sessions.runtime_store() {
-                            let target_id = id.as_str().to_owned();
-                            store
-                                .with_connection(move |db| {
-                                    anyhow::ensure!(
-                                        !super::inbox::session_busy_in(db, &target_id)?,
-                                        "Routing target is busy"
-                                    );
-                                    Ok(())
-                                })
-                                .await?;
-                        }
-                        Ok::<_, anyhow::Error>((target, lock))
-                    }
-                    .await;
-                    match target {
-                        Ok((target, lock)) => {
-                            ownership.extend(lock);
-                            selected = Some(target);
-                        }
-                        Err(error) => {
-                            log::warn!("Cannot reuse session; keeping current session: {error:#}");
-                            route = SessionRoute::Continue;
-                        }
-                    }
-                }
-                let mut switch = route != SessionRoute::Continue;
-                let previous_user_messages = session
-                    .messages()
-                    .iter()
-                    .filter(|m| matches!(m, crate::agent::message::Message::User(_)))
-                    .count();
-                // Reserve notification capacity before changing persistent state. Cancellation
-                // while a UI is slow must not leave its displayed session behind the store.
-                let notification = if switch && let Some(tx) = progress.as_ref() {
-                    if self.sessions.runtime_store().is_some() {
-                        tx.try_reserve().ok()
-                    } else if let Some(cancel) = cancel.as_mut() {
-                        tokio::select! {
-                            biased;
-                            _ = cancel => { routing_stopped = true; switch = false; None },
-                            permit = tx.reserve() => permit.ok(),
-                        }
-                    } else {
-                        tx.reserve().await.ok()
-                    }
-                } else {
-                    None
-                };
-                let routing_from = session.id().as_str().to_owned();
-                if switch {
-                    // Finish persistence outside cancellation: never abandon an active-id write.
-                    let group = session.telegram_group().cloned();
-                    let reusing = selected.is_some();
-                    session = if let Some(target) = selected {
-                        if submission.is_none() {
-                            self.sessions.select(&session_id, target.id()).await?;
-                        }
-                        target
-                    } else if submission.is_some() {
-                        Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()))
-                    } else {
-                        self.sessions.new_session(&session_id).await?
-                    };
-                    if !reusing && let Some(store) = self.sessions.runtime_store() {
-                        ownership.push(
-                            store
-                                .execution_lock("session", session.id().as_str())
-                                .await?,
-                        );
-                    }
-                    session.merge_telegram_group(group.as_ref());
-                    if let Some(permit) = notification {
-                        permit.send(AgentEvent::SessionChanged {
-                            session_id: session.id().clone(),
-                            previous_user_messages,
-                        });
-                    }
-                }
                 if let Some(source) = webhook_source {
                     session.record_webhook_message(*source);
                 }
@@ -622,25 +480,18 @@ impl AgentRunner {
                     && let Some(record) = &submission
                 {
                     cp.record.submission_ids.push(record.id.clone());
-                    if switch {
-                        cp.record.routing_from = Some(routing_from);
-                    }
                 }
                 let response = super::reminders::WAKEUP_CONTEXT
                     .scope(wakeup_context, async {
-                        if routing_stopped {
-                            Err(anyhow::anyhow!("Stopped by user"))
-                        } else {
-                            self.execute_controlled(
-                                &mut session,
-                                input.clone(),
-                                progress.as_ref(),
-                                incoming.as_deref_mut(),
-                                checkpoint.as_mut(),
-                                cancel,
-                            )
-                            .await
-                        }
+                        self.execute_controlled(
+                            &mut session,
+                            input.clone(),
+                            progress.as_ref(),
+                            incoming.as_deref_mut(),
+                            checkpoint.as_mut(),
+                            cancel,
+                        )
+                        .await
                     })
                     .await;
                 if response
@@ -782,19 +633,6 @@ impl AgentRunner {
             .await?
             .into_iter()
             .filter(|s| !s.id().as_str().starts_with("companion:"))
-            .collect())
-    }
-
-    async fn routing_candidates(&self, source: &Session) -> anyhow::Result<Vec<Session>> {
-        let sessions = if let Some(store) = self.sessions.runtime_store() {
-            store.search_sessions(None).await?.sessions
-        } else {
-            self.sessions.list().await?
-        };
-        Ok(sessions
-            .into_iter()
-            .filter(|target| super::session::handoff::eligible(source, target))
-            .take(32)
             .collect())
     }
 
@@ -1077,48 +915,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routing_reuses_existing_session_and_followups_stay_there() {
-        use crate::agent::{
-            session::SqliteSessionStore, session_router::SessionRouter, system_one::SystemOne,
-        };
-        struct ChooseExisting(std::sync::atomic::AtomicUsize);
-        #[async_trait::async_trait]
-        impl LlmProvider for ChooseExisting {
-            async fn generate(
-                &self,
-                _: &LlmContext<'_>,
-                _: &[&dyn Tool],
-                _: Option<&mpsc::Sender<AgentEvent>>,
-            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
-                let choice = if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    "new"
-                } else {
-                    "session_0"
-                };
-                Ok((
-                    vec![Message::Assistant(AssistantMessage {
-                        content: format!("{{\"choice\":\"{choice}\"}}"),
-                    })],
-                    None,
-                ))
-            }
-        }
+    async fn new_topic_stays_in_current_session_until_agent_handoff() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            SqliteSessionStore::open_async(directory.path().into())
-                .await
-                .unwrap(),
-        );
-        let conversation = SessionId::new("cli:main");
+        let store = Arc::new(JsonSessionStore::new(directory.path()));
+        let id = SessionId::new("cli:main");
         let original: Session = serde_json::from_value(serde_json::json!({
             "id":"cli:main", "last_message_at":"2000-01-01T00:00:00Z",
             "messages":[{"User":{"content":"old topic"}}]
         }))
         .unwrap();
-        let mut target = Session::new(SessionId::new("nutrition"));
-        target.push(Message::User(user("nutrition history")));
         store.save(&original).await.unwrap();
-        store.save(&target).await.unwrap();
         let runner = AgentRunner::new(
             Arc::new(Agent::new(
                 Arc::new(ReplyLlm {
@@ -1130,199 +936,22 @@ mod tests {
                 ContextBuilder::new("test"),
             )),
             store.clone(),
-        )
-        .with_session_router(SessionRouter::new(
-            SystemOne::new(Arc::new(ChooseExisting(Default::default()))),
-            30,
-        ));
-        for text in ["nutrition question", "followup"] {
-            runner
-                .run(
-                    conversation.clone(),
-                    IncomingMessage::new(InterfaceId("cli".into()), "main", text),
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(store.active_id(&conversation).await.unwrap(), *target.id());
-        }
-        assert_eq!(
-            store
-                .load(original.id())
-                .await
-                .unwrap()
-                .unwrap()
-                .messages()
-                .len(),
-            1
         );
-        let saved = store.load(target.id()).await.unwrap().unwrap();
-        assert_eq!(saved.messages().len(), 5);
-        assert!(
-            matches!(&saved.messages()[0], Message::User(m) if m.content == "nutrition history")
-        );
-    }
-
-    #[tokio::test]
-    async fn routing_preserves_old_history_and_only_explicit_new_switches() {
-        use crate::agent::{session_router::SessionRouter, system_one::SystemOne};
-        for (decision, switch) in [
-            ("new", true),
-            ("continue", false),
-            ("uncertain", false),
-            ("invalid", false),
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let store = Arc::new(JsonSessionStore::new(directory.path()));
-            let conversation = SessionId::new("cli:main");
-            let mut original = Session::new(conversation.clone());
-            original.push(Message::User(user("old topic")));
-            original.push(Message::Assistant(AssistantMessage {
-                content: "old answer".into(),
-            }));
-            store.save(&original).await.unwrap();
-            let (requests, mut contexts) = mpsc::unbounded_channel();
-            let (replies, responses) = mpsc::unbounded_channel();
-            let router_reply = match decision {
-                "new" => r#"{"choice":"new"}"#,
-                "continue" => r#"{"choice":"continue"}"#,
-                "uncertain" => r#"{"choice":"uncertain"}"#,
-                _ => "malformed",
-            };
-            let runner = Arc::new(
-                AgentRunner::new(
-                    Arc::new(Agent::new(
-                        Arc::new(ControlledLlm {
-                            requests,
-                            replies: tokio::sync::Mutex::new(responses),
-                        }),
-                        ToolRegistry::default(),
-                        ContextBuilder::new("test"),
-                    )),
-                    store.clone(),
-                )
-                .with_session_router(SessionRouter::new(
-                    SystemOne::new(Arc::new(ReplyLlm {
-                        reply: router_reply,
-                        fail: false,
-                        calls: 0.into(),
-                    })),
-                    0,
-                )),
-            );
-            let task_runner = runner.clone();
-            let (tx, mut events) = mpsc::channel(16);
-            let task = tokio::spawn(async move {
-                let mut message =
-                    IncomingMessage::new(InterfaceId("cli".into()), "main", "new topic");
-                message.telegram_group = Some(
-                    serde_json::from_value(serde_json::json!({
-                        "chat_id":-42,"name":"Group","bot_username":"@TestBot",
-                        "participants":{"user:11":{"name":"Alice"}},
-                    }))
-                    .unwrap(),
-                );
-                task_runner
-                    .run(SessionId::new("cli:main"), message, Some(tx))
-                    .await
-            });
-            let context = contexts.recv().await.unwrap();
-            assert_eq!(context.len(), if switch { 1 } else { 3 });
-            assert!(matches!(context.last(), Some(Message::User(m)) if m.content == "new topic"));
-            replies.send(Ok(answer("done"))).unwrap();
-            task.await.unwrap().unwrap();
-            let active = runner.load_session(conversation.clone()).await.unwrap();
-            assert_eq!(active.id() != &conversation, switch);
-            assert_eq!(active.messages().len(), if switch { 2 } else { 4 });
-            assert_eq!(
-                active.telegram_group().unwrap().participants["user:11"]
-                    .name
-                    .as_deref(),
-                Some("Alice")
-            );
-            if switch {
-                assert_eq!(
-                    store
-                        .load(&conversation)
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .messages()
-                        .len(),
-                    2
-                );
-                assert!(matches!(
-                    events.recv().await,
-                    Some(AgentEvent::SessionChanged { session_id, .. }) if &session_id == active.id()
-                ));
-            }
-            assert_eq!(store.active_id(&conversation).await.unwrap(), *active.id());
-        }
-    }
-
-    #[tokio::test]
-    async fn cancellation_during_routing_preserves_input_and_steering() {
-        use crate::agent::{session_router::SessionRouter, system_one::SystemOne};
-        let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(JsonSessionStore::new(directory.path()));
-        let id = SessionId::new("cli:main");
-        let mut original = Session::new(id.clone());
-        original.push(Message::User(user("old topic")));
-        store.save(&original).await.unwrap();
-        let (requests, mut contexts) = mpsc::unbounded_channel();
-        let (_replies, responses) = mpsc::unbounded_channel();
-        let foreground = Arc::new(ReplyLlm {
-            reply: "unused",
-            fail: false,
-            calls: 0.into(),
-        });
-        let runner = Arc::new(
-            AgentRunner::new(
-                Arc::new(Agent::new(
-                    foreground.clone(),
-                    ToolRegistry::default(),
-                    ContextBuilder::new("test"),
-                )),
-                store.clone(),
+        let (tx, mut events) = mpsc::channel(16);
+        runner
+            .run(
+                id.clone(),
+                IncomingMessage::new(InterfaceId("cli".into()), "main", "unrelated new topic"),
+                Some(tx),
             )
-            .with_session_router(SessionRouter::new(
-                SystemOne::new(Arc::new(ControlledLlm {
-                    requests,
-                    replies: tokio::sync::Mutex::new(responses),
-                })),
-                0,
-            )),
-        );
-        let (cancel, cancelled) = oneshot::channel();
-        let (tx, mut incoming) = mpsc::unbounded_channel();
-        let task_runner = runner.clone();
-        let task = tokio::spawn(async move {
-            task_runner
-                .run_with_cancel(
-                    SessionId::new("cli:main"),
-                    IncomingMessage::new(InterfaceId("cli".into()), "main", "new topic"),
-                    None,
-                    Some(cancelled),
-                    Some(&mut incoming),
-                )
-                .await
-        });
-        contexts.recv().await.unwrap();
-        tx.send(user("correction")).unwrap();
-        cancel.send(()).unwrap();
-        assert_eq!(
-            task.await.unwrap().unwrap_err().to_string(),
-            "Stopped by user"
-        );
+            .await
+            .unwrap();
         let saved = runner.load_session(id.clone()).await.unwrap();
         assert_eq!(saved.id(), &id);
         assert_eq!(saved.messages().len(), 3);
-        assert!(matches!(&saved.messages()[1], Message::User(m) if m.content == "new topic"));
-        assert!(matches!(&saved.messages()[2], Message::User(m) if m.content == "correction"));
-        assert_eq!(
-            foreground.calls.load(std::sync::atomic::Ordering::SeqCst),
-            0
-        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(event, AgentEvent::SessionChanged { .. }));
+        }
     }
 
     struct ReminderRaceInterface(std::sync::atomic::AtomicUsize);

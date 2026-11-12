@@ -50,7 +50,7 @@ release workflows. Neither check installs Kodrik or starts a service.
 | `src/agent/subagents.rs`, `tools/subagents.rs` | Parent-bound child sessions, durable input, lifecycle controls and tool schemas |
 | `src/agent/context.rs` | Prompt and session context snapshots |
 | `src/agent/session/` | Transactional SQLite sessions, checkpoints and legacy JSON import |
-| `src/agent/system_one.rs`, `command_audit.rs`, `session_router.rs`, `group_reply.rs` | Independent decisions, batched tool audit and durable approvals, session routing and group participation policy |
+| `src/agent/system_one.rs`, `command_audit.rs`, `group_reply.rs` | Independent decisions, batched tool audit and durable approvals, and group participation policy |
 | `src/agent/llm/` | Provider contract and Responses API adapter |
 | `src/agent/tools/` | Tool schemas, execution and registration |
 | `src/agent/memory.rs`, `companion.rs`, `learning.rs` | Explicit memory and automatic learning |
@@ -69,8 +69,10 @@ path. Most tests live next to their implementation in `#[cfg(test)]` modules.
 1. A command or gateway submits input to the agent runner. For ordinary group
    messages the gateway first asks System One whether to reply, before any
    visible activity. Silent inputs are saved without starting the agent.
-2. At an eligible turn boundary, the session router asks System One whether to
-   continue. The consumer owns the fallback to the current session.
+2. The foreground agent chooses the session. For an unrelated incoming topic,
+   its system prompt requires `session_search`, then `switch_session` to a
+   suitable existing personal dialogue or a new one if none fits. The handoff
+   uses the durable run transition, not a System One routing decision.
 3. The agent loads or reuses context snapshots, adds the current time in
    `companion.timezone` before each model call and executes requested tools.
    The clock is live context, not a persisted snapshot.
@@ -88,7 +90,7 @@ Implement the `Tool` trait under `src/agent/tools/` and register the tool in
 grant access to proactive research. Keep that tool set explicit.
 
 Use System One for bounded choices with a clear validation and fallback policy;
-session routing, group participation and tool review are its consumers. A new consumer should define its own
+group participation and command/tool review are its consumers. A new consumer should define its own
 state, question, criteria and error handling rather than embedding side effects
 in the decision provider.
 

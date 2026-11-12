@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HandoffRequest {
-    /// Existing personal session in this user's store.
+    /// Existing personal session in this user's store; omit when create_new is true.
+    #[serde(default)]
     pub session_id: String,
+    /// Create a new personal dialogue instead of selecting an existing session.
+    #[serde(default)]
+    pub create_new: bool,
     /// Task, decisions, progress, and already performed effects. Do not ask to replay effects.
     pub context: String,
 }
@@ -19,7 +23,7 @@ impl Tool for SwitchSessionTool {
         "switch_session".into()
     }
     fn description(&self) -> String {
-        "Continue this task in an existing suitable personal session. Its history becomes active and later messages stay there. Supply task context, progress and already performed effects; never replay them. Runs only after all calls in this batch finish. Not available to children, wakeups, isolated, group or guest runs.".into()
+        "Move this task to an existing suitable personal session, or set create_new=true and omit session_id to create a new dialogue for an unrelated topic. Its history becomes active and later messages stay there. Supply task context, progress and already performed effects; never replay them. Runs only after all calls in this batch finish. Not available to children, wakeups, isolated, group or guest runs.".into()
     }
     fn parameters(&self) -> serde_json::Value {
         schema_for!(HandoffRequest).to_value()
@@ -38,7 +42,7 @@ pub(crate) async fn validate(
     args: serde_json::Value,
 ) -> anyhow::Result<(HandoffRequest, ToolOutput)> {
     use crate::agent::session::{SessionId, SessionStore, handoff::eligible};
-    let request: HandoffRequest = serde_json::from_value(args)?;
+    let mut request: HandoffRequest = serde_json::from_value(args)?;
     anyhow::ensure!(
         !request.context.trim().is_empty() && request.context.len() <= 32_768,
         "Context must contain 1–32768 bytes"
@@ -53,11 +57,19 @@ pub(crate) async fn validate(
             && !cp.record.conversation_id.starts_with("companion:"),
         "Session handoff is restricted to normal personal runs"
     );
-    let target = cp
-        .store
-        .load(&SessionId::new(&request.session_id))
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Target session not found in this user's store"))?;
+    let target = if request.create_new {
+        anyhow::ensure!(
+            request.session_id.is_empty(),
+            "Omit session_id when creating a new dialogue"
+        );
+        request.session_id = uuid::Uuid::new_v4().to_string();
+        crate::agent::session::Session::new(SessionId::new(&request.session_id))
+    } else {
+        cp.store
+            .load(&SessionId::new(&request.session_id))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Target session not found in this user's store"))?
+    };
     anyhow::ensure!(
         eligible(source, &target),
         "Session handoff is not allowed between these sessions"
@@ -72,6 +84,70 @@ mod tests {
         run_state::Checkpoint,
         session::{Session, SessionId, SessionStore, SqliteSessionStore},
     };
+
+    #[tokio::test]
+    async fn creation_request_is_validated_without_creating_until_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        let source = Session::new(SessionId::new("source"));
+        let mut cp = Checkpoint::new(&store, source.id(), &source);
+        cp.record.isolated = Some(false);
+        let (request, _) = validate(
+            &cp,
+            &source,
+            serde_json::json!({"create_new":true,"context":"new topic"}),
+        )
+        .await
+        .unwrap();
+        assert!(!request.session_id.is_empty());
+        assert!(
+            store
+                .load(&SessionId::new(request.session_id))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn new_dialogue_rejects_restricted_sources_and_conflicting_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        for id in [
+            "telegram:bot:-100",
+            "telegram:bot:1:guest",
+            "cli:once:1",
+            "companion:wakeup:1",
+            "webhook:1",
+        ] {
+            let source = Session::new(SessionId::new(id));
+            let mut cp = Checkpoint::new(&store, source.id(), &source);
+            cp.record.isolated = Some(false);
+            assert!(
+                validate(
+                    &cp,
+                    &source,
+                    serde_json::json!({"create_new":true,"context":"task"})
+                )
+                .await
+                .is_err(),
+                "{id}"
+            );
+        }
+        let source = Session::new(SessionId::new("source"));
+        let mut cp = Checkpoint::new(&store, source.id(), &source);
+        cp.record.isolated = Some(false);
+        assert!(
+            validate(
+                &cp,
+                &source,
+                serde_json::json!({"create_new":true,"session_id":"target","context":"task"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(store.list().await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn validation_restricts_scope_hops_and_malformed_context_without_effects() {

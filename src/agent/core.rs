@@ -31,6 +31,8 @@ pub enum AgentEvent {
     SessionChanged {
         session_id: SessionId,
         previous_user_messages: usize,
+        /// None for a newly created conversation; Some for an existing target.
+        title: Option<String>,
     },
     TextDelta(String),
     PlanUpdated(TaskPlan),
@@ -49,6 +51,21 @@ pub enum AgentEvent {
         failed: bool,
         output: serde_json::Value,
     },
+}
+
+pub(crate) fn session_change_notice(
+    language: crate::i18n::Language,
+    title: Option<&str>,
+) -> String {
+    match title {
+        Some(title) => format!(
+            "{} «{title}»",
+            language.pick("Switched to conversation", "Перешёл в диалог")
+        ),
+        None => language
+            .pick("Created a new conversation.", "Создал новый диалог")
+            .into(),
+    }
 }
 
 #[derive(Debug)]
@@ -407,6 +424,11 @@ impl Agent {
                     .iter()
                     .filter(|m| matches!(m, Message::User(_)))
                     .count();
+                let creating = cp
+                    .record
+                    .pending_handoff
+                    .as_ref()
+                    .is_some_and(|request| request.create_new);
                 if let Some(target) = cp.apply_handoff(session, &self.context).await? {
                     *session = target;
                     overflow_retry_used = false;
@@ -417,6 +439,11 @@ impl Agent {
                         let _ = tx.try_send(AgentEvent::SessionChanged {
                             session_id: session.id().clone(),
                             previous_user_messages,
+                            title: if creating {
+                                None
+                            } else {
+                                Some(cp.store.session_title(session).await)
+                            },
                         });
                     }
                 }

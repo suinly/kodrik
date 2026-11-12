@@ -66,8 +66,7 @@ impl GatewayRunner {
         let directory = crate::spaces::telegram_interface(&spaces.root, key)
             .join("guest-chats")
             .join(format!("{first}-{second}"));
-        let mut config = spaces.config.clone();
-        config.sessions.auto_switch = false;
+        let config = spaces.config.clone();
         let app = crate::bootstrap::build_app_with_access(
             &config,
             &directory,

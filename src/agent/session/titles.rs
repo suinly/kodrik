@@ -2,6 +2,23 @@ use super::SqliteSessionStore;
 use rusqlite::OptionalExtension;
 
 impl SqliteSessionStore {
+    pub(crate) async fn session_title(&self, session: &super::Session) -> String {
+        let saved = async {
+            self.init_titles().await?;
+            let root = self.title_root(session.id().as_str()).await?;
+            self.saved_title(&root).await
+        }
+        .await;
+        match saved {
+            Ok(Some(title)) if !title.trim().is_empty() => return title,
+            Err(error) => log::warn!("Cannot read session title: {error:#}"),
+            _ => {}
+        }
+        session
+            .fallback_title()
+            .unwrap_or_else(|| session.id().as_str().to_owned())
+    }
+
     pub(crate) async fn init_titles(&self) -> anyhow::Result<()> {
         self.with_connection(|db| {
             db.execute_batch(
@@ -52,5 +69,24 @@ impl SqliteSessionStore {
             tx.commit()?;
             Ok(())
         }).await
+    }
+}
+
+impl super::Session {
+    pub(crate) fn fallback_title(&self) -> Option<String> {
+        self.messages().iter().find_map(|message| {
+            let crate::agent::message::Message::User(user) = message else {
+                return None;
+            };
+            let title: String = user
+                .content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(80)
+                .collect();
+            (!title.is_empty()).then_some(title)
+        })
     }
 }

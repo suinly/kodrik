@@ -17,7 +17,7 @@ The terminal UI and one-shot CLI share the owner's state. Each Telegram chat has
 | Save, inspect or forget a preference | [Persistent memory](memory.md) |
 | Keep a nutrition diary or other structured records | [Datasets](datasets.md) |
 | Change personality or manage learned facts and interests | [Companion](companion.md) |
-| Understand automatic session switching and System One | [Sessions](sessions.md) |
+| Understand agent-directed sessions and System One | [Sessions](sessions.md) |
 | Create a reusable workflow | [Skills](skills.md) |
 | Send a photo or inspect a screenshot | [Images and vision](vision.md) |
 | Search the web or read a link | [Web research](web-research.md) |
@@ -39,6 +39,6 @@ The terminal UI and one-shot CLI share the owner's state. Each Telegram chat has
 limits. **Reference and operations** contains settings, storage and maintenance.
 **Development** covers the source and documentation workflow.
 
-Search the `docs/` Markdown files for terms such as `idle_minutes`, `SOUL.md`,
+Search the `docs/` Markdown files for terms such as `switch_session`, `SOUL.md`,
 `/new` or `self-update`.
 Configuration defaults are maintained in the [configuration reference](configuration.md).

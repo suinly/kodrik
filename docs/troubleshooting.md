@@ -56,14 +56,13 @@ text after rejection. See [Images and vision](vision.md).
 
 ## A new topic stays in the same session
 
-By default, routing only runs after a 30-minute pause since the last user or
-assistant message. It also keeps the current session on ambiguity, timeout,
-invalid output or provider failure. Legacy sessions without a saved timestamp
-skip their first check. Full text history is sent without truncation, so a model
-context limit can cause a fallback. A `System One decision timed out after 15s`
-log entry means classification exceeded its deadline and was cancelled; consider
-a faster `provider.system_one` model if this recurs. Use `/new` for a definite fresh start.
-See [Sessions](sessions.md).
+The foreground agent, not System One, must search for a suitable personal
+session for an unrelated topic, then switch to it or create a new dialogue if
+none fits. There is no idle threshold; legacy `auto_switch` and `idle_minutes`
+settings have no effect. Check whether the message was accepted as steering in
+an ongoing run or the conversation is outside the supported personal-session
+scope. Handoffs also reject busy targets and stop after four switches per run.
+Use `/new` for a definite fresh start. See [Sessions](sessions.md).
 
 ## Changed memory, personality or skills are not reflected
 

@@ -131,8 +131,10 @@ Tab or Enter completes a selected slash-command suggestion; Enter submits the
 completed command.
 
 You can send corrections while the agent is working; they join the current run.
-`/new` and `/sessions` are unavailable during that run. After a sufficient pause,
-[automatic routing](sessions.md) may start a new session for an unrelated topic.
+`/new` and `/sessions` are unavailable during that run. For an unrelated incoming
+topic, the foreground agent must [find and switch to a suitable personal
+session](sessions.md), or create a new dialogue when none fits. This does not
+require an idle pause or a System One routing decision.
 
 ## Telegram
 
@@ -172,8 +174,8 @@ previous session before switching. Private chats and `/chatid` retain their
 existing behavior.
 
 Group decisions use `provider.system_one` when configured, otherwise `primary`,
-and incur model usage even when Kodrik stays silent. They remain enabled when
-automatic session switching is disabled. To let the bot see ordinary group
+and incur model usage even when Kodrik stays silent. They are independent of
+agent-directed personal-session handoffs. To let the bot see ordinary group
 messages, disable its Privacy Mode in BotFather or make it an administrator;
 see the [Telegram bot FAQ](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get).
 

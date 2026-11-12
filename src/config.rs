@@ -143,8 +143,6 @@ impl Default for WebConfig {
 #[derive(Debug, Clone)]
 pub struct SessionsConfig {
     pub restart_limit: u32,
-    pub auto_switch: bool,
-    pub idle_minutes: u32,
     pub compact_threshold_tokens: u64,
     pub compact_background_margin_tokens: u64,
 }
@@ -152,8 +150,6 @@ pub struct SessionsConfig {
 impl Default for SessionsConfig {
     fn default() -> Self {
         Self {
-            auto_switch: true,
-            idle_minutes: 30,
             compact_threshold_tokens: 250_000,
             compact_background_margin_tokens: 50_000,
             restart_limit: 5,
@@ -167,8 +163,11 @@ impl<'de> Deserialize<'de> for SessionsConfig {
         #[serde(default, deny_unknown_fields)]
         struct Fields {
             restart_limit: u32,
-            auto_switch: bool,
-            idle_minutes: u32,
+            // Accepted only for compatibility with older configurations.
+            #[serde(rename = "auto_switch")]
+            _auto_switch: Option<bool>,
+            #[serde(rename = "idle_minutes")]
+            _idle_minutes: Option<u32>,
             #[serde(deserialize_with = "deserialize_compact_threshold")]
             compact_threshold_tokens: u64,
             compact_background_margin_tokens: u64,
@@ -178,8 +177,8 @@ impl<'de> Deserialize<'de> for SessionsConfig {
                 let v = SessionsConfig::default();
                 Self {
                     restart_limit: v.restart_limit,
-                    auto_switch: v.auto_switch,
-                    idle_minutes: v.idle_minutes,
+                    _auto_switch: None,
+                    _idle_minutes: None,
                     compact_threshold_tokens: v.compact_threshold_tokens,
                     compact_background_margin_tokens: v.compact_background_margin_tokens,
                 }
@@ -195,8 +194,6 @@ impl<'de> Deserialize<'de> for SessionsConfig {
         }
         Ok(Self {
             restart_limit: v.restart_limit,
-            auto_switch: v.auto_switch,
-            idle_minutes: v.idle_minutes,
             compact_threshold_tokens: v.compact_threshold_tokens,
             compact_background_margin_tokens: v.compact_background_margin_tokens,
         })
@@ -505,39 +502,11 @@ mod tests {
     }
 
     #[test]
-    fn session_switching_defaults_on_and_can_be_disabled() {
-        assert!(toml::from_str::<SessionsConfig>("").unwrap().auto_switch);
-        assert!(
-            !toml::from_str::<SessionsConfig>("auto_switch = false")
-                .unwrap()
-                .auto_switch
-        );
-        let config: Config = toml::from_str(
-            r#"
-            [gateway]
-            [provider.primary]
-            type = "openai"
-            model = "main"
-            api_key = "test"
-            [provider.system_one]
-            type = "openai"
-            model = "fast"
-            api_key = "test"
-        "#,
-        )
-        .unwrap();
-        assert!(config.sessions.auto_switch);
-        assert_eq!(config.sessions.idle_minutes, 30);
-        assert_eq!(
-            toml::from_str::<SessionsConfig>("idle_minutes = 15")
-                .unwrap()
-                .idle_minutes,
-            15
-        );
-        assert!(toml::from_str::<SessionsConfig>("idle_minutes = -1").is_err());
-        assert!(
-            matches!(&config.provider["system_one"], ProviderConfig::OpenAi { model, .. } if model == "fast")
-        );
+    fn legacy_topic_routing_settings_remain_parseable_but_are_ignored() {
+        let config =
+            toml::from_str::<SessionsConfig>("auto_switch = true\nidle_minutes = 0").unwrap();
+        assert_eq!(config.restart_limit, 5);
+        assert!(toml::from_str::<SessionsConfig>("auto_switch = false\nidle_minutes = 30").is_ok());
     }
 
     #[test]

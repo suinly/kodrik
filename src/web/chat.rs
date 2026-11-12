@@ -431,20 +431,7 @@ impl Chat {
 }
 
 fn fallback_title(session: &Session) -> Option<String> {
-    session.messages().iter().find_map(|message| {
-        let crate::agent::message::Message::User(user) = message else {
-            return None;
-        };
-        let title: String = user
-            .content
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(80)
-            .collect();
-        (!title.is_empty()).then_some(title)
-    })
+    session.fallback_title()
 }
 
 // Legacy ids name Telegram/CLI selectors; web must use its own delivery channel.
@@ -1332,6 +1319,7 @@ mod tests {
         let mut cp = Checkpoint::new(&chat.sessions, &web_conversation(&id), &source);
         cp.record.isolated = Some(false);
         cp.record.pending_handoff = Some(HandoffRequest {
+            create_new: false,
             session_id: target_id.clone(),
             context: "continue task".into(),
         });
@@ -1352,6 +1340,7 @@ mod tests {
             .unwrap();
         let mut target = target;
         cp.record.pending_handoff = Some(HandoffRequest {
+            create_new: false,
             session_id: third_id.clone(),
             context: "continue again".into(),
         });

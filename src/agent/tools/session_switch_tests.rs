@@ -11,6 +11,7 @@ use std::sync::{
 };
 
 struct HandoffModel {
+    create_new: bool,
     seen: Mutex<Vec<Vec<Message>>>,
     calls: AtomicUsize,
 }
@@ -28,7 +29,11 @@ impl LlmProvider for HandoffModel {
                 Message::ToolCall(ToolCall {
                     call_id: "move".into(),
                     name: "switch_session".into(),
-                    arguments: serde_json::json!({"session_id":"target","context":"Continue task; completed effect must not replay"}),
+                    arguments: if self.create_new {
+                        serde_json::json!({"create_new":true,"context":"New unrelated task; completed effect must not replay"})
+                    } else {
+                        serde_json::json!({"session_id":"target","context":"Continue task; completed effect must not replay"})
+                    },
                 }),
                 Message::ToolCall(ToolCall {
                     call_id: "effect".into(),
@@ -85,6 +90,7 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
     let mut source = Session::new(SessionId::new("source"));
     source.push(Message::User(user("old unrelated source history")));
     let model = Arc::new(HandoffModel {
+        create_new: false,
         seen: Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
     });
@@ -113,10 +119,18 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
         .unwrap(),
     );
     let mut cp = Checkpoint::new(&store, source.id(), &source);
+    let (tx, mut events) = mpsc::channel(32);
     agent
-        .run_durable(&mut source, input.clone(), None, None, Some(&mut cp))
+        .run_durable(&mut source, input.clone(), Some(&tx), None, Some(&mut cp))
         .await
         .unwrap();
+    let mut switched_title = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::SessionChanged { title, .. } = event {
+            switched_title = title;
+        }
+    }
+    assert_eq!(switched_title.as_deref(), Some("target question"));
     assert_eq!(source.id().as_str(), "target");
     assert_eq!(effects.load(SeqCst), 1);
     let seen = model.seen.lock().unwrap();
@@ -196,6 +210,7 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
     let mut cp = Checkpoint::new(&store, source.id(), &source);
     cp.record.isolated = Some(false);
     cp.record.pending_handoff = Some(HandoffRequest {
+        create_new: false,
         session_id: "target".into(),
         context: "effect already completed".into(),
     });
@@ -216,6 +231,7 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
     let ownership = store.claim_execution("source", "source").await.unwrap();
     let mut cp = Checkpoint::resume(&store, record, ownership);
     let model = Arc::new(HandoffModel {
+        create_new: false,
         seen: Mutex::new(vec![]),
         calls: AtomicUsize::new(1),
     });
@@ -246,4 +262,57 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
             .result
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn handoff_core_creates_dialogue_and_announces_creation_without_replaying_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    let mut source = Session::new(SessionId::new("source"));
+    source.push(Message::User(user("old unrelated history")));
+    let model = Arc::new(HandoffModel {
+        create_new: true,
+        seen: Mutex::new(vec![]),
+        calls: AtomicUsize::new(0),
+    });
+    let effects = Arc::new(AtomicUsize::new(0));
+    let agent = Agent::new(
+        model.clone(),
+        ToolRegistry::default()
+            .register(Arc::new(SwitchSessionTool))
+            .register(Arc::new(Effect(effects.clone()))),
+        ContextBuilder::new("rules"),
+    );
+    let mut cp = Checkpoint::new(&store, source.id(), &source);
+    let (tx, mut events) = mpsc::channel(32);
+    agent
+        .run_durable(
+            &mut source,
+            user("new topic"),
+            Some(&tx),
+            None,
+            Some(&mut cp),
+        )
+        .await
+        .unwrap();
+    assert_ne!(source.id().as_str(), "source");
+    assert_eq!(
+        store.active_id(&SessionId::new("source")).await.unwrap(),
+        *source.id()
+    );
+    assert_eq!(effects.load(SeqCst), 1);
+    assert!(
+        model.seen.lock().unwrap()[1]
+            .iter()
+            .all(|m| !matches!(m, Message::User(u) if u.content == "old unrelated history"))
+    );
+    let mut created = false;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::SessionChanged { title, .. } = event {
+            assert!(title.is_none());
+            created = true;
+        }
+    }
+    assert!(created);
+    assert_eq!(store.list().await.unwrap().len(), 2);
 }

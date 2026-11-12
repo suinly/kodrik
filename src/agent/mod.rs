@@ -16,7 +16,6 @@ pub(crate) mod run_state;
 mod runner;
 pub(crate) mod sandbox;
 pub mod session;
-pub(crate) mod session_router;
 pub(crate) mod skills;
 pub(crate) mod subagents;
 pub(crate) mod system_one;
@@ -25,6 +24,7 @@ pub mod tools;
 
 pub use compact::CompactionProgress;
 pub use context::{ContextBuilder, LlmContext};
+pub(crate) use core::session_change_notice;
 pub use core::{Agent, AgentEvent};
 pub use file::FileAttachment;
 pub use image::Image;

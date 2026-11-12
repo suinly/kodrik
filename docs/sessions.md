@@ -1,63 +1,32 @@
-# Automatic sessions and System One
+# Sessions and System One
 
-Kodrik checks whether a new turn belongs to the active conversation only after
-at least 30 minutes since the last user or assistant message, before the main
-agent answers. During an active conversation there is no session-routing call;
-[group participation](usage.md#telegram) is decided separately for each message.
-For a clearly unrelated, self-contained topic, System One first looks for a
-suitable existing personal session; it creates a new session only when none fits.
-Follow-ups, corrections, answers, acknowledgements and related topics
-continue the current one. Ambiguous decisions also keep the current session.
+Session choice belongs to the foreground agent, not a separate System One
+classifier. When an incoming message is unrelated to the current topic, the
+system prompt requires the agent to use `session_search` to find a suitable
+existing personal session and `switch_session` to continue there. If none fits,
+the agent must create a new dialogue through `switch_session`. Follow-ups,
+corrections and related messages stay in the current session; an active task is
+not abandoned for a minor vocabulary change.
+
+There is no idle-time threshold or automatic topic-routing call before the
+agent answers. The legacy `sessions.auto_switch` and `sessions.idle_minutes`
+configuration keys remain accepted but are ignored. `/new` still creates a fresh
+session manually. See [agent-directed handoff](#agent-directed-handoff) for scope
+and restrictions.
 
 ## System One decisions
 
-The decision uses a reusable `SystemOne::choose` service: JSON state plus a
-question and named criteria, returning one validated choice. This is a Jev-like
-request design implemented through the configured generative provider, not a
-native Jev integration or a calibrated probability model. It does not generate
-explanations, use tools, or take actions. Each consumer owns its fallback policy.
+System One remains responsible for [group participation](usage.md#telegram) and
+command/tool audit, not topic or session selection. Its reusable
+`SystemOne::choose` service takes JSON state, a question and named criteria,
+returning one validated choice. It does not use tools or take actions; each
+consumer owns its validation and fallback policy.
 
-Configure a separate fast model through [`provider.system_one`](configuration.md#providers).
-If absent, Kodrik uses `primary` with separate decision limits. See
-[session configuration](configuration.md#sessions) for the switching controls.
-
-## Idle time and persistence
-
-`idle_minutes` is a nonnegative integer; `0` checks every eligible turn. The
-last user/assistant message time is saved in the SQLite session payload and survives restarts.
-Tool calls and tool results do not reset it. Replies from the agent, including
-proactive messages, do reset it. A long pause permits classification; it never
-forces a new session by itself. Future timestamps (clock rollback) suppress
-classification until the configured pause has elapsed.
-
-Legacy sessions without a timestamp conservatively continue on the first new
-turn. The next user/assistant message establishes the timestamp. No timestamp is
-guessed from file modification time.
-
-## Context and failure handling
-
-The router sends **all user and assistant text in chronological order**, followed
-by the new message. It never truncates history by message count or character
-budget. Tool calls, tool outputs and image payloads are excluded; image captions
-remain. Personality, skills and memory snapshots are not included in the decision
-request. Empty sessions and incoming messages without text bypass classification.
-
-The first decision chooses `continue`, `new` or `uncertain`. After `new`, a second
-decision may select an existing session, create a new one, or keep the current
-session on uncertainty. Candidates are restricted to the same user’s accessible
-personal sessions (not groups, guests, internal, one-shot or webhook sessions).
-The candidate list uses up to 32 recent sessions and at most eight 512-character
-user/assistant excerpts per candidate. A bounded history scan may omit very large
-or older sessions; the main agent can use history search for a more targeted choice.
-Candidate-selection failures retain the current session. Each request has a 15-second
-provider deadline, at most 128 output tokens and no retries. The same deadline
-applies to System One decisions about group participation. The response must be
-exactly a JSON object such as `{"choice":"new"}`; unknown values, extra fields,
-invalid JSON, provider failures and timeouts retain the current session and log
-the error. Timeout errors include the deadline (`System One decision timed out
-after 15s`). An oversized history is not silently shortened; a context-limit error
-also retains the session. These limits bound the extra decision call, not the
-main agent's answer. No numeric confidence is invented by the model.
+Configure a separate fast model through
+[`provider.system_one`](configuration.md#providers). If absent, Kodrik uses
+`primary` with separate decision limits. Group participation decisions have a
+15-second provider deadline; a timeout logs `System One decision timed out after
+15s`. These decision limits do not govern the main agent's session choice.
 
 ## Switching and cancellation
 
@@ -76,22 +45,22 @@ Previous sessions remain available through `/sessions` in TUI, `/sessions` and
 `/session <id>` in private Telegram chats, the web sidebar and history search.
 `/new` continues to work manually.
 
-Classification runs only at turn boundaries under the conversation lock.
-Messages consumed as steering during an ongoing run stay in that run. Cancellation
-while classifying preserves accepted input and corrections without switching.
-Once a persistent session transition starts, it is allowed to finish before
-handling cancellation. Proactive messages are not classified; they enter the
-normal history and are visible when classifying the owner's next reply. One-shot
-CLI requests already create their own sessions and need no routing.
-
-The web chat continues to use its explicitly opened conversation rather than
-running the idle classifier. Agent-directed handoffs are supported there as below.
+Messages consumed as steering during an ongoing run stay in that run. Once a
+persistent session transition starts, it is allowed to finish before handling
+cancellation. One-shot CLI requests already create their own sessions; isolated
+runs and background wakeups cannot hand off. Web chat supports the same
+agent-directed handoffs as the personal Telegram chat and TUI.
 
 ## Agent-directed handoff
 
-The foreground agent can use `switch_session(session_id, context)` to continue a
-running task in an existing personal session without waiting for the idle threshold.
-The context should name the task, decisions, progress, and effects already performed.
+The foreground agent uses `session_search` to find a suitable existing personal
+session, then `switch_session(session_id, context)` to continue there. If none
+fits, it uses `switch_session(create_new=true, context=...)`, omitting
+`session_id`. The optional `create_new` flag defaults to `false`; `session_id`
+defaults to empty and must identify an existing target when not creating one.
+Existing targets must be accessible personal sessions in the same
+user's space, not group, guest, internal, one-shot or webhook sessions.
+The handoff context should name the task, decisions, progress, and effects already performed.
 The original request and accepted steering, including attachments, accompany the task;
 whole histories are not merged. The target history becomes the working context and
 subsequent messages use the new active selection. Source history remains saved.
@@ -100,15 +69,10 @@ Handoff occurs only at a completed tool-batch boundary. The source history, targ
 history, run binding and active selection are persisted together. A target owned by
 another worker or with unfinished work cannot be entered. Children, isolated runs,
 group/guest conversations and background wakeups cannot use this capability.
-At most four handoffs are allowed per run to prevent routing loops. A switch does
+For a new dialogue, validation generates its UUID once and saves it in the pending
+handoff; the handoff transaction creates the target only with `create_new=true`.
+At most four handoffs are allowed per run to prevent handoff loops. A switch does
 not authorize replaying completed effects or expanding the task’s permissions.
-
-## Model evaluation
-
-Automated tests cover routing mechanics and failure handling with local provider
-fixtures. Semantic accuracy and latency of a chosen live model should be measured
-on representative Russian conversations, especially short replies and gradual
-topic changes. A structurally valid decision can still be semantically wrong.
 
 See also: [Manual session commands](usage.md), [Storage and backups](storage.md).
 
@@ -143,8 +107,8 @@ original user request, retaining its goal and constraints in the summary.
 The summaries are supplied as historical assistant context, not system instructions.
 Personality, memory, skills and system instructions keep their existing snapshots.
 The full transcript and attachments remain in session storage for history, search,
-learning and session routing. Summary blocks, their covered-message ranges and the
-active digest are persisted. When more than eight root blocks accumulate, or their
+learning and agent-directed session selection. Summary blocks, their covered-message
+ranges and the active digest are persisted. When more than eight root blocks accumulate, or their
 estimated text exceeds one eighth of the threshold, they are consolidated into a
 parent summary. Original leaf blocks are retained as flat children for provenance;
 intermediate parent digests are not nested indefinitely. A single
@@ -332,9 +296,10 @@ queued ordinary inputs per conversation. Control commands remain admissible when
 this queue is full. Overflow explicitly rejects only that input; other chats
 continue processing. A following request cannot overtake a queued follow-up.
 History, applied steering, run state and completion status commit together.
-Automatic session routing binds the submission and updates the active pointer
-in that same first checkpoint transaction. Already bound requests retain their
-original session even if `/new` changes the active pointer.
+The submission's initial session binding is saved with the first run checkpoint.
+Agent-directed handoffs move the run binding and active selection atomically as
+described above. Otherwise, already bound requests retain their original session
+even if `/new` changes the active pointer.
 
 After failure or cancellation, independent follow-ups remain queued with a
 blocking reason. Only genuinely new input resumes them in order; duplicate
@@ -442,7 +407,7 @@ usage remains unknown. No pricing estimates are invented.
 ## Verified crash behavior
 
 The [durable recovery matrix](durable-recovery.md#crash-matrix) records real
-SIGKILL tests at admission, routing, model/tool checkpoints, delivery, cancellation,
+SIGKILL tests at admission, model/tool checkpoints, delivery, cancellation,
 retry waits, wakeup reconciliation and compaction. Recovery is deliberately
 conservative about external effects: it preserves a confirmed result, or reports
 an unknown outcome instead of automatically repeating an unsafe tool. Later model

@@ -1201,11 +1201,11 @@ impl GatewayRunner {
                         }
                         // A reply belongs in its own message; previewing it in the status
                         // makes the chat jump when that status is removed or shortened.
-                        Some(AgentEvent::SessionChanged { .. }) => {
+                        Some(AgentEvent::SessionChanged { title, .. }) => {
                             compaction = None;
                             compaction_message = None;
                             compaction_sent = None;
-                            if let Err(error) = interface.send(conversation_id, language.pick("Switched to the session for this topic.", "Перешёл в диалог по этой теме.")).await {
+                            if let Err(error) = interface.send(conversation_id, &crate::agent::session_change_notice(language, title.as_deref())).await {
                                 log::warn!("Failed to announce session change: {error}");
                             }
                             continue;
@@ -2618,6 +2618,54 @@ mod tests {
         ] {
             assert_eq!(tool_description(name, &args), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn session_change_announces_creation() {
+        let (updates, mut messages) = mpsc::unbounded_channel();
+        let interface = RecordingInterface {
+            updates,
+            sends: Arc::default(),
+            incoming: None,
+        };
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(AgentEvent::SessionChanged {
+            session_id: SessionId::new("new"),
+            previous_user_messages: 0,
+            title: None,
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        GatewayRunner::show_progress(&interface, "chat", rx).await;
+        assert_eq!(
+            messages.recv().await.unwrap(),
+            "Created a new conversation."
+        );
+    }
+
+    #[tokio::test]
+    async fn session_change_announces_target_title() {
+        let (updates, mut messages) = mpsc::unbounded_channel();
+        let interface = RecordingInterface {
+            updates,
+            sends: Arc::default(),
+            incoming: None,
+        };
+        let (tx, rx) = mpsc::channel(16);
+        tx.send(AgentEvent::SessionChanged {
+            session_id: SessionId::new("target"),
+            previous_user_messages: 0,
+            title: Some("Nutrition".into()),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        GatewayRunner::show_progress(&interface, "chat", rx).await;
+        assert_eq!(
+            messages.recv().await.unwrap(),
+            "Switched to conversation «Nutrition»"
+        );
     }
 
     struct RecordingInterface {

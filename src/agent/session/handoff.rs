@@ -70,7 +70,11 @@ impl SqliteSessionStore {
             ensure!(run.isolated == Some(false) && run.handoff_hops < 4 && !run.conversation_id.contains(":guest") && !run.conversation_id.starts_with("companion:"), "Restricted handoff run");
             let request = run.pending_handoff.take().context("No pending handoff")?;
             let validation = (|| -> anyhow::Result<Session> {
-                let mut target = sqlite::load(&tx, &request.session_id)?.context("Target session missing")?;
+                let existing = sqlite::load(&tx, &request.session_id)?;
+                let mut target = if request.create_new {
+                    ensure!(existing.is_none(), "New session ID already exists");
+                    Session::new(super::SessionId::new(&request.session_id))
+                } else { existing.context("Target session missing")? };
                 ensure!(eligible(&source, &target), "Session handoff is not allowed");
                 ensure!(!crate::agent::inbox::session_busy_in(&tx, &request.session_id)?, "Target session is busy");
                 ensure!(crate::agent::message::tool_boundaries(target.messages()).contains(&target.messages().len()), "Target has unresolved tool calls");
@@ -236,11 +240,51 @@ mod durable_tests {
         let mut cp = Checkpoint::new(&store, source.id(), &source);
         cp.record.isolated = Some(false);
         cp.record.pending_handoff = Some(HandoffRequest {
+            create_new: false,
             session_id: "target".into(),
             context: "Effects already completed".into(),
         });
         cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
         (dir, store, cp, source)
+    }
+
+    #[tokio::test]
+    async fn saved_creation_request_recovers_into_exactly_one_new_dialogue() {
+        let (_dir, store, mut cp, source) = fixture().await;
+        cp.record.pending_handoff = None;
+        let (request, _) = crate::agent::tools::session_switch::validate(
+            &cp,
+            &source,
+            serde_json::json!({"create_new":true,"context":"new topic"}),
+        )
+        .await
+        .unwrap();
+        let id = request.session_id.clone();
+        cp.record.pending_handoff = Some(request);
+        cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
+        let run_id = cp.record.id.clone();
+        drop(cp);
+        let (record, mut source) = store.load_run(&run_id).await.unwrap().unwrap();
+        let ownership = store.claim_execution("source", "source").await.unwrap();
+        let mut cp = Checkpoint::resume(&store, record, ownership);
+        let target = cp
+            .apply_handoff(&mut source, &crate::agent::ContextBuilder::new("rules"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.id().as_str(), id);
+        assert_eq!(
+            store
+                .active_id(&super::super::SessionId::new("source"))
+                .await
+                .unwrap(),
+            *target.id()
+        );
+        assert_eq!(store.list().await.unwrap().len(), 3);
+        let (record, saved) = store.load_run(&run_id).await.unwrap().unwrap();
+        assert!(record.pending_handoff.is_none());
+        assert_eq!(record.handoff_hops, 1);
+        assert_eq!(saved.id(), target.id());
     }
 
     #[tokio::test]

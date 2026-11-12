@@ -139,8 +139,9 @@ backups. See [configuration and pairing](remote-tui.md#configure-and-pair).
 
 Sessions save messages and snapshots of personality, memory, skills and companion
 context. Image data URLs are stored inline, so images can make session payloads
-large. `last_message_at` is an optional UTC timestamp serialized as RFC 3339;
-automatic routing uses it across restarts. Tool activity does not update it.
+large. `last_message_at` is an optional UTC timestamp serialized as RFC 3339
+for the last user/assistant message. Tool activity does not update it; it no
+longer controls session routing.
 
 The database uses WAL with `synchronous=FULL`, foreign keys and a five-second
 busy timeout. Session directories are mode `0700`; database and sidecars are
@@ -180,7 +181,9 @@ Run and tool-execution tables hold versioned checkpoint payloads. History, run
 revision and tool outcome commit atomically; stale revisions are rejected. The
 submission table now stores canonical input, sequence and status/run/session
 binding. Schema v3 adds those indexed state columns and `inbox_controls` for
-paused queues; session routing and binding commit with the first run checkpoint.
+paused queues; initial submission binding commits with the first run checkpoint.
+Agent-directed handoffs persist source/target histories, run binding and active
+selection together.
 Schema v2
 adds `run_controls` cancellation tombstones, including cancellation before the
 first run checkpoint. Schema v4 adds `deliveries` with JSON receipts for final and explicit

@@ -69,7 +69,6 @@ fake interface, not Telegram's network service.
 | --- | --- | --- |
 | Before admission commit | matrix, `admission-before` | Rollback; same request ID may be submitted |
 | After admission, before acknowledgement | matrix, `admission-after` | Duplicate returns the same submission |
-| Routing decision before binding commit | matrix, `routing` | Old active mapping survives; safe routing repeats and commits atomically |
 | During streaming | matrix, `stream` | Saved old partial is Interrupted; replacement/history do not contain its text |
 | After assistant/tool-call commit | matrix, `decision` | Saved call executes; no fresh model decision first |
 | Unsafe intent before tool invocation | matrix, `unsafe` | Interrupted/unknown result; zero external effects |

@@ -169,8 +169,6 @@ implemented.
 
 ```toml
 [sessions]
-auto_switch = true
-idle_minutes = 30
 compact_threshold_tokens = 250000
 compact_background_margin_tokens = 50000
 restart_limit = 5
@@ -178,14 +176,15 @@ restart_limit = 5
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `auto_switch` | `true` | Check whether an eligible message starts a new topic |
-| `idle_minutes` | `30` | Minimum pause since the last user/assistant message; nonnegative integer |
 | `restart_limit` | `5` | Consecutive crashed attempts in one semantic phase before parking; `0` disables automatic recovery |
 | `compact_background_margin_tokens` | `50000` | Start preparing a summary this many tokens before the blocking threshold; `0` disables background only |
 | `compact_threshold_tokens` | `250000` | Automatically summarize old context at this estimated input size; `0` disables, otherwise at least `4096` |
 
-`idle_minutes = 0` checks every eligible turn. A pause only permits the check; it does not force
-a new session. See [Sessions](sessions.md) for context, timeouts and fallbacks.
+Legacy `sessions.auto_switch` and `sessions.idle_minutes` keys are accepted but
+ignored; they no longer control runtime behavior. The foreground agent must
+search for a suitable personal session when a message starts an unrelated topic,
+then switch to it or create a new dialogue if none fits. System One does not
+route sessions. See [Sessions](sessions.md) for handoff behavior and restrictions.
 
 For a nonzero threshold, the background margin must be smaller than the threshold.
 If an existing configuration uses a threshold of 50,000 or less, explicitly set

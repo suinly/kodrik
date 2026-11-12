@@ -1198,6 +1198,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         AgentEvent::SessionChanged {
             session_id,
             previous_user_messages,
+            title,
         } => {
             app.cancel_message_navigation();
             app.session = Some(session_id);
@@ -1220,14 +1221,10 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             app.streaming_message = None;
             app.pending_tools.clear();
             app.scroll = 0;
-            app.push_kodrik_message(
-                app.language
-                    .pick(
-                        "Switched to the session for this topic.",
-                        "Перешёл в сеанс по этой теме.",
-                    )
-                    .into(),
-            );
+            app.push_kodrik_message(crate::agent::session_change_notice(
+                app.language,
+                title.as_deref(),
+            ));
         }
         AgentEvent::PlanUpdated(plan) => app.update_plan(plan),
         AgentEvent::TextDelta(delta) => {
@@ -1722,6 +1719,33 @@ mod tests {
     }
 
     #[test]
+    fn session_change_notice_distinguishes_creation_and_named_switch() {
+        for (language, title, expected) in [
+            (Language::Ru, None, "Создал новый диалог"),
+            (Language::Ru, Some("Питание"), "Перешёл в диалог «Питание»"),
+            (
+                Language::En,
+                Some("Nutrition"),
+                "Switched to conversation «Nutrition»",
+            ),
+        ] {
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            show_progress(
+                &mut app,
+                AgentEvent::SessionChanged {
+                    session_id: SessionId::new("target"),
+                    previous_user_messages: 0,
+                    title: title.map(str::to_owned),
+                },
+            );
+            assert_eq!(app.messages.last().unwrap().content, expected);
+        }
+    }
+
+    #[test]
     fn session_change_keeps_current_and_queued_input_but_clears_old_history() {
         let mut app = App {
             session: Some(SessionId::new("old-session")),
@@ -1739,6 +1763,7 @@ mod tests {
             AgentEvent::SessionChanged {
                 session_id: SessionId::new("new-session"),
                 previous_user_messages: 1,
+                title: None,
             },
         );
         assert_eq!(app.messages[0].content, "new topic");
@@ -1760,6 +1785,7 @@ mod tests {
             AgentEvent::SessionChanged {
                 session_id: SessionId::new("target"),
                 previous_user_messages: 1,
+                title: None,
             },
         );
         let mut target = Session::new(SessionId::new("target"));
@@ -2004,6 +2030,7 @@ mod tests {
             AgentEvent::SessionChanged {
                 session_id: SessionId::new("new"),
                 previous_user_messages: 0,
+                title: None,
             },
         );
         assert!(app.plan.is_none());

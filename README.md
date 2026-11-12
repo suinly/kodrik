@@ -17,8 +17,8 @@ the browser, with personal history, memory and skills shared across interfaces.
 
 - Persistent memory, personality and searchable conversation history.
 - Skills for reusable workflows, including skill creation and self-update.
-- Saved conversations, automatic context compaction and topic-based session switching
-  after a pause, with an optional fast decision model.
+- Saved conversations, automatic context compaction and agent-directed handoffs
+  to existing or new dialogues when the topic changes.
 - Image understanding from local files, Telegram photos and browser uploads;
   PDF, Office and text/code attachments in Telegram and web chat.
 - Structured datasets for diaries and trackers, with queries and summaries.

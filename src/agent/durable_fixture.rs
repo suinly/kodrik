@@ -222,24 +222,6 @@ fn input() -> IncomingMessage {
     message.request_id = "stable-fixture-request".into();
     message
 }
-struct Routing(String);
-#[async_trait::async_trait]
-impl LlmProvider for Routing {
-    async fn generate(
-        &self,
-        _: &LlmContext<'_>,
-        _: &[&dyn Tool],
-        _: Option<&tokio::sync::mpsc::Sender<AgentEvent>>,
-    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
-        event(&self.0, "routing").await;
-        Ok((
-            vec![Message::Assistant(AssistantMessage {
-                content: r#"{"choice":"new"}"#.into(),
-            })],
-            None,
-        ))
-    }
-}
 fn runner(
     store: SqliteSessionStore,
     url: &str,
@@ -247,7 +229,7 @@ fn runner(
     scenario: &str,
     policy: ReplayPolicy,
 ) -> AgentRunner {
-    let runner = AgentRunner::new(
+    AgentRunner::new(
         Arc::new(Agent::new(
             Arc::new(Model {
                 url: url.into(),
@@ -264,15 +246,7 @@ fn runner(
             ContextBuilder::new("fixture rules"),
         )),
         Arc::new(store),
-    );
-    if scenario == "routing" {
-        runner.with_session_router(super::session_router::SessionRouter::new(
-            super::system_one::SystemOne::new(Arc::new(Routing(url.into()))),
-            0,
-        ))
-    } else {
-        runner
-    }
+    )
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn durable_process_worker() {
@@ -300,11 +274,7 @@ async fn durable_process_worker() {
         assert!(!report.blocked.is_empty());
         return;
     }
-    if scenario == "routing" {
-        let old:Session=serde_json::from_value(serde_json::json!({"id":"old-session","last_message_at":"2000-01-01T00:00:00Z","messages":[{"User":{"content":"old topic"}}]})).unwrap();
-        store.save(&old).await.unwrap();
-        store.select(&conversation(), old.id()).await.unwrap();
-    }
+
     if scenario == "wakeup" {
         use super::reminders::{Recipient, ReminderStore};
         let source = runner.new_session(&conversation()).await.unwrap();
@@ -496,7 +466,6 @@ async fn durable_process_crash_matrix() {
         ("admission-before", "before_admission", 1),
         ("admission-after", "after_admission", 1),
         ("binding", "before_binding", 1),
-        ("routing", "before_binding", 1),
         ("stream", "", 1),
         ("decision", "after_decision", 1),
         ("unsafe", "after_intent", 0),
@@ -557,29 +526,17 @@ async fn durable_process_crash_matrix() {
             assert_eq!(first.id, again.id);
             assert!(again.duplicate);
         }
-        if scenario == "routing" {
-            assert_eq!(
-                store.active_id(&conversation()).await.unwrap().as_str(),
-                "old-session"
-            );
-            assert_eq!(service.count("routing"), 1);
-        }
+
         let models_before = service.count("model");
         let policy = if scenario == "safe" {
             ReplayPolicy::Safe
         } else {
             ReplayPolicy::Never
         };
-        let report = runner(
-            store.clone(),
-            &service.url,
-            dir.path(),
-            if scenario == "routing" { "routing" } else { "" },
-            policy,
-        )
-        .recover(RecoveryTarget::Conversation(conversation()))
-        .await
-        .unwrap();
+        let report = runner(store.clone(), &service.url, dir.path(), "", policy)
+            .recover(RecoveryTarget::Conversation(conversation()))
+            .await
+            .unwrap();
         assert!(
             report.blocked.is_empty(),
             "{scenario}: {:?}",
@@ -610,13 +567,7 @@ async fn durable_process_crash_matrix() {
                 "request issued before durable retry deadline"
             );
         }
-        if scenario == "routing" {
-            assert_ne!(
-                store.active_id(&conversation()).await.unwrap().as_str(),
-                "old-session"
-            );
-            assert_eq!(service.count("routing"), 2);
-        }
+
         if scenario == "stream" {
             let view = store.run_view(&before[0].id).await.unwrap();
             assert_eq!(view.live.interrupted.as_ref().unwrap().text, "old partial");

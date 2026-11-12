@@ -23,7 +23,6 @@ use crate::{
         learning::LearningService,
         llm::OpenAiLlm,
         session::SqliteSessionStore,
-        session_router::SessionRouter,
         system_one::SystemOne,
         tools::{
             ApplyPatchTool, CompanionTool, ContextReadTool, DatasetsTool, EncyclopediaTool,
@@ -375,11 +374,6 @@ pub(crate) async fn build_app_with_access(
     let mut agent_runner = AgentRunner::new(Arc::new(agent), Arc::new(sessions))
         .with_restart_limit(config.sessions.restart_limit)
         .with_group_decider(SystemOne::new(decision_llm.clone()));
-    if config.sessions.auto_switch {
-        let system_one = SystemOne::new(decision_llm);
-        agent_runner = agent_runner
-            .with_session_router(SessionRouter::new(system_one, config.sessions.idle_minutes));
-    }
     if config.companion.learning_enabled {
         agent_runner = agent_runner.with_learning(Arc::new(
             LearningService::new(CompanionStore::new(data), background_llm)
