@@ -41,7 +41,7 @@ pub(crate) fn read_revision(session: &Session) -> String {
     )
 }
 
-pub(super) fn capture(db: &Connection, session: &Session) -> anyhow::Result<()> {
+fn capture_activity(db: &Connection, session: &Session) -> anyhow::Result<()> {
     db.execute(
         "INSERT INTO web_chat_activity(session_id,revision,listed) VALUES(?1,?2,?3)
         ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,listed=excluded.listed",
@@ -51,6 +51,87 @@ pub(super) fn capture(db: &Connection, session: &Session) -> anyhow::Result<()> 
             crate::web::chat::listed_session(session)
         ],
     )?;
+    Ok(())
+}
+
+// A Session-shaped projection lets the sidebar reuse selection/branch semantics without history.
+fn listing_payload(session: &Session) -> anyhow::Result<String> {
+    let title = session.messages().iter().find_map(|message| {
+        let Message::User(user) = message else {
+            return None;
+        };
+        let title: String = user
+            .content
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect();
+        (!title.is_empty()).then_some(title)
+    });
+    let messages: Vec<Message> = title
+        .into_iter()
+        .map(|content| {
+            Message::User(crate::agent::message::UserMessage {
+                content,
+                images: vec![],
+                files: vec![],
+            })
+        })
+        .collect();
+    // Only the recorded source line is used by webhook_source; never cache instructions.
+    let webhook =
+        session.webhook_instruction.as_deref().map(|instruction| {
+            instruction.strip_prefix("## Recorded delivery source\n")
+            .and_then(|rest| rest.lines().next())
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .map(|source| format!("## Recorded delivery source\n{}", serde_json::json!({
+                "webhook_id": source["webhook_id"], "webhook_name": source["webhook_name"]
+            }))).unwrap_or_default()
+        });
+    Ok(serde_json::to_string(&serde_json::json!({
+        "id":session.id(), "messages":messages, "last_message_at":session.last_message_at(),
+        "webhook_instruction":webhook
+    }))?)
+}
+
+pub(super) fn capture(db: &Connection, session: &Session) -> anyhow::Result<()> {
+    capture_activity(db, session)?;
+    db.execute(
+        "UPDATE web_chat_activity SET webhook_event=?2,listing_payload=?3 WHERE session_id=?1",
+        params![
+            session.id().as_str(),
+            session.webhook_instruction.is_some(),
+            listing_payload(session)?
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn migrate_listing(db: &Connection) -> anyhow::Result<()> {
+    for (column, declaration) in [
+        ("webhook_event", "INTEGER NOT NULL DEFAULT 0"),
+        ("listing_payload", "TEXT NOT NULL DEFAULT '{}'"),
+    ] {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('web_chat_activity') WHERE name=?1)",
+            [column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            db.execute_batch(&format!(
+                "ALTER TABLE web_chat_activity ADD COLUMN {column} {declaration};"
+            ))?;
+        }
+    }
+    let mut statement = db.prepare("SELECT payload FROM sessions")?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let session: Session = serde_json::from_slice(&row.get::<_, Vec<u8>>(0)?)?;
+        capture(db, &session)?;
+    }
+    db.execute_batch("PRAGMA user_version=16;")?;
     Ok(())
 }
 
@@ -67,7 +148,7 @@ pub(super) fn migrate(db: &Connection) -> anyhow::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for payload in sessions {
         let session: Session = serde_json::from_slice(&payload)?;
-        capture(db, &session)?;
+        capture_activity(db, &session)?;
         // Baseline only newly imported history; existing unread markers must survive retries.
         db.execute(
             "UPDATE web_chat_activity SET read_revision=revision WHERE session_id=?1",
@@ -88,8 +169,8 @@ impl SqliteSessionStore {
                     AND revision!='' AND revision!=read_revision
                 ), categorized AS (
                     SELECT coalesce(b.root_id,u.session_id) AS root_id,
-                        json_extract(s.payload,'$.webhook_instruction') IS NOT NULL AS event
-                    FROM unread u JOIN sessions s ON s.id=u.session_id
+                        a.webhook_event AS event
+                    FROM unread u JOIN web_chat_activity a ON a.session_id=u.session_id
                     LEFT JOIN web_chat_branches b ON b.session_id=u.session_id
                 )
                 SELECT count(DISTINCT CASE WHEN NOT event THEN root_id END),
@@ -139,6 +220,52 @@ mod tests {
         AssistantMessage,
         session::{SessionId, SessionStore},
     };
+
+    #[tokio::test]
+    async fn listing_migration_backfills_version15_and_preserves_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        for id in ["cli:seen", "cli:unseen"] {
+            let mut session = Session::new(SessionId::new(id));
+            session.push(Message::Assistant(AssistantMessage {
+                content: "answer".into(),
+            }));
+            store.save(&session).await.unwrap();
+            if id == "cli:seen" {
+                store
+                    .mark_chat_read(id, &read_revision(&session))
+                    .await
+                    .unwrap();
+            }
+        }
+        store
+            .with_connection(|db| {
+                db.execute_batch(
+                    "ALTER TABLE web_chat_activity DROP COLUMN webhook_event;
+                ALTER TABLE web_chat_activity DROP COLUMN listing_payload;
+                PRAGMA user_version=15;",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        drop(store);
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        store.with_connection(|db| {
+            assert_eq!(db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0))?,16);
+            let states = db.prepare("SELECT session_id,revision=read_revision,listing_payload FROM web_chat_activity ORDER BY session_id")?
+                .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,String>(2)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(states.iter().map(|(id,seen,_)|(id.as_str(),*seen)).collect::<Vec<_>>(),
+                vec![("cli:seen",true),("cli:unseen",false)]);
+            for (id,_,payload) in states {
+                let projected: Session = serde_json::from_str(&payload)?;
+                assert_eq!(projected.id().as_str(), id);
+                assert!(projected.messages().is_empty());
+            }
+            Ok(())
+        }).await.unwrap();
+    }
 
     #[tokio::test]
     async fn activity_checks_history_once_instead_of_once_per_conversation() {

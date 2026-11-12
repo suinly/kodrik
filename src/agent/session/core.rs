@@ -303,6 +303,7 @@ impl Session {
             .map(|state| (state.through, state.summary.as_str()))
     }
 
+    #[cfg(test)]
     pub(crate) fn set_compaction(&mut self, through: usize, summary: String) {
         self.compaction = Some(Compaction {
             through,

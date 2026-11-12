@@ -73,6 +73,13 @@ pub(crate) fn stage_personal_sessions(
                     }
                 }
             }
+            // The activity markers above retain read state; derive listing metadata for all schema versions.
+            let mut statement = snapshot.prepare("SELECT payload FROM sessions")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let session: super::Session = serde_json::from_slice(&row.get::<_, Vec<u8>>(0)?)?;
+                super::activity::capture(&tx, &session)?;
+            }
             if version >= 5 {
                 let revision: i64 = snapshot.query_row(
                     "SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='run_view_revision'",
@@ -248,7 +255,9 @@ fn merge_table(
     columns: usize,
 ) -> anyhow::Result<()> {
     // All identifiers come from the fixed schema above, never user input.
-    let select = if table == "webhooks" {
+    let select = if table == "web_chat_activity" {
+        "SELECT session_id,revision,read_revision,listed FROM web_chat_activity".to_owned()
+    } else if table == "webhooks" {
         let has_mode: bool = source.query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('webhooks') WHERE name='command_audit_mode')",
             [], |row| row.get(0),
@@ -265,7 +274,9 @@ fn merge_table(
         format!("SELECT * FROM {table}")
     };
     let placeholders = vec!["?"; columns].join(",");
-    let names = if table == "submissions" && columns == 6 {
+    let names = if table == "web_chat_activity" {
+        "(session_id,revision,read_revision,listed)"
+    } else if table == "submissions" && columns == 6 {
         "(id,conversation_id,request_id,payload_hash,sequence,payload)"
     } else if table == "runs" && columns == 6 {
         "(id,conversation_id,session_id,revision,terminal,payload)"

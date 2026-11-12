@@ -280,6 +280,15 @@ impl Chat {
 
     async fn snapshot(&self, id: &str) -> anyhow::Result<Value> {
         let view = self.sessions.conversation_view(id).await?;
+        anyhow::ensure!(listed_session(&view.session), "Conversation not found");
+        self.snapshot_view(id, view).await
+    }
+
+    async fn snapshot_view(
+        &self,
+        id: &str,
+        view: crate::agent::run_view::ConversationView,
+    ) -> anyhow::Result<Value> {
         let mut snapshot = if let Some(run) = &view.run {
             SnapshotProjection::new(run.run.id.clone())
                 .snapshot(run)
@@ -370,16 +379,26 @@ impl Chat {
         self.session_access(id, true).await
     }
 
-    async fn session_access(&self, id: &str, allow_subagent: bool) -> Result<Session, Response> {
-        if id.is_empty()
-            || id.len() > 256
-            || !id
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_'))
-            || uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() != id)
-        {
-            return Err(error(StatusCode::BAD_REQUEST, "Invalid conversation ID"));
+    async fn readable_view(
+        &self,
+        id: &str,
+    ) -> Result<crate::agent::run_view::ConversationView, Response> {
+        validate_conversation_id(id)?;
+        let view = self.sessions.conversation_view(id).await.map_err(|error| {
+            if error.to_string() == "Conversation not found" {
+                self::error(StatusCode::NOT_FOUND, "Conversation not found")
+            } else {
+                internal(error)
+            }
+        })?;
+        if view.session.id().as_str() != id || !listed_session(&view.session) {
+            return Err(error(StatusCode::NOT_FOUND, "Conversation not found"));
         }
+        Ok(view)
+    }
+
+    async fn session_access(&self, id: &str, allow_subagent: bool) -> Result<Session, Response> {
+        validate_conversation_id(id)?;
         let saved = self
             .sessions
             .load(&SessionId::new(id))
@@ -653,6 +672,19 @@ pub(super) fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({"error":message}))).into_response()
 }
 
+fn validate_conversation_id(id: &str) -> Result<(), Response> {
+    if id.is_empty()
+        || id.len() > 256
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b':' | b'-' | b'_'))
+        || uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() != id)
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "Invalid conversation ID"));
+    }
+    Ok(())
+}
+
 pub(crate) fn personal_session(session: &Session) -> bool {
     session.telegram_group().is_none() && personal_session_id(session.id().as_str())
 }
@@ -706,12 +738,7 @@ async fn read(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.readable_session(&id).await?;
-    let view = chat
-        .sessions
-        .conversation_view(&id)
-        .await
-        .map_err(internal)?;
+    let view = chat.readable_view(&id).await?;
     let session = &view.session;
     let root = chat.root_id(&id).await.map_err(internal)?;
     let title_pending = chat.title_jobs.lock().await.contains(&root);
@@ -1122,8 +1149,8 @@ async fn run_snapshot(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    chat.readable_session(&id).await?;
-    Ok(Json(chat.snapshot(&id).await.map_err(internal)?))
+    let view = chat.readable_view(&id).await?;
+    Ok(Json(chat.snapshot_view(&id, view).await.map_err(internal)?))
 }
 
 async fn events(
@@ -1211,6 +1238,17 @@ async fn events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn snapshot_rejects_private_sessions_before_projecting_history() {
+        let data = tempfile::tempdir().unwrap();
+        let chat = super::super::chat_tests::chat(data.path()).await;
+        chat.sessions
+            .save(&Session::new(SessionId::new("companion:private")))
+            .await
+            .unwrap();
+        assert!(chat.snapshot("companion:private").await.is_err());
+    }
 
     #[tokio::test]
     async fn shutdown_finishes_with_chat_observer_still_connected() {

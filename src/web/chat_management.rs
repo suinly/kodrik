@@ -94,6 +94,94 @@ fn page_size() -> usize {
     30
 }
 
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sidebar_listing_preserves_branch_title_date_webhook_without_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let chat = crate::web::chat_tests::chat(dir.path()).await;
+        for (id, title, date) in [
+            ("cli:root", "original", "2026-10-01T10:00:00Z"),
+            (
+                "cli:branch",
+                "  selected   branch  ",
+                "2026-10-02T10:00:00Z",
+            ),
+        ] {
+            let session: Session = serde_json::from_value(json!({
+                "id":id,"messages":[{"User":{"content":title}}],"last_message_at":date,
+                "webhook_instruction":"## Recorded delivery source\n{\"webhook_id\":\"hook\",\"webhook_name\":\"Events\"}\nlarge instructions"
+            })).unwrap();
+            chat.sessions.save(&session).await.unwrap();
+        }
+        chat.sessions
+            .with_connection(|db| {
+                db.execute_batch(
+                    "INSERT INTO web_chat_branches VALUES('cli:branch','cli:root','cli:root',0);
+                INSERT INTO web_chat_selection VALUES('cli:root','cli:branch');
+                INSERT INTO web_chat_pins VALUES('cli:root');",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let search = || Search {
+            q: String::new(),
+            limit: 30,
+            offset: 0,
+            webhooks: true,
+        };
+        let before = list_sessions(&chat, search()).await.unwrap();
+        chat.sessions
+            .with_connection(|db| {
+                db.execute("UPDATE sessions SET payload='{}'", [])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let after = list_sessions(&chat, search()).await.unwrap();
+        assert_eq!(after, before);
+        assert_eq!(after.as_array().unwrap().len(), 1);
+        assert_eq!(after[0]["id"], "cli:branch");
+        assert_eq!(after[0]["root_id"], "cli:root");
+        assert_eq!(after[0]["title"], "selected branch");
+        assert_eq!(after[0]["title_default"], false);
+        assert_eq!(after[0]["updated_at"], "2026-10-02T10:00:00Z");
+        assert_eq!(after[0]["webhook"], json!({"id":"hook","name":"Events"}));
+        assert_eq!(after[0]["pinned"], true);
+        assert_eq!(after[0]["busy"], false);
+    }
+
+    #[tokio::test]
+    async fn sidebar_parents_use_cached_category_without_reading_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        init(&store).await.unwrap();
+        for id in ["cli:parent", "companion:subagent:child"] {
+            let mut session = Session::new(SessionId::new(id));
+            session.webhook_instruction = Some("event".into());
+            store.save(&session).await.unwrap();
+        }
+        let parents = store
+            .with_connection(|db| {
+                db.execute_batch(
+                    "CREATE TABLE subagent_sessions(id TEXT PRIMARY KEY,parent TEXT);
+                INSERT INTO subagent_sessions VALUES('companion:subagent:child','cli:parent');
+                UPDATE sessions SET payload='{}';",
+                )?;
+                session_parents(db, true)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            parents.get("companion:subagent:child").map(String::as_str),
+            Some("cli:parent")
+        );
+    }
+}
+
 // Only link parents visible in the same listing category; private parents remain orphans.
 fn session_parents(db: &Connection, webhooks: bool) -> anyhow::Result<HashMap<String, String>> {
     let exists: bool = db.query_row(
@@ -103,10 +191,12 @@ fn session_parents(db: &Connection, webhooks: bool) -> anyhow::Result<HashMap<St
     if !exists {
         return Ok(HashMap::new());
     }
-    let mut statement = db.prepare("SELECT s.id,coalesce(b.root_id,s.id) FROM sessions s
+    let mut statement = db.prepare(
+        "SELECT s.id,coalesce(b.root_id,s.id) FROM sessions s
+        JOIN web_chat_activity a ON a.session_id=s.id
         LEFT JOIN web_chat_branches b ON b.session_id=s.id
-        WHERE (json_extract(s.payload,'$.webhook_instruction') IS NOT NULL)=?1
-        AND (json_type(s.payload,'$.telegram_group') IS NULL OR json_type(s.payload,'$.telegram_group')='null')")?;
+        WHERE a.webhook_event=?1 AND a.listed=1",
+    )?;
     let visible: HashMap<String, String> = statement
         .query_map([webhooks], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<HashMap<String, String>>>()?
@@ -137,49 +227,87 @@ async fn page_sessions(
     offset: usize,
     webhook_events: bool,
 ) -> anyhow::Result<(Vec<Session>, Vec<String>)> {
-    chat.sessions.with_connection(move |db| {
-        let parents = session_parents(db, webhook_events)?;
-        let mut groups: HashMap<String,(bool,i64)> = HashMap::new();
-        let mut statement = db.prepare("SELECT s.id,coalesce(b.root_id,s.id),s.updated_at,
-            json_type(s.payload,'$.telegram_group') IS NOT NULL AND json_type(s.payload,'$.telegram_group')!='null',
+    chat.sessions
+        .with_connection(move |db| {
+            let parents = session_parents(db, webhook_events)?;
+            let mut groups: HashMap<String, (bool, i64)> = HashMap::new();
+            let mut statement = db.prepare(
+                "SELECT s.id,coalesce(b.root_id,s.id),s.updated_at,
+            NOT a.listed,
             p.root_id IS NOT NULL FROM sessions s
+            JOIN web_chat_activity a ON a.session_id=s.id
             LEFT JOIN web_chat_branches b ON b.session_id=s.id
             LEFT JOIN web_chat_pins p ON p.root_id=coalesce(b.root_id,s.id)
-            WHERE (json_extract(s.payload,'$.webhook_instruction') IS NOT NULL)=?1")?;
-        let mut rows = statement.query([webhook_events])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            if row.get::<_,bool>(3)? || !super::listed_session_id(&id) { continue; }
-            let root: String = row.get(1)?;
-            let updated: i64 = row.get(2)?;
-            let pinned: bool = row.get(4)?;
-            groups.entry(root).and_modify(|entry| entry.1=entry.1.max(updated)).or_insert((pinned,updated));
-        }
-        let mut families: HashMap<String, (bool, i64)> = HashMap::new();
-        for (root, (pinned, updated)) in &groups {
-            let family = parents.get(root).unwrap_or(root);
-            let family_pinned = groups.get(family).is_some_and(|entry| entry.0);
-            families.entry(family.clone()).and_modify(|entry| entry.1 = entry.1.max(*updated))
-                .or_insert((if family == root { *pinned } else { family_pinned }, *updated));
-        }
-        let mut groups: Vec<_> = families.into_iter().collect();
-        groups.sort_by(|(a, av),(b,bv)| bv.cmp(av).then_with(|| a.cmp(b)));
-        let roots: Vec<_> = groups.into_iter().skip(offset).take(limit).map(|(id,_)|id).collect();
-        let included: Vec<_> = roots.iter().cloned().chain(parents.iter()
-            .filter(|(_, parent)| roots.contains(parent)).map(|(child, _)| child.clone())).collect();
-        let mut statement=db.prepare("SELECT s.id,s.payload FROM sessions s
+            WHERE a.webhook_event=?1",
+            )?;
+            let mut rows = statement.query([webhook_events])?;
+            while let Some(row) = rows.next()? {
+                let id: String = row.get(0)?;
+                if row.get::<_, bool>(3)? || !super::listed_session_id(&id) {
+                    continue;
+                }
+                let root: String = row.get(1)?;
+                let updated: i64 = row.get(2)?;
+                let pinned: bool = row.get(4)?;
+                groups
+                    .entry(root)
+                    .and_modify(|entry| entry.1 = entry.1.max(updated))
+                    .or_insert((pinned, updated));
+            }
+            let mut families: HashMap<String, (bool, i64)> = HashMap::new();
+            for (root, (pinned, updated)) in &groups {
+                let family = parents.get(root).unwrap_or(root);
+                let family_pinned = groups.get(family).is_some_and(|entry| entry.0);
+                families
+                    .entry(family.clone())
+                    .and_modify(|entry| entry.1 = entry.1.max(*updated))
+                    .or_insert((
+                        if family == root {
+                            *pinned
+                        } else {
+                            family_pinned
+                        },
+                        *updated,
+                    ));
+            }
+            let mut groups: Vec<_> = families.into_iter().collect();
+            groups.sort_by(|(a, av), (b, bv)| bv.cmp(av).then_with(|| a.cmp(b)));
+            let roots: Vec<_> = groups
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|(id, _)| id)
+                .collect();
+            let included: Vec<_> = roots
+                .iter()
+                .cloned()
+                .chain(
+                    parents
+                        .iter()
+                        .filter(|(_, parent)| roots.contains(parent))
+                        .map(|(child, _)| child.clone()),
+                )
+                .collect();
+            let mut statement = db.prepare(
+                "SELECT s.id,a.listing_payload FROM sessions s
+            JOIN web_chat_activity a ON a.session_id=s.id
             LEFT JOIN web_chat_branches b ON b.session_id=s.id
-            WHERE coalesce(b.root_id,s.id) IN (SELECT value FROM json_each(?1))
-            ORDER BY s.updated_at DESC,s.id")?;
-        let mut rows=statement.query([serde_json::to_string(&included)?])?;
-        let mut sessions=vec![];
-        while let Some(row)=rows.next()? {
-            let session: Session=serde_json::from_slice(&row.get::<_,Vec<u8>>(1)?)?;
-            anyhow::ensure!(session.id().as_str()==row.get::<_,String>(0)?,"Session ID mismatch");
-            sessions.push(session);
-        }
-        Ok((sessions,roots))
-    }).await
+            WHERE a.listed=1 AND coalesce(b.root_id,s.id) IN (SELECT value FROM json_each(?1))
+            ORDER BY s.updated_at DESC,s.id",
+            )?;
+            let mut rows = statement.query([serde_json::to_string(&included)?])?;
+            let mut sessions = vec![];
+            while let Some(row) = rows.next()? {
+                let session: Session = serde_json::from_str(&row.get::<_, String>(1)?)?;
+                anyhow::ensure!(
+                    session.id().as_str() == row.get::<_, String>(0)?,
+                    "Session ID mismatch"
+                );
+                sessions.push(session);
+            }
+            Ok((sessions, roots))
+        })
+        .await
 }
 
 pub(super) async fn list(

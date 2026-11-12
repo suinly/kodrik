@@ -30,10 +30,11 @@ groups, waits 2 seconds, then sends KILL. Processes escaping with `setsid` or
 double-fork and already-submitted external MCP actions are outside that
 containment guarantee. The OS may run old work after wake before cleanup runs.
 
-The current SQLite session schema is **v13**, not the v6 ceiling described in
+The current SQLite session schema is **v16**, not the v6 ceiling described in
 the original storage rollout. Supported older stores upgrade transactionally;
 v12 adds `remote_bindings`/`remote_operations`, and v13 adds
-`remote_tool_attachments`, keyed by run/call. Owner migration preserves those
+`remote_tool_attachments`, keyed by run/call. v14–v16 add chat read markers,
+draft selectors and lightweight sidebar metadata. Owner migration preserves those
 records and existing attachment references; it does not relocate or garbage
 collect referenced source files. Newer schemas are rejected by older binaries.
 Keep a pre-upgrade backup and matching binary for downgrade, never edit the

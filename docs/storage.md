@@ -82,7 +82,7 @@ not mistaken for an empty, successfully migrated database.
 | `SOUL.md` | Owner-editable personality; initialized once, limited to 32768 bytes |
 | `memories/USER.md` | Explicit profile and preferences; 1375 Unicode characters |
 | `memories/MEMORY.md` | Explicit environment facts and conventions; 2200 Unicode characters |
-| `sessions/state.sqlite3` | Session JSON payloads, active-session pointers, durable run/tool state, remote bindings/operations and selected-text attachment metadata; current schema v13 |
+| `sessions/state.sqlite3` | Session JSON payloads, active-session pointers, durable run/tool state, remote bindings/operations, selected-text attachment metadata and lightweight chat listing metadata; current schema v16 |
 | `sessions/attachments/` | Immutable attachment bytes referenced by saved `FileAttachment` paths, including explicitly saved remote text; keep referenced source directories after migration |
 | `datasets/state.sqlite3` | Typed record definitions, values, revisions and idempotent write receipts; see [Datasets](datasets.md) |
 | `datasets/state.sqlite3-wal`, `datasets/state.sqlite3-shm` | Dataset SQLite sidecars; include committed WAL data in backups |
@@ -187,16 +187,21 @@ first run checkpoint. Schema v4 adds `deliveries` with JSON receipts for final a
 Telegram replies. Schema v5 adds a separate `runs.live` partial payload and a transactional view
 revision in schema_meta, advanced by triggers on run/history/inbox/control/delivery/compaction
 changes. Partial flushes do not rewrite Session JSON or checkpoint revisions.
-The current schema ceiling is **v13**. Opening v1–v12 upgrades transactionally;
+The current schema ceiling is **v16**. Opening v1–v15 upgrades transactionally;
 run payload version remains 1 with backwards-compatible optional fields. Older
 binaries reject a newer schema. Schema v6 introduced compaction jobs; v7–v8
 added web-push state/presence; v9–v11 added command audit records/settings/modes;
 v12 adds `remote_bindings` and `remote_operations`; v13 adds
-`remote_tool_attachments` keyed by run/call. Historical v6 rollout measurements
+`remote_tool_attachments` keyed by run/call. v14 adds chat activity/read markers,
+v15 permits active draft selectors, and v16 caches lightweight sidebar metadata
+in `web_chat_activity`. The v16 upgrade reads existing histories once to backfill
+the cache, preserving read markers and full session payloads. Normal sidebar
+refreshes no longer read those histories; text search still scans saved history.
+Historical v6 rollout measurements
 in [Durable recovery](durable-recovery.md) describe that earlier binary, not the
 current compatibility ceiling.
 
-Owner migration accepts v1–v13 and carries compaction jobs, submissions,
+Owner migration accepts v1–v16 and carries compaction jobs, submissions,
 cancellation controls, paused inbox state, delivery receipts, live payloads,
 web-push/audit state and available remote tables, preserving a revision above
 both source clocks. Earlier audit settings are adapted without changing source

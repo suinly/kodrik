@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 15;
+pub(super) const VERSION: i64 = 16;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -234,6 +234,9 @@ impl SqliteSessionStore {
                  END;
                  PRAGMA user_version=15;",
             )?;
+        }
+        if version < 16 {
+            super::activity::migrate_listing(&tx)?;
         }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;

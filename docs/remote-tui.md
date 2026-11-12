@@ -294,9 +294,10 @@ reference. Unsaved local-file rows identify that the file remains on the device
 when disconnected. Existing images retain their `Image.data_url` in session
 JSON (up to 10 MiB per image); this does not add a remote TUI uploader.
 
-The current session SQLite schema is **v13**. Opening an older supported schema
+The current session SQLite schema is **v16**. Opening an older supported schema
 upgrades transactionally: v12 adds remote bindings/operations; v13 adds saved
-remote-tool attachment references. Existing legacy JSON import remains a
+remote-tool attachment references; v14–v16 add chat read markers, draft selectors
+and lightweight sidebar metadata. Existing legacy JSON import remains a
 one-time transaction and preserves original JSON bytes; imported JSON is not
 subsequently authoritative. Remote mode does not copy an existing laptop's
 standalone history or memory to the server. Pair/select server history rather
