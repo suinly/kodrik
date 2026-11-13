@@ -167,6 +167,7 @@ watch([search,showEvents],()=>{
 onBeforeUnmount(()=>{disposed=true;clearTimeout(searchTimer);listRevision++;navigationRevision++})
 const dateFormat = computed(() => new Intl.DateTimeFormat(locale.value,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}))
 const chatUrl = new URL('app/chat', base).pathname
+const browserSidebar = new URLSearchParams(window.location.search).get('browser_sidebar')==='1'
 
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
@@ -175,6 +176,7 @@ function writeLocation() {
   const url=new URL(window.location.href)
   url.pathname=new URL(`app/${event?'chat':section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
   url.search=showEvents.value && !event?'?view=events':''
+  if(browserSidebar) url.searchParams.set('browser_sidebar','1')
   url.hash=''
   if(url.href===window.location.href) return
   window.history.replaceState(window.history.state,'',url)

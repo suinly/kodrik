@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
+import {createTabBridge} from '../utils/browser-tab'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage, type CommandAuditMode } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
 import {compactionActive,formatCompaction} from '../utils/compaction'
@@ -12,6 +13,8 @@ import {useDocumentVisibility, useWindowFocus} from '@vueuse/core'
 const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;active?:boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
 const home = computed(() => !!props.start)
 const homeView = !!props.start
+const tabBridge = createTabBridge(window)
+onBeforeUnmount(()=>tabBridge.dispose())
 const emit = defineEmits<{ saved: [];new:[];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
@@ -431,6 +434,17 @@ async function submit() {
       }
     }
     if (!text.trim() && !selectedFiles.length) return
+    // Preserve the exact existing attachment for uncertain retries; never recapture it.
+    if(!pending) {
+      const context = await tabBridge.capture()
+      if(!mounted) return
+      if(context) {
+        if(selectedFiles.length>=10 || selectedFiles.reduce((size,file)=>size+file.size,context.size)>50_000_000) throw new Error(t("Можно отправить до 10 вложений, суммарно до 50 MB."))
+        selectedFiles.push(context)
+        keys=await fingerprints(selectedFiles)
+        if(!mounted) return
+      }
+    }
     if (!pending) pending = { id: crypto.randomUUID(), text, files: keys }
     sessionStorage.setItem(pendingKey.value, JSON.stringify(pending))
     props.draftState.pendingFiles={id:pending.id,files:selectedFiles}

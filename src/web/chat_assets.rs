@@ -10,7 +10,18 @@ pub(crate) fn available() -> bool {
 }
 
 pub(super) fn index(prefix: &str) -> Response {
-    page(prefix, "")
+    let mut response = page(prefix, "");
+    if let Some(policy) = response
+        .headers_mut()
+        .get_mut(header::CONTENT_SECURITY_POLICY)
+    {
+        let value = policy.to_str().unwrap().replace(
+            "frame-ancestors 'none'",
+            "frame-ancestors chrome-extension://iiajbdommloibgimhfmoojnhknbaklih",
+        );
+        *policy = value.parse().unwrap();
+    }
+    response
 }
 
 pub(super) fn home(prefix: &str, logged_in: bool) -> Response {
@@ -77,4 +88,28 @@ pub(super) fn response(path: &str) -> Response {
          (header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".into())],
         file.contents(),
     ).into_response()
+}
+
+#[cfg(test)]
+mod sidebar_tests {
+    #[test]
+    fn only_chat_html_allows_extension_framing() {
+        for (response, allowed) in [
+            (super::index("/"), true),
+            (super::login("/", "/app/chat", ""), false),
+            (super::home("/", true), false),
+        ] {
+            if response.status() == axum::http::StatusCode::NOT_FOUND {
+                panic!("Build frontend assets before testing framing policy");
+            }
+            let csp = response.headers()[axum::http::header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                csp.contains("frame-ancestors chrome-extension://iiajbdommloibgimhfmoojnhknbaklih"),
+                allowed
+            );
+            assert!(csp.contains("object-src 'none'"));
+        }
+    }
 }

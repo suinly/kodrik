@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Кодрик</title><link rel="stylesheet" href="sidepanel.css"></head>
+<body>
+  <header><strong>Кодрик</strong><button id="settings" title="Настройки подключения">Настройки</button><button id="login">Войти ↗</button></header>
+  <form id="connect">
+    <label for="server">Адрес вашего Кодрика</label>
+    <input id="server" type="url" required placeholder="https://kodrik.example.com/" autocomplete="url">
+    <button type="submit">Подключить</button>
+    <p>Войдите в Кодрик в обычной вкладке. История и ответы будут общими с веб-чатом.</p>
+  </form>
+  <section id="context"><label><input id="include" type="checkbox" checked> Прикрепить открытую вкладку</label><button id="access" hidden>Разрешить чтение сайтов</button><div id="tab" title="Контекст обновляется при отправке"></div><small>Текст или выделение передаются только вместе с вопросом</small></section>
+  <p id="status" role="status"></p>
+  <iframe id="chat" title="Чат Кодрика" hidden allow="clipboard-write"></iframe>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
