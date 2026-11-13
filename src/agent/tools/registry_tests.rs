@@ -227,6 +227,7 @@ async fn mcp_discovery_recovery_loads_the_saved_selection_before_resuming_the_mo
     }
     let registry = registry(1, 1);
     let mut history = vec![Message::User(UserMessage {
+        browser_context: None,
         content: "Read the issue".into(),
         files: vec![],
         images: vec![],

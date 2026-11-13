@@ -28,7 +28,7 @@ pub(crate) use core::session_change_notice;
 pub use core::{Agent, AgentEvent};
 pub use file::FileAttachment;
 pub use image::Image;
-pub use message::{AssistantMessage, UserMessage};
+pub use message::{AssistantMessage, BrowserContext, UserMessage};
 pub use runner::AgentRunner;
 
 #[cfg(test)]

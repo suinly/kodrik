@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
-import {createTabBridge} from '../utils/browser-tab'
+import {createTabBridge,type BrowserContext} from '../utils/browser-tab'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage, type CommandAuditMode } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
 import {compactionActive,formatCompaction} from '../utils/compaction'
@@ -10,10 +10,22 @@ import { CharacterCount } from '@tiptap/extensions/character-count'
 import { Slice } from '@tiptap/pm/model'
 import {useDocumentVisibility, useWindowFocus} from '@vueuse/core'
 
-const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;active?:boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
+const props = defineProps<{ conversation: Conversation; draftState: ConversationDraft; blocked: boolean;browserSidebar?:boolean;active?:boolean;initialSearch?:string;searchOpen?:boolean;start?:()=>Promise<Conversation|undefined> }>()
 const home = computed(() => !!props.start)
 const homeView = !!props.start
 const tabBridge = createTabBridge(window)
+const tabState=ref({enabled:true,title:'Текущая вкладка',url:''})
+const tabExpanded=ref(false)
+const tabPreview=ref<BrowserContext|null>(null)
+const tabPreviewLoading=ref(false)
+const tabPreviewError=ref('')
+tabBridge.subscribe(value=>{tabState.value=value;if(tabPreview.value?.url!==value.url) tabPreview.value=null})
+async function toggleTabPreview(){
+  tabExpanded.value=!tabExpanded.value
+  if(!tabExpanded.value) return
+  tabPreviewLoading.value=true;tabPreviewError.value='';tabPreview.value=null
+  try {tabPreview.value=await tabBridge.preview()} catch(error){tabPreviewError.value=messageOf(error)} finally {tabPreviewLoading.value=false}
+}
 onBeforeUnmount(()=>tabBridge.dispose())
 const emit = defineEmits<{ saved: [];new:[];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
@@ -21,7 +33,7 @@ const searchInput=useTemplateRef('searchInput')
 const matchIndex=ref(0)
 const matches=computed(()=>matchingMessages(snapshot.value?.messages ?? [],search.value))
 const editingMessage=ref<string|null>(null)
-type Pending = { id: string; text: string; files?: string[] }
+type Pending = { id: string; text: string; files?: string[];browser_context?:BrowserContext|null }
 const pendingKey = computed(() => `kodrik.pending.${props.conversation.id}`)
 let pending: Pending | null = null
 try { pending = JSON.parse(sessionStorage.getItem(pendingKey.value) || 'null') } catch {}
@@ -73,7 +85,7 @@ const hasDraft = computed(() => !!draft.value.trim() || !!files.value.length)
 const hasInput = computed(() => hasDraft.value || !!pending)
 const superseded = computed(()=>supersededDocuments(snapshot.value?.messages ?? []))
 const queuedMessages = computed<ChatMessage[]>(()=>(snapshot.value?.queued ?? []).map((item,index)=>({
-  id:item.id,role:'user',parts:[
+  id:item.id,role:'user',browser_context:item.browser_context,parts:[
     {type:'text',text:item.text,format:(item.webhook ?? (props.conversation.webhook && !snapshot.value?.messages.some(message=>message.role==='user') && index===0)) ? 'code' : undefined},
     ...(item.files ?? []).map(filename=>({type:'file' as const,filename,mediaType:'application/octet-stream'})),
     ...Array.from({length:item.photos ?? 0},(_,index)=>({type:'file' as const,filename:t("Фото {0}", index+1),mediaType:'image/png'})),
@@ -232,15 +244,20 @@ async function reload(block = false) {
   }
 }
 
+let observation:AbortController|undefined
 async function observe() {
+  observation?.abort()
+  const current=new AbortController()
+  observation=current
+  const signal=AbortSignal.any([controller.signal,current.signal])
   let delay = 500
-  while (!controller.signal.aborted) {
+  while (!signal.aborted) {
     try {
-      const response = await checkedFetch(endpoint(`sessions/${props.conversation.id}/run`), { signal: controller.signal })
+      const response = await checkedFetch(endpoint(`sessions/${props.conversation.id}/run`), { signal })
       receive(await response.json())
-      await watchSnapshots(props.conversation.id, controller.signal, view => { receive(view); delay = 500 })
+      await watchSnapshots(props.conversation.id, signal, view => { receive(view); delay = 500 })
     } catch (error) {
-      if (controller.signal.aborted) break
+      if (signal.aborted) break
       if (error instanceof ConversationNotFoundError) {emit('removed');break}
       if (error instanceof AuthenticationError) {
         authExpired.value = true
@@ -249,11 +266,15 @@ async function observe() {
         break
       }
       connection.value = t("Соединение потеряно, работа продолжается")
-      await backoff(delay, controller.signal)
+      await backoff(delay, signal)
       delay = Math.min(delay * 2, 8000)
     }
   }
 }
+// A backgrounded iframe can retain a silent stream; refresh canonical state on return.
+watch([visibility,focused],([visible,focus],[previousVisible,previousFocus])=>{
+  if(props.active && !home.value && visible==='visible' && (previousVisible!=='visible' || focus && !previousFocus)) void observe()
+})
 onMounted(() => {
   document.addEventListener('keydown', recoverInputFocus, {signal:controller.signal})
   searchObserver = new MutationObserver(highlightSearch)
@@ -289,7 +310,7 @@ const tokenUsage=computed(()=>snapshot.value?.token_usage)
 const contextTokens=computed(()=>snapshot.value?.context_tokens)
 const contextLimit=computed(()=>snapshot.value?.context_limit)
 const contextCompactionThreshold=computed(()=>snapshot.value?.context_compaction_threshold)
-defineExpose({focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment,tokenUsage,contextTokens,contextLimit,contextCompactionThreshold})
+defineExpose({openBrowserSettings:()=>tabBridge.settings(),focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment,tokenUsage,contextTokens,contextLimit,contextCompactionThreshold})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
   if(!editor) return
   // UEditor applies options only at creation; keep its live instance in sync.
@@ -434,18 +455,12 @@ async function submit() {
       }
     }
     if (!text.trim() && !selectedFiles.length) return
-    // Preserve the exact existing attachment for uncertain retries; never recapture it.
+    // Preserve this exact snapshot for uncertain retries; never recapture it.
     if(!pending) {
-      const context = await tabBridge.capture()
+      const browser_context=await tabBridge.capture()
       if(!mounted) return
-      if(context) {
-        if(selectedFiles.length>=10 || selectedFiles.reduce((size,file)=>size+file.size,context.size)>50_000_000) throw new Error(t("Можно отправить до 10 вложений, суммарно до 50 MB."))
-        selectedFiles.push(context)
-        keys=await fingerprints(selectedFiles)
-        if(!mounted) return
-      }
+      pending = { id: crypto.randomUUID(), text, files: keys, browser_context }
     }
-    if (!pending) pending = { id: crypto.randomUUID(), text, files: keys }
     sessionStorage.setItem(pendingKey.value, JSON.stringify(pending))
     props.draftState.pendingFiles={id:pending.id,files:selectedFiles}
     draft.value = ''
@@ -456,11 +471,12 @@ async function submit() {
     follow.value = true
     loading.value = true
     sent = true
-    const body = selectedFiles.length ? new FormData() : JSON.stringify({ id: props.conversation.id, request_id: pending.id, text: pending.text })
+    const body = selectedFiles.length ? new FormData() : JSON.stringify({ id: props.conversation.id, request_id: pending.id, text: pending.text, browser_context:pending.browser_context })
     if (body instanceof FormData) {
       body.set('id', props.conversation.id)
       body.set('request_id', pending.id)
       body.set('text', pending.text)
+      if(pending.browser_context) body.set('browser_context',JSON.stringify(pending.browser_context))
       selectedFiles.forEach(file => body.append('files', file, file.name))
     }
     // The observer's abort signal must never cancel a durable submission.
@@ -561,7 +577,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
 </script>
 
 <template>
-  <section :aria-label="t('Разговор с Кодриком')" class="flex min-h-0 flex-1 flex-col">
+  <section :aria-label="t('Разговор с Кодриком')" class="flex min-h-0 flex-1 flex-col" :class="{'sidebar-conversation':browserSidebar}">
     <div v-if="searchOpen || search.trim()" class="mx-auto flex w-full max-w-3xl shrink-0 items-center gap-1 px-4 py-2 sm:px-6">
       <UInput ref="searchInput" v-model="search" :aria-label="t('Поиск в диалоге')" :placeholder="t('Найти в диалоге…')" icon="i-lucide-search" size="sm" class="min-w-0 flex-1" @keydown.enter.prevent="showMatch(matchIndex+1)" @keydown.esc="closeSearch" />
       <template v-if="search.trim()">
@@ -574,10 +590,10 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
     <div class="conversation-layout" :class="{'conversation-layout-home':homeView,'conversation-layout-centered':home && !submitting}">
     <div class="relative flex min-h-0 flex-1 flex-col">
       <div ref="transcript" data-testid="chat-transcript" class="min-h-0 flex-1 overflow-y-auto overscroll-contain" :class="{'flex flex-col justify-end':home}" @scroll="trackScroll">
-        <div ref="transcriptContent" class="mx-auto w-full max-w-3xl space-y-5 px-4 py-6 sm:px-6">
+        <div ref="transcriptContent" class="conversation-messages mx-auto w-full max-w-3xl space-y-5 px-4 py-6 sm:px-6">
           <p v-if="loading" role="status" class="text-muted text-sm"> {{ t("Загружаю историю…") }} </p>
-          <div v-if="!loading && !submitting && !snapshot?.messages.length && !queuedMessages.length && !snapshot?.command_approvals?.length" class="text-center space-y-3" :class="home ? 'pb-4' : 'py-12'">
-            <KodrikLogo v-if="home" class="mx-auto mb-5 h-10" />
+          <div v-if="!loading && !submitting && !snapshot?.messages.length && !queuedMessages.length && !snapshot?.command_approvals?.length" class="conversation-empty text-center space-y-3" :class="home ? 'pb-4' : 'py-12'">
+            <KodrikLogo v-if="home && !browserSidebar" class="mx-auto mb-5 h-10" />
             <h1 class="text-2xl font-semibold text-highlighted">{{ home ? t('С чего начнём?') : t('Есть мысль?') }}</h1>
             <p class="text-muted">{{ home ? t('Задайте вопрос, поделитесь идеей или отправьте файл и фото — разберёмся вместе.') : t('Начните с вопроса, задачи, файла или фотографии.') }}</p>
           </div>
@@ -640,6 +656,25 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
           </template>
         </UAccordion>
       </div>
+      <section v-if="browserSidebar" data-testid="tab-context" class="relative shrink-0 rounded-lg border border-default bg-default">
+        <div v-if="tabExpanded" id="tab-context-preview" class="absolute bottom-full inset-x-0 mb-2 max-h-[45vh] overflow-auto rounded-lg border border-default bg-default p-3 shadow-lg" role="region" aria-label="Содержимое вкладки">
+          <p v-if="tabPreviewLoading" role="status" class="text-sm text-muted">Читаю вкладку…</p>
+          <p v-else-if="tabPreviewError" role="alert" class="text-sm text-error">{{ tabPreviewError }}</p>
+          <template v-else-if="tabPreview">
+            <p class="text-sm font-medium break-words">{{ tabPreview.title }}</p>
+            <p class="mt-1 text-xs text-muted break-all">{{ tabPreview.url }}</p>
+            <p v-if="tabPreview.truncated" class="mt-1 text-xs text-muted">Снимок усечён</p>
+            <pre class="mt-3 whitespace-pre-wrap break-words text-xs">{{ tabPreview.text }}</pre>
+          </template>
+        </div>
+        <div class="flex min-w-0 items-center gap-2 px-2 py-1">
+          <USwitch :model-value="tabState.enabled" aria-label="Включить контекст вкладки" size="sm" @update:model-value="value=>tabBridge.toggle(value)" />
+          <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-xs py-1" :aria-expanded="tabExpanded" aria-controls="tab-context-preview" @click="toggleTabPreview">
+            <span class="min-w-0 flex-1 truncate" :title="tabState.url">{{ tabState.enabled?'Контекст:':'Без контекста:' }} {{ tabState.title }}</span>
+            <UIcon :name="tabExpanded?'i-lucide-chevron-down':'i-lucide-chevron-up'" class="size-4 shrink-0" />
+          </button>
+        </div>
+      </section>
       <p v-if="conversation.subagent" class="text-center text-sm text-muted">{{ t('Сабагент · только просмотр') }}</p>
       <UChatPrompt v-else v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
         class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
@@ -678,6 +713,17 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
 </template>
 
 <style scoped>
+.sidebar-conversation { min-width: 0; }
+.sidebar-conversation .conversation-layout-home { display: flex; }
+.sidebar-conversation .conversation-messages { padding: 1.25rem 1rem; }
+.sidebar-conversation .conversation-empty { padding: 2rem 0.5rem; text-align: left; }
+.sidebar-conversation .conversation-empty h1 { font-size: 1.25rem; line-height: 1.75rem; letter-spacing: -0.025em; }
+.sidebar-conversation .conversation-empty p { font-size: 0.875rem; line-height: 1.6; }
+.sidebar-conversation [data-testid='chat-composer'] { padding: 0.75rem; }
+.sidebar-conversation .chat-prompt { border-radius: 1rem; padding: 0.5rem; }
+.sidebar-conversation .chat-editor :deep(.tiptap) { font-size: 0.875rem; }
+.sidebar-conversation .chat-keyboard-hint { display: none; }
+
 .chat-editor :deep(table) { border-collapse: collapse; width: 100%; }
 .chat-editor :deep(th), .chat-editor :deep(td) { border: 1px solid var(--ui-border); padding: 0.125rem 0.5rem; min-width: 5rem; }
 .chat-editor :deep(ul[data-type='taskList']) { list-style: none; padding: 0; }

@@ -83,6 +83,7 @@ async fn telegram_login_retains_user_identity_after_configured_owner_changes() {
             .unwrap();
     let mut old_history = Session::new(SessionId::new("old-owner-history"));
     old_history.push(Message::User(UserMessage {
+        browser_context: None,
         content: "USER 42 HISTORY".into(),
         files: vec![],
         images: vec![],
@@ -107,6 +108,7 @@ async fn telegram_login_retains_user_identity_after_configured_owner_changes() {
         .unwrap();
     let mut owner_history = Session::new(SessionId::new("new-owner-history"));
     owner_history.push(Message::User(UserMessage {
+        browser_context: None,
         content: "NEW OWNER SECRET".into(),
         files: vec![],
         images: vec![],
@@ -360,6 +362,7 @@ async fn web_continues_legacy_history_without_telegram_delivery_or_following_cli
     for id in ["telegram:main:42", "cli:main"] {
         let mut original = Session::new(SessionId::new(id));
         original.push(Message::User(UserMessage {
+            browser_context: None,
             content: "Earlier device".into(),
             files: vec![],
             images: vec![],
@@ -374,6 +377,7 @@ async fn web_continues_legacy_history_without_telegram_delivery_or_following_cli
         admit(
             state.clone(),
             Input {
+                browser_context: None,
                 id: id.into(),
                 request_id: new_request_id(),
                 text: "Continue on web".into(),
@@ -468,6 +472,7 @@ async fn shared_owner_history_accepts_legacy_personal_session_ids() {
     ] {
         let mut session = Session::new(SessionId::new(&id));
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: "Shared history".into(),
             images: vec![],
             files: vec![],

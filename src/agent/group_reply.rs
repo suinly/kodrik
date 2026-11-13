@@ -13,7 +13,7 @@ impl AgentRunner {
         crate::agent::run_state::CURRENT_EXECUTION.scope(_guard.ownership.clone(), async {
         let mut session = self.load_session(id.clone()).await?;
         session.merge_telegram_group(message.telegram_group.as_ref());
-        let input = UserMessage {
+        let input = UserMessage { browser_context: message.browser_context.clone(),
             content: message.text.clone(),
             images: message.images.clone(),
             files: message.files.clone(),
@@ -69,6 +69,7 @@ impl AgentRunner {
                     self.observe_group_input(
                         &mut session,
                         UserMessage {
+                            browser_context: message.browser_context,
                             content: message.text,
                             images: message.images,
                             files: message.files,

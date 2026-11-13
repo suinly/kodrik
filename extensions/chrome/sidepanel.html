@@ -2,15 +2,17 @@
 <html lang="ru">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Кодрик</title><link rel="stylesheet" href="sidepanel.css"></head>
 <body>
-  <header><strong>Кодрик</strong><button id="settings" title="Настройки подключения">Настройки</button><button id="login">Войти ↗</button></header>
-  <form id="connect">
-    <label for="server">Адрес вашего Кодрика</label>
+  <dialog id="connection" aria-labelledby="connection-title">
+    <div class="dialog-heading"><h1 id="connection-title">Настройки подключения</h1><button id="close-connection" type="button" aria-label="Закрыть настройки">×</button></div>
+    <form id="connect">
+    <div class="form-heading">Ваш Кодрик <span>Общая история, отдельный чат для вкладки</span></div>
+    <label for="server">Адрес сервера</label>
     <input id="server" type="url" required placeholder="https://kodrik.example.com/" autocomplete="url">
-    <button type="submit">Подключить</button>
-    <p>Войдите в Кодрик в обычной вкладке. История и ответы будут общими с веб-чатом.</p>
-  </form>
-  <section id="context"><label><input id="include" type="checkbox" checked> Прикрепить открытую вкладку</label><button id="access" hidden>Разрешить чтение сайтов</button><div id="tab" title="Контекст обновляется при отправке"></div><small>Текст или выделение передаются только вместе с вопросом</small></section>
-  <p id="status" role="status"></p>
+    <div class="form-actions"><button type="submit" class="primary">Подключить</button><button type="button" id="login">Войти ↗</button></div>
+    <p>Вход откроется в обычной вкладке браузера.</p>
+    </form>
+  </dialog>
+  <div id="notice"><p id="status" role="status"></p><button id="access" hidden>Разрешить чтение сайтов</button></div>
   <iframe id="chat" title="Чат Кодрика" hidden allow="clipboard-write"></iframe>
   <script type="module" src="sidepanel.js"></script>
 </body>

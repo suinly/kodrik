@@ -315,6 +315,7 @@ mod tests {
 
     fn user(text: &str) -> Message {
         Message::User(UserMessage {
+            browser_context: None,
             content: text.into(),
             files: vec![],
             images: vec![],
@@ -533,6 +534,7 @@ mod tests {
         )
         .unwrap();
         source.push(Message::User(UserMessage {
+            browser_context: None,
             content: "second".into(),
             files: vec![file.clone()],
             images: vec![Image {
@@ -656,6 +658,7 @@ mod tests {
                 files.push(file);
             }
             source.push(Message::User(UserMessage {
+                browser_context: None,
                 content: "original".into(),
                 files,
                 images: vec![],

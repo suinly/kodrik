@@ -173,6 +173,7 @@ X-Tenant = "test-tenant"
             .run(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     content: "probe".into(),
                     images: vec![],
                     files: vec![],
@@ -268,6 +269,7 @@ async fn mcp_http_call_waits_for_approval_before_contacting_server() {
                 .run_durable(
                     &mut session,
                     UserMessage {
+                        browser_context: None,
                         content: "list issues".into(),
                         files: vec![],
                         images: vec![],

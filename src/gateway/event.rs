@@ -16,6 +16,8 @@ pub struct IncomingMessage {
     #[serde(skip)]
     pub(crate) admission:
         Option<std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_context: Option<crate::agent::BrowserContext>,
     pub text: String,
     pub is_group: bool,
     pub guest_query_id: Option<String>,
@@ -50,6 +52,7 @@ impl IncomingMessage {
                 interface,
                 conversation_id: conversation_id.into(),
             },
+            browser_context: None,
             text: text.into(),
             is_group: false,
             guest_query_id: None,

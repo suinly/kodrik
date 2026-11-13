@@ -828,6 +828,8 @@ pub(super) struct Input {
     #[serde(default = "new_request_id")]
     request_id: String,
     text: String,
+    #[serde(default)]
+    browser_context: Option<crate::agent::BrowserContext>,
 }
 
 fn new_request_id() -> String {
@@ -884,7 +886,14 @@ async fn admit_message(
     uploads: Vec<super::chat_upload::Upload>,
     from_tui: bool,
 ) -> Result<Value, Response> {
-    if (input.text.trim().is_empty() && uploads.is_empty()) || input.text.len() > 32 * 1024 {
+    if let Some(context) = &input.browser_context {
+        context
+            .validate()
+            .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
+    }
+    if (input.text.trim().is_empty() && uploads.is_empty() && input.browser_context.is_none())
+        || input.text.len() > 32 * 1024
+    {
         return Err(error(
             StatusCode::BAD_REQUEST,
             "Message must contain text or attachments; text limit is 32768 bytes",
@@ -921,6 +930,7 @@ async fn admit_message(
         &input.id,
         &input.text,
     );
+    message.browser_context = input.browser_context;
     message.request_id = input.request_id.clone();
     message.from_tui = from_tui;
     let directory = chat.attachment_directory.join(&input.id);
@@ -1325,6 +1335,7 @@ mod tests {
         let mut source = Session::new(SessionId::new(&id));
         source.push(crate::agent::message::Message::User(
             crate::agent::UserMessage {
+                browser_context: None,
                 content: "source question".into(),
                 images: vec![],
                 files: vec![],

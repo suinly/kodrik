@@ -207,6 +207,7 @@ async fn background_session_cannot_inherit_even_an_explicit_scope() {
             agent.run(
                 &mut session,
                 crate::agent::UserMessage {
+                    browser_context: None,
                     content: "inspect".into(),
                     images: vec![],
                     files: vec![],
@@ -458,6 +459,7 @@ async fn agent_refreshes_live_overlay_without_mutating_session_snapshots() {
                 agent.run(
                     &mut session,
                     crate::agent::UserMessage {
+                        browser_context: None,
                         content: "inspect".into(),
                         images: vec![],
                         files: vec![],
@@ -485,6 +487,7 @@ async fn agent_refreshes_live_overlay_without_mutating_session_snapshots() {
             agent.run(
                 &mut other,
                 crate::agent::UserMessage {
+                    browser_context: None,
                     content: "inspect".into(),
                     images: vec![],
                     files: vec![],

@@ -574,6 +574,7 @@ impl Chat {
             }
             ChatCommand::Send { request_id, text } => {
                 let input = Input {
+                    browser_context: None,
                     id: id.as_str().into(),
                     request_id: request_id.to_string(),
                     text,
@@ -594,6 +595,7 @@ impl Chat {
                 .map_err(|e| internal(e.into()))?
                 .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
                 let input = Input {
+                    browser_context: None,
                     id: id.as_str().into(),
                     request_id: request_id.to_string(),
                     text,

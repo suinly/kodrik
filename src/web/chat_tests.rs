@@ -732,6 +732,7 @@ async fn fake_subagents_waits_for_running_child_not_first_completed_result() {
     use crate::agent::message::ToolResult;
     let messages = vec![
         Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: "subagents".into(),
             images: vec![],
             files: vec![],
@@ -944,6 +945,7 @@ impl Fixture {
             if store.load(&id).await.unwrap().is_none() {
                 let mut session = crate::agent::session::Session::new(id);
                 session.push(Message::User(crate::agent::UserMessage {
+                    browser_context: None,
                     content: "История из Telegram".into(),
                     files: vec![],
                     images: vec![],
@@ -1392,6 +1394,7 @@ async fn chat_conversation_pages_keep_pins_branches_and_old_history_search() {
         let mut session =
             crate::agent::session::Session::new(SessionId::new(format!("paged-{index:03}")));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: if index == 2 {
                 "Исторический маяк".into()
             } else {
@@ -2905,6 +2908,7 @@ async fn chat_recovered_runs_share_four_worker_limit() {
         let id = uuid::Uuid::new_v4().to_string();
         let mut session = Session::new(SessionId::new(&id));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: "wait".into(),
             files: vec![],
             images: vec![],
@@ -3387,4 +3391,147 @@ async fn activity_counts_unread_roots_in_both_categories_beyond_sidebar_pages() 
             json!({"busy":false,"unread":chats+events>0,"unread_chats":chats,"unread_events":events})
         );
     }
+}
+
+fn browser_context_fixture() -> Value {
+    json!({"url":"https://example.org/article", "title":"Article", "text":"Untrusted page content", "source":"selection", "captured_at":"2026-11-13T16:00:00Z", "truncated":false})
+}
+
+#[tokio::test]
+async fn browser_context_roundtrips_without_becoming_an_attachment() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let request = uuid::Uuid::new_v4();
+    let context = browser_context_fixture();
+    let payload = json!({"id":id,"request_id":request,"text":"hello","browser_context":context});
+    for _ in 0..2 {
+        let response = f
+            .request(reqwest::Method::POST, "send")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    }
+    let history = f.idle(&id).await;
+    let users: Vec<_> = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .collect();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["browser_context"], context);
+    assert_eq!(users[0]["parts"], json!([{"type":"text","text":"hello"}]));
+    let mut changed = payload.clone();
+    changed["browser_context"]["text"] = json!("changed");
+    assert_eq!(
+        f.request(reqwest::Method::POST, "send")
+            .json(&changed)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+}
+
+#[tokio::test]
+async fn browser_context_validates_metadata_and_utf8_budget() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    for (field, value) in [
+        ("url", json!("file:///etc/passwd")),
+        ("url", json!("https://user:password@example.org")),
+        ("url", json!("not a url")),
+        ("source", json!("instruction")),
+        ("captured_at", json!("yesterday")),
+        ("text", json!("я".repeat(50_000))),
+    ] {
+        let mut context = browser_context_fixture();
+        context[field] = value;
+        let response = f
+            .request(reqwest::Method::POST, "send")
+            .json(&json!({"id":id,"text":"hello","browser_context":context}))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_client_error(),
+            "{field}: {}",
+            response.status()
+        );
+    }
+    let mut context = browser_context_fixture();
+    context["text"] = json!("x".repeat(90_000));
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .json(&json!({"id":id,"text":"hello","browser_context":context}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    f.idle(&id).await;
+}
+
+#[tokio::test]
+async fn browser_context_multipart_with_real_file_and_queued_snapshot() {
+    use crate::agent::{
+        inbox::{BusyMode, SubmissionRequest},
+        session::SessionId,
+    };
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let context = browser_context_fixture();
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .multipart(
+            reqwest::multipart::Form::new()
+                .text("id", id.clone())
+                .text("text", "hello")
+                .text("browser_context", context.to_string())
+                .part(
+                    "files",
+                    reqwest::multipart::Part::bytes(b"real attachment".to_vec())
+                        .file_name("notes.txt"),
+                ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let history = f.idle(&id).await;
+    assert_eq!(history["messages"][0]["browser_context"], context);
+    assert_eq!(history["messages"][0]["parts"][1]["filename"], "notes.txt");
+    let branch_id = uuid::Uuid::new_v4().to_string();
+    let response = f
+        .request(
+            reqwest::Method::POST,
+            &format!("sessions/{id}/messages/0/edit"),
+        )
+        .json(&json!({"request_id":branch_id,"text":"edited question"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let edited = f.idle(&branch_id).await;
+    assert_eq!(edited["messages"][0]["browser_context"], context);
+    assert_eq!(edited["messages"][0]["parts"][1]["filename"], "notes.txt");
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    let mut message = crate::gateway::IncomingMessage::new(
+        crate::gateway::InterfaceId("web".into()),
+        &id,
+        "queued",
+    );
+    message.browser_context = Some(serde_json::from_value(context.clone()).unwrap());
+    let request = SubmissionRequest::new(&SessionId::new(&id), message, BusyMode::Steer);
+    let original_hash = request.hash().unwrap();
+    let saved = store.submit(request.clone()).await.unwrap();
+    assert_eq!(saved.request.hash().unwrap(), original_hash);
+    assert_eq!(
+        serde_json::to_value(&saved.request.message.browser_context).unwrap(),
+        context
+    );
+    let queued = store.conversation_view(&id).await.unwrap();
+    assert_eq!(queued.queued[0]["browser_context"], context);
 }

@@ -169,6 +169,12 @@ const dateFormat = computed(() => new Intl.DateTimeFormat(locale.value,{day:'num
 const chatUrl = new URL('app/chat', base).pathname
 const browserSidebar = new URLSearchParams(window.location.search).get('browser_sidebar')==='1'
 
+function notifySidebarLocation(url:URL) {
+  if(browserSidebar && window.parent!==window && section.value==='chat') {
+    window.parent.postMessage({type:'kodrik-tab-location',path:url.pathname},'chrome-extension://iiajbdommloibgimhfmoojnhknbaklih')
+  }
+}
+
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
   const event=showEvents.value && selected.value?.webhook ? selected.value : null
@@ -178,6 +184,7 @@ function writeLocation() {
   url.search=showEvents.value && !event?'?view=events':''
   if(browserSidebar) url.searchParams.set('browser_sidebar','1')
   url.hash=''
+  notifySidebarLocation(url)
   if(url.href===window.location.href) return
   window.history.replaceState(window.history.state,'',url)
 }
@@ -229,7 +236,10 @@ async function restoreLocation() {
     }
   } finally {
     await nextTick()
-    if(revision===navigationRevision) restoring.value=false
+    if(revision===navigationRevision) {
+      restoring.value=false
+      if(!locationError.value) notifySidebarLocation(new URL(window.location.href))
+    }
   }
 }
 watch(()=>wakeups.selected,()=>{
@@ -531,7 +541,10 @@ onMounted(() => {
     window.removeEventListener('pagehide',clearPresence)
   })
   const target=section.value==='chat'?Promise.resolve():restoreLocation()
-  void Promise.all([refresh(),target]).finally(() => { initializing.value = false })
+  void Promise.all([refresh(),target]).finally(() => {
+    initializing.value = false
+    if(!restoring.value && !locationError.value) notifySidebarLocation(new URL(window.location.href))
+  })
   const viewport = window.visualViewport
   const updateViewport = () => {
     // Safari's keyboard shrinks the visual viewport, not the layout viewport.
@@ -566,7 +579,7 @@ onMounted(() => {
   </DefineRail>
   <div aria-hidden="true" class="chat-screen-edge top-0 lg:hidden" :style="{backgroundColor}" />
   <div aria-hidden="true" class="chat-screen-edge bottom-0 lg:hidden" :style="{backgroundColor}" />
-  <UDashboardGroup unit="rem" class="chat-viewport bg-default" :style="{backgroundColor:desktop?undefined:backgroundColor}"
+  <UDashboardGroup unit="rem" class="chat-viewport bg-default" :class="{'browser-sidebar':browserSidebar}" :style="{backgroundColor:desktop?undefined:backgroundColor}"
     @touchstart.passive="startMenuSwipe" @touchmove="moveMenuSwipe" @touchend="endMenuSwipe" @touchcancel="endMenuSwipe">
     <aside class="hidden h-full w-14 shrink-0 flex-col items-center border-r border-default bg-muted/40 py-3 lg:flex">
       <ReuseRail />
@@ -666,13 +679,14 @@ onMounted(() => {
 
     <UDashboardPanel id="chat" class="bg-default dark:[--ui-bg:#23273a]" :ui="{root:'min-h-0',body:'min-h-0 p-0 sm:p-0 overflow-hidden'}">
       <template #header>
-        <UDashboardNavbar as="header" :title="mainTitle">
+        <UDashboardNavbar as="header" :title="browserSidebar && viewingConversation ? undefined : mainTitle" :class="{'browser-sidebar-navbar':browserSidebar}"
+          :ui="browserSidebar ? {root:'h-12 min-h-12 flex-nowrap gap-1 px-3',left:'min-w-0 flex-none',right:'min-w-0 flex-1 justify-end gap-1'} : undefined">
           <template #left>
             <div v-if="section==='pages' && selectedPage" class="flex min-w-0 items-center gap-1.5">
               <UButton icon="i-lucide-arrow-left" :aria-label="t('Вернуться в диалог')" :title="t('Вернуться в диалог')" color="neutral" variant="ghost" @click="closePage" />
               <h1 class="min-w-0 truncate font-semibold text-highlighted">{{ selectedPage.title }}</h1>
             </div>
-            <div v-else-if="viewingConversation" class="conversation-heading hidden sm:flex min-w-0 items-center gap-1.5">
+            <div v-else-if="viewingConversation && !browserSidebar" class="conversation-heading min-w-0 items-center gap-1.5" :class="browserSidebar ? 'flex flex-1' : 'hidden sm:flex'">
               <div class="min-w-0 flex-1 sm:flex sm:items-center sm:gap-1.5">
               <h1 class="min-w-0 truncate font-semibold text-highlighted">
                 <UChatShimmer v-if="selected?.title_pending" :text="selected.title" data-testid="navbar-title-shimmer" :aria-label="t('Создаю название диалога')" class="truncate motion-reduce:animate-none" />
@@ -684,9 +698,9 @@ onMounted(() => {
               </div>
               <UButton v-if="selected" icon="i-lucide-pencil" :aria-label="t('Переименовать диалог')" color="neutral" variant="ghost" size="sm" class="conversation-rename shrink-0" @click="manage(selected,'rename')" />
             </div>
-            <h1 v-else class="min-w-0 truncate font-semibold text-highlighted">{{ mainTitle }}</h1>
+            <h1 v-else-if="!viewingConversation || !browserSidebar" class="min-w-0 truncate font-semibold text-highlighted">{{ mainTitle }}</h1>
           </template>
-          <template #toggle><UDashboardSidebarToggle :aria-label="menuLabel" :disabled="webhooks.saving" size="xl" /></template>
+          <template #toggle><UDashboardSidebarToggle :aria-label="menuLabel" :disabled="webhooks.saving" :size="browserSidebar ? 'sm' : 'xl'" /></template>
           <template #right>
             <template v-if="section==='pages' && selectedPage">
               <UButton icon="i-lucide-refresh-cw" :aria-label="t('Обновить страницу')" :title="t('Обновить страницу')" color="neutral" variant="ghost" @click="pageRevision++" />
@@ -705,8 +719,10 @@ onMounted(() => {
               </UPopover>
               <CommandAuditMenu compact-mobile :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
+              <UButton v-if="browserSidebar" icon="i-lucide-settings" aria-label="Настройки расширения" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
               <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
             </template>
+            <UButton v-else-if="browserSidebar && viewingConversation" icon="i-lucide-settings" aria-label="Настройки расширения" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
           </template>
         </UDashboardNavbar>
       </template>
@@ -740,7 +756,7 @@ onMounted(() => {
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" @new="newDraft" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :browser-sidebar="browserSidebar" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" @new="newDraft" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>
@@ -771,6 +787,10 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.browser-sidebar { --ui-header-height: 3rem; }
+.browser-sidebar-navbar .conversation-heading h1 { font-size: 0.875rem; line-height: 1.5rem; }
+.browser-sidebar-navbar .conversation-heading > div { min-width: 0; }
+
 @media (hover: hover) and (pointer: fine) {
   .conversation-rename { opacity: 0; }
   .conversation-heading:hover .conversation-rename,

@@ -1,5 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+const pageContext={url:'https://example.com/',title:'Example',text:'Page content',source:'page',captured_at:'2026-11-13T17:00:00.000Z',truncated:false};
+
 import {createTabBridge} from '../app/utils/browser-tab.ts';
 
 function fixture() {
@@ -17,22 +19,22 @@ test('bridge rejects spoofed origins/sources and fails closed without handshake'
   await assert.rejects(()=>bridge.capture(),/подключ/);
   bridge.dispose();
 });
-test('capture matches exact request and creates bounded text attachment; disabled capture is empty',async()=>{
+test('capture matches exact request and returns structured browser context; disabled capture is empty',async()=>{
   const {bridge,deliver,parent,listeners}=fixture();
   deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
   const pending=bridge.capture();
   const request=parent.sent.at(-1).message;
   deliver({type:'kodrik-tab-result',channel:'other',id:request.id,context:'bad'});
   deliver({type:'kodrik-tab-result',channel:'x',id:'other',context:'bad'});
-  deliver({type:'kodrik-tab-result',channel:'x',id:request.id,context:'UNTRUSTED page'});
-  const file=await pending;
-  assert.equal(file.name,'browser-tab.txt');assert.equal(file.type,'text/plain');assert.equal(await file.text(),'UNTRUSTED page');
+  deliver({type:'kodrik-tab-result',channel:'x',id:request.id,context:pageContext});
+  const context=await pending;
+  assert.deepEqual(context,pageContext);
   deliver({type:'kodrik-tab-init',channel:'x',enabled:false});
   assert.equal(await bridge.capture(),null);
   bridge.dispose();assert.equal(listeners.size,0);
 });
 test('capture reports errors, invalid payload and timeout instead of sending without context',async()=>{
-  for(const result of [{error:'Permission denied'},{context:'я'.repeat(100001)},{context:42}]) {
+  for(const result of [{error:'Permission denied'},{context:'я'.repeat(100001)},{context:42},{context:{...pageContext,url:'javascript:alert(1)'}},{context:{...pageContext,text:'я'.repeat(100001)}}]) {
     const {bridge,deliver,parent}=fixture();
     deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
     const pending=bridge.capture();
@@ -49,5 +51,21 @@ test('unknown extension cannot initialize a bridge',async()=>{
   const {bridge,deliver}=fixture();
   deliver({type:'kodrik-tab-init',channel:'x',enabled:true},'chrome-extension://unknown');
   await assert.rejects(()=>bridge.capture(),/подключ/);
+  bridge.dispose();
+});
+
+test('bridge exposes tab metadata and forwards explicit preview, toggle and settings actions',async()=>{
+  const {bridge,deliver,parent}=fixture();
+  let state;
+  bridge.subscribe(value=>{state=value});
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:false,tab:{title:'Article',url:'https://example.com/'}});
+  assert.equal(state.title,'Article');assert.equal(state.enabled,false);
+  bridge.settings();assert.equal(parent.sent.at(-1).message.type,'kodrik-tab-settings');
+  bridge.toggle(true);assert.equal(parent.sent.at(-1).message.enabled,true);
+  const preview=bridge.preview();
+  const message=parent.sent.at(-1).message;
+  assert.equal(message.type,'kodrik-tab-preview');
+  deliver({type:'kodrik-tab-result',channel:'x',id:message.id,context:pageContext});
+  assert.deepEqual(await preview,pageContext);
   bridge.dispose();
 });

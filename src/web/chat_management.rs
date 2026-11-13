@@ -608,7 +608,11 @@ pub(super) async fn edit_message(
                 "Only user messages can be edited",
             ));
         };
-        if input.text.trim().is_empty() && user.files.is_empty() && user.images.is_empty() {
+        if input.text.trim().is_empty()
+            && user.files.is_empty()
+            && user.images.is_empty()
+            && user.browser_context.is_none()
+        {
             return Err(error(
                 StatusCode::BAD_REQUEST,
                 "Message must contain text or attachments",
@@ -637,6 +641,7 @@ pub(super) async fn edit_message(
         );
         message.request_id = input.request_id.clone();
         message.from_tui = !select_in_browser;
+        message.browser_context = user.browser_context.clone();
         message.files = user.files.clone();
         message.images = user.images.clone();
         let mut request =
@@ -784,6 +789,7 @@ mod shared_store_tests {
     async fn session(chat: &Chat, text: &str) -> Session {
         let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: text.into(),
             files: vec![],
             images: vec![],

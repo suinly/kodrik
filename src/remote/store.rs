@@ -239,6 +239,7 @@ pub(crate) fn prepare_environment_pause(
         }
         let message = record.request.message.clone();
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: message.text,
             files: message.files,
             images: message.images,

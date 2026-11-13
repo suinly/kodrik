@@ -15,6 +15,7 @@ async fn child_session_families_link_branches_and_paginate_without_splitting() {
     ] {
         let mut session = Session::new(SessionId::new(id));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: if id.starts_with("companion:") {
                 "child-only-match"
             } else {
@@ -156,6 +157,7 @@ async fn child_sessions_are_listed_searchable_and_read_only() {
     for session_id in [id, "companion:private", "companion:wakeup:hidden"] {
         let mut session = Session::new(SessionId::new(session_id));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: "Проверить авторизацию".into(),
             files: vec![],
             images: vec![],

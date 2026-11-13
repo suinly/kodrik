@@ -1,3 +1,4 @@
+import type {BrowserContext} from './browser-tab'
 import {locale,t} from './i18n.ts'
 const config = JSON.parse(document.getElementById('kodrik-config')!.textContent!);
 export const base = new URL(config.prefix, window.location.href);
@@ -18,7 +19,7 @@ export type MessagePart =
   | { type: 'text'; text: string;format?:'code' }
   | { type: 'file'; filename: string; mediaType: string; url?: string; origin?:ToolOrigin }
   | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string; origin?:ToolOrigin; attachment_saved?:boolean };
-export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; created_at?:string|null; versions?:string[]; version?:number };
+export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; browser_context?:BrowserContext|null; created_at?:string|null; versions?:string[]; version?:number };
 export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
 export type CommandAuditMode = 'trusted'|'review'|'ask';
 export type RegisteredDevice = {id:string;label:string;expires_at:number};
@@ -104,7 +105,7 @@ export type Snapshot = {
   blocked_reason: string | null;
   live: { current: Partial | null; interrupted: Partial | null };
   plan: { explanation?: string; plan: { step: string; status: string }[] } | null;
-  queued: { id: string; text: string; files?: string[]; photos?: number; webhook?: boolean }[];
+  queued: { id: string; text: string;browser_context?:BrowserContext|null; files?: string[]; photos?: number; webhook?: boolean }[];
   compaction?: Compaction | null;
 };
 type Partial = { attempt: number; text: string; status: 'Active' | 'Ready' | 'Interrupted' | 'Committed' };

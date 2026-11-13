@@ -419,6 +419,7 @@ async fn preparing_session_keeps_history_unchanged_until_first_save() {
     let mut draft = draft;
     draft.push(crate::agent::message::Message::User(
         crate::agent::UserMessage {
+            browser_context: None,
             content: "hello".into(),
             images: vec![],
             files: vec![],

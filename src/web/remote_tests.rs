@@ -726,6 +726,7 @@ async fn durable_agent_proxy_executes_on_laptop_and_preserves_normalized_provena
             agent.run_durable(
                 &mut session,
                 crate::agent::UserMessage {
+                    browser_context: None,
                     content: "run once on laptop".into(),
                     images: vec![],
                     files: vec![],

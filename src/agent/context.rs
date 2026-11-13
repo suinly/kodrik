@@ -261,6 +261,7 @@ mod tests {
         assert_events(&session, 1);
         let mut branch = session.fork_before(SessionId::new("edited"), 2).unwrap();
         branch.push(Message::User(UserMessage {
+            browser_context: None,
             content: "Edited owner follow-up".into(),
             images: vec![],
             files: vec![],
@@ -271,6 +272,7 @@ mod tests {
         );
         session.truncate_view(2).unwrap();
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: "New owner follow-up".into(),
             images: vec![],
             files: vec![],
@@ -347,6 +349,7 @@ mod tests {
         );
 
         session.push(Message::User(crate::agent::UserMessage {
+            browser_context: None,
             content: "old request".into(),
             images: vec![],
             files: vec![],

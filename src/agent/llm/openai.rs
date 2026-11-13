@@ -335,10 +335,19 @@ impl OpenAiLlm {
             let item = match message {
                 Message::User(msg) => InputItem::EasyMessage(EasyInputMessage {
                     role: Role::User,
-                    content: if msg.images.is_empty() && msg.files.is_empty() {
+                    content: if msg.images.is_empty()
+                        && msg.files.is_empty()
+                        && msg.browser_context.is_none()
+                    {
                         EasyInputContent::Text(msg.content.clone())
                     } else {
                         let mut content = image_content(msg.content.clone(), &msg.images);
+                        if let Some(browser) = &msg.browser_context {
+                            content.push(InputContent::InputText(InputTextContent {
+                                text: browser.model_text(),
+                                prompt_cache_breakpoint: None,
+                            }));
+                        }
                         for file in &msg.files {
                             content.push(InputContent::InputFile(InputFileContent {
                                 filename: Some(file.filename.clone()),
@@ -957,6 +966,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     files: vec![],
                     images: vec![],
                     content: "work".into(),

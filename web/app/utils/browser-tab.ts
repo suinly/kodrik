@@ -1,7 +1,19 @@
+export type BrowserContext={url:string;title:string;text:string;source:'page'|'selection';captured_at:string;truncated:boolean}
+function validContext(value:unknown):value is BrowserContext {
+  if(!value || typeof value!=='object') return false
+  const c=value as BrowserContext
+  if(typeof c.url!=='string' || c.url.length>4096 || typeof c.title!=='string' || c.title.length>1024 || typeof c.text!=='string' || !['page','selection'].includes(c.source) || typeof c.truncated!=='boolean' || typeof c.captured_at!=='string' || !Number.isFinite(Date.parse(c.captured_at))) return false
+  try {
+    const url=new URL(c.url)
+    return ['http:','https:'].includes(url.protocol) && !url.username && !url.password && new TextEncoder().encode(JSON.stringify(c)).length<=100000
+  } catch {return false}
+}
 // The extension never submits messages: it can only supply page data to an explicit Send.
 export function createTabBridge(win:Window, timeout=15000) {
   let origin='',channel='',enabled=true
-  const pending=new Map<string,{resolve:(file:File|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
+  let state={enabled:true,title:'Текущая вкладка',url:''}
+  const subscribers=new Set<(state:{enabled:boolean;title:string;url:string})=>void>()
+  const pending=new Map<string,{resolve:(context:BrowserContext|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   const framed=win.parent!==win && new URLSearchParams(win.location.search).get('browser_sidebar')==='1'
   function receive(event:MessageEvent) {
     if(!framed || event.source!==win.parent || event.origin!=='chrome-extension://iiajbdommloibgimhfmoojnhknbaklih') return
@@ -10,6 +22,8 @@ export function createTabBridge(win:Window, timeout=15000) {
     if(data.type==='kodrik-tab-init' && typeof data.channel==='string' && data.channel.length<=100 && typeof data.enabled==='boolean') {
       if(origin && (origin!==event.origin || channel!==data.channel)) return
       origin=event.origin;channel=data.channel;enabled=data.enabled
+      state={enabled,title:typeof data.tab?.title==='string'?data.tab.title.slice(0,1024):'Текущая вкладка',url:typeof data.tab?.url==='string'?data.tab.url.slice(0,4096):''}
+      for(const listener of subscribers) listener(state)
       win.parent.postMessage({type:'kodrik-tab-ready',channel},origin)
       return
     }
@@ -19,28 +33,33 @@ export function createTabBridge(win:Window, timeout=15000) {
     clearTimeout(request.timer);pending.delete(data.id)
     if(typeof data.error==='string') request.reject(new Error(data.error.slice(0,2000)))
     else if(data.context===null) request.resolve(null)
-    else if(typeof data.context==='string' && data.context.length>0 && new TextEncoder().encode(data.context).length<=100000) {
-      request.resolve(new File([data.context],'browser-tab.txt',{type:'text/plain'}))
+    else if(validContext(data.context)) {
+      request.resolve(data.context)
     } else request.reject(new Error('Некорректный контекст вкладки. Повторите отправку.'))
   }
   win.addEventListener('message',receive)
   if(framed) win.parent.postMessage({type:'kodrik-tab-connect'},'*')
+  async function request(preview=false):Promise<BrowserContext|null> {
+    if(!framed) return null
+    if(!origin) throw new Error('Расширение ещё не подключено к чату. Переподключите панель.')
+    if(!preview && !enabled) return null
+    const id=crypto.randomUUID()
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Истекло время чтения вкладки. Повторите отправку или отключите контекст.'))},timeout)
+      pending.set(id,{resolve,reject,timer})
+      win.parent.postMessage({type:preview?'kodrik-tab-preview':'kodrik-tab-capture',channel,id},origin)
+    })
+  }
   return {
-    async capture():Promise<File|null> {
-      if(!framed) return null
-      if(!origin) throw new Error('Расширение ещё не подключено к чату. Переподключите панель.')
-      if(!enabled) return null
-      const id=crypto.randomUUID()
-      return new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Истекло время чтения вкладки. Повторите отправку или отключите контекст.'))},timeout)
-        pending.set(id,{resolve,reject,timer})
-        win.parent.postMessage({type:'kodrik-tab-capture',channel,id},origin)
-      })
-    },
+    capture:()=>request(),
+    preview:()=>request(true),
+    settings(){if(origin) win.parent.postMessage({type:'kodrik-tab-settings',channel},origin)},
+    toggle(value:boolean){if(origin) win.parent.postMessage({type:'kodrik-tab-toggle',channel,enabled:value},origin)},
+    subscribe(listener:(state:{enabled:boolean;title:string;url:string})=>void){subscribers.add(listener);listener(state);return ()=>subscribers.delete(listener)},
     dispose() {
       win.removeEventListener('message',receive)
       for(const request of pending.values()) {clearTimeout(request.timer);request.reject(new Error('Чат закрыт.'))}
-      pending.clear()
+      pending.clear();subscribers.clear()
     },
   }
 }

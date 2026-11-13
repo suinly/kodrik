@@ -171,6 +171,7 @@ mod tests {
             );
         }
         messages.push(Message::User(UserMessage {
+            browser_context: None,
             content: "Next".into(),
             files: vec![],
             images: vec![],

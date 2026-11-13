@@ -380,6 +380,7 @@ async fn edited_branch_captures_profile_mode_before_its_first_run_save() {
     let store = SqliteSessionStore::open(fixture.data.path().join("owner-sessions")).unwrap();
     let mut session = store.load(&SessionId::new(&parent)).await.unwrap().unwrap();
     session.push(Message::User(crate::agent::UserMessage {
+        browser_context: None,
         content: "Original question".into(),
         files: vec![],
         images: vec![],

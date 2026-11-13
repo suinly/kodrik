@@ -11,7 +11,8 @@ use axum::{
 };
 use std::path::Path;
 
-pub(super) const BODY_LIMIT: usize = MAX_REQUEST_FILE_BYTES + 64 * 1024;
+pub(super) const BODY_LIMIT: usize =
+    MAX_REQUEST_FILE_BYTES + 64 * 1024 + crate::agent::BrowserContext::MAX_BYTES;
 pub(super) const MAX_ATTACHMENTS: usize = 10;
 
 pub(super) struct Upload {
@@ -37,9 +38,14 @@ pub(super) fn is_multipart(request: &Request) -> bool {
 pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Response> {
     if !is_multipart(&request) {
         let (parts, body) = request.into_parts();
-        let bytes = axum::body::to_bytes(body, 64 * 1024)
+        let bytes = axum::body::to_bytes(body, 64 * 1024 + crate::agent::BrowserContext::MAX_BYTES)
             .await
-            .map_err(|_| error(StatusCode::PAYLOAD_TOO_LARGE, "Message body exceeds 64 KiB"))?;
+            .map_err(|_| {
+                error(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "Message body exceeds browser context and text budget",
+                )
+            })?;
         let request = Request::from_parts(parts, axum::body::Body::from(bytes));
         let Json(input) = Json::<Input>::from_request(request, &())
             .await
@@ -62,8 +68,10 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
         let mime = field.content_type().map(str::to_owned);
         let is_file = name == "files" && filename.is_some();
         if (!is_file
-            && (!matches!(name.as_str(), "id" | "request_id" | "text")
-                || fields.contains_key(&name)))
+            && (!matches!(
+                name.as_str(),
+                "id" | "request_id" | "text" | "browser_context"
+            ) || fields.contains_key(&name)))
             || (is_file && uploads.len() >= MAX_ATTACHMENTS)
         {
             return Err(error(
@@ -71,7 +79,13 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
                 "Invalid fields or more than 10 attachments",
             ));
         }
-        let limit = if is_file { MAX_FILE_BYTES } else { 32 * 1024 };
+        let limit = if is_file {
+            MAX_FILE_BYTES
+        } else if name == "browser_context" {
+            crate::agent::BrowserContext::MAX_BYTES
+        } else {
+            32 * 1024
+        };
         let mut bytes = vec![];
         while let Some(chunk) = field
             .chunk()
@@ -96,7 +110,13 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
         } else {
             let value = String::from_utf8(bytes)
                 .map_err(|_| error(StatusCode::BAD_REQUEST, "Invalid UTF-8 field"))?;
-            fields.insert(name, value.into());
+            let value = if name == "browser_context" {
+                serde_json::from_str(&value)
+                    .map_err(|_| error(StatusCode::BAD_REQUEST, "Invalid browser context JSON"))?
+            } else {
+                value.into()
+            };
+            fields.insert(name, value);
         }
     }
     let input = serde_json::from_value(fields.into())

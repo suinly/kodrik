@@ -627,6 +627,7 @@ mod tests {
     async fn save(store: &SqliteSessionStore, id: &str, title: &str) {
         let mut session = Session::new(SessionId::new(id));
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: title.into(),
             images: vec![],
             files: vec![],

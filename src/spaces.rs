@@ -535,6 +535,7 @@ mod tests {
             let store = SqliteSessionStore::open(directory.join("sessions")).unwrap();
             let mut session = Session::new(SessionId::new("same-session"));
             session.push(Message::User(UserMessage {
+                browser_context: None,
                 content: text.into(),
                 files: vec![],
                 images: vec![],
@@ -842,6 +843,7 @@ mod tests {
         let mut session = Session::new(SessionId::new("web"));
         session.push(crate::agent::message::Message::User(
             crate::agent::UserMessage {
+                browser_context: None,
                 content: "saved input".into(),
                 images: vec![],
                 files: vec![attachment.clone()],

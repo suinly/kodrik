@@ -195,6 +195,7 @@ mod tests {
         let second = Instance::claim(&b, None).await.unwrap();
         let mut original = Session::new(SessionId::new("saved"));
         original.push(Message::User(UserMessage {
+            browser_context: None,
             content: "original".into(),
             files: vec![],
             images: vec![],

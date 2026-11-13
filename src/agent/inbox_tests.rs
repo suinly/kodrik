@@ -573,6 +573,7 @@ async fn inbox_late_steering_keeps_original_session_after_new() {
     let mut session = Session::new(SessionId::new("chat"));
     session.initialize_system_prompt("test");
     session.push(Message::User(UserMessage {
+        browser_context: None,
         content: "original".into(),
         files: vec![],
         images: vec![],

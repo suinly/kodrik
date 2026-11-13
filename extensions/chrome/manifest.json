@@ -24,7 +24,7 @@
     "default_path": "sidepanel.html"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; frame-src https: http://localhost:* http://127.0.0.1:* http://[::1]:*; base-uri 'none'"
+    "extension_pages": "script-src 'self'; object-src 'none'; frame-src https: http://localhost:* http://127.0.0.1:*; base-uri 'none'"
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzpI69a4y/VryYKNQYGZsnOD1cpKt3bfsWH5DWrGTtRwz2V6jCbvctk45hVCvreqhL9oNJFEDXVudUrZRtdarV7dtcDm3yyq6J1XR4woH3fFdvTcwS8A33TE3OMwpX32ozSuCAgYPJ+MpOXCgGUJFisk1ZiwQPl7KM9DiJz1di5ox18+s32LN9kd4Ie4la5WBccmek6wxFq5gmDEFrSPWYkOKXx+F5Yz/75bEiZXQAHzvh3niM4hIP6zZhSHy5Wjzy5J+keGY7HyOyfk9DCPtSA+jGKGr0IolN6ju/5N162/MvK2wGW3wfN+LmN/qbJxzd2DeaGyWPoPQKx/QzHGPBQIDAQAB"
 }

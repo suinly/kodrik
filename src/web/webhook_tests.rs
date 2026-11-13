@@ -161,6 +161,7 @@ async fn wakeups_view_is_owner_only_read_only_and_keeps_failed_history() {
     assert_eq!(body["busy"], true);
     session.push(crate::agent::message::Message::User(
         crate::agent::UserMessage {
+            browser_context: None,
             content: "Image".into(),
             files: vec![],
             images: vec![crate::agent::Image {
@@ -996,6 +997,7 @@ async fn webhook_conversations_are_filtered_before_paging_and_keep_their_source(
     let mut normal = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
     normal.push(crate::agent::message::Message::User(
         crate::agent::UserMessage {
+            browser_context: None,
             content: "KOD-2-event ordinary conversation".into(),
             images: vec![],
             files: vec![],
@@ -1062,6 +1064,7 @@ async fn webhook_conversations_are_filtered_before_paging_and_keep_their_source(
     let mut session = f.chat.sessions.conversation_view(id).await.unwrap().session;
     session.push(crate::agent::message::Message::User(
         crate::agent::UserMessage {
+            browser_context: None,
             content: "**follow up**".into(),
             files: vec![],
             images: vec![],

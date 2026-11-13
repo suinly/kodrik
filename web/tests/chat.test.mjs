@@ -4917,3 +4917,56 @@ test('wakeups dashboard restores pathname deep links and sidebar selections read
     assert.equal(await page.getByRole('textbox',{name:'Message',exact:true}).isVisible(),false);
   } finally {await browser.close()}
 });
+
+test('returning to a sidebar chat refreshes a silently stalled event stream without resending the question', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  let finishStream;
+  const streamBlocked=new Promise(resolve=>{finishStream=resolve});
+  try {
+    const page=await signedPage(browser);
+    let reads=0,sends=0;
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:true,cancel_requested:false,phase:'NeedModel',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:'user',role:'user',parts:[{type:'text',text:'Вопрос о вкладке'}]},
+    ]};
+    page.on('request',request=>{if(request.method()==='POST' && request.url().endsWith('/send')) sends++});
+    await page.route(`**/sessions/${id}/run`,route=>{reads++;return route.fulfill({json:snapshot})});
+    // A connected but silent stream never throws: the old observer waits forever.
+    await page.route(`**/sessions/${id}/events`,async route=>{await streamBlocked;await route.abort().catch(()=>{})});
+    await page.goto(new URL(`app/chat/${id}?browser_sidebar=1`,base).href);
+    await expect(page.locator('[data-message-id="user"]')).toBeVisible();
+    await page.evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('blur'));
+    });
+    snapshot.revision++;snapshot.busy=false;snapshot.phase='Completed';
+    snapshot.messages.push({id:'final-after-return',role:'assistant',parts:[{type:'text',text:'Ответ завершён, пока вкладка была скрыта'}]});
+    const before=reads;
+    await page.evaluate(()=>{
+      Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await expect(page.locator('[data-message-id="final-after-return"]')).toHaveText('Ответ завершён, пока вкладка была скрыта');
+    assert.ok(reads>before,'returning must fetch canonical state, not trust the stalled stream');
+    assert.equal(sends,0,'recovery must never resubmit the question');
+  } finally {finishStream();await browser.close()}
+});
+
+test('browser context stays out of message history', {timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const browser_context={url:'https://example.com/article',title:'<img src=x onerror=alert(1)>',text:'<script>secretInstruction()</script>\nLiteral page text',source:'selection',captured_at:'2026-11-13T17:00:00Z',truncated:true};
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[{id:'page-question',role:'user',parts:[{type:'text',text:'Объясни страницу'}],browser_context}]};
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    await expect(page.locator('[data-message-id="page-question"]')).toContainText('Объясни страницу');
+    await expect(page.getByTestId('browser-context')).toHaveCount(0);
+    await expect(page.locator('[data-message-id="page-question"]')).not.toContainText(browser_context.title);
+    await expect(page.getByRole('link',{name:'browser-tab.txt',exact:true})).toHaveCount(0);
+  } finally {await browser.close()}
+});

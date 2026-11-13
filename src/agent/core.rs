@@ -455,6 +455,7 @@ impl Agent {
                 for record in cp.store.steering(&cp.record).await? {
                     let message = record.request.message;
                     let mut input = UserMessage {
+                        browser_context: None,
                         content: message.text,
                         files: message.files,
                         images: message.images,
@@ -1238,6 +1239,7 @@ mod tests {
                     .run_durable(
                         &mut session,
                         UserMessage {
+                            browser_context: None,
                             content: "initial".into(),
                             files: vec![],
                             images: vec![],
@@ -1283,6 +1285,7 @@ mod tests {
                 } else {
                     input_tx
                         .send(UserMessage {
+                            browser_context: None,
                             content: text.into(),
                             files: vec![file.clone()],
                             images: vec![],
@@ -1389,7 +1392,7 @@ mod tests {
                 store.with_connection(move |_| { acquired.notify_one(); let _ = released.recv(); Ok(()) }).await
             });
             locked.notified().await;
-            input_tx.send(UserMessage { content: "accepted correction".into(), files: vec![], images: vec![] }).unwrap();
+            input_tx.send(UserMessage { browser_context: None, content: "accepted correction".into(), files: vec![], images: vec![] }).unwrap();
             cancellations.recv().await.unwrap();
             stop.send(()).unwrap();
             release.send(()).unwrap();
@@ -1459,6 +1462,7 @@ mod tests {
             .with_compaction(model.clone(), 80000);
             let mut session = Session::new(SessionId::new("cli:overflow"));
             session.push(Message::User(UserMessage {
+                browser_context: None,
                 content: "old ".repeat(1000),
                 images: vec![],
                 files: vec![],
@@ -1467,6 +1471,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_context: None,
                         content: "next".into(),
                         images: vec![],
                         files: vec![],
@@ -1489,11 +1494,13 @@ mod tests {
     fn overflow_history() -> Session {
         let mut session = Session::new(SessionId::new("cli:overflow"));
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: "old ".repeat(1000),
             images: vec![],
             files: vec![],
         }));
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: "next".into(),
             images: vec![],
             files: vec![],
@@ -1527,12 +1534,14 @@ mod tests {
             if mode == "oversized" {
                 session = Session::new(SessionId::new("oversized"));
                 session.push(Message::User(UserMessage {
+                    browser_context: None,
                     content: "x".repeat(125000),
                     images: vec![],
                     files: vec![],
                 }));
             }
             let input = UserMessage {
+                browser_context: None,
                 content: "latest".into(),
                 images: vec![],
                 files: vec![],
@@ -1786,6 +1795,7 @@ mod tests {
                 .run_durable(
                     &mut session,
                     UserMessage {
+                        browser_context: None,
                         content: "user goal ".repeat(600),
                         images: vec![],
                         files: vec![],
@@ -1870,6 +1880,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     content: "PRIVATE_PROMPT".into(),
                     files: vec![],
                     images: vec![],
@@ -1922,6 +1933,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     content: "work".into(),
                     files: vec![],
                     images: vec![],
@@ -1957,6 +1969,7 @@ mod tests {
         .with_journal(crate::audit::Journal::new(dir.path()));
         let mut session = Session::new(SessionId::new("audit"));
         let input = UserMessage {
+            browser_context: None,
             content: "work".into(),
             files: vec![],
             images: vec![],
@@ -1997,6 +2010,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_context: None,
                         content: "work".into(),
                         files: vec![],
                         images: vec![],
@@ -2068,6 +2082,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     files: Vec::new(),
                     content: "work".into(),
                     images: vec![],
@@ -2112,6 +2127,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     files: vec![],
                     content: "work".into(),
                     images: vec![],
@@ -2144,6 +2160,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     files: vec![],
                     content: "work".into(),
                     images: vec![],
@@ -2177,6 +2194,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_context: None,
                         files: Vec::new(),
                         content: "work".into(),
                         images: vec![],
@@ -2238,6 +2256,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_context: None,
                     files: Vec::new(),
                     content: "work".into(),
                     images: Vec::new(),

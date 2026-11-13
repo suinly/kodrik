@@ -64,6 +64,7 @@ async fn seed(dir: PathBuf, phase: RunPhase, policy: ReplayPolicy) -> String {
     let mut session = Session::new(SessionId::new("cli:main"));
     session.initialize_system_prompt("test");
     session.push(Message::User(UserMessage {
+        browser_context: None,
         content: "original".into(),
         files: vec![],
         images: vec![],

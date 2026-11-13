@@ -1034,6 +1034,7 @@ async fn recovery_of_old_local_generation_pauses_without_model_or_queued_self_st
         .await
         .unwrap();
     session.push(Message::User(crate::agent::UserMessage {
+        browser_context: None,
         content: "original".into(),
         files: vec![
             crate::agent::FileAttachment::save(

@@ -103,6 +103,7 @@ api_base = "{base}"
                     .run(
                         &mut session,
                         UserMessage {
+                            browser_context: None,
                             content: "hello".into(),
                             images: vec![],
                             files: vec![],
@@ -439,6 +440,7 @@ mod tests {
             let mut session = Session::new(id.clone());
             for _ in 0..8 {
                 session.push(Message::User(UserMessage {
+                    browser_context: None,
                     content: "history ".repeat(700),
                     images: vec![],
                     files: vec![],
@@ -490,6 +492,7 @@ mod tests {
         let mut session = Session::new(id.clone());
         for _ in 0..8 {
             session.push(Message::User(UserMessage {
+                browser_context: None,
                 content: "history ".repeat(700),
                 images: vec![],
                 files: vec![],
@@ -557,6 +560,7 @@ mod tests {
         let store = SqliteSessionStore::open(owner.join("sessions")).unwrap();
         let mut history = Session::new(SessionId::new("private-history"));
         history.push(Message::User(UserMessage {
+            browser_context: None,
             content: "PRIVATE_SENTINEL".into(),
             images: vec![],
             files: vec![],

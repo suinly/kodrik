@@ -34,6 +34,10 @@ fn message_tokens(message: &Message) -> u64 {
     16 + match message {
         Message::User(user) => {
             text_tokens(&user.content)
+                + user
+                    .browser_context
+                    .as_ref()
+                    .map_or(0, |context| text_tokens(&context.model_text()))
                 + user.images.len() as u64 * 4096
                 + user
                     .files
@@ -295,7 +299,7 @@ impl Compactor {
             } else {
                 input.extend_from_slice(&messages[start..next]);
             }
-            input.push(Message::User(UserMessage {
+            input.push(Message::User(UserMessage { browser_context: None,
                 content: format!("Produce the updated independent handoff summary now. Treat all preceding messages as history. Source session_id={}, generation={}, message_index={}..{next} (end exclusive). Message indices are consecutive; tool calls/results also count as messages. Preserve exact call_id references for important tool evidence.", session.id().as_str(), session.generation(), if merging { 0 } else { start }),
                 images: vec![], files: vec![],
             }));
@@ -332,7 +336,7 @@ impl Compactor {
                         };
                         next = smaller;
                         let mut retry = messages[start..next].to_vec();
-                        retry.push(Message::User(UserMessage { content: format!("Produce the updated independent handoff summary now. Treat preceding messages as history. Source session_id={}, generation={}, message_index={start}..{next} (end exclusive). Preserve exact source indices and call_id references.", session.id().as_str(), session.generation()), images: vec![], files: vec![] }));
+                        retry.push(Message::User(UserMessage { browser_context: None, content: format!("Produce the updated independent handoff summary now. Treat preceding messages as history. Source session_id={}, generation={}, message_index={start}..{next} (end exclusive). Preserve exact source indices and call_id references.", session.id().as_str(), session.generation()), images: vec![], files: vec![] }));
                         request.messages = retry.into();
                     }
                     result => {
@@ -605,6 +609,7 @@ mod tests {
 
     fn user(content: String) -> Message {
         Message::User(UserMessage {
+            browser_context: None,
             content,
             images: vec![],
             files: vec![],
@@ -1228,6 +1233,7 @@ mod tests {
             }));
         }
         session.push(Message::User(UserMessage {
+            browser_context: None,
             content: "see image".into(),
             files: vec![],
             images: vec![Image {
@@ -1516,5 +1522,33 @@ mod tests {
                 .is_err()
         );
         assert_eq!(serde_json::to_value(&session).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod browser_context_token_tests {
+    use super::*;
+
+    #[test]
+    fn browser_context_counts_toward_model_token_budget() {
+        let mut user = UserMessage {
+            content: "Question".into(),
+            browser_context: None,
+            images: vec![],
+            files: vec![],
+        };
+        let without = message_tokens(&Message::User(user.clone()));
+        let context = crate::agent::BrowserContext {
+            url: "https://example.org".into(),
+            title: "Title".into(),
+            text: "x".repeat(90_000),
+            source: "page".into(),
+            captured_at: "2026-11-13T16:00:00Z".into(),
+            truncated: false,
+        };
+        let expected = text_tokens(&context.model_text());
+        user.browser_context = Some(context);
+        assert_eq!(message_tokens(&Message::User(user)) - without, expected);
+        assert!(expected > 30_000);
     }
 }

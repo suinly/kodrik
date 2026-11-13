@@ -1283,6 +1283,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                 .collect::<Vec<_>>()
                 .join("\n");
             session.push(Message::User(UserMessage {
+                browser_context: None,
                 content,
                 files: vec![],
                 images: vec![],
@@ -1298,6 +1299,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                     }
                     session.push(if row["role"] == "user" {
                         Message::User(UserMessage {
+                            browser_context: None,
                             content: text,
                             files: vec![],
                             images: vec![],

@@ -314,7 +314,7 @@ async fn messages_webhook_telegram_followup_uses_the_notification_history() {
     assert!(reply.content.contains("Checkout failed"));
     assert_eq!(&f.store.active_id(&chat).await.unwrap(), f.source.id());
     let saved = f.store.load(f.source.id()).await.unwrap().unwrap();
-    assert!(saved.messages().iter().any(|message| matches!(message, Message::User(UserMessage { content, .. }) if content == "What failed?")));
+    assert!(saved.messages().iter().any(|message| matches!(message, Message::User(UserMessage { browser_context: None, content, .. }) if content == "What failed?")));
     assert!(
         f.store
             .load(&previous)
