@@ -4892,3 +4892,28 @@ test('session handoff navigates to the target conversation',{timeout:60000},asyn
     await expect(page.getByTestId('chat-composer')).toBeVisible();
   } finally {await browser.close();}
 });
+
+test('wakeups dashboard restores pathname deep links and sidebar selections read-only',{timeout:45000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'en-US',viewport:{width:1280,height:900}});
+    const calls=[];
+    const tasks=[{id:'wakeup-one',instruction:'Check first build',due_at:'2026-11-13T12:00:00Z',status:'running'},{id:'wakeup-two',instruction:'Check second build',due_at:'2026-11-14T12:00:00Z',status:'pending'}];
+    await page.route('**/api/wakeups**',r=>{
+      calls.push({url:r.request().url(),method:r.request().method()});
+      return r.fulfill({json:r.request().url().endsWith('/events')?{messages:[{id:'saved',role:'assistant',parts:[{type:'text',text:'Persisted wakeup answer'}]}],busy:true,live:{current:{text:'Building now'}},phase:{Parked:{reason:'Waiting for permission'}}}:tasks});
+    });
+    await page.goto(new URL('app/wakeups/wakeup-one',base).href);
+    await expect(page.getByRole('navigation',{name:'Wakeups list'}).getByRole('button',{name:'Check first build',exact:true})).toHaveAttribute('aria-current','page');
+    await expect(page.getByText('Persisted wakeup answer',{exact:true})).toBeVisible();
+    await expect(page.getByText('Building now',{exact:true})).toBeVisible();
+    await expect(page.getByText('Waiting for permission',{exact:true})).toBeVisible();
+    await page.screenshot({path:'/tmp/kodrik-wakeups-ui.png',fullPage:true});
+    await page.getByRole('navigation',{name:'Wakeups list'}).getByRole('button',{name:'Check second build',exact:true}).click();
+    await expect(page).toHaveURL(new URL('app/wakeups/wakeup-two',base).href);
+    await page.reload();
+    await expect(page.getByRole('navigation',{name:'Wakeups list'}).getByRole('button',{name:'Check second build',exact:true})).toHaveAttribute('aria-current','page');
+    assert.ok(calls.every(call=>call.method==='GET'));
+    assert.equal(await page.getByRole('textbox',{name:'Message',exact:true}).isVisible(),false);
+  } finally {await browser.close()}
+});

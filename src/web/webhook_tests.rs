@@ -16,6 +16,211 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn wakeups_view_is_owner_only_read_only_and_keeps_failed_history() {
+    use crate::agent::{AssistantMessage, message::Message, reminders::ReminderStore};
+    let f = Fixture::new().await;
+    let store = ReminderStore::wakeups(f._data.path());
+    let created = store.execute_wakeup(
+        &crate::agent::reminders::Recipient { interface: "telegram:test".into(), chat: "42".into() },
+        "source-session",
+        serde_json::from_value(json!({"action":"create","text":"Morning reading","due_at":(chrono::Utc::now()+chrono::Duration::hours(1)).to_rfc3339()})).unwrap(),
+        chrono::Utc::now(),
+    ).unwrap();
+    let id = created["wakeup"]["id"].as_str().unwrap();
+    let mut session = Session::new(SessionId::new(format!("companion:wakeup:{id}")));
+    session.push(Message::Assistant(AssistantMessage {
+        content: "Collected articles".into(),
+    }));
+    f.chat.sessions.save(&session).await.unwrap();
+    store
+        .claim(id, chrono::Utc::now() + chrono::Duration::hours(2))
+        .unwrap()
+        .unwrap();
+    store
+        .finish(
+            id,
+            crate::agent::reminders::Status::Uncertain,
+            Some("Invalid wakeup approval source".into()),
+            None,
+        )
+        .unwrap();
+    let before = std::fs::read(f._data.path().join("wakeups.json")).unwrap();
+    for (path, cookie, expected) in [
+        ("/api/wakeups".to_owned(), None, StatusCode::UNAUTHORIZED),
+        (
+            "/api/wakeups".to_owned(),
+            Some(&f.guest),
+            StatusCode::FORBIDDEN,
+        ),
+        ("/api/wakeups".to_owned(), Some(&f.cookie), StatusCode::OK),
+        (
+            format!("/api/wakeups/{id}/events"),
+            Some(&f.cookie),
+            StatusCode::OK,
+        ),
+        (
+            format!("/api/wakeups/{id}/events"),
+            Some(&f.guest),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            format!("/api/wakeups/{}/events", uuid::Uuid::new_v4()),
+            Some(&f.cookie),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/api/wakeups/not-an-id/events".to_owned(),
+            Some(&f.cookie),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let mut request = Request::builder().uri(format!("/kodrik{path}"));
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        let response = f
+            .router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{path}");
+        if expected == StatusCode::OK {
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                    .unwrap();
+            if path.ends_with("/events") {
+                assert_eq!(
+                    body["messages"][0]["parts"][0]["text"],
+                    "Collected articles"
+                );
+            } else {
+                assert_eq!(body[0]["instruction"], "Morning reading");
+                assert_eq!(body[0]["status"], "uncertain");
+                assert_eq!(body[0]["last_error"], "Invalid wakeup approval source");
+                assert!(body[0].get("durable").is_none());
+            }
+        }
+    }
+    assert_eq!(
+        before,
+        std::fs::read(f._data.path().join("wakeups.json")).unwrap()
+    );
+    let response = f
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/kodrik/api/wakeups")
+                .header("cookie", &f.cookie)
+                .header("origin", "http://localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    // A persisted checkpoint and partial answer must be visible without a web worker.
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        run_view::PartialStatus,
+    };
+    let mut checkpoint = Checkpoint::new(&f.chat.sessions, session.id(), &session);
+    checkpoint
+        .save(&session, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    f.chat
+        .sessions
+        .save_live(
+            &checkpoint.record.id,
+            checkpoint.record.model_attempts,
+            "Searching sources".into(),
+            PartialStatus::Active,
+        )
+        .await
+        .unwrap();
+    let response = f
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/kodrik/api/wakeups/{id}/events"))
+                .header("cookie", &f.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(body["live"]["current"]["text"], "Searching sources");
+    assert_eq!(body["busy"], true);
+    session.push(crate::agent::message::Message::User(
+        crate::agent::UserMessage {
+            content: "Image".into(),
+            files: vec![],
+            images: vec![crate::agent::Image {
+                data_url: "data:image/png;base64,aGk=".into(),
+                width: 1,
+                height: 1,
+            }],
+        },
+    ));
+    f.chat.sessions.save(&session).await.unwrap();
+    checkpoint
+        .save(&session, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    let response = f
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/kodrik/api/wakeups/{id}/events"))
+                .header("cookie", &f.cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(
+        body["messages"][1]["parts"][1]["url"],
+        format!("../api/wakeups/{id}/attachments/1/images/0")
+    );
+    for (cookie, expected) in [
+        (&f.cookie, StatusCode::OK),
+        (&f.guest, StatusCode::FORBIDDEN),
+    ] {
+        let response = f
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/kodrik/api/wakeups/{id}/attachments/1/images/0"))
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            assert_eq!(
+                to_bytes(response.into_body(), 1024).await.unwrap().as_ref(),
+                b"hi"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn webhook_audit_mode_defaults_validates_and_persists_across_api_and_tool() {
     let mut f = Fixture::new().await;
     let hook = f.create().await;

@@ -4,6 +4,7 @@ import {locale, t} from '../utils/i18n'
 import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle,conversationRows,conversationPageSize} from '../utils/chat-presentation'
 import {useWebhooks} from '../utils/webhooks'
+import {useWakeups, wakeupStatus} from '../utils/wakeups'
 import {initializePush, pushEnabled, updatePushPresence, refreshPushPermission} from '../utils/push'
 import icon from '../../public/chat/icon.svg?raw'
 import {faviconHref, type ChatActivity} from '../utils/favicon'
@@ -42,10 +43,10 @@ useHead(()=>({
 const [DefineRail, ReuseRail] = createReusableTemplate()
 const desktop = useMediaQuery('(min-width: 1024px)')
 watch(desktop, value => { if(value) menu.value=false })
-type Section = 'chat'|'pages'|'webhooks'|'profile'
+type Section = 'chat'|'pages'|'webhooks'|'wakeups'|'profile'
 function readLocation():{section:Section;id:string|null} {
   const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
-  return {section:section==='pages' || section==='webhooks' || section==='profile'?section:'chat',id:id?decodeURIComponent(id):null}
+  return {section:section==='pages' || section==='webhooks' || section==='wakeups' || section==='profile'?section:'chat',id:id?decodeURIComponent(id):null}
 }
 const section = ref<Section>(readLocation().section)
 const restoring = ref(false)
@@ -59,6 +60,9 @@ const reportPushPresence = () => { refreshPushPermission(); void updatePushPrese
 watch([pushConversation,pushEnabled],reportPushPresence)
 useIntervalFn(reportPushPresence,15000)
 const webhooks = useWebhooks(computed(()=>section.value==='webhooks' && !showEvents.value))
+const wakeups = useWakeups(computed(()=>section.value==='wakeups'))
+const wakeupSearch = ref('')
+const visibleWakeups = computed(()=>wakeups.items.filter(item=>item.instruction.toLowerCase().includes(wakeupSearch.value.trim().toLowerCase())))
 const webhookSearch = ref('')
 const visibleWebhooks = computed(() => {
   const query = webhookSearch.value.trim().toLowerCase()
@@ -66,10 +70,11 @@ const visibleWebhooks = computed(() => {
 })
 const sections = [
   {id:'chat',label:'Чат',icon:'i-lucide-messages-square'},
+  {id:'wakeups',label:'Пробуждения',icon:'i-lucide-alarm-clock'},
   {id:'pages',label:'Страницы',icon:'i-lucide-panels-top-left'},
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
 ] as const
-const visibleSections = computed(()=>sections.filter(item=>item.id!=='webhooks' || webhooks.allowed))
+const visibleSections = computed(()=>sections.filter(item=>!['webhooks','wakeups'].includes(item.id) || webhooks.allowed))
 function sectionUnread(id:string) {
   return id==='chat' ? activity.value.unread_chats ?? 0 : id==='webhooks' ? activity.value.unread_events ?? 0 : 0
 }
@@ -77,8 +82,8 @@ function sectionLabel(id:string,label:string) {
   const count=sectionUnread(id)
   return count ? `${t(label)} · ${t('Непрочитанных: {0}',count)}` : t(label)
 }
-const sectionTitle = computed(()=>section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
-const menuLabel = computed(()=>section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
+const sectionTitle = computed(()=>section.value==='wakeups'?t('Пробуждения'):section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
+const menuLabel = computed(()=>section.value==='wakeups'?t('Показать пробуждения'):section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
 const pageCatalogRevision = ref(0)
@@ -86,7 +91,7 @@ const pageToDelete = ref<PublishedPage | null>(null)
 const deletingPage = ref(false)
 const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
-const mainTitle = computed(()=>viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
+const mainTitle = computed(()=>section.value==='wakeups'?t('Пробуждения'):viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
@@ -166,7 +171,7 @@ const chatUrl = new URL('app/chat', base).pathname
 function writeLocation() {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
   const event=showEvents.value && selected.value?.webhook ? selected.value : null
-  const id=event?.id ?? (section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks' && !showEvents.value?webhooks.selected:null)
+  const id=event?.id ?? (section.value==='wakeups'?wakeups.selected:section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks' && !showEvents.value?webhooks.selected:null)
   const url=new URL(window.location.href)
   url.pathname=new URL(`app/${event?'chat':section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
   url.search=showEvents.value && !event?'?view=events':''
@@ -199,6 +204,9 @@ async function restoreLocation() {
         if(!page) throw new Error(t('Страница удалена или не найдена.'))
         selectedPage.value=page;pageRevision.value++
       }
+    } else if(target.section==='wakeups') {
+      wakeups.choose(target.id)
+      await wakeups.load()
     } else if(target.section==='webhooks') {
       webhookTab.value=!target.id && new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks'
       webhooks.clear()
@@ -222,6 +230,9 @@ async function restoreLocation() {
     if(revision===navigationRevision) restoring.value=false
   }
 }
+watch(()=>wakeups.selected,()=>{
+  if(section.value==='wakeups' && !restoring.value) writeLocation()
+},{flush:'post'})
 watch(()=>webhooks.selected,()=>{
   if(section.value==='webhooks' && !showEvents.value && !restoring.value) writeLocation()
 },{flush:'post'})
@@ -401,6 +412,13 @@ function openSection(next:Section) {
   else if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
 }
 
+function chooseWakeup(id:string) {
+  wakeups.choose(id)
+  writeLocation()
+  focusAfterMenu=false
+  menu.value=false
+}
+
 function chooseWebhook(hook?:typeof webhooks.hooks[number]) {
   webhookTab.value='hooks'
   webhooks.choose(hook)
@@ -492,6 +510,8 @@ async function create(fromHome = false) {
 }
 
 onMounted(() => {
+  window.addEventListener('popstate',restoreLocation)
+  onBeforeUnmount(()=>window.removeEventListener('popstate',restoreLocation))
   void refreshActivity()
   void initializePush().then(reportPushPresence)
   document.addEventListener('visibilitychange',reportPushPresence)
@@ -564,6 +584,7 @@ onMounted(() => {
           </template>
           <UButton v-if="!showEvents" :label="t('Новый диалог')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :loading="creating" @click="newDraft()" />
       </SidebarSearch>
+      <SidebarSearch v-else-if="section==='wakeups'" v-model="wakeupSearch" :title="sectionTitle" :label="t('Поиск пробуждений')" :placeholder="t('Поиск пробуждений…')" />
       <SidebarSearch v-else-if="section==='webhooks' && webhooks.allowed" v-model="webhookSearch" :title="sectionTitle" :label="t('Поиск вебхуков')" :placeholder="t('Поиск вебхуков…')">
           <template #title>
             <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
@@ -611,6 +632,19 @@ onMounted(() => {
       <div v-else-if="section==='profile'" class="space-y-2 text-sm">
         <h2 class="font-semibold text-highlighted">{{ t('Профиль') }}</h2>
         <p class="leading-relaxed text-muted">{{ t('Настройки имени и безопасности аккаунта.') }}</p>
+      </div>
+      <div v-else-if="section==='wakeups'" class="flex min-h-0 flex-1 flex-col gap-3">
+        <p v-if="wakeups.loading && !wakeups.items.length" role="status" class="text-sm text-muted">{{ t('Загружаю пробуждения…') }}</p>
+        <p v-else-if="!visibleWakeups.length && !wakeups.error" class="text-sm text-muted">{{ wakeups.items.length ? t('Пробуждения не найдены.') : t('Пока нет пробуждений.') }}</p>
+        <nav :aria-label="t('Список пробуждений')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
+          <UButton v-for="item in visibleWakeups" :key="item.id" :aria-label="item.instruction" :title="item.instruction" color="neutral" :variant="wakeups.selected===item.id?'soft':'ghost'" :aria-current="wakeups.selected===item.id?'page':undefined" class="sidebar-item" @click="chooseWakeup(item.id)">
+            <UIcon name="i-lucide-alarm-clock" class="sidebar-icon" />
+            <span class="min-w-0 flex-1 text-left">
+              <span class="block truncate">{{ item.instruction }}</span>
+              <span class="block text-xs font-normal text-muted">{{ wakeupStatus(item.status) }} · {{ wakeups.dateFormat.format(new Date(item.due_at)) }}</span>
+            </span>
+          </UButton>
+        </nav>
       </div>
       <div v-else-if="section==='webhooks' && webhooks.allowed" class="flex min-h-0 flex-1 flex-col gap-3">
         <p v-if="webhooks.loading" role="status" class="text-sm text-muted">{{ t('Загружаю вебхуки…') }}</p>
@@ -690,6 +724,9 @@ onMounted(() => {
           </template>
           <p v-else-if="!restoring" class="p-6 text-sm text-muted">{{ t('Выберите страницу в боковом меню.') }}</p>
         </section>
+        <div v-if="section==='wakeups' && !restoring" class="min-h-0 flex-1 overflow-y-auto">
+          <WakeupsManager :manager="wakeups" />
+        </div>
         <div v-show="section==='webhooks' && !showEvents && !restoring" class="min-h-0 flex-1 overflow-y-auto">
           <LazyWebhooksManager v-if="webhooks.allowed && !locationError" :manager="webhooks" @open="openWebhookConversation" />
         </div>

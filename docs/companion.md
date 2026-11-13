@@ -121,6 +121,16 @@ history search/listing. It receives the original instruction, deadline and sourc
 and current session IDs so it can check whether the work remains relevant.
 Follow-up wakeups keep the searchable original conversation as their source.
 
+The owner's web dashboard has a **Wakeups** section (`app/wakeups`). It lists
+pending and finished tasks, including failures, with their instruction, due time,
+source conversation, result and error. Selecting a task shows its persisted
+messages, tool calls/results, execution plan and current partial response. The
+list and selected execution refresh every three seconds while the section is
+open. Viewing never retries a task or changes its permissions. Events and saved
+attachments use owner-only read endpoints; internal sessions remain excluded
+from ordinary chat listings. There are no retry, cancellation or editing controls
+in this view; scheduling changes still use the `wakeups` tool.
+
 New durable wakeup executions inherit the original source session's tool-audit
 mode, not the profile default or whichever session is currently selected. Pending
 tool approvals appear in that source conversation in Web/TUI and can be delivered

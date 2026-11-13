@@ -53,6 +53,8 @@ mod titles;
 #[cfg(test)]
 #[path = "chat_user_tests.rs"]
 pub(super) mod user_tests;
+#[path = "wakeups.rs"]
+mod wakeups;
 #[cfg(test)]
 #[path = "webhook_tests.rs"]
 mod webhook_tests;
@@ -72,6 +74,7 @@ pub(crate) struct Chat {
     user_chats: Arc<Mutex<HashMap<u64, Chat>>>,
     push: Option<Arc<push::Push>>,
     datasets: Option<crate::agent::datasets::DatasetStore>,
+    wakeups: crate::agent::reminders::ReminderStore,
 }
 
 impl Chat {
@@ -103,6 +106,7 @@ impl Chat {
             user_chats: Default::default(),
             push: None,
             datasets: None,
+            wakeups: crate::agent::reminders::ReminderStore::wakeups(data),
         };
         // Reserve recovered conversations before accepting HTTP submissions.
         for id in chat.runner.unfinished_conversations().await? {
@@ -549,6 +553,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .merge(api)
         .merge(remote::routes(state.clone()))
         .merge(webhooks::routes(state.clone()))
+        .merge(wakeups::routes(state.clone()))
         .route("/push-sw.js", get(push::worker))
         .route("/chat", get(chat_redirect))
         .route("/chat/", get(chat_redirect))
@@ -564,6 +569,9 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route("/app/webhooks", get(index))
         .route("/app/webhooks/", get(index))
         .route("/app/webhooks/{id}", get(index))
+        .route("/app/wakeups", get(index))
+        .route("/app/wakeups/", get(index))
+        .route("/app/wakeups/{id}", get(index))
         .route("/app/profile", get(index))
         .route("/app/profile/", get(index))
         .with_state(state)
@@ -986,10 +994,20 @@ async fn attachment(
     Extension(state): Extension<WebState>,
     Path((id, message, kind, index)): Path<(String, usize, String, usize)>,
 ) -> Result<Response, Response> {
-    use axum::http::header;
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let chat = state.chat().map_err(IntoResponse::into_response)?;
     let session = chat.readable_session(&id).await?;
+    attachment_response(chat, session, message, kind, index).await
+}
+
+async fn attachment_response(
+    chat: &Chat,
+    session: Session,
+    message: usize,
+    kind: String,
+    index: usize,
+) -> Result<Response, Response> {
+    use axum::http::header;
+    use base64::{Engine, engine::general_purpose::STANDARD};
     let stored = session.messages().get(message);
     let user = match stored {
         Some(crate::agent::message::Message::User(user)) => Some(user),

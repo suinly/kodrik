@@ -358,6 +358,10 @@ impl ReminderStore {
     }
 
     // ponytail: scan the bounded journal; index pending entries if polling cost becomes material.
+    pub(crate) fn history(&self) -> anyhow::Result<Vec<Reminder>> {
+        self.read()
+    }
+
     pub(crate) fn due(&self, now: DateTime<Utc>) -> anyhow::Result<Vec<Reminder>> {
         self.update(|records| {
             let mut due: Vec<_> = records.iter().filter(|r| ready(r, now)).cloned().collect();

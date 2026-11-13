@@ -33,7 +33,11 @@ pub(super) fn routes(state: WebState) -> Router<WebState> {
     )
 }
 
-async fn owner_only(State(state): State<WebState>, mut request: Request, next: Next) -> Response {
+pub(super) async fn owner_only(
+    State(state): State<WebState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let Some(token) = super::request_token(request.headers()) else {
         return error(StatusCode::UNAUTHORIZED, "Sign in to continue");
     };
