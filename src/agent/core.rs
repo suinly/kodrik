@@ -1027,10 +1027,19 @@ impl Agent {
                                                                 .ok()
                                                                 .flatten()
                                                                 .map(|mut context| {
-                                                                    context.session = session
+                                                                    // Follow-ups retain the source, never the internal wakeup transcript.
+                                                                    if !session
                                                                         .id()
                                                                         .as_str()
-                                                                        .to_owned();
+                                                                        .starts_with(
+                                                                            "companion:wakeup:",
+                                                                        )
+                                                                    {
+                                                                        context.session = session
+                                                                            .id()
+                                                                            .as_str()
+                                                                            .to_owned();
+                                                                    }
                                                                     context
                                                                 }),
                                                             registry.execute(

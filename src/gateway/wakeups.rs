@@ -546,6 +546,74 @@ mod tests {
             Utc::now() - chrono::Duration::minutes(2)).unwrap()["wakeup"]["id"].as_str().unwrap().into()
     }
 
+    #[tokio::test]
+    async fn wakeup_follow_up_keeps_personal_source_after_restart() {
+        use crate::agent::session::{SessionStore, SqliteSessionStore};
+        let root = tempfile::tempdir().unwrap();
+        let conversation = SessionId::new("telegram:test:42");
+        let mut source_id = String::new();
+        let mut source_generation = String::new();
+        for turn in 0..2 {
+            let sessions = Arc::new(
+                SqliteSessionStore::open_async(root.path().join("sessions"))
+                    .await
+                    .unwrap(),
+            );
+            let runner = AgentRunner::new(
+                Arc::new(Agent::new(
+                    Arc::new(TaskModel {
+                        root: root.path().to_owned(),
+                        result: "{\"message\":null}",
+                        calls: AtomicUsize::new(0),
+                        seen: Mutex::new(vec![]),
+                    }),
+                    ToolRegistry::default()
+                        .register(Arc::new(ExecCommandTool))
+                        .register(Arc::new(WakeupTool::new(root.path()))),
+                    ContextBuilder::new("test"),
+                )),
+                sessions.clone(),
+            );
+            let store = ReminderStore::wakeups(root.path());
+            store.recover().unwrap();
+            if turn == 0 {
+                let source = runner.new_session(&conversation).await.unwrap();
+                source_id = source.id().as_str().to_owned();
+                source_generation = source.generation().to_owned();
+                create(&store, &source_id);
+            }
+            let now = Utc::now() + chrono::Duration::days(31 * turn);
+            let task = store.due(now).unwrap().pop().unwrap();
+            assert_eq!(task.source_session.as_deref(), Some(source_id.as_str()));
+            runner
+                .execute_wakeup(Some(&Chat::new(false)), &store, &task, now)
+                .await
+                .unwrap();
+            let internal = sessions
+                .load(&SessionId::new(format!("companion:wakeup:{}", task.id)))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                internal.approval_parent,
+                Some((source_id.clone(), source_generation.clone()))
+            );
+            let saved: Vec<crate::agent::reminders::Reminder> =
+                serde_json::from_slice(&std::fs::read(root.path().join("wakeups.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                saved.iter().find(|r| r.id == task.id).unwrap().status,
+                Status::Completed
+            );
+            let next = saved.iter().find(|r| r.status == Status::Pending).unwrap();
+            assert_eq!(next.source_session.as_deref(), Some(source_id.as_str()));
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("marker")).unwrap(),
+            "xx"
+        );
+    }
+
     struct ApprovalTaskModel(std::path::PathBuf);
 
     #[async_trait::async_trait]
