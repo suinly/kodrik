@@ -28,8 +28,17 @@ pub(super) fn message(app: &App, session: &str, text: String) -> IncomingMessage
 
 fn attach(app: &mut App, image: Image) -> anyhow::Result<()> {
     ensure!(app.input_images.len() < 4, "At most 4 images per message");
-    app.input_images.push(image);
-    app.insert_input(&format!("[Image {}]", app.input_images.len()));
+    app.snap_image_cursor(true);
+    let start = app.input_cursor;
+    app.next_image_id += 1;
+    let id = app.next_image_id;
+    app.insert_input(&format!("[Image {id}]"));
+    let index = app
+        .image_markers
+        .partition_point(|(range, _)| range.start < start);
+    app.image_markers
+        .insert(index, (start..app.input_cursor, id));
+    app.input_images.insert(index, image);
     Ok(())
 }
 
@@ -103,6 +112,108 @@ mod tests {
     use super::*;
     use crate::commands::tui::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn atomic_image_deletion_keeps_ids_and_literal_text() {
+        let mut app = App::default();
+        let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+            .unwrap();
+        app.insert_input("[Image 1]я");
+        attach(&mut app, image.clone()).unwrap();
+        attach(&mut app, image.clone()).unwrap();
+        app.update(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.input_cursor, "[Image 1]я[Image 1]".len());
+        app.update(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.input, "[Image 1]я[Image 2]");
+        assert_eq!(app.input_images.len(), 1);
+        app.input_cursor = app.input.len();
+        attach(&mut app, image).unwrap();
+        assert_eq!(app.input, "[Image 1]я[Image 2][Image 3]");
+        app.input_cursor = "[Image 1]я".len();
+        app.update(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.input, "[Image 1]я[Image 3]");
+        assert_eq!(app.input_images.len(), 1);
+    }
+
+    #[test]
+    fn shifted_markers_delete_the_matching_payload_and_survive_failed_send() {
+        let mut app = App::default();
+        let first = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+            .unwrap();
+        let second = Image::from_bytes(&crate::agent::image::tests::sample(
+            image::ImageFormat::Jpeg,
+        ))
+        .unwrap();
+        attach(&mut app, first.clone()).unwrap();
+        app.input_cursor = 0;
+        attach(&mut app, second.clone()).unwrap();
+        assert_eq!(app.input, "[Image 2][Image 1]");
+        assert_eq!(app.input_images[0].data_url, second.data_url);
+        app.input_cursor = 0;
+        app.insert_input("я ");
+        app.update(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.input, "я[Image 2][Image 1]");
+        app.update(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.input, "я[Image 1]");
+        assert_eq!(app.input_images[0].data_url, first.data_url);
+        let text = app
+            .update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        // Submission failure restores this exact draft, retaining attachment metadata.
+        app.input = text;
+        app.input_cursor = app.input.len();
+        app.update(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.input, "я");
+        assert!(
+            message(&app, "cli:main", app.input.clone())
+                .images
+                .is_empty()
+        );
+        app.clear_input_images();
+        attach(&mut app, first).unwrap();
+        assert_eq!(app.input, "я[Image 1]");
+    }
+
+    #[test]
+    fn wrapped_image_markers_cannot_be_split_by_cursor_or_paste() {
+        let mut app = App::default();
+        attach(
+            &mut app,
+            Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+                .unwrap(),
+        )
+        .unwrap();
+        app.input_width = 4;
+        app.update(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.input_cursor, 0);
+        app.update(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(app.input_cursor == 0 || app.input_cursor == 9);
+        app.input_cursor = 4;
+        app.insert_input("hello");
+        assert_eq!(app.input, "[Image 1]hello");
+        app.input_cursor = 0;
+        app.update(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.input_cursor, 9);
+        app.update(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.input, "hello");
+        assert!(app.input_images.is_empty());
+    }
+
+    #[test]
+    fn image_draft_is_not_replaced_by_history() {
+        let mut app = App::default();
+        app.push_user_message("old".into());
+        attach(
+            &mut app,
+            Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!app.recall_input(true));
+        app.select_user_turn(0);
+        assert!(app.navigation.selected.is_none());
+        assert_eq!(app.input, "[Image 1]");
+    }
 
     #[tokio::test]
     async fn pasted_path_attaches_validated_image_without_sending_it_as_text() {

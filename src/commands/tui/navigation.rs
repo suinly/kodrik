@@ -51,6 +51,9 @@ impl App {
     }
 
     pub fn select_user_turn(&mut self, user_turn: usize) {
+        if !self.input_images.is_empty() {
+            return;
+        }
         if let Some((index, _)) = self
             .messages
             .iter()
@@ -66,6 +69,9 @@ impl App {
     }
 
     pub fn recall_input(&mut self, previous: bool) -> bool {
+        if !self.input_images.is_empty() {
+            return false;
+        }
         let users = self
             .messages
             .iter()

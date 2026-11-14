@@ -18,6 +18,8 @@ pub struct App {
     pub compaction_progress: Option<crate::agent::CompactionProgress>,
     pub input: String,
     pub input_images: Vec<crate::agent::Image>,
+    pub(super) image_markers: Vec<(Range<usize>, usize)>,
+    pub(super) next_image_id: usize,
     pub input_cursor: usize,
     pub input_width: usize,
     pub commands_dismissed: bool,
@@ -190,6 +192,46 @@ impl App {
             .copied()
     }
 
+    pub(super) fn clear_input_images(&mut self) {
+        self.input_images.clear();
+        self.image_markers.clear();
+        self.next_image_id = 0;
+    }
+
+    pub(super) fn snap_image_cursor(&mut self, forward: bool) {
+        for (range, _) in &self.image_markers {
+            if range.start < self.input_cursor && self.input_cursor < range.end {
+                self.input_cursor = if forward { range.end } else { range.start };
+                break;
+            }
+        }
+    }
+
+    fn replace_input_range(&mut self, mut range: Range<usize>, text: &str) {
+        for (marker, _) in &self.image_markers {
+            if marker.start < range.end && range.start < marker.end {
+                range.start = range.start.min(marker.start);
+                range.end = range.end.max(marker.end);
+            }
+        }
+        for index in (0..self.image_markers.len()).rev() {
+            let marker = &self.image_markers[index].0;
+            if marker.start < range.end && range.start < marker.end {
+                self.image_markers.remove(index);
+                self.input_images.remove(index);
+            }
+        }
+        let removed = range.end - range.start;
+        for (marker, _) in &mut self.image_markers {
+            if marker.start >= range.end {
+                marker.start = marker.start - removed + text.len();
+                marker.end = marker.end - removed + text.len();
+            }
+        }
+        self.input.replace_range(range.clone(), text);
+        self.input_cursor = range.start + text.len();
+    }
+
     pub fn insert_input(&mut self, text: &str) {
         if self.remote_grant.is_some()
             || self.approval.is_some()
@@ -202,8 +244,8 @@ impl App {
         self.commands_dismissed = false;
         self.command_index = 0;
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.input.insert_str(self.input_cursor, &text);
-        self.input_cursor += text.len();
+        self.snap_image_cursor(true);
+        self.replace_input_range(self.input_cursor..self.input_cursor, &text);
     }
 
     fn line_start(&self) -> usize {
@@ -506,6 +548,9 @@ impl App {
                     return None;
                 }
                 KeyCode::Tab | KeyCode::Enter => {
+                    if !self.input_images.is_empty() {
+                        return None;
+                    }
                     self.input = command.to_owned();
                     self.input_cursor = self.input.len();
                     self.commands_dismissed = true;
@@ -551,7 +596,7 @@ impl App {
                     self.commands_dismissed = false;
                     self.command_index = 0;
                     self.input.clear();
-                    self.input_images.clear();
+                    self.clear_input_images();
                     self.input_cursor = 0;
                 }
             }
@@ -570,6 +615,30 @@ impl App {
                     || super::approvals::is_command(&self.input))
                     && (!self.input.trim().is_empty() || !self.input_images.is_empty()) =>
             {
+                if !self.input_images.is_empty()
+                    && (matches!(
+                        self.input.split_whitespace().next(),
+                        Some(
+                            "/new"
+                                | "/sessions"
+                                | "/language"
+                                | "/attach"
+                                | "/detach"
+                                | "/older"
+                                | "/retry"
+                        )
+                    ) || super::approvals::is_command(self.input.trim()))
+                {
+                    self.set_copy_notice(
+                        self.language
+                            .pick(
+                                "Send or clear images before running a command",
+                                "Отправьте или удалите изображения перед командой",
+                            )
+                            .into(),
+                    );
+                    return None;
+                }
                 if matches!(self.status, Status::Working)
                     && matches!(self.input.trim(), "/new" | "/sessions")
                 {
@@ -625,21 +694,28 @@ impl App {
             {
                 self.commands_dismissed = false;
                 self.command_index = 0;
-                self.input.insert(self.input_cursor, c);
-                self.input_cursor += c.len_utf8();
+                self.insert_input(&c.to_string());
             }
             KeyCode::Backspace => {
                 self.commands_dismissed = false;
                 self.command_index = 0;
                 if let Some(c) = self.input[..self.input_cursor].chars().next_back() {
-                    self.input_cursor -= c.len_utf8();
-                    self.input.remove(self.input_cursor);
+                    self.replace_input_range(
+                        self.input_cursor - c.len_utf8()..self.input_cursor,
+                        "",
+                    );
                 }
             }
             KeyCode::Delete if self.input_cursor < self.input.len() => {
                 self.commands_dismissed = false;
                 self.command_index = 0;
-                self.input.remove(self.input_cursor);
+                let end = self.input_cursor
+                    + self.input[self.input_cursor..]
+                        .chars()
+                        .next()
+                        .unwrap()
+                        .len_utf8();
+                self.replace_input_range(self.input_cursor..end, "");
             }
             KeyCode::Left => {
                 if let Some(c) = self.input[..self.input_cursor].chars().next_back() {
@@ -662,6 +738,10 @@ impl App {
             KeyCode::Down => self.scroll = self.scroll.saturating_sub(1),
             _ => {}
         }
+        self.snap_image_cursor(!matches!(
+            key.code,
+            KeyCode::Left | KeyCode::Home | KeyCode::Up
+        ));
         None
     }
 }

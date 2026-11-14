@@ -511,7 +511,7 @@ impl Remote {
         self.uncertain = None;
         app.cancel_message_navigation();
         app.sessions = None;
-        app.input_images.clear();
+        app.clear_input_images();
         self.projection.accept(app, &self.snapshot)?;
         self.observer = Some(observe(
             self.chat.clone(),
@@ -559,7 +559,7 @@ impl Remote {
         match result {
             Ok(response) => {
                 self.uncertain = None;
-                app.input_images.clear();
+                app.clear_input_images();
                 if is_edit {
                     let id =
                         SessionId::new(response["id"].as_str().context("Edit returned no branch")?);
@@ -680,7 +680,7 @@ impl Remote {
                     }
                 }
                 app.input.clear();
-                app.input_images.clear();
+                app.clear_input_images();
                 app.input_cursor = 0;
             }
             "/approvals" => {

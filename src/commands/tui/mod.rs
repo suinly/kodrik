@@ -363,7 +363,7 @@ async fn run_session_inner(
                             }
                             let message=images::message(&app, session_id.as_str(), input);
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
-                                Ok(_)=>{app.input_images.clear();input_tx.send(message)?;},
+                                Ok(_)=>{app.clear_input_images();input_tx.send(message)?;},
                                 Err(error)=>{app.discard_pending_input(&message.text, message.images.len());app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
                             }
                         }
