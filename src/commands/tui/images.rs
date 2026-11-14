@@ -29,6 +29,7 @@ pub(super) fn message(app: &App, session: &str, text: String) -> IncomingMessage
 fn attach(app: &mut App, image: Image) -> anyhow::Result<()> {
     ensure!(app.input_images.len() < 4, "At most 4 images per message");
     app.input_images.push(image);
+    app.insert_input(&format!("[Image {}]", app.input_images.len()));
     Ok(())
 }
 
@@ -114,7 +115,7 @@ mod tests {
         .unwrap();
         let mut app = App::default();
         paste(&mut app, &format!("'{}'", path.display())).await;
-        assert!(app.input.is_empty());
+        assert_eq!(app.input, "[Image 1]");
         assert_eq!(app.input_images.len(), 1);
         assert_eq!(
             (app.input_images[0].width, app.input_images[0].height),
@@ -122,7 +123,7 @@ mod tests {
         );
         assert_eq!(
             app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-            Some(String::new())
+            Some("[Image 1]".into())
         );
         let message = message(&app, "cli:main", "".into());
         assert_eq!(message.images.len(), 1);
@@ -145,6 +146,20 @@ mod tests {
     }
 
     #[test]
+    fn image_markers_are_numbered_and_inserted_at_the_cursor() {
+        let mut app = App::default();
+        let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+            .unwrap();
+        app.insert_input("before after");
+        app.input_cursor = "before ".len();
+        attach(&mut app, image.clone()).unwrap();
+        attach(&mut app, image).unwrap();
+        assert_eq!(app.input, "before [Image 1][Image 2]after");
+        assert_eq!(app.input_cursor, "before [Image 1][Image 2]".len());
+        assert_eq!(app.input_images.len(), 2);
+    }
+
+    #[test]
     fn attachment_limit_and_clear_keep_the_composer_usable() {
         let mut app = App::default();
         let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
@@ -152,10 +167,15 @@ mod tests {
         for _ in 0..4 {
             attach(&mut app, image.clone()).unwrap();
         }
-        assert!(attach(&mut app, image).is_err());
+        let draft = app.input.clone();
+        assert!(attach(&mut app, image.clone()).is_err());
+        assert_eq!(app.input, draft);
         app.update(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(!app.should_quit);
         assert!(app.input_images.is_empty());
+        assert!(app.input.is_empty());
+        attach(&mut app, image).unwrap();
+        assert_eq!(app.input, "[Image 1]");
     }
 
     #[tokio::test]

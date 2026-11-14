@@ -29,7 +29,7 @@ the browser, with personal history, memory and skills shared across interfaces.
 - Shared personal dialogs in Telegram and the browser, with a Telegram session picker
   and web sign-in through Telegram or the owner password.
 - Optional remote TUI to the server agent with explicitly attached, temporary
-  laptop files, shell, skills and HTTP MCP; access ends when TUI disconnects.
+  device files, shell, skills and HTTP MCP; access ends when TUI disconnects.
 - Optional daily Telegram initiative based on saved interests and one-shot reminders.
 - Optional web search through self-hosted SearXNG or DeGoog and page reading with local Obscura.
 
@@ -113,7 +113,7 @@ Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
 Multiple terminal UI instances keep independent session selections.
 Launch from the directory where you want shell and file tools to work.
 
-To keep the agent and memory on a server instead, pair the laptop with
+To keep the agent and memory on a server instead, pair your device with
 `kodrik connect`, then launch `kodrik --remote`. Local access starts detached and
 requires `/attach` followed by `/attach yes`. See [Remote TUI](docs/remote-tui.md)
 for its separate configuration, data disclosure and cleanup limits; shell/MCP
@@ -226,7 +226,7 @@ Start at the [documentation index](docs/index.md), or go directly to:
 | Install with Homebrew or publish a release | [Homebrew](docs/homebrew.md)                                                         |
 | Configure models or Telegram               | [Configuration](docs/configuration.md)                                               |
 | Find commands and shortcuts                | [Using Kodrik](docs/usage.md)                                                        |
-| Connect a laptop to the server agent        | [Remote TUI](docs/remote-tui.md)                                                      |
+| Connect a device to the server agent        | [Remote TUI](docs/remote-tui.md)                                                      |
 | Understand memory and learning             | [Memory](docs/memory.md) · [Companion](docs/companion.md)                            |
 | Manage sessions and context                | [Sessions](docs/sessions.md)                                                         |
 | Create reusable workflows                  | [Skills](docs/skills.md)                                                             |
@@ -244,19 +244,3 @@ Start at the [documentation index](docs/index.md), or go directly to:
 
 Kodrik is licensed under the [MIT License](LICENSE).
 Third-party components retain their respective licenses.
-
-### Images in TUI
-
-Paste an absolute PNG, JPEG or WebP file path (quoted paths and escaped spaces
-are supported), or press **Ctrl+V** to attach a clipboard image. Add a prompt
-if needed, then press **Enter**; image-only messages also work. The composer
-shows the attachment count; **Ctrl+C** clears the draft and attachments.
-Up to four images are allowed per message, each at most 10 MiB and 32 million
-pixels. Recognition uses the configured model and requires vision support.
-
-Clipboard images use macOS native clipboard access, `wl-paste` on Wayland or
-`xclip` on X11. Over SSH/tmux, or on unsupported platforms, paste an image file
-path instead. In remote TUI, local images are uploaded to the server without
-requiring `/attach`; both client and server need image-capable versions.
-New attachments are not added while editing a previous message (its existing
-attachments remain unchanged).
