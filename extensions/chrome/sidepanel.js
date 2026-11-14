@@ -2,6 +2,7 @@ import {serverURL, pageContext, extractPage} from './core.mjs';
 const $ = id => document.getElementById(id);
 const frame = $('chat');
 let server, windowId, channel, ready = false;
+let connectionTimer;
 let includeContext = true, tabMetadata = {title:'',url:''};
 const connection = $('connection');
 function openSettings() { if (!connection.open) connection.showModal(); }
@@ -9,6 +10,17 @@ const ownerId = Number(new URLSearchParams(location.search).get('tab'));
 const bound = Number.isInteger(ownerId) && ownerId > 0;
 const storageKey = `tab-chat:${ownerId}`;
 const status = text => { $('status').textContent = text; };
+function waitForChat() {
+  ready = false;
+  clearTimeout(connectionTimer);
+  $('connection-toolbar').hidden = true;
+  status('Подключаюсь к чату…');
+  connectionTimer = setTimeout(() => {
+    if (ready) return;
+    $('connection-toolbar').hidden = false;
+    status('Чат не ответил. Откройте «Настройки подключения», проверьте адрес и при необходимости нажмите «Войти ↗».');
+  }, 8000);
+}
 function post(message) { if (server) frame.contentWindow.postMessage(message, server.origin); }
 async function activeTab() {
   const tab = bound ? await chrome.tabs.get(ownerId) : (await chrome.tabs.query({active:true,windowId}))[0];
@@ -37,7 +49,7 @@ async function load(value) {
   server = serverURL(value);
   $('server').value = server.href;
   channel = crypto.randomUUID();
-  ready = false;
+  waitForChat();
   let url = new URL('app/chat', server);
   if(bound) {
     const saved = (await chrome.storage.session.get(storageKey))[storageKey];
@@ -47,7 +59,6 @@ async function load(value) {
   frame.src = url.href;
   frame.hidden = false;
   connection.close();
-  status('Ожидаю чат. Если он не появился, войдите через «Войти ↗» и подключитесь снова.');
 }
 $('connect').addEventListener('submit', async event => {
   event.preventDefault();
@@ -58,19 +69,25 @@ $('connect').addEventListener('submit', async event => {
     await load(url.href);
   } catch (error) {status(error.message);}
 });
+$('settings').onclick = openSettings;
 $('close-connection').onclick = () => connection.close();
 connection.addEventListener('click', event => {
   if (event.target !== connection) return;
   const rect = connection.getBoundingClientRect();
   if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) connection.close();
 });
-$('login').onclick = () => {if(server) void chrome.tabs.create({url:new URL('auth/login',server).href});else status('Сначала укажите адрес Кодрика.');};
+$('login').onclick = async () => {
+  try {
+    const url = serverURL($('server').value);
+    await chrome.tabs.create({url:new URL('auth/login',url).href});
+  } catch(error) {status(error.message);}
+};
 $('access').onclick = async () => {
   try {
     if(await chrome.permissions.request({origins:['https://*/*','http://*/*']})) { $('access').hidden=true;status('Доступ разрешён. Повторите отправку вопроса.');await preview(); }
   } catch(error) {status(error.message);}
 };
-frame.addEventListener('load',()=>{ready=false;handshake();});
+frame.addEventListener('load',()=>{waitForChat();handshake();});
 // A ready message can race iframe load while Vue is booting; retry the handshake only.
 setInterval(()=>{if(!ready) handshake();},1000);
 window.addEventListener('message', async event => {
@@ -82,7 +99,7 @@ window.addEventListener('message', async event => {
   }
   if(event.data?.channel !== channel) return;
   const message = event.data;
-  if(message.type === 'kodrik-tab-ready') {ready=true;status('');return;}
+  if(message.type === 'kodrik-tab-ready') {ready=true;clearTimeout(connectionTimer);$('connection-toolbar').hidden=true;status('');return;}
   if(message.type === 'kodrik-tab-settings') {openSettings();return;}
   if(message.type === 'kodrik-tab-toggle') {
     if(typeof message.enabled === 'boolean') {includeContext=message.enabled;handshake();}
@@ -111,4 +128,4 @@ chrome.tabs.onActivated.addListener(info=>{if(!bound && info.windowId===windowId
 chrome.tabs.onUpdated.addListener((_id,change,tab)=>{if((bound ? _id===ownerId : tab.active && tab.windowId===windowId) && (change.title || change.url || change.status==='complete')) void preview();});
 windowId = (await chrome.windows.getCurrent()).id;
 await preview();
-try {const saved=await chrome.storage.local.get('server');if(saved.server) await load(saved.server);else openSettings();} catch(error){status(error.message);openSettings();}
+try {const saved=await chrome.storage.local.get('server');if(saved.server) await load(saved.server);else {$('connection-toolbar').hidden=false;openSettings();}} catch(error){status(error.message);$('connection-toolbar').hidden=false;openSettings();}

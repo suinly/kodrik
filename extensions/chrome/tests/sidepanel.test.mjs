@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chromium,expect} from '../../../web/node_modules/@playwright/test/index.mjs';
 
-async function panelFixture(t, configured=true) {
+async function panelFixture(t, configured=true, responds=true) {
   const browser=await chromium.launch({headless:true});
   t.after(()=>browser.close());
   const page=await browser.newPage();
+  if(!responds) await page.clock.install();
   await page.addInitScript(configured=>{
-    window.testState={tab:{id:7,title:'Example article',url:'https://article.test/read'},captures:0,updates:[]};
+    window.testState={tab:{id:7,title:'Example article',url:'https://article.test/read'},captures:0,updates:[],opened:[]};
     window.chrome={
-      tabs:{get:async()=>testState.tab, onActivated:{addListener(){}},onUpdated:{addListener(fn){testState.updates.push(fn);}},create:async()=>{}},
+      tabs:{get:async()=>testState.tab, onActivated:{addListener(){}},onUpdated:{addListener(fn){testState.updates.push(fn);}},create:async options=>{testState.opened.push(options.url);}},
       windows:{getCurrent:async()=>({id:1})},
       storage:{local:{get:async()=>configured?{server:'https://server.test/'}:{},set:async()=>{}},session:{get:async()=>({}),set:async()=>{}}},
       permissions:{request:async()=>true},
@@ -23,10 +24,10 @@ async function panelFixture(t, configured=true) {
   });
   await page.route('https://server.test/**',route=>route.fulfill({contentType:'text/html',body:`<script>
     window.messages=[];
-    addEventListener('message',event=>{messages.push(event.data);if(event.data.type==='kodrik-tab-init') parent.postMessage({type:'kodrik-tab-ready',channel:event.data.channel},'*');});
+    addEventListener('message',event=>{messages.push(event.data);if(${responds} && event.data.type==='kodrik-tab-init') parent.postMessage({type:'kodrik-tab-ready',channel:event.data.channel},'*');});
   </script>`}));
   await page.goto('https://panel.test/sidepanel.html?tab=7');
-  if(configured) await expect(page.locator('#status')).toHaveText('');
+  if(configured && responds) await expect(page.locator('#status')).toHaveText('');
   const chat=()=>page.frames().find(frame=>frame.url().startsWith('https://server.test/'));
   const send=(type,extra={})=>chat().evaluate(({type,extra})=>parent.postMessage({type,channel:messages.find(m=>m.type==='kodrik-tab-init').channel,...extra},'*'),{type,extra});
   return {page,chat,send};
@@ -57,6 +58,7 @@ test('sidepanel handshake tracks tab metadata and toggle; preview reads even whe
 
 test('settings require trusted frame and channel; native dialog closes and failures stay visible',async t=>{
   const {page,chat,send}=await panelFixture(t);
+  await expect(page.locator('#settings')).not.toBeVisible();
   const dialog=page.getByRole('dialog',{name:'Настройки подключения'});
   await send('kodrik-tab-settings',{channel:'invalid'});
   await page.evaluate(()=>postMessage({type:'kodrik-tab-settings'},'*'));
@@ -86,4 +88,27 @@ test('unconfigured sidepanel opens connection modal on startup',async t=>{
   const {page}=await panelFixture(t,false);
   await expect(page.getByRole('dialog',{name:'Настройки подключения'})).toBeVisible();
   await expect(page.getByLabel('Адрес сервера')).toBeVisible();
+});
+
+test('unresponsive server reveals settings only after timeout and allows correcting the login address',async t=>{
+  const {page,send}=await panelFixture(t,true,false);
+  const dialog=page.getByRole('dialog',{name:'Настройки подключения'});
+  await expect(page.locator('#status')).toContainText('Подключаюсь');
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('#settings')).not.toBeVisible();
+  await page.clock.runFor(8100);
+  await expect(page.locator('#settings')).toBeVisible();
+  await send('kodrik-tab-ready');
+  await expect(page.locator('#settings')).not.toBeVisible();
+  await page.locator('#chat').evaluate(frame=>frame.dispatchEvent(new Event('load')));
+  await page.clock.runFor(8100);
+  await page.getByRole('button',{name:'Настройки подключения',exact:true}).click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('Адрес сервера').fill('https://correct.test/kodrik/');
+  await dialog.getByRole('button',{name:'Войти ↗'}).click();
+  await expect.poll(()=>page.evaluate(()=>testState.opened)).toEqual(['https://correct.test/kodrik/auth/login']);
+  await dialog.getByRole('button',{name:'Подключить',exact:true}).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('#chat')).toHaveAttribute('src','https://correct.test/kodrik/app/chat?browser_sidebar=1');
+  await expect(page.locator('#settings')).not.toBeVisible();
 });
