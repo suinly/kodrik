@@ -190,6 +190,8 @@ body:has(.chat-viewport) {
 }
 .prose { overflow-wrap: anywhere; }
 .prose pre { overflow-x: auto; }
+.prose .katex-display { overflow-x: auto; overflow-y: hidden; padding-block: 0.25rem; }
+.prose .katex { overflow-wrap: normal; }
 .prose .syntax-code span { color: var(--shiki-light); }
 .dark .prose .syntax-code span { color: var(--shiki-dark); }
 ::highlight(conversation-search) { background-color: #f9e2af; color: #4c4f69; }

@@ -3,7 +3,7 @@ export default defineNuxtConfig({
   ssr: false,
   devtools: { enabled: false },
   modules: ['@nuxt/ui', '@nuxtjs/mdc'],
-  css: ['~/assets/css/main.css'],
+  css: ['katex/dist/katex.min.css', '~/assets/css/main.css'],
   app: {
     // Auth and chat share the base prefix; compiled assets stay under /chat/.
     baseURL: '/__kodrik_chat__/',

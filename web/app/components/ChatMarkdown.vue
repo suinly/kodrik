@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { parseMarkdown } from '@nuxtjs/mdc/runtime'
+import { parseChatMarkdown } from '../utils/chat-markdown'
 import type { MDCNode, MDCRoot } from '@nuxtjs/mdc'
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import MarkdownLink from './MarkdownLink.vue'
 
 const props = defineProps<{ text: string }>()
-const body = shallowRef<Awaited<ReturnType<typeof parseMarkdown>>['body']>()
+const body = shallowRef<Awaited<ReturnType<typeof parseChatMarkdown>>['body']>()
 
 async function highlightCode(node: MDCNode | MDCRoot): Promise<void> {
   if (node.type !== 'element' && node.type !== 'root') return
@@ -40,22 +39,7 @@ watch(() => props.text, async (text, _, onCleanup) => {
   let stale = false
   onCleanup(() => { stale = true })
   try {
-    const parsed = await parseMarkdown(text, {
-      toc: false, contentHeading: false, highlight: false,
-      remark: { plugins: { 'remark-mdc': false } },
-      rehype: {
-        options: { allowDangerousHtml: false },
-        plugins: { 'rehype-sanitize': {
-          instance: rehypeSanitize,
-          options: { ...defaultSchema, attributes: {
-            ...defaultSchema.attributes,
-            // Keep fenced code native; inline code still uses ProseCode.
-            code: [...(defaultSchema.attributes?.code || []), '__ignoreMap'],
-            pre: [...(defaultSchema.attributes?.pre || []), 'language'],
-          } },
-        } },
-      },
-    })
+    const parsed = await parseChatMarkdown(text)
     await highlightCode(parsed.body)
     if (!stale) body.value = parsed.body
   } catch { if (!stale) body.value = undefined }

@@ -1643,6 +1643,32 @@ test('conversation search scrolls to matches and navigates in both directions', 
   } finally {await browser.close();}
 });
 
+test('chat formulas render with local fonts in both themes without changing code', {timeout:30000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:390,height:844}}),errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    const text=String.raw`\[ y = f(w_1x_1 + w_2x_2 + \dots + b) \]`+'\n\nInline $x^2$ and `$x^2$`.';
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:'Completed',blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:`${id}:0`,role:'assistant',parts:[{type:'text',text}]},
+    ]};
+    await page.route('**/events',r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route('**/run',r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    await expect(page.locator('.message .katex')).toHaveCount(2);
+    await expect(page.locator('.message .katex-display')).toBeVisible();
+    await expect(page.locator('.message code')).toHaveText('$x^2$');
+    for(const colorScheme of ['light','dark']) {
+      await page.emulateMedia({colorScheme});
+      assert.equal(await page.locator('.katex-mathml').first().evaluate(el=>getComputedStyle(el).position),'absolute');
+      assert.equal(await page.evaluate(async()=>{await document.fonts.ready;return document.fonts.check('16px KaTeX_Main')}),true);
+      await page.screenshot({path:`/tmp/kodrik-math-${colorScheme}.png`,fullPage:true});
+    }
+    assert.deepEqual(errors,[]);
+  } finally {await browser.close();}
+});
+
 test('fenced code uses one block surface while inline code keeps its styling', {timeout:30000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
