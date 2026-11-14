@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {chromium,expect} from '../../../web/node_modules/@playwright/test/index.mjs';
 import {startFixture,stopFixture} from '../../../web/tests/fixture-process.mjs';
 
-test('extension sends fresh page context and native document attachments through authenticated chat', {timeout:120000},async()=>{
+test('extension sends context only on first message and serves agent requests with fresh context', {timeout:120000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),'kodrik-extension-test-'));
   let context,server;
   try {
@@ -55,6 +55,7 @@ test('extension sends fresh page context and native document attachments through
     assert.ok(!payload.files?.length);
     const attachment=chat.getByTestId('tab-context');
     await expect(attachment).toHaveCount(1);
+    await expect(chat.getByRole('switch',{name:'Включить контекст вкладки'})).toHaveCount(0);
     await expect(chat.getByTestId('browser-context')).toHaveCount(0);
     await attachment.getByRole('button').click();
     await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).toContainText('ORIGINAL ARTICLE CONTENT');
@@ -80,7 +81,20 @@ test('extension sends fresh page context and native document attachments through
     await input.fill('А сейчас?');
     const second=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
     await input.press('Enter');
-    await second;
+    assert.equal((await second).postDataJSON().browser_context,null);
+    // Simulate only the server request boundary; real iframe bridge and MV3 capture remain live.
+    let requested=false;
+    await panel.route('**/api/chat/browser-context**',route=>{
+      if(route.request().method()==='GET') {
+        const request_id=requested ? null : 'agent-request';requested=true;
+        return route.fulfill({json:{request_id}});
+      }
+      return route.fulfill({json:{ok:true}});
+    });
+    const agentResult=await panel.waitForRequest(req=>req.method()==='POST' && req.url().includes('/api/chat/browser-context'));
+    assert.equal(agentResult.postDataJSON().request_id,'agent-request');
+    assert.match(agentResult.postDataJSON().context.text,/UPDATED ARTICLE CONTENT/);
+    await panel.unroute('**/api/chat/browser-context**');
     await expect(attachment).toHaveCount(1);
     await attachment.getByRole('button').click();
     await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).toContainText('UPDATED ARTICLE CONTENT');
@@ -92,12 +106,17 @@ test('extension sends fresh page context and native document attachments through
     await article.bringToFront();
     const third=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
     await input.press('Enter');
-    await third;
+    assert.match((await third).postDataJSON().browser_context.text,/UPDATED ARTICLE CONTENT/);
     await expect(attachment).toHaveCount(1);
     await expect.poll(()=>worker.evaluate(async id=>(await chrome.storage.session.get(`tab-chat:${id}`))[`tab-chat:${id}`]?.path,owner)).toMatch(/\/app\/chat\/.+/);
     const mapping=await worker.evaluate(async id=>(await chrome.storage.session.get(`tab-chat:${id}`))[`tab-chat:${id}`],owner);
     assert.match(mapping.path,/\/app\/chat\/.+/);
     await panel.reload();
+    await expect(input).toBeEditable();
+    await input.fill('После перезагрузки');
+    const restored=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
+    await input.press('Enter');
+    assert.equal((await restored).postDataJSON().browser_context,null);
     await expect(chat.getByTestId('tab-context')).toHaveCount(1);
     const other=await context.newPage();
     await other.goto(`chrome-extension://${extensionId}/sidepanel.html?tab=999999`);
@@ -115,6 +134,8 @@ test('extension sends fresh page context and native document attachments through
     await article.goto('https://docs.google.com/document/d/test-document/edit?tab=t.1');
     await panel.reload();
     await expect(input).toBeEditable();
+    await menu.click();
+    await chat.getByRole('button',{name:/^(Новый диалог|New conversation)$/,exact:true}).first().click();
     await input.fill('Прочти документ');
     const exported=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
     await input.press('Enter');
@@ -131,6 +152,8 @@ test('extension sends fresh page context and native document attachments through
     await article.goto('http://127.0.0.1:19991/report.pdf');
     await panel.reload();
     await expect(input).toBeEditable();
+    await menu.click();
+    await chat.getByRole('button',{name:/^(Новый диалог|New conversation)$/,exact:true}).first().click();
     await input.fill('Прочти PDF');
     const pdfSent=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
     await input.press('Enter');

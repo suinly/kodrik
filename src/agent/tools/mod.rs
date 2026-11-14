@@ -1,3 +1,5 @@
+pub(crate) mod browser_context;
+
 pub(crate) mod apply_patch;
 mod companion;
 mod context_read;

@@ -110,7 +110,7 @@ window.addEventListener('message', async event => {
   try {
     if(message.type === 'kodrik-tab-capture' && !includeContext) {post({type:'kodrik-tab-result',channel,id:message.id,context:null});return;}
     const tab = await activeTab();
-    if(!/^https?:/.test(tab.url || '') || (tab.url && new URL(tab.url).origin === server.origin)) throw new Error('Эта вкладка недоступна для чтения. Выберите обычную страницу или отключите контекст.');
+    if(!/^https?:/.test(tab.url || '') || (tab.url && new URL(tab.url).origin === server.origin)) throw new Error('Эта вкладка недоступна для чтения. Выберите обычную HTTP(S)-страницу.');
     const snapshotChannel = channel;
     const isPreview = message.type === 'kodrik-tab-preview';
     const [documentResult] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:readDocument,args:[tab.url,isPreview]});

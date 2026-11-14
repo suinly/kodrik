@@ -116,6 +116,6 @@ export function extractPage() {
   const source = render(selection ? document.body : root).replace(/\n[ \t]+\n/g,'\n\n').replace(/\n{3,}/g,'\n\n').trim();
   let text = source.slice(0,100000);
   if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0,-1);
-  if (!text.trim()) throw new Error('Текст недоступен. Отключите контекст вкладки, чтобы отправить вопрос без него.');
+  if (!text.trim()) throw new Error('Текст недоступен. Выберите вкладку с доступным текстом.');
   return {url:location.href,title:document.title,text,selection:!!selection,truncated:truncated || source.length > 100000};
 }

@@ -112,3 +112,18 @@ rerun for this documentation refresh; unresolved full-suite failures above remai
   the same five named failures recorded above (pages catalog; sidebar lists; section rail;
   composer focus recovery; conversation menus). No full-suite success claimed.
 - No Rust source changes, deployment, gateway restart or installed-profile changes.
+
+## First-message context and agent-requested refresh
+
+- Automatic tab capture now happens only for the first user message of a conversation;
+  canonical history is refreshed before deciding. Retries reuse their pending snapshot.
+- Context toggle is hidden; the tab title and explicit local preview remain.
+- `browser_context` requests fresh text through the authenticated sidebar bridge.
+  A per-panel UUID and five-second heartbeat reject ambiguous multi-panel captures.
+- Checks: extension/bridge suite 27/27; focused Rust browser_context suite 10/10;
+  Nuxt build/typecheck, cargo fmt and git diff checks passed. Narrow 420×850 screenshot
+  inspected: title/preview retained, toggle absent.
+- Full web suite: 256/257 passed; `typing restores composer focus without losing the
+  first character or cursor position` failed with an extra leading space under the
+  full run, then passed in an isolated rerun. Not claiming the full suite is green.
+- Running gateway/browser installation was not deployed or restarted.

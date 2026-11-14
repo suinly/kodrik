@@ -255,6 +255,10 @@ impl SqliteSessionStore {
         tokio::task::spawn_blocking(move || Self::open(directory)).await?
     }
 
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
     pub(crate) fn attachment_directory(&self) -> PathBuf {
         self.directory.join("attachments")
     }

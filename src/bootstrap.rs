@@ -273,6 +273,13 @@ pub(crate) async fn build_app_with_access(
         .register(Arc::new(EncyclopediaTool))
         .register(Arc::new(SessionSearchTool::new(data.join("sessions"))))
         .register(Arc::new(ContextReadTool::new(data.join("sessions"))));
+    if !isolated && access.is_none() {
+        tools = tools.register(Arc::new(
+            crate::agent::tools::browser_context::BrowserContextTool {
+                directory: data.join("sessions"),
+            },
+        ));
+    }
     if !isolated
         && access.is_none()
         && let Some(settings) = crate::web::Settings::from_config(&config.web)?

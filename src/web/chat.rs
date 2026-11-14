@@ -31,6 +31,9 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
+#[path = "chat_browser_context.rs"]
+mod browser_context;
+
 #[path = "chat_approvals.rs"]
 mod approvals;
 #[path = "chat_forms.rs"]
@@ -571,6 +574,14 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route(
             "/api/chat/send",
             post(send).layer(DefaultBodyLimit::max(super::chat_upload::BODY_LIMIT)),
+        )
+        .route(
+            "/api/chat/browser-context",
+            get(browser_context::poll)
+                .post(browser_context::complete)
+                .layer(DefaultBodyLimit::max(
+                    crate::agent::BrowserContext::MAX_BYTES + 16 * 1024,
+                )),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     Router::new()

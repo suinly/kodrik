@@ -3539,3 +3539,166 @@ async fn browser_context_multipart_with_real_file_and_queued_snapshot() {
     let queued = store.conversation_view(&id).await.unwrap();
     assert_eq!(queued.queued[0]["browser_context"], context);
 }
+
+#[tokio::test]
+async fn browser_context_endpoint_auth_session_and_client_validation() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let client_id = uuid::Uuid::new_v4();
+    let path = format!("browser-context?id={id}&client_id={client_id}");
+    let response = f
+        .client
+        .get(format!("{}api/chat/{path}", f.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let response = f.request(reqwest::Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"request_id":null})
+    );
+    for (path, expected) in [
+        (format!("browser-context?id={id}"), 400),
+        (format!("browser-context?id={id}&client_id=invalid"), 400),
+        (
+            format!(
+                "browser-context?id={}&client_id={client_id}",
+                uuid::Uuid::new_v4()
+            ),
+            404,
+        ),
+    ] {
+        assert_eq!(
+            f.request(reqwest::Method::GET, &path)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            expected
+        );
+    }
+    let payload = json!({"id":id,"client_id":client_id,"request_id":uuid::Uuid::new_v4(),"context":browser_context_fixture()});
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .header("Origin", "https://evil.example")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    let foreign = Fixture::new().await;
+    assert_eq!(
+        foreign
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        foreign
+            .request(reqwest::Method::POST, "browser-context")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
+async fn browser_context_endpoint_delivers_only_to_requested_panel_once() {
+    use crate::agent::tools::browser_context::{BrowserContextTool, CURRENT_SESSION};
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let other = f.create().await;
+    let client_id = uuid::Uuid::new_v4();
+    let path = format!("browser-context?id={id}&client_id={client_id}");
+    f.request(reqwest::Method::GET, &path).send().await.unwrap();
+    let tool = BrowserContextTool {
+        directory: f.sessions.directory().to_owned(),
+    };
+    let session = id.clone();
+    let task = tokio::spawn(async move {
+        CURRENT_SESSION
+            .scope(session, tool.execute(json!({})))
+            .await
+    });
+    let request_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let value: Value = f
+                .request(reqwest::Method::GET, &path)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            if let Some(id) = value["request_id"].as_str() {
+                break id.to_owned();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let payload = json!({"id":id,"client_id":client_id,"request_id":request_id,"context":browser_context_fixture()});
+    let mut wrong = payload.clone();
+    wrong["id"] = json!(other);
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .json(&wrong)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    wrong = payload.clone();
+    wrong["client_id"] = json!(uuid::Uuid::new_v4());
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .json(&wrong)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let output = task.await.unwrap().unwrap();
+    assert_eq!(output.output["context"], browser_context_fixture());
+    assert_eq!(output.output["untrusted"], true);
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-context")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+}

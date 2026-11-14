@@ -26,7 +26,24 @@ async function toggleTabPreview(){
   tabPreviewLoading.value=true;tabPreviewError.value='';tabPreview.value=null
   try {tabPreview.value=await tabBridge.preview()} catch(error){tabPreviewError.value=messageOf(error)} finally {tabPreviewLoading.value=false}
 }
-onBeforeUnmount(()=>tabBridge.dispose())
+const tabClientId=crypto.randomUUID()
+let tabRequestTimer:ReturnType<typeof setTimeout>|undefined
+let tabRequestsStopped=false
+async function pollTabRequests(){
+  try {
+    if(props.browserSidebar && props.active && !home.value) {
+      const {request_id}=await api<{request_id:string|null}>(`browser-context?id=${encodeURIComponent(props.conversation.id)}&client_id=${tabClientId}`)
+      if(request_id && !tabRequestsStopped) {
+        let context:BrowserContext|null=null,error:string|undefined
+        try {context=await tabBridge.preview()} catch(cause){error=messageOf(cause)}
+        if(!tabRequestsStopped) await api('browser-context','POST',{id:props.conversation.id,client_id:tabClientId,request_id,context,error})
+      }
+    }
+  } catch { /* Reconnect on the next poll; tool requests have their own deadline. */ }
+  finally {if(!tabRequestsStopped) tabRequestTimer=setTimeout(pollTabRequests,1000)}
+}
+onMounted(()=>{if(props.browserSidebar) void pollTabRequests()})
+onBeforeUnmount(()=>{tabRequestsStopped=true;clearTimeout(tabRequestTimer);tabBridge.dispose()})
 const emit = defineEmits<{ saved: [];new:[];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
@@ -457,7 +474,11 @@ async function submit() {
     if (!text.trim() && !selectedFiles.length) return
     // Preserve this exact snapshot for uncertain retries; never recapture it.
     if(!pending) {
-      const capture=await tabBridge.capture()
+      // Refresh before deciding: a failed/stale history load is not an empty conversation.
+      const current=props.browserSidebar ? await api<Snapshot>(`sessions/${props.conversation.id}/run`) : snapshot.value
+      if(!mounted) return
+      const firstMessage=!!current && !(current.messages.some(message=>message.role==='user') || current.queued.length)
+      const capture=firstMessage ? await tabBridge.capture() : null
       if(!mounted) return
       const {document:tabDocument,...context}=capture ?? {}
       const browser_context=capture ? context as BrowserContext : null
@@ -676,9 +697,8 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
           </template>
         </div>
         <div class="flex min-w-0 items-center gap-2 px-2 py-1">
-          <USwitch :model-value="tabState.enabled" aria-label="Включить контекст вкладки" size="sm" @update:model-value="value=>tabBridge.toggle(value)" />
           <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-xs py-1" :aria-expanded="tabExpanded" aria-controls="tab-context-preview" @click="toggleTabPreview">
-            <span class="min-w-0 flex-1 truncate" :title="tabState.url">{{ tabState.enabled?'Контекст:':'Без контекста:' }} {{ tabState.title }}</span>
+            <span class="min-w-0 flex-1 truncate" :title="tabState.url">Вкладка: {{ tabState.title }}</span>
             <UIcon :name="tabExpanded?'i-lucide-chevron-down':'i-lucide-chevron-up'" class="size-4 shrink-0" />
           </button>
         </div>

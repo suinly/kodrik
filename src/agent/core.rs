@@ -99,6 +99,7 @@ impl Agent {
             "wakeups",
             "webhooks",
             "switch_session",
+            "browser_context",
         ]);
         agent.limits = None;
         agent
@@ -1043,9 +1044,9 @@ impl Agent {
                                                                     }
                                                                     context
                                                                 }),
-                                                            registry.execute(
-                                                                &call.name,
-                                                                call.arguments.clone(),
+                                                            super::tools::browser_context::CURRENT_SESSION.scope(
+                                                                session.id().as_str().to_owned(),
+                                                                registry.execute(&call.name, call.arguments.clone()),
                                                             ),
                                                         ),
                                                     ),

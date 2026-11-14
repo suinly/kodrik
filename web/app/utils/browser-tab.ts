@@ -55,7 +55,7 @@ export function createTabBridge(win:Window, timeout=90000) {
     if(!preview && !enabled) return null
     const id=crypto.randomUUID()
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Истекло время чтения вкладки. Повторите отправку или отключите контекст.'))},timeout)
+      const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Истекло время чтения вкладки. Повторите чтение вкладки.'))},timeout)
       pending.set(id,{resolve,reject,timer})
       win.parent.postMessage({type:preview?'kodrik-tab-preview':'kodrik-tab-capture',channel,id},origin)
     })
