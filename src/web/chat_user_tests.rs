@@ -776,3 +776,38 @@ async fn full_stream_pool_does_not_block_login_and_releases_capacity() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn owner_wakeups_use_personal_storage_not_web_root() {
+    use crate::agent::reminders::{Recipient, ReminderStore};
+    let root = tempfile::tempdir().unwrap();
+    let config = user_config();
+    let personal = root.path().join("users/42");
+    let app = crate::bootstrap::build_app_at(&config, &personal, false)
+        .await
+        .unwrap();
+    let users = Arc::new(crate::users::UserSpaces::new(
+        &config,
+        root.path(),
+        app.clone(),
+    ));
+    let now = chrono::Utc::now();
+    for (path, text) in [
+        (&personal, "Owner wakeup"),
+        (&root.path().to_path_buf(), "Wrong root wakeup"),
+    ] {
+        ReminderStore::wakeups(path).execute_wakeup(
+            &Recipient { interface: "web".into(), chat: "test".into() },
+            "source",
+            serde_json::from_value(json!({"action":"create","text":text,"due_at":(now+chrono::Duration::hours(1)).to_rfc3339()})).unwrap(),
+            now,
+        ).unwrap();
+    }
+    let chat = Chat::new(&app.agent_runner, root.path())
+        .await
+        .unwrap()
+        .with_users(users);
+    let records = chat.wakeups.history().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].text, "Owner wakeup");
+}

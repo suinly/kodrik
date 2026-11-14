@@ -144,6 +144,13 @@ impl UserSpaces {
         }
     }
 
+    pub(crate) fn owner_directory(&self) -> PathBuf {
+        self.config.owner.as_ref().map_or_else(
+            || self.root.clone(),
+            |owner| self.directory(owner.user_id.get()),
+        )
+    }
+
     pub(crate) fn directory(&self, user_id: u64) -> PathBuf {
         crate::spaces::personal(&self.root, user_id)
     }

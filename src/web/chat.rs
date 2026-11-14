@@ -125,6 +125,7 @@ impl Chat {
     }
 
     pub(crate) fn with_users(mut self, users: Arc<crate::users::UserSpaces>) -> Self {
+        self.wakeups = crate::agent::reminders::ReminderStore::wakeups(users.owner_directory());
         self.users = Some(users);
         self
     }
