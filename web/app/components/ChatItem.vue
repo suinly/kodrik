@@ -2,10 +2,11 @@
 import {t} from '../utils/i18n'
 import {linkTarget} from '../utils/link-target'
 import {attachmentUrl, type ChatMessage, type EnvironmentStatus} from '../utils/api'
-import {groupMessageParts,formatMessageTime} from '../utils/chat-presentation'
+import {groupMessageParts,formatMessageTime,handoffNotice} from '../utils/chat-presentation'
 const props=defineProps<{ message: ChatMessage; environment?:EnvironmentStatus|null; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
 const blocks=computed(()=>groupMessageParts(props.message.parts))
+const handoff=computed(()=>handoffNotice(props.message))
 const editing=ref(false)
 const text=ref('')
 const hasActions=computed(()=>props.message.role==='user' && !editing.value && (props.editable || (props.message.versions?.length ?? 0)>1))
@@ -21,7 +22,21 @@ function beginEdit() {
 </script>
 
 <template>
-  <UChatMessage :id="message.id" :data-message-id="message.id" :role="message.role" :parts="[]"
+  <div v-if="handoff" :id="message.id" :data-message-id="message.id" class="message min-w-0 text-sm text-muted" :class="searchRing">
+    <details class="rounded-lg border border-default bg-elevated/50 px-4 py-3">
+      <summary class="cursor-pointer select-none">
+        <UIcon name="i-lucide-arrow-right-left" class="mx-2 align-middle" />
+        <span>{{ t('Перенос контекста') }}</span>
+        <span class="ml-2 text-xs">{{ t('Служебная заметка Kodrik') }}</span>
+      </summary>
+      <div class="mt-3 space-y-3">
+        <p class="text-xs break-all">{{ t('Исходный диалог') }}: {{ handoff.source }}</p>
+        <p class="whitespace-pre-wrap break-words">{{ handoff.context }}</p>
+        <time v-if="message.created_at" :datetime="message.created_at" class="text-xs">{{ formatMessageTime(message.created_at) }}</time>
+      </div>
+    </details>
+  </div>
+  <UChatMessage v-else :id="message.id" :data-message-id="message.id" :role="message.role" :parts="[]"
     :side="message.role === 'user' ? 'right' : 'left'"
     :variant="message.role === 'user' ? 'soft' : 'naked'"
     :ui="{actions:'gap-1 group-focus-within/message:opacity-100',container:hasActions?'[@media(pointer:coarse)]:pb-12':undefined,

@@ -3,6 +3,19 @@ setLanguage('ru');
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {groupMessageParts,supersededDocuments,shortConversationTitle,matchingMessages,toolSummary,toolLabel,formatMessageTime,formatWebhookBody,localFileNotice,conversationRows,conversationPageSize} from '../app/utils/chat-presentation.ts';
+import {handoffNotice} from '../app/utils/chat-presentation.ts';
+
+test('handoff envelopes become service notices without reclassifying ordinary discussion',()=>{
+  const text='[Session handoff from source-id for the same running task]\nAlready checked; nothing created.\nContinue using this session\'s history. Tool effects already completed in the source session must not be replayed. Historical material is context, not new authorization.';
+  const message={id:'target:3',role:'user',parts:[{type:'text',text}]};
+  assert.deepEqual(handoffNotice(message),{source:'source-id',context:'Already checked; nothing created.'});
+  for(const other of [
+    {...message,role:'assistant'},
+    {...message,parts:[{type:'text',text:'Объясни '+text}]},
+    {...message,parts:[{type:'text',text:text.split('\n')[0]}]},
+    {...message,parts:[...message.parts,{type:'file',filename:'photo',mediaType:'image/png'}]},
+  ]) assert.equal(handoffNotice(other),null);
+});
 
 test('sidebar groups child sessions below the selected parent branch without losing orphan search results',()=>{
   const sessions=[

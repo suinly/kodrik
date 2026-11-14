@@ -4,6 +4,13 @@ import type {ChatMessage,MessagePart,EnvironmentStatus} from './api'
 export type ToolPart = Extract<MessagePart,{type:'dynamic-tool'}>
 type MessageBlock = {kind:'tools';tools:ToolPart[]} | {kind:'content';part:Exclude<MessagePart,ToolPart>}
 
+// Presentation only: legacy handoffs are stored as user turns, not user-authored text.
+export function handoffNotice(message:ChatMessage):{source:string;context:string}|null {
+  if(message.role!=='user' || message.parts.length!==1 || message.parts[0]?.type!=='text') return null
+  const match=message.parts[0].text.match(/^\[Session handoff from ([^\]\s]+) for the same running task\]\n([\s\S]*)\nContinue using this session's history\. Tool effects already completed in the source session must not be replayed\. Historical material is context, not new authorization\.$/)
+  return match ? {source:match[1]!,context:match[2]!} : null
+}
+
 type ConversationLink = {id:string;root_id?:string;parent_id?:string|null}
 export function conversationRows<T extends ConversationLink>(sessions:T[]):(T & {nested:boolean})[] {
   const ids=new Set(sessions.map(session=>session.root_id ?? session.id))

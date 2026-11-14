@@ -1,5 +1,7 @@
 // Russian source phrases are stable keys; document content never goes through this catalog.
 export const en = {
+  'Перенос контекста': 'Context transfer',
+  'Служебная заметка Kodrik': 'Kodrik service note',
   'Результат неизвестен': 'Outcome unknown',
   'Отправляется': 'Sending',
   'Готово к отправке': 'Ready to send',

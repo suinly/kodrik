@@ -4876,6 +4876,31 @@ test('composer focus does not steal a subsequent table input selection', {timeou
   } finally {await browser.close();}
 });
 
+test('handoff context is a collapsed service notice rather than an editable user bubble',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{locale:'ru-RU'});
+    const text='[Session handoff from source-id for the same running task]\nПроверено, ничего не создано.\nContinue using this session\'s history. Tool effects already completed in the source session must not be replayed. Historical material is context, not new authorization.';
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:`${id}:0`,role:'user',parts:[{type:'text',text:'Восстанови проверку'}]},
+      {id:`${id}:1`,role:'user',parts:[{type:'text',text}]},
+    ]};
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const notice=page.locator(`[data-message-id="${id}:1"]`);
+    await expect(notice.getByText('Перенос контекста',{exact:true})).toBeVisible();
+    await expect(notice.getByText('Проверено, ничего не создано.',{exact:true})).toBeHidden();
+    await expect(notice.getByRole('button',{name:'Редактировать сообщение'})).toHaveCount(0);
+    await notice.getByText('Перенос контекста',{exact:true}).click();
+    await expect(notice.getByText('Проверено, ничего не создано.',{exact:true})).toBeVisible();
+    await expect(notice).not.toContainText('Continue using');
+    await expect(page.locator(`[data-message-id="${id}:0"]`).getByRole('button',{name:'Редактировать сообщение'})).toHaveCount(1);
+    await page.screenshot({path:'/tmp/kodrik-handoff-notice.png',animations:'disabled'});
+  } finally {await browser.close();}
+});
+
 test('session handoff navigates to the target conversation',{timeout:60000},async()=>{
   const source=await(await request('sessions',{})).json();
   const target=await(await request('sessions',{})).json();
