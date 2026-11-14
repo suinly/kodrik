@@ -92,6 +92,8 @@ pub struct Session {
     #[serde(default)]
     generation: String,
     id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_override: Option<String>,
     #[serde(default)]
     system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -128,6 +130,7 @@ impl Session {
         Self {
             generation: uuid::Uuid::new_v4().to_string(),
             id,
+            model_override: None,
             system_prompt: None,
             webhook_instruction: None,
             approval_parent: None,
@@ -144,6 +147,14 @@ impl Session {
             last_message_at: None,
             message_times: Vec::new(),
         }
+    }
+
+    pub fn model_override(&self) -> Option<&str> {
+        self.model_override.as_deref()
+    }
+
+    pub fn set_model_override(&mut self, model: Option<String>) {
+        self.model_override = model;
     }
 
     pub(crate) fn token_usage(&self) -> TokenUsage {
@@ -453,6 +464,31 @@ impl Session {
 mod tests {
     use super::*;
     use crate::agent::message::{ToolCall, ToolResult};
+
+    #[test]
+    fn model_override_survives_reload_and_branch_without_changing_source() {
+        let mut session = Session::new(SessionId::new("model"));
+        assert_eq!(session.model_override(), None);
+        session.set_model_override(Some("chosen".into()));
+        session.push(Message::User(crate::agent::UserMessage {
+            content: "hello".into(),
+            images: Vec::new(),
+            files: Vec::new(),
+            browser_client_id: None,
+            browser_context: None,
+        }));
+        let saved = serde_json::to_value(&session).unwrap();
+        assert_eq!(saved["model_override"], "chosen");
+        let restored: Session = serde_json::from_value(saved).unwrap();
+        let mut branch = restored.fork_before(SessionId::new("branch"), 0).unwrap();
+        assert_eq!(branch.model_override(), Some("chosen"));
+        branch.set_model_override(None);
+        assert_eq!(restored.model_override(), Some("chosen"));
+        assert_eq!(branch.model_override(), None);
+        let legacy: Session =
+            serde_json::from_value(serde_json::json!({"id":"old","messages":[]})).unwrap();
+        assert_eq!(legacy.model_override(), None);
+    }
 
     #[test]
     fn invalid_compaction_block_ranges_fall_back_to_original_history() {

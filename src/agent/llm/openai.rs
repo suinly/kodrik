@@ -183,6 +183,7 @@ fn retry_after(value: &str) -> Option<std::time::Duration> {
         })
 }
 
+#[derive(Clone)]
 pub struct OpenAiLlm {
     client: Client<OpenAIConfig>,
     model: String,
@@ -512,6 +513,33 @@ impl OpenAiLlm {
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAiLlm {
+    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        self.check_access()?;
+        #[derive(Deserialize)]
+        struct Model {
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct Models {
+            data: Vec<Model>,
+        }
+        let response: Models = self.client.models().list_byot().await?;
+        let mut ids: Vec<String> = response.data.into_iter().map(|model| model.id).collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    fn with_model(&self, model: &str) -> anyhow::Result<std::sync::Arc<dyn LlmProvider>> {
+        anyhow::ensure!(
+            !model.trim().is_empty() && !model.chars().any(char::is_control),
+            "Invalid model ID"
+        );
+        let mut selected = self.clone();
+        selected.model = model.into();
+        Ok(std::sync::Arc::new(selected))
+    }
+
     fn identity(&self) -> String {
         format!("openai:{}", self.model)
     }
@@ -616,6 +644,38 @@ mod tests {
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
         sync::oneshot,
     };
+
+    #[tokio::test]
+    async fn model_selection_lists_primary_models_and_isolates_override() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let llm = OpenAiLlm::new(
+            "test",
+            Some("default"),
+            Some(format!("http://{}", listener.local_addr().unwrap())),
+        );
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "GET /models HTTP/1.1\r\n");
+            loop {
+                line.clear();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let body = r#"{"object":"list","data":[{"id":"z","object":"model","created":0,"owned_by":"test"},{"id":"a","object":"model","created":0,"owned_by":"test"},{"id":"z","object":"model","created":0,"owned_by":"test"}]}"#;
+            reader.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        assert_eq!(llm.list_models().await.unwrap(), vec!["a", "z"]);
+        server.await.unwrap();
+        let selected = llm.with_model("chosen").unwrap();
+        assert_eq!(selected.identity(), "openai:chosen");
+        assert_eq!(llm.identity(), "openai:default");
+        assert!(llm.with_model("  ").is_err());
+    }
 
     #[tokio::test]
     async fn revoked_user_cannot_make_new_provider_attempts_or_background_calls() {

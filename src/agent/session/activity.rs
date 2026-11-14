@@ -254,7 +254,7 @@ mod tests {
         drop(store);
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
         store.with_connection(|db| {
-            assert_eq!(db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0))?,16);
+            assert_eq!(db.pragma_query_value::<i64,_>(None,"user_version",|r|r.get(0))?,super::super::sqlite::VERSION);
             let states = db.prepare("SELECT session_id,revision=read_revision,listing_payload FROM web_chat_activity ORDER BY session_id")?
                 .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,String>(2)?)))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

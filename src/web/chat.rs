@@ -40,6 +40,8 @@ mod approvals;
 mod forms;
 #[path = "chat_management.rs"]
 mod management;
+#[path = "chat_models.rs"]
+mod models;
 #[path = "chat_push.rs"]
 mod push;
 #[path = "remote_chat.rs"]
@@ -362,6 +364,12 @@ impl Chat {
             &view.session
         ));
         snapshot["token_usage"] = json!(view.session.token_usage());
+        snapshot["model"] = json!(
+            view.session
+                .model_override()
+                .unwrap_or(&self.runner.model_identity())
+        );
+        snapshot["model_override"] = json!(view.session.model_override());
         snapshot["context_tokens"] = json!(view.session.input_tokens);
         snapshot["context_limit"] = Value::Null;
         snapshot["context_compaction_threshold"] =
@@ -526,6 +534,8 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         )
         .route("/api/chat/push/presence", post(push::presence))
         .route("/api/chat/activity", get(activity))
+        .route("/api/chat/models", get(models::list))
+        .route("/api/chat/sessions/{id}/model", post(models::set))
         .route("/api/chat/sessions/{id}/read", post(mark_read))
         .route("/api/chat/sessions", get(management::list).post(create))
         .route(

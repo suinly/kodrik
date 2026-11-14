@@ -1,5 +1,13 @@
 // Russian source phrases are stable keys; document content never goes through this catalog.
 export const en = {
+  'Модель диалога': 'Conversation model',
+  'По умолчанию': 'Default',
+  'Поиск моделей': 'Search models',
+  'Загружаю модели…': 'Loading models…',
+  'Модели не найдены': 'No models found',
+  'По умолчанию · {0}': 'Default · {0}',
+  'Использовать по умолчанию · {0}': 'Use default · {0}',
+  'Использовать по умолчанию': 'Use default',
   'Настройки': 'Settings',
   'Настройки доступны только владельцу.': 'Settings are available to the owner only.',
   'Конфигурация шлюза': 'Gateway configuration',

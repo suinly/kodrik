@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 16;
+pub(super) const VERSION: i64 = 17;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -31,6 +31,56 @@ pub(crate) struct SearchSessions {
 }
 
 impl SqliteSessionStore {
+    pub async fn set_session_model(&self, id: &str, model: Option<String>) -> anyhow::Result<bool> {
+        if let Some(model) = &model {
+            ensure!(
+                !model.is_empty() && model.len() <= 512 && !model.chars().any(char::is_control),
+                "Invalid model ID"
+            );
+        }
+        let id = id.to_owned();
+        self.with_connection(move |db| {
+            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut session = match load(&tx, &id)? {
+                Some(session) => session,
+                None => {
+                    let draft: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM active_sessions WHERE session_id=?1)",
+                        [&id], |r| r.get(0),
+                    )?;
+                    ensure!(draft, "Session not found");
+                    Session::new(SessionId::new(&id))
+                }
+            };
+            if crate::agent::inbox::session_busy_in(&tx, &id)?
+                || crate::agent::inbox::session_busy_in(&tx, &format!("web:{id}"))?
+            {
+                return Ok(false);
+            }
+            let persisted: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&id], |r| r.get(0),
+            )?;
+            if persisted {
+                session.set_model_override(model);
+                save(&tx, &session)?;
+            } else if let Some(model) = model {
+                tx.execute("INSERT INTO draft_models(session_id,model) VALUES (?1,?2) ON CONFLICT(session_id) DO UPDATE SET model=excluded.model", params![id, model])?;
+            } else {
+                tx.execute("DELETE FROM draft_models WHERE session_id=?1", [&id])?;
+            }
+            tx.execute("UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='run_view_revision'", [])?;
+            tx.commit()?;
+            Ok(true)
+        }).await
+    }
+
+    pub(crate) fn load_in_transaction(
+        db: &Connection,
+        id: &str,
+    ) -> anyhow::Result<Option<Session>> {
+        load(db, id)
+    }
+
     pub(crate) async fn is_draft(&self, id: &str) -> anyhow::Result<bool> {
         let id = id.to_owned();
         self.with_connection(move |db| {
@@ -238,6 +288,9 @@ impl SqliteSessionStore {
         if version < 16 {
             super::activity::migrate_listing(&tx)?;
         }
+        if version < 17 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS draft_models(session_id TEXT PRIMARY KEY, model TEXT NOT NULL); PRAGMA user_version=17;")?;
+        }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
         // SQLite derives sidecar permissions from the already-private main database.
@@ -391,7 +444,18 @@ pub(super) fn load(db: &Connection, id: &str) -> anyhow::Result<Option<Session>>
             r.get(0)
         })
         .optional()?;
-    bytes.map(|bytes| decode(id, &bytes)).transpose()
+    if let Some(bytes) = bytes {
+        return Ok(Some(decode(id, &bytes)?));
+    }
+    let model: Option<String> = db.query_row(
+        "SELECT model FROM draft_models WHERE session_id=?1 AND EXISTS(SELECT 1 FROM active_sessions WHERE session_id=?1)",
+        [id], |r| r.get(0),
+    ).optional()?;
+    Ok(model.map(|model| {
+        let mut session = Session::new(SessionId::new(id));
+        session.set_model_override(Some(model));
+        session
+    }))
 }
 
 pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
@@ -406,6 +470,10 @@ pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
                 .timestamp_nanos_opt()
                 .context("Session timestamp overflow")?
         ],
+    )?;
+    db.execute(
+        "DELETE FROM draft_models WHERE session_id=?1",
+        [session.id().as_str()],
     )?;
     super::activity::capture(db, session)?;
     crate::agent::command_audit::capture_mode(db, session)

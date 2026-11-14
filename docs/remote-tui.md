@@ -125,6 +125,7 @@ the first message saves the conversation; attaching alone does not save it.
 | Remote TUI input | Action |
 | --- | --- |
 | `/sessions` | Select a saved server conversation; load 30 at a time without blocking keyboard input |
+| `/models` | Search the server provider's model catalogue; ↑/↓ and Enter select, Esc cancels; the default entry resets the conversation override |
 | `/new` | Create and select a server conversation |
 | `/attach` | Reconnect the launch project; show the grant picker if approval is needed |
 | `/detach` | Revoke this environment binding and clean up local work; keep server chat available |
@@ -141,7 +142,12 @@ Use matching client and gateway versions: older gateways do not support this
 paginated session-list API.
 
 In slash-command suggestions, Enter runs the highlighted command directly;
-Tab only completes its name. `/language` and `/audit` open keyboard choices.
+Tab only completes its name. `/language`, `/audit` and `/models` open keyboard choices.
+Model selection is saved on the server for this conversation only, and requires
+an idle conversation with no queued requests. It does not change the laptop's
+provider configuration or grant additional local access.
+This also works before the first message after startup or `/new`: choosing a
+model keeps the conversation a draft, and the first request uses that choice.
 Bare `/approve` and `/deny` open the full pending-call review, without deciding
 anything until a separate explicit choice.
 

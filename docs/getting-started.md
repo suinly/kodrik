@@ -63,6 +63,13 @@ literal TOML strings; `${VARIABLE}` is not expanded. See the
 
 Try “Remember that I prefer concise answers”, then `/new` and “What do you
 remember about me?”. Use `/sessions` to reopen an earlier terminal conversation.
+Use `/models` to select a model for the current conversation from the provider's
+catalogue. Navigate with ↑/↓, confirm with Enter, or close with Esc. The default
+option restores the configured model; other conversations keep their own choice.
+Model changes require an idle conversation with no queued requests.
+You can choose a model immediately after opening TUI or using `/new`, before
+sending anything. This keeps the conversation a draft until its first message;
+that first message already uses the selected model.
 For a single request:
 
 ```sh

@@ -12,6 +12,15 @@ pub struct GenerationUsage {
 
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
+    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// Return an isolated provider; never change the shared default provider.
+    fn with_model(&self, _model: &str) -> anyhow::Result<std::sync::Arc<dyn LlmProvider>> {
+        anyhow::bail!("Model selection is unsupported by this provider")
+    }
+
     fn identity(&self) -> String {
         std::any::type_name::<Self>().into()
     }

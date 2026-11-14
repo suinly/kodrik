@@ -545,7 +545,37 @@ async fn terminal_remote_fixture() {
         let mut view = state.lock().unwrap();
         view.revision += 1;
         let value = match command {
+            ChatCommand::Models => {
+                let count = std::fs::read_to_string("model-lists")
+                    .unwrap_or_default()
+                    .parse::<usize>()
+                    .unwrap_or(0)
+                    + 1;
+                std::fs::write("model-lists", count.to_string()).unwrap();
+                eprintln!("fixture-model-list-{count}");
+                json!({"models":["fixture-chosen-model"],"default_model":"server-test-model"})
+            }
+            ChatCommand::SetModel { model } => {
+                assert!(
+                    model
+                        .as_deref()
+                        .is_none_or(|id| id == "fixture-chosen-model")
+                );
+                std::fs::write("selected-model", model.as_deref().unwrap_or("default")).unwrap();
+                eprintln!("fixture-model-selected");
+                if model.is_none() {
+                    eprintln!("fixture-model-default");
+                }
+                view.run.as_mut().unwrap()["model"] =
+                    json!(model.as_deref().unwrap_or("server-test-model"));
+                view.run.as_mut().unwrap()["model_override"] = json!(model);
+                serde_json::Value::Null
+            }
             ChatCommand::Send { text, request_id } => {
+                assert!(
+                    !text.starts_with("/model"),
+                    "Model commands must not reach generation"
+                );
                 view.messages.push(json!({"id":"server-session:2","role":"assistant","parts":[{"type":"text","text":format!("remote echo: {text}")}]}));
                 if text == "uncertain" {
                     use std::io::Write;
@@ -1320,4 +1350,45 @@ fn remote_herdr_reports_and_resumes_without_creating_a_new_session() {
     );
     assert!(log.contains("client config.toml\n"), "{log}");
     assert!(log.contains("release-agent\nremote-pane\n"), "{log}");
+}
+
+#[test]
+fn remote_model_override_tracks_server_and_clears_on_default() {
+    let mut app = App::default();
+    let mut view = snapshot();
+    view.run.as_mut().unwrap()["model_override"] = json!("selected-model");
+    remote::project(&mut app, &view).unwrap();
+    assert_eq!(app.model_override.as_deref(), Some("selected-model"));
+    view.run.as_mut().unwrap()["model_override"] = serde_json::Value::Null;
+    remote::project(&mut app, &view).unwrap();
+    assert_eq!(app.model_override, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_models_picker_selects_and_resets_without_sending_model_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    terminal.send(b"\x1b");
+    terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/models\r");
+    terminal.wait_for(b"fixture-model-list-1", 0);
+    terminal.wait_for(b"fixture-chosen-model", 0);
+    terminal.send(b"\x1b[B\r");
+    terminal.wait_for(b"fixture-model-selected", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-model")).unwrap(),
+        "fixture-chosen-model"
+    );
+    terminal.send(b"/models\r");
+    terminal.wait_for(b"fixture-model-list-2", 0);
+    terminal.send(b"\x1b[A\r");
+    terminal.wait_for(b"fixture-model-default", 0);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("selected-model")).unwrap(),
+        "default"
+    );
+    terminal.send(b"\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
 }

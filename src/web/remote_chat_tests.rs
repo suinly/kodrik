@@ -11,8 +11,16 @@ use crate::{
 struct Echo;
 #[async_trait::async_trait]
 impl crate::agent::llm::LlmProvider for Echo {
+    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec!["test-alpha".into(), "test-beta".into()])
+    }
+
     fn identity(&self) -> String {
         "test-provider:server-model".into()
+    }
+
+    fn with_model(&self, model: &str) -> anyhow::Result<Arc<dyn crate::agent::llm::LlmProvider>> {
+        Ok(Arc::new(SelectedEcho(model.into())))
     }
 
     async fn generate(
@@ -33,6 +41,27 @@ impl crate::agent::llm::LlmProvider for Echo {
         Ok((
             vec![Message::Assistant(AssistantMessage {
                 content: format!("echo {text}"),
+            })],
+            None,
+        ))
+    }
+}
+
+struct SelectedEcho(String);
+#[async_trait::async_trait]
+impl crate::agent::llm::LlmProvider for SelectedEcho {
+    fn identity(&self) -> String {
+        self.0.clone()
+    }
+    async fn generate(
+        &self,
+        _: &crate::agent::LlmContext<'_>,
+        _: &[&dyn crate::agent::tools::Tool],
+        _: Option<&mpsc::Sender<crate::agent::AgentEvent>>,
+    ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        Ok((
+            vec![Message::Assistant(AssistantMessage {
+                content: self.0.clone(),
             })],
             None,
         ))
@@ -91,6 +120,43 @@ async fn new_remote_chat_is_a_draft_until_first_message() {
             .is_err()
     );
     assert!(chat.remote_snapshot(&id).await.unwrap().messages.is_empty());
+    chat.remote_command(
+        &id,
+        serde_json::from_value(json!({"kind":"set_model","model":"test-beta"})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(chat.sessions.is_draft(id.as_str()).await.unwrap());
+    assert_eq!(chat.sessions.list().await.unwrap().len(), 1);
+    assert_eq!(
+        chat.sessions
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override(),
+        Some("test-beta")
+    );
+    let snapshot = chat.remote_snapshot(&id).await.unwrap();
+    assert!(snapshot.messages.is_empty());
+    let run = snapshot.run.unwrap();
+    assert_eq!(run["model"], "test-beta");
+    assert_eq!(run["model_override"], "test-beta");
+    chat.remote_command(
+        &id,
+        serde_json::from_value(json!({"kind":"set_model","model":null})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(chat.sessions.is_draft(id.as_str()).await.unwrap());
+    assert_eq!(chat.sessions.list().await.unwrap().len(), 1);
+    assert!(chat.remote_snapshot(&id).await.unwrap().run.unwrap()["model_override"].is_null());
+    chat.remote_command(
+        &id,
+        serde_json::from_value(json!({"kind":"set_model","model":"test-beta"})).unwrap(),
+    )
+    .await
+    .unwrap();
     let accepted = chat
         .remote_command(
             &id,
@@ -117,6 +183,15 @@ async fn new_remote_chat_is_a_draft_until_first_message() {
     .await
     .unwrap();
     assert_eq!(chat.sessions.list().await.unwrap().len(), 2);
+    let saved = chat.sessions.load(&id).await.unwrap().unwrap();
+    assert_eq!(saved.model_override(), Some("test-beta"));
+    assert!(
+        saved
+            .messages()
+            .iter()
+            .any(|m| matches!(m, Message::Assistant(a) if a.content == "test-beta"))
+    );
+    assert!(!chat.sessions.is_draft(id.as_str()).await.unwrap());
 }
 
 #[tokio::test]
@@ -1818,4 +1893,87 @@ async fn native_image_send_preserves_vision_payload_and_deduplicates() {
         .collect();
     assert_eq!(images.len(), 1);
     assert_eq!(images[0][0].width, 2);
+}
+
+#[tokio::test]
+async fn remote_model_commands_validate_persist_reset_and_scope() {
+    let (_dir, chat, _, id) = fixture().await;
+    let models: ChatCommand = serde_json::from_value(json!({"kind":"models"})).unwrap();
+    assert_eq!(
+        chat.remote_command(&id, models).await.unwrap(),
+        json!({"models":["test-alpha","test-beta"],"default_model":"test-provider:server-model"})
+    );
+    let set: ChatCommand =
+        serde_json::from_value(json!({"kind":"set_model","model":"test-beta"})).unwrap();
+    assert_eq!(
+        chat.remote_command(&id, set).await.unwrap(),
+        json!({"ok":true})
+    );
+    assert_eq!(
+        chat.sessions
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override(),
+        Some("test-beta")
+    );
+    let reset =
+        || serde_json::from_value::<ChatCommand>(json!({"kind":"set_model","model":null})).unwrap();
+    assert_eq!(
+        chat.remote_command(&id, reset()).await.unwrap(),
+        json!({"ok":true})
+    );
+    assert!(
+        chat.sessions
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override()
+            .is_none()
+    );
+    let invalid =
+        serde_json::from_value::<ChatCommand>(json!({"kind":"set_model","model":"unknown"}))
+            .unwrap();
+    assert_eq!(
+        chat.remote_command(&id, invalid)
+            .await
+            .unwrap_err()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        chat.remote_command(&SessionId::new(uuid::Uuid::new_v4().to_string()), reset())
+            .await
+            .unwrap_err()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let draft = chat.remote_command(&id, ChatCommand::New).await.unwrap();
+    let draft = SessionId::new(draft["id"].as_str().unwrap());
+    chat.remote_command(
+        &draft,
+        serde_json::from_value(json!({"kind":"set_model","model":"test-alpha"})).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        chat.sessions
+            .load(&draft)
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override(),
+        Some("test-alpha")
+    );
+    assert!(
+        chat.sessions
+            .load(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override()
+            .is_none()
+    );
 }

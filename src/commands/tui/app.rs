@@ -9,6 +9,8 @@ pub struct App {
     pub language: Language,
     pub should_quit: bool,
     pub model: String,
+    pub model_override: Option<String>,
+    pub model_picker: Option<super::models::ModelPicker>,
     pub remote_environment: Option<String>,
     pub remote_connection: Option<&'static str>,
     pub remote_grant: Option<RemoteGrant>,
@@ -96,6 +98,7 @@ impl App {
         if self.remote_grant.is_some()
             || self.approval.is_some()
             || self.audit_picker.is_some()
+            || self.model_picker.is_some()
             || self.language_choice.is_some()
             || self.sessions.is_some()
             || self.navigation.selected.is_some()
@@ -112,6 +115,11 @@ impl App {
             (
                 "/sessions",
                 self.language.pick("Select a session", "Выбрать сеанс"),
+            ),
+            (
+                "/models",
+                self.language
+                    .pick("Choose session model", "Выбрать модель сеанса"),
             ),
             (
                 "/language",
@@ -236,6 +244,7 @@ impl App {
         if self.remote_grant.is_some()
             || self.approval.is_some()
             || self.audit_picker.is_some()
+            || self.model_picker.is_some()
             || self.language_choice.is_some()
             || self.navigation.selected.is_some()
         {
@@ -479,10 +488,14 @@ impl App {
         if key.code != KeyCode::Esc
             || self.sessions.is_some()
             || self.audit_picker.is_some()
+            || self.model_picker.is_some()
             || self.language_choice.is_some()
             || self.approval.is_some()
         {
             self.navigation.escape = None;
+        }
+        if self.model_picker.is_some() {
+            return super::models::update_model_picker(self, key);
         }
         if self.audit_picker.is_some() {
             return super::approvals::update_audit_picker(self, key);
@@ -622,6 +635,8 @@ impl App {
                             "/new"
                                 | "/sessions"
                                 | "/language"
+                                | "/models"
+                                | "/model"
                                 | "/attach"
                                 | "/detach"
                                 | "/older"
@@ -641,6 +656,14 @@ impl App {
                 }
                 if matches!(self.status, Status::Working)
                     && matches!(self.input.trim(), "/new" | "/sessions")
+                {
+                    return None;
+                }
+                if self.navigation.editing.is_some()
+                    && matches!(
+                        self.input.split_whitespace().next(),
+                        Some("/models" | "/model")
+                    )
                 {
                     return None;
                 }
@@ -665,7 +688,10 @@ impl App {
                             command.split_whitespace().next(),
                             Some("/attach" | "/detach" | "/older" | "/retry")
                         ))
-                    || command.split_whitespace().next() == Some("/language")
+                    || matches!(
+                        command.split_whitespace().next(),
+                        Some("/language" | "/models" | "/model")
+                    )
                     || super::approvals::is_command(command)
                 {
                     return Some(command.to_owned());
@@ -770,6 +796,34 @@ pub enum ToolState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_commands_cannot_replace_an_edited_message() {
+        let mut app = App::default();
+        app.navigation.editing = Some(super::super::navigation::Edit {
+            source: None,
+            user_turn: 0,
+        });
+        app.input = "/models".into();
+        assert_eq!(
+            app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            None
+        );
+        assert_eq!(app.input, "/models");
+    }
+
+    #[test]
+    fn models_command_does_not_enqueue_a_user_message() {
+        let mut app = App::default();
+        app.insert_input("/models");
+        assert_eq!(
+            app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .as_deref(),
+            Some("/models")
+        );
+        assert!(app.waiting_messages.is_empty());
+        assert!(matches!(app.status, Status::Ready));
+    }
 
     #[test]
     fn failed_submission_removes_only_its_own_pending_input() {
@@ -1223,7 +1277,7 @@ mod tests {
     fn sessions_command_and_picker_navigation() {
         let mut app = App::default();
         app.insert_input("/");
-        assert_eq!(app.command_suggestions().len(), 7);
+        assert_eq!(app.command_suggestions().len(), 8);
         key(&mut app, KeyCode::Down);
         assert_eq!(app.command_suggestion().unwrap().0, "/sessions");
         key(&mut app, KeyCode::Tab);

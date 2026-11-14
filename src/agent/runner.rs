@@ -41,6 +41,17 @@ impl AgentRunner {
         self.agent.context_compaction_threshold()
     }
 
+    pub async fn available_models(&self) -> anyhow::Result<Vec<String>> {
+        self.agent.llm().list_models().await
+    }
+
+    pub fn effective_model_identity(&self, session: &Session) -> anyhow::Result<String> {
+        match session.model_override() {
+            Some(model) => Ok(self.agent.llm().with_model(model)?.identity()),
+            None => Ok(self.model_identity()),
+        }
+    }
+
     pub(crate) fn model_identity(&self) -> String {
         self.agent.model_identity()
     }
@@ -820,6 +831,75 @@ mod tests {
         cp.save(&live, RunPhase::NeedModel, None).await.unwrap();
         assert!(runner.select_session(&web, live.id()).await.is_err());
         assert_eq!(store.active_id(&web).await.unwrap(), *source.id());
+    }
+
+    struct SelectableModel(String);
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SelectableModel {
+        fn identity(&self) -> String {
+            self.0.clone()
+        }
+        fn with_model(&self, model: &str) -> anyhow::Result<Arc<dyn LlmProvider>> {
+            Ok(Arc::new(Self(model.into())))
+        }
+        async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+            Ok(vec!["chosen".into(), "default".into()])
+        }
+        async fn generate(
+            &self,
+            _: &LlmContext<'_>,
+            _: &[&dyn Tool],
+            _: Option<&mpsc::Sender<AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            Ok((
+                vec![Message::Assistant(AssistantMessage {
+                    content: self.0.clone(),
+                })],
+                None,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn model_selection_is_per_session_and_default_provider_stays_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(JsonSessionStore::new(dir.path()));
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(SelectableModel("default".into())),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            store.clone(),
+        );
+        let mut selected = Session::new(SessionId::new("cli:selected"));
+        selected.set_model_override(Some("chosen".into()));
+        store.save(&selected).await.unwrap();
+        assert_eq!(
+            runner.available_models().await.unwrap(),
+            vec!["chosen", "default"]
+        );
+        assert_eq!(
+            runner.effective_model_identity(&selected).unwrap(),
+            "chosen"
+        );
+        for (id, expected) in [
+            ("selected", "chosen"),
+            ("other", "default"),
+            ("selected", "chosen"),
+        ] {
+            let reply = runner
+                .run(
+                    SessionId::new(format!("cli:{id}")),
+                    IncomingMessage::new(InterfaceId("cli".into()), id, "hello"),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(reply.content, expected);
+        }
+        assert_eq!(runner.model_identity(), "default");
     }
 
     struct ReplyLlm {

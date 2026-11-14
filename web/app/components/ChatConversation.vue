@@ -84,6 +84,7 @@ const childProblems = ref<Record<string,string>>({})
 const decidingCommands = ref(new Set<string>())
 const commandProblems = ref<Record<string,string>>({})
 const savingCommandAudit = ref(false)
+const savingModel = ref(false)
 const resuming = ref(false)
 const problem = ref('')
 const connection = ref('')
@@ -113,7 +114,7 @@ const prompt = useTemplateRef('prompt')
 const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
 const transcript = useTemplateRef('transcript')
 const transcriptContent = useTemplateRef('transcriptContent')
-const editorLocked = computed(() => loading.value || submitting.value || props.blocked || authExpired.value || !!props.conversation.subagent)
+const editorLocked = computed(() => loading.value || submitting.value || savingModel.value || props.blocked || authExpired.value || !!props.conversation.subagent)
 const locked = computed(() => editorLocked.value || stopping.value || resuming.value || busy.value && !!snapshot.value?.cancel_requested)
 const hasDraft = computed(() => !!draft.value.trim() || !!files.value.length)
 const hasInput = computed(() => hasDraft.value || !!pending)
@@ -276,6 +277,10 @@ async function reload(block = false) {
     problem.value = messageOf(error)
     loading.value = false
   }
+}
+
+async function refreshModel() {
+  receive(await api<Snapshot>(`sessions/${props.conversation.id}/run`))
 }
 
 let observation:AbortController|undefined
@@ -728,7 +733,11 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
         </div>
       </section>
       <p v-if="conversation.subagent" class="text-center text-sm text-muted">{{ t('Сабагент · только просмотр') }}</p>
-      <UChatPrompt v-else v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
+      <ChatModelPicker v-if="!home && !conversation.subagent" :session-id="conversation.id" :key="conversation.id"
+        :model="snapshot?.model" :model-override="snapshot?.model_override" :refresh="refreshModel"
+        :disabled="!snapshot || locked || busy || !!snapshot?.queued.length || !!snapshot?.blocked_reason || !!editingMessage || savingCommandAudit"
+        @saving="savingModel=$event" />
+      <UChatPrompt v-if="!conversation.subagent" v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
         class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
         @submit="submit">
         <template #body>

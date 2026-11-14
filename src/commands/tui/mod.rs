@@ -5,6 +5,7 @@ mod herdr;
 mod images;
 mod instance;
 mod markdown;
+mod models;
 mod navigation;
 pub(crate) mod remote;
 #[cfg(test)]
@@ -119,6 +120,7 @@ async fn run_session_inner(
     };
     app.model = model;
     restore_history(&mut app, &session);
+    models::refresh(&mut app, &runner, &session)?;
     refresh_versions(&mut app, &runner, &session).await?;
     approvals::refresh(&mut app, &runner, &session_id).await?;
     refresh_waiting(&mut app, &runner, &session_id).await;
@@ -200,6 +202,7 @@ async fn run_session_inner(
                 app.pending_tools.clear();
                 app.streaming_message = None;
                 restore_history(&mut app, &session);
+                models::refresh(&mut app, &runner, &session)?;
                 refresh_versions(&mut app, &runner, &session).await?;
                 approvals::refresh(&mut app, &runner, &session_id).await?;
                 app.status = if !report.blocked.is_empty() {
@@ -232,6 +235,11 @@ async fn run_session_inner(
                                 continue;
                             }
                             None => {}
+                        }
+                        if app.model_picker.is_some() {
+                            if let Some(input) = app.update(key) { models::handle_command(&mut app, &runner, &session_id, &input).await; }
+                            redraw = true;
+                            continue;
                         }
                         if app.approval.is_some() || app.audit_picker.is_some() {
                             if let Some(input) = app.update(key) {
@@ -269,6 +277,7 @@ async fn run_session_inner(
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
+                                        models::refresh(&mut app, &runner, &session)?;
                                         refresh_versions(&mut app, &runner, &session).await?;
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
@@ -295,7 +304,7 @@ async fn run_session_inner(
                             && !matches!(app.status, Status::Working | Status::Recovering | Status::Stopping)
                         {
                             match runner.load_session(session_id.clone()).await {
-                                Ok(session) => { refresh_history(&mut app, &session); refresh_versions(&mut app, &runner, &session).await?; }
+                                Ok(session) => { refresh_history(&mut app, &session); models::refresh(&mut app, &runner, &session)?; refresh_versions(&mut app, &runner, &session).await?; }
                                 Err(error) => {
                                     app.navigation.escape = None;
                                     app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not load saved messages", "Не удалось загрузить сохранённые сообщения")));
@@ -313,6 +322,10 @@ async fn run_session_inner(
                                         app.status = Status::Error;
                                     }
                                 }
+                                redraw = true;
+                                continue;
+                            }
+                            if models::handle_command(&mut app, &runner, &session_id, &input).await {
                                 redraw = true;
                                 continue;
                             }
@@ -349,6 +362,7 @@ async fn run_session_inner(
                                     Ok(session) => {
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
+                                        models::refresh(&mut app, &runner, &session)?;
                                         app.push_kodrik_message(app.language.pick("New session created.", "Создан новый сеанс.").into());
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
@@ -404,7 +418,7 @@ async fn run_session_inner(
                 show_progress(&mut app, event);
                 if let Some(id) = switched {
                     match runner.load_session(id).await {
-                        Ok(session) => { refresh_history(&mut app, &session); },
+                        Ok(session) => { refresh_history(&mut app, &session); models::refresh(&mut app, &runner, &session)?; },
                         Err(error) => log::warn!("Could not reload switched TUI session: {error:#}"),
                     }
                 }
@@ -476,6 +490,7 @@ async fn run_session_inner(
                     if history_revision != Some(revision) {
                         let session = runner.load_session(session_id.clone()).await?;
                         redraw |= refresh_history(&mut app, &session);
+                        redraw |= models::refresh(&mut app, &runner, &session)?;
                         redraw |= refresh_versions(&mut app, &runner, &session).await?;
                         redraw |= approvals::refresh(&mut app, &runner, &session_id).await?;
                         history_revision = Some(revision);
@@ -727,6 +742,7 @@ fn local_accepted_input_moves_from_queue_to_history_without_duplicates() {
     let mut session = Session::new(SessionId::new("local-queue-cycle"));
     let mut app = App::default();
     restore_history(&mut app, &session);
+
     for _ in 0..2 {
         app.insert_input("same question");
         assert_eq!(
@@ -1112,6 +1128,7 @@ fn message_navigation_survives_reloaded_history_and_session_identity_changes() {
             ..Default::default()
         };
         restore_history(&mut app, &session);
+
         app.messages.insert(
             0,
             app::AppMessage {
@@ -1140,6 +1157,7 @@ fn message_navigation_survives_reloaded_history_and_session_identity_changes() {
     }
     let mut app = App::default();
     restore_history(&mut app, &session);
+
     let other = session.fork_before(SessionId::new("other"), 1).unwrap();
     let mut same_messages = other;
     same_messages.push(Message::User(crate::agent::UserMessage {
@@ -1161,6 +1179,7 @@ fn idle_history_refresh_shows_wakeup_without_losing_the_draft() {
     }));
     let mut app = App::default();
     restore_history(&mut app, &session);
+
     app.input = "unfinished draft".into();
     app.input_cursor = 3;
     app.scroll = 7;
@@ -2072,6 +2091,7 @@ mod tests {
             append_plan_update(&mut session, "first", "Inspect", status);
             let mut app = App::default();
             restore_history(&mut app, &session);
+
             assert!(app.plan.is_some());
             session.push(Message::User(UserMessage {
                 browser_client_id: None,

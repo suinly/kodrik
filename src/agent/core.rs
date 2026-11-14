@@ -628,6 +628,12 @@ impl Agent {
                     cp.record.model_attempts += 1;
                     cp.save(session, RunPhase::NeedModel, None).await?;
                 }
+                // Only foreground generation uses the override; auxiliary providers stay untouched.
+                let selected_llm = session
+                    .model_override()
+                    .map(|model| self.llm.with_model(model))
+                    .transpose()?;
+                let llm = selected_llm.as_deref().unwrap_or(self.llm.as_ref());
                 let mut context = self.context.build(session);
                 if let Some(cp) = checkpoint.as_ref() {
                     let evidence = cp.store.remote_reconciliation(session.id()).await?;
@@ -699,9 +705,9 @@ impl Agent {
                         },
                         result = async {
                             if checkpoint.is_some() {
-                                self.llm.generate_attempt_with_usage(&context, &tools, model_progress).await
+                                llm.generate_attempt_with_usage(&context, &tools, model_progress).await
                             } else {
-                                self.llm.generate_with_usage(&context, &tools, model_progress).await
+                                llm.generate_with_usage(&context, &tools, model_progress).await
                             }
                         } => result,
                     }

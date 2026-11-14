@@ -431,3 +431,232 @@ async fn preparing_session_keeps_history_unchanged_until_first_save() {
     store.delete(draft.id()).await.unwrap();
     assert_eq!(store.active_id(&conversation).await.unwrap(), conversation);
 }
+
+#[tokio::test]
+async fn session_model_setter_persists_resets_and_rejects_busy_or_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+    store.save(&sample("target")).await.unwrap();
+    store.save(&sample("other")).await.unwrap();
+    assert!(
+        store
+            .set_session_model("target", Some("provider/model".into()))
+            .await
+            .unwrap()
+    );
+    let saved = store
+        .load(&SessionId::new("target"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.model_override(), Some("provider/model"));
+    assert_eq!(saved.messages().len(), 2);
+    assert!(
+        store
+            .load(&SessionId::new("other"))
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override()
+            .is_none()
+    );
+    for model in [String::new(), "x".repeat(513), "bad\nmodel".into()] {
+        assert!(
+            store
+                .set_session_model("target", Some(model))
+                .await
+                .is_err()
+        );
+    }
+    assert!(store.set_session_model("missing", None).await.is_err());
+    store
+        .with_connection(|db| {
+            db.execute(
+                "INSERT INTO runs VALUES ('model-run','web:target','target',0,0,x'7b7d',NULL)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!store.set_session_model("target", None).await.unwrap());
+    store.with_connection(|db| {
+        db.execute("DELETE FROM runs", [])?;
+        db.execute("INSERT INTO active_sessions VALUES ('channel','target')", [])?;
+        db.execute("INSERT INTO submissions(id,conversation_id,request_id,payload_hash,sequence,payload) VALUES ('queued-model','channel','req','hash',1,x'7b7d')", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(!store.set_session_model("target", None).await.unwrap());
+    assert_eq!(
+        store
+            .load(&SessionId::new("target"))
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override(),
+        Some("provider/model")
+    );
+    store
+        .with_connection(|db| {
+            db.execute("DELETE FROM submissions", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(store.set_session_model("target", None).await.unwrap());
+    assert!(
+        store
+            .load(&SessionId::new("target"))
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn local_mapped_draft_model_survives_reopen_reset_and_first_save() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    store.save(&sample("old")).await.unwrap();
+    let conversation = SessionId::new("cli:main");
+    let draft = store.prepare_session(&conversation).await.unwrap();
+    let id = draft.id().clone();
+    assert!(
+        store
+            .set_session_model(id.as_str(), Some("chosen".into()))
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .with_connection({
+                let id = id.clone();
+                move |db| {
+                    Ok(db.query_row(
+                        "SELECT NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                        [id.as_str()],
+                        |r| r.get::<_, bool>(0),
+                    )?)
+                }
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    drop(store);
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    assert_eq!(
+        store.load(&id).await.unwrap().unwrap().model_override(),
+        Some("chosen")
+    );
+    assert_eq!(store.active_id(&conversation).await.unwrap(), id);
+    assert!(store.set_session_model(id.as_str(), None).await.unwrap());
+    assert!(
+        store
+            .load(&id)
+            .await
+            .unwrap()
+            .is_none_or(|s| s.model_override().is_none())
+    );
+    assert!(
+        store
+            .with_connection({
+                let id = id.clone();
+                move |db| {
+                    Ok(db.query_row(
+                        "SELECT NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                        [id.as_str()],
+                        |r| r.get::<_, bool>(0),
+                    )?)
+                }
+            })
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert!(
+        store
+            .set_session_model("unknown", Some("chosen".into()))
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .set_session_model(id.as_str(), Some("chosen".into()))
+            .await
+            .unwrap()
+    );
+    let mut session = store.load(&id).await.unwrap().unwrap();
+    session.push(crate::agent::message::Message::User(
+        crate::agent::UserMessage {
+            browser_client_id: None,
+            browser_context: None,
+            content: "first".into(),
+            images: vec![],
+            files: vec![],
+        },
+    ));
+    store.save(&session).await.unwrap();
+    assert!(!store.is_draft(id.as_str()).await.unwrap());
+    assert_eq!(store.list().await.unwrap().len(), 2);
+    assert_eq!(
+        store.load(&id).await.unwrap().unwrap().model_override(),
+        Some("chosen")
+    );
+    store
+        .with_connection(|db| {
+            let count: i64 = db.query_row("SELECT count(*) FROM draft_models", [], |r| r.get(0))?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn v16_migration_adds_draft_models_without_changing_saved_sessions() {
+    let root = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    store.save(&sample("saved")).await.unwrap();
+    let draft = store
+        .prepare_session(&SessionId::new("cli:main"))
+        .await
+        .unwrap();
+    store
+        .with_connection(|db| {
+            db.execute_batch("DROP TABLE draft_models; PRAGMA user_version=16;")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    drop(store);
+    let store = SqliteSessionStore::open(root.path().into()).unwrap();
+    assert_eq!(store.list().await.unwrap().len(), 1);
+    assert!(
+        store
+            .set_session_model(draft.id().as_str(), Some("chosen".into()))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .load(draft.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .model_override(),
+        Some("chosen")
+    );
+    assert_eq!(
+        store
+            .load(&SessionId::new("saved"))
+            .await
+            .unwrap()
+            .unwrap()
+            .messages()
+            .len(),
+        2
+    );
+}

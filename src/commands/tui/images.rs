@@ -11,6 +11,7 @@ fn accepts(app: &App) -> bool {
         && app.remote_grant.is_none()
         && app.approval.is_none()
         && app.audit_picker.is_none()
+        && app.model_picker.is_none()
         && app.language_choice.is_none()
         && app.navigation.selected.is_none()
         && app.navigation.editing.is_none()

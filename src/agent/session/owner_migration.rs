@@ -53,6 +53,9 @@ pub(crate) fn stage_personal_sessions(
                 merge_table(&snapshot, &tx, table, keys, columns)
                     .with_context(|| format!("Owner migration conflict in {} ({table}); back up and reconcile both stores", path.display()))?;
             }
+            if version >= 17 {
+                merge_table(&snapshot, &tx, "draft_models", &["session_id"], 2)?;
+            }
             if version >= 14 {
                 merge_table(&snapshot, &tx, "web_chat_activity", &["session_id"], 4)?;
             } else {
@@ -360,6 +363,36 @@ pub(crate) fn checkpoint_owner_destination(directory: &Path) -> anyhow::Result<(
 mod tests {
     use super::*;
     use crate::agent::session::{Session, SessionId, SessionStore};
+
+    #[tokio::test]
+    async fn owner_migration_preserves_model_selected_for_unsent_draft() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(source.path().into()).unwrap();
+        let conversation = SessionId::new("cli:main");
+        let draft = store.prepare_session(&conversation).await.unwrap();
+        assert!(
+            store
+                .set_session_model(draft.id().as_str(), Some("chosen".into()))
+                .await
+                .unwrap()
+        );
+        drop(store);
+        stage_personal_sessions(&[source.path().into()], destination.path()).unwrap();
+        let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();
+        let active = migrated.active_id(&conversation).await.unwrap();
+        assert_eq!(active, *draft.id());
+        assert_eq!(
+            migrated
+                .load(&active)
+                .await
+                .unwrap()
+                .unwrap()
+                .model_override(),
+            Some("chosen")
+        );
+        assert!(migrated.list().await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn owner_migration_preserves_activity_markers_and_baselines_legacy() {

@@ -184,9 +184,10 @@ impl SqliteSessionStore {
             use rusqlite::OptionalExtension;
             let tx=db.transaction()?;
             let revision=tx.query_row("SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='run_view_revision'",[],|r|r.get(0))?;
-            let bytes:Option<Vec<u8>>=tx.query_row("SELECT payload FROM sessions WHERE id=?1",[&id],|r|r.get(0)).optional()?;
-            let session:Session=if let Some(bytes)=bytes {
-                serde_json::from_slice(&bytes)?
+            let visible:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1) OR EXISTS(SELECT 1 FROM active_sessions WHERE conversation_id=?1 AND session_id=?1)",[&id],|r|r.get(0))?;
+            ensure!(visible,"Conversation not found");
+            let session:Session=if let Some(session)=Self::load_in_transaction(&tx,&id)? {
+                session
             } else {
                 let draft:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM active_sessions WHERE conversation_id=?1 AND session_id=?1)",[&id],|r|r.get(0))?;
                 ensure!(draft,"Conversation not found");

@@ -604,6 +604,37 @@ impl Remote {
             return Ok(());
         }
         match input.trim() {
+            "/models" => {
+                let catalogue = self
+                    .chat
+                    .command(&self.session, ChatCommand::Models)
+                    .await?;
+                let models: Vec<String> = serde_json::from_value(catalogue["models"].clone())?;
+                app.model_picker = Some(super::models::ModelPicker::new(
+                    models,
+                    app.model_override.clone(),
+                ));
+                app.sessions = None;
+                app.view.clear_selection();
+            }
+            input if input == "/model" || input.starts_with("/model ") => {
+                ensure!(
+                    !matches!(
+                        app.status,
+                        Status::Working | Status::Recovering | Status::Stopping
+                    ) && app.waiting_messages.is_empty()
+                        && self.uncertain.is_none(),
+                    "Wait for the current request before changing models"
+                );
+                let model = input.strip_prefix("/model ").map(str::to_owned);
+                self.chat
+                    .command(&self.session, ChatCommand::SetModel { model })
+                    .await?;
+                let snapshot = self.chat.snapshot(&self.session).await?;
+                if self.projection.accept(app, &snapshot)? {
+                    self.snapshot = snapshot;
+                }
+            }
             "/audit" => {
                 app.audit_picker = Some(approvals::AuditPicker {
                     session: None,
@@ -929,7 +960,7 @@ async fn event_loop(
                         if app.remote_grant.is_none() && key.code==KeyCode::Enter && key.kind==KeyEventKind::Press && let Some((id,_))=app.sessions.as_ref().and_then(|rows|rows.get(app.session_index)) {
                             return remote.select(app,ChatCommand::Select{session_id:id.clone()}).await;
                         }
-                        if key.code==KeyCode::Esc && app.remote_grant.is_none() && app.sessions.is_none() && app.audit_picker.is_none() && app.language_choice.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
+                        if key.code==KeyCode::Esc && app.remote_grant.is_none() && app.sessions.is_none() && app.model_picker.is_none() && app.audit_picker.is_none() && app.language_choice.is_none() && app.approval.is_none() && app.navigation.selected.is_none() && app.navigation.editing.is_none() && app.command_suggestion().is_none() && matches!(app.status,Status::Working) {
                             remote.chat.command(&remote.session,ChatCommand::Stop).await?;app.status=Status::Stopping;return Ok(());
                         }
                         let turn=app.selected_user_turn();
@@ -1397,6 +1428,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         app.plan_completed = false;
     }
     app.model = run["model"].as_str().unwrap_or("server agent").into();
+    app.model_override = run["model_override"].as_str().map(str::to_owned);
     app.context_tokens = run["context_tokens"].as_u64();
     if app.remote_environment.is_none() {
         app.remote_environment = Some(String::new());

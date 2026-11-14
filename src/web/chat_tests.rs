@@ -178,6 +178,35 @@ async fn chat_form_actions_require_a_successful_declaration_in_the_scoped_sessio
     assert_eq!(response.status(), 404);
 }
 
+#[tokio::test]
+async fn dialogue_model_selection_cannot_change_an_active_run() {
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        session::SessionId,
+    };
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let session = f
+        .sessions
+        .load(&SessionId::new(&id))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut checkpoint = Checkpoint::new(&f.sessions, session.id(), &session);
+    checkpoint
+        .save(&session, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    let response = f
+        .request(reqwest::Method::POST, &format!("sessions/{id}/model"))
+        .json(&json!({"model":"test-alpha"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    assert!(f.history(&id).await["model_override"].is_null());
+}
+
 struct FakeLlm;
 
 #[tokio::test]
@@ -262,6 +291,10 @@ async fn chat_form_actions_write_only_the_authenticated_users_dataset() {
 
 #[async_trait::async_trait]
 impl LlmProvider for FakeLlm {
+    async fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec!["test-alpha".into(), "test-beta".into()])
+    }
+
     async fn generate(
         &self,
         context: &LlmContext<'_>,
@@ -3839,4 +3872,118 @@ async fn browser_request_admission_persists_panel_only_for_browser_submission() 
         .unwrap()
         .unwrap();
     assert_eq!(record.request.message.browser_client_id, None);
+}
+
+#[tokio::test]
+async fn dialogue_model_selection_is_validated_scoped_and_resettable() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let other = f.create().await;
+    let path = format!("sessions/{id}/model");
+    let catalogue: Value = f
+        .request(reqwest::Method::GET, "models")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(catalogue["models"], json!(["test-alpha", "test-beta"]));
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .json(&json!({"model":"test-beta"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let selected = f
+        .request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(selected["model_override"], "test-beta");
+    assert_eq!(selected["model"], "test-beta");
+    assert!(
+        f.request(reqwest::Method::GET, &format!("sessions/{other}/run"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["model_override"]
+            .is_null()
+    );
+    let saved = f
+        .sessions
+        .load(&crate::agent::session::SessionId::new(&id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(saved).unwrap()["model_override"],
+        "test-beta"
+    );
+    // Reset works even for providers without a model catalogue.
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .json(&json!({"model":null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    for model in ["", "not-advertised", "bad\nmodel"] {
+        let response = f
+            .request(reqwest::Method::POST, &path)
+            .json(&json!({"model":model}))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error(), "{}", response.status());
+    }
+    assert!(
+        f.request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["model_override"]
+            .is_null()
+    );
+    assert!(
+        f.request(reqwest::Method::GET, &format!("sessions/{other}/run"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["model_override"]
+            .is_null()
+    );
+    let response = f
+        .client
+        .post(format!("{}api/chat/{path}", f.base))
+        .json(&json!({"model":null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 401);
+    let response = f
+        .request(reqwest::Method::POST, &path)
+        .header("Origin", "https://other.invalid")
+        .json(&json!({"model":null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let response = f
+        .request(reqwest::Method::POST, "sessions/missing/model")
+        .json(&json!({"model":null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
 }

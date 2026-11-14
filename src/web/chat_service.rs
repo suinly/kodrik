@@ -389,7 +389,8 @@ impl Chat {
         let mut run = json!({"busy":view.busy,"blocked_reason":view.blocked_reason,
             "queued":queued_summaries(&view.queued),
             "clear_completed_plan":!view.queued.is_empty(),
-            "model":self.runner.model_identity(),
+            "model":view.session.model_override().unwrap_or(&self.runner.model_identity()),
+            "model_override":view.session.model_override(),
             "token_usage":view.session.token_usage(),
             "context_tokens":view.session.input_tokens,
             "context_limit":null,
@@ -539,6 +540,11 @@ impl Chat {
             }
         }
         match command {
+            ChatCommand::Models => self.models().await,
+            ChatCommand::SetModel { model } => {
+                self.set_model(id.as_str(), model).await?;
+                Ok(json!({"ok":true}))
+            }
             ChatCommand::SubmissionStatus { request_id } => {
                 let request = request_id.to_string();
                 let mut submission = self
