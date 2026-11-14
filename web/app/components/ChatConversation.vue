@@ -457,8 +457,16 @@ async function submit() {
     if (!text.trim() && !selectedFiles.length) return
     // Preserve this exact snapshot for uncertain retries; never recapture it.
     if(!pending) {
-      const browser_context=await tabBridge.capture()
+      const capture=await tabBridge.capture()
       if(!mounted) return
+      const {document:tabDocument,...context}=capture ?? {}
+      const browser_context=capture ? context as BrowserContext : null
+      if(tabDocument) {
+        selectedFiles.push(tabDocument)
+        keys=await fingerprints(selectedFiles)
+        if(!mounted) return
+      }
+      if(selectedFiles.length>10 || selectedFiles.reduce((sum,file)=>sum+file.size,0)>49_000_000) throw new Error('С учётом документа вкладки разрешено не более 10 вложений и 49 MB суммарно.')
       pending = { id: crypto.randomUUID(), text, files: keys, browser_context }
     }
     sessionStorage.setItem(pendingKey.value, JSON.stringify(pending))

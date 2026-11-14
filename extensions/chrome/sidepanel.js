@@ -1,4 +1,5 @@
 import {serverURL, pageContext, extractPage} from './core.mjs';
+import {readDocument} from './documents.mjs';
 const $ = id => document.getElementById(id);
 const frame = $('chat');
 let server, windowId, channel, ready = false;
@@ -110,14 +111,32 @@ window.addEventListener('message', async event => {
     if(message.type === 'kodrik-tab-capture' && !includeContext) {post({type:'kodrik-tab-result',channel,id:message.id,context:null});return;}
     const tab = await activeTab();
     if(!/^https?:/.test(tab.url || '') || (tab.url && new URL(tab.url).origin === server.origin)) throw new Error('Эта вкладка недоступна для чтения. Выберите обычную страницу или отключите контекст.');
-    const results = await chrome.scripting.executeScript({target:{tabId:tab.id},func:extractPage});
-    const page = results[0]?.result;
-    if(!page) throw new Error('Не удалось прочитать текст вкладки.');
+    const snapshotChannel = channel;
+    const isPreview = message.type === 'kodrik-tab-preview';
+    const [documentResult] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:readDocument,args:[tab.url,isPreview]});
+    const document = documentResult?.result;
+    let page, attachment;
+    if (document?.mime) {
+      page = {url:document.url,title:document.title,text:`Документ: ${document.name} (${document.mime}). При отправке файл прикладывается к сообщению.`,selection:false};
+      if (!isPreview) {
+        if (typeof document.base64 !== 'string') throw new Error('Не удалось прочитать документ.');
+        attachment = {name:document.name,mime:document.mime,base64:document.base64};
+      }
+    } else {
+      const [result] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:extractPage});
+      if (documentResult?.documentId && result?.documentId !== documentResult.documentId) throw new Error('Документ вкладки изменился во время чтения.');
+      page = result?.result;
+    }
+    if(!page) throw new Error('Не удалось прочитать содержимое вкладки.');
     const current = await activeTab();
-    if(current.id !== tab.id || current.url !== page.url) throw new Error('Вкладка изменилась во время чтения. Повторите отправку.');
+    if(current.id !== tab.id || current.url !== page.url || snapshotChannel !== channel) throw new Error('Вкладка изменилась во время чтения. Повторите отправку.');
+    if(documentResult?.documentId) {
+      const [check] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:()=>location.href});
+      if(check?.documentId !== documentResult.documentId || check.result !== page.url) throw new Error('Документ вкладки изменился во время чтения.');
+    }
     await preview();
     status('');
-    post({type:'kodrik-tab-result',channel,id:message.id,context:pageContext(page)});
+    post({type:'kodrik-tab-result',channel,id:message.id,context:pageContext(page),...(attachment ? {document:attachment} : {})});
   } catch(error) {
     const text = `${error.message} Если Chrome не дал доступ — нажмите «Разрешить чтение сайтов» или ещё раз значок расширения на нужной вкладке.`;
     status(text);$('access').hidden=false;

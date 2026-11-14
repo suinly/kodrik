@@ -1,3 +1,4 @@
+export type BrowserCapture=BrowserContext & {document?:File}
 export type BrowserContext={url:string;title:string;text:string;source:'page'|'selection';captured_at:string;truncated:boolean}
 function validContext(value:unknown):value is BrowserContext {
   if(!value || typeof value!=='object') return false
@@ -9,11 +10,11 @@ function validContext(value:unknown):value is BrowserContext {
   } catch {return false}
 }
 // The extension never submits messages: it can only supply page data to an explicit Send.
-export function createTabBridge(win:Window, timeout=15000) {
+export function createTabBridge(win:Window, timeout=90000) {
   let origin='',channel='',enabled=true
   let state={enabled:true,title:'Текущая вкладка',url:''}
   const subscribers=new Set<(state:{enabled:boolean;title:string;url:string})=>void>()
-  const pending=new Map<string,{resolve:(context:BrowserContext|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
+  const pending=new Map<string,{resolve:(context:BrowserCapture|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   const framed=win.parent!==win && new URLSearchParams(win.location.search).get('browser_sidebar')==='1'
   function receive(event:MessageEvent) {
     if(!framed || event.source!==win.parent || event.origin!=='chrome-extension://iiajbdommloibgimhfmoojnhknbaklih') return
@@ -34,12 +35,21 @@ export function createTabBridge(win:Window, timeout=15000) {
     if(typeof data.error==='string') request.reject(new Error(data.error.slice(0,2000)))
     else if(data.context===null) request.resolve(null)
     else if(validContext(data.context)) {
-      request.resolve(data.context)
+      try {
+        if(data.document===undefined) request.resolve(data.context)
+        else {
+          const doc=data.document
+          if(!doc || typeof doc.name!=='string' || !doc.name || doc.name.length>200 || /[\\/\x00-\x1f]/.test(doc.name) || !['application/pdf','text/markdown','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'].includes(doc.mime) || typeof doc.base64!=='string' || doc.base64.length>26666668) throw new Error('Некорректное вложение вкладки.')
+          const binary=atob(doc.base64)
+          if(!binary.length || binary.length>20000000 || doc.mime==='application/pdf' && !binary.startsWith('%PDF-') || doc.mime.includes('spreadsheet') && !binary.startsWith('PK')) throw new Error('Некорректное вложение вкладки.')
+          request.resolve({...data.context,document:new File([Uint8Array.from(binary,c=>c.charCodeAt(0))],doc.name,{type:doc.mime})})
+        }
+      } catch {request.reject(new Error('Некорректное вложение вкладки. Повторите отправку.'))}
     } else request.reject(new Error('Некорректный контекст вкладки. Повторите отправку.'))
   }
   win.addEventListener('message',receive)
   if(framed) win.parent.postMessage({type:'kodrik-tab-connect'},'*')
-  async function request(preview=false):Promise<BrowserContext|null> {
+  async function request(preview=false):Promise<BrowserCapture|null> {
     if(!framed) return null
     if(!origin) throw new Error('Расширение ещё не подключено к чату. Переподключите панель.')
     if(!preview && !enabled) return null

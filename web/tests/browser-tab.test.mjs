@@ -69,3 +69,24 @@ test('bridge exposes tab metadata and forwards explicit preview, toggle and sett
   assert.deepEqual(await preview,pageContext);
   bridge.dispose();
 });
+
+test('bridge decodes document attachments separately from bounded text context',async()=>{
+  const {bridge,deliver,parent}=fixture();
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  const pending=bridge.capture();
+  deliver({type:'kodrik-tab-result',channel:'x',id:parent.sent.at(-1).message.id,context:pageContext,document:{name:'report.pdf',mime:'application/pdf',base64:btoa('%PDF-1.7\ncontent')}});
+  const capture=await pending;
+  assert.equal(capture.document?.name,'report.pdf');
+  assert.equal(await capture.document.text(),'%PDF-1.7\ncontent');
+  assert.equal(capture.text,'Page content');
+  bridge.dispose();
+});
+test('bridge rejects invalid document attachment instead of silently dropping it',async()=>{
+  for(const document of [{name:'bad.pdf',mime:'application/pdf',base64:btoa('not a PDF')},{name:'bad.html',mime:'text/html',base64:btoa('<html>')},{name:'bad.pdf',mime:'application/pdf',base64:'!!!'}]) {
+    const {bridge,deliver,parent}=fixture();
+    deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+    const pending=bridge.capture();
+    deliver({type:'kodrik-tab-result',channel:'x',id:parent.sent.at(-1).message.id,context:pageContext,document});
+    await assert.rejects(()=>pending);bridge.dispose();
+  }
+});

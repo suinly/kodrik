@@ -99,3 +99,16 @@ automatic screenshot/PDF capture, per-tab lifetime and server/extension update s
 Fresh checks: 15/15 serial extension/bridge tests, 5/5 Rust browser-context tests,
 Nuxt typecheck, cargo fmt --check and git diff --check passed. Full suites were not
 rerun for this documentation refresh; unresolved full-suite failures above remain.
+
+## 2026-11-14: native documents and structured extraction
+
+- Typecheck and frontend production build passed.
+- MV3 Chromium integration verified regular-page recapture, Google Docs Markdown export,
+  and an actual PDF viewer tab. Both exported Markdown and PDF were admitted as ordinary
+  chat attachments; downloads from stored history matched original bytes exactly.
+- Targeted document tests cover metadata-only preview without fetch, credentialed GET,
+  changed URL, wrong MIME/login HTML, invalid PDF and declared oversized response.
+- Full web suite attempted with npm test: stopped at 200-second tool timeout. Observed
+  the same five named failures recorded above (pages catalog; sidebar lists; section rail;
+  composer focus recovery; conversation menus). No full-suite success claimed.
+- No Rust source changes, deployment, gateway restart or installed-profile changes.

@@ -15,7 +15,7 @@ async function panelFixture(t, configured=true, responds=true) {
       windows:{getCurrent:async()=>({id:1})},
       storage:{local:{get:async()=>configured?{server:'https://server.test/'}:{},set:async()=>{}},session:{get:async()=>({}),set:async()=>{}}},
       permissions:{request:async()=>true},
-      scripting:{executeScript:async()=>{testState.captures++;return [{result:{url:testState.tab.url,title:testState.tab.title,text:'Fresh page content',source:'page'}}];}}
+      scripting:{executeScript:async options=>{if(options.func.name==='readDocument') return [{result:null}];testState.captures++;return [{result:{url:testState.tab.url,title:testState.tab.title,text:'Fresh page content',source:'page'}}];}}
     };
   },configured);
   await page.route('https://panel.test/**',async route=>{

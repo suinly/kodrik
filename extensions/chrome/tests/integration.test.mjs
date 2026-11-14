@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {chromium,expect} from '../../../web/node_modules/@playwright/test/index.mjs';
 import {startFixture,stopFixture} from '../../../web/tests/fixture-process.mjs';
 
-test('extension embeds authenticated chat and sends structured page context without file attachments', {timeout:120000},async()=>{
+test('extension sends fresh page context and native document attachments through authenticated chat', {timeout:120000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),'kodrik-extension-test-'));
   let context,server;
   try {
@@ -17,7 +17,7 @@ test('extension embeds authenticated chat and sends structured page context with
     await cp(fileURLToPath(new URL('../',import.meta.url)),extension,{recursive:true});
     // A browser test pregrants only the fixture hosts; shipping manifest uses optional permissions.
     const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
-    manifest.host_permissions=['http://127.0.0.1/*'];
+    manifest.host_permissions=['http://127.0.0.1/*','https://docs.google.com/*'];
     await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
     context=await chromium.launchPersistentContext(join(dir,'profile'),{headless:true,channel:'chromium',args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]});
     const worker=context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
@@ -107,5 +107,40 @@ test('extension embeds authenticated chat and sends structured page context with
     await panel.waitForTimeout(700);
     await mkdir(join(tmpdir(),'kodrik-sidebar-check'),{recursive:true});
     await panel.screenshot({path:join(tmpdir(),'kodrik-sidebar-check/sidebar.png')});
+    // Exercise native export through real MV3 injection, bridge, multipart admission and history.
+    await article.route('https://docs.google.com/document/d/test-document/**', route=> {
+      const url=new URL(route.request().url());
+      return route.fulfill(url.pathname.endsWith('/export') ? {contentType:'text/markdown',body:'# Exported document\nNATIVE EXPORT CONTENT'} : {contentType:'text/html',body:'<title>Workspace report</title><main>EDITOR SHELL MUST NOT BE SENT</main>'});
+    });
+    await article.goto('https://docs.google.com/document/d/test-document/edit?tab=t.1');
+    await panel.reload();
+    await expect(input).toBeEditable();
+    await input.fill('Прочти документ');
+    const exported=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
+    await input.press('Enter');
+    const exportedRequest=await exported;
+    assert.match(exportedRequest.headers()['content-type'],/multipart\/form-data/);
+    const exportedLink=chat.getByRole('link',{name:'Workspace report.md',exact:true});
+    await expect(exportedLink).toBeVisible();
+    const documentURL=await exportedLink.evaluate(el=>el.href);
+    const storedDocument=await context.request.get(documentURL);
+    assert.equal(storedDocument.ok(),true);
+    assert.equal(await storedDocument.text(),'# Exported document\nNATIVE EXPORT CONTENT');
+    const pdfBytes='%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0/Kids[]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF';
+    await article.route('http://127.0.0.1:19991/report.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdfBytes}));
+    await article.goto('http://127.0.0.1:19991/report.pdf');
+    await panel.reload();
+    await expect(input).toBeEditable();
+    await input.fill('Прочти PDF');
+    const pdfSent=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
+    await input.press('Enter');
+    assert.match((await pdfSent).headers()['content-type'],/multipart\/form-data/);
+    const pdfLink=chat.getByRole('link',{name:/\.pdf$/,exact:false});
+    await expect(pdfLink).toBeVisible();
+    const savedPDF=await context.request.get(await pdfLink.evaluate(el=>el.href));
+    assert.equal(savedPDF.ok(),true);
+    assert.equal(await savedPDF.text(),pdfBytes);
+
+
   } finally {await context?.close();await stopFixture(server);await rm(dir,{recursive:true,force:true});}
 });
