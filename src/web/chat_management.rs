@@ -789,6 +789,7 @@ mod shared_store_tests {
     async fn session(chat: &Chat, text: &str) -> Session {
         let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: text.into(),
             files: vec![],

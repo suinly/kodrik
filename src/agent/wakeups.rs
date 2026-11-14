@@ -101,6 +101,7 @@ impl AgentRunner {
                 let mut session =
                     Session::new(SessionId::new(format!("companion:wakeup:{}", task.id)));
                 let input = UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: vec![],
                     images: vec![],
@@ -277,7 +278,7 @@ impl AgentRunner {
                     let id=cp.record.id.clone();
                     tokio::select! {result=self.agent.resume_durable(&mut session,&mut cp)=>result,stopped=self.wait_cancel(store,&id)=>{stopped?;Err(anyhow::anyhow!("Stopped by user"))}}
                 }
-                else {self.execute_controlled(&mut session,UserMessage{browser_context:durable.request.message.browser_context.clone(),content:durable.request.message.text.clone(),files:vec![],images:vec![]},None,None,Some(&mut cp),None).await}
+                else {self.execute_controlled(&mut session,UserMessage{browser_client_id:durable.request.message.browser_client_id.clone(),browser_context:durable.request.message.browser_context.clone(),content:durable.request.message.text.clone(),files:vec![],images:vec![]},None,None,Some(&mut cp),None).await}
             })).await;
             if result
                 .as_ref()

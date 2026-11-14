@@ -1,3 +1,4 @@
+pub(crate) mod browser_automation;
 pub(crate) mod browser_context;
 
 pub(crate) mod apply_patch;

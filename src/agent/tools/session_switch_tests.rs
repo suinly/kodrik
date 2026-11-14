@@ -71,6 +71,7 @@ impl Tool for Effect {
 }
 fn user(content: &str) -> UserMessage {
     UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: content.into(),
         images: vec![],

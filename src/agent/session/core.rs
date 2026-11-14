@@ -459,6 +459,7 @@ mod tests {
         let mut session = Session::new(SessionId::new("bad-blocks"));
         for text in ["first", "second", "tail"] {
             session.push(Message::User(crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: text.into(),
                 images: vec![],
@@ -488,6 +489,7 @@ mod tests {
         let mut source = Session::new(SessionId::new("source"));
         for text in ["request", "answer", "edit here"] {
             source.push(Message::User(crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: text.into(),
                 images: vec![],
@@ -523,6 +525,7 @@ mod tests {
         use crate::agent::llm::GenerationUsage;
         let mut session = Session::new(SessionId::new("usage"));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "hi".into(),
             images: vec![],
@@ -572,6 +575,7 @@ mod tests {
         source.initialize_system_prompt("instructions");
         source.initialize_memory_snapshot("memory".into());
         source.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "old".into(),
             files: vec![],
@@ -620,6 +624,7 @@ mod tests {
                 "edit at message {index}"
             );
             branch.push(Message::User(crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "replacement".into(),
                 images: vec![],
@@ -677,6 +682,7 @@ mod tests {
     fn message_time_survives_reload_and_ignores_tool_activity() {
         let mut session = Session::new(SessionId::new("time"));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: "hello".into(),

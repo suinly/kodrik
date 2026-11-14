@@ -100,6 +100,11 @@ impl Agent {
             "webhooks",
             "switch_session",
             "browser_context",
+            "browser_snapshot",
+            "browser_click",
+            "browser_fill",
+            "browser_scroll",
+            "browser_evaluate",
         ]);
         agent.limits = None;
         agent
@@ -399,6 +404,9 @@ impl Agent {
         // Dropping this sender also stops children when the parent future is cancelled.
         let (_children, child_lifetime) = tokio::sync::watch::channel(false);
         let mut audit_context = crate::audit::Context::current_or(session.id().as_str(), "message");
+        let input_browser_client = input
+            .as_ref()
+            .and_then(|input| input.browser_client_id.clone());
         if let Some(mut input) = input {
             self.prepare_input(session, &mut input).await?;
             self.context.initialize_session(session)?;
@@ -406,6 +414,14 @@ impl Agent {
                 cp.record.handoff_inputs.push(input.clone());
             }
             session.push(Message::User(input));
+        }
+        let mut browser_client_id = checkpoint
+            .as_ref()
+            .and_then(|cp| cp.record.handoff_inputs.last())
+            .and_then(|input| input.browser_client_id.clone());
+        // Only this run's inputs authorize browser tools, never historical session messages.
+        if checkpoint.is_none() {
+            browser_client_id = input_browser_client;
         }
         let mut requests = 0;
         let mut overflow_retry_used = checkpoint
@@ -456,12 +472,14 @@ impl Agent {
                 for record in cp.store.steering(&cp.record).await? {
                     let message = record.request.message;
                     let mut input = UserMessage {
-                        browser_context: None,
+                        browser_client_id: message.browser_client_id,
+                        browser_context: message.browser_context,
                         content: message.text,
                         files: message.files,
                         images: message.images,
                     };
                     self.prepare_input(session, &mut input).await?;
+                    browser_client_id = input.browser_client_id.clone();
                     cp.record.handoff_inputs.push(input.clone());
                     session.push(Message::User(input));
                     cp.record.submission_ids.push(record.id);
@@ -470,6 +488,7 @@ impl Agent {
             }
             if let Some(incoming) = incoming.as_mut() {
                 while let Ok(mut input) = incoming.try_recv() {
+                    browser_client_id = input.browser_client_id.clone();
                     if let Some(sandbox) = &self.sandbox {
                         sandbox.prepare_input(&mut input).await?;
                     }
@@ -512,6 +531,11 @@ impl Agent {
             let registry = match &environment {
                 Some(scope) => scope.tools(&self.tools)?,
                 None => self.tools.clone(),
+            };
+            let registry = if browser_client_id.is_some() && !self.isolated() {
+                registry
+            } else {
+                registry.without(super::tools::browser_context::BROWSER_TOOLS)
             };
             let tools = registry.for_model(session.messages())?;
             let messages = if let Some(cp) = checkpoint
@@ -1046,7 +1070,7 @@ impl Agent {
                                                                 }),
                                                             super::tools::browser_context::CURRENT_SESSION.scope(
                                                                 session.id().as_str().to_owned(),
-                                                                registry.execute(&call.name, call.arguments.clone()),
+                                                                super::tools::browser_context::CURRENT_BROWSER_CLIENT.scope(browser_client_id.clone(), registry.execute(&call.name, call.arguments.clone())),
                                                             ),
                                                         ),
                                                     ),
@@ -1159,6 +1183,114 @@ mod tests {
         tools::{Tool, UpdatePlanTool},
     };
 
+    #[tokio::test]
+    async fn browser_tools_follow_current_input_not_conversation_history() {
+        struct BrowserModel;
+        #[async_trait::async_trait]
+        impl LlmProvider for BrowserModel {
+            async fn generate(
+                &self,
+                context: &LlmContext<'_>,
+                tools: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                let current = context
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|m| match m {
+                        Message::User(input) => Some(input),
+                        _ => None,
+                    })
+                    .unwrap();
+                for name in super::super::tools::browser_context::BROWSER_TOOLS {
+                    assert_eq!(
+                        tools.iter().any(|tool| tool.name() == *name),
+                        current.browser_client_id.is_some(),
+                        "{name}"
+                    );
+                }
+                Ok((
+                    vec![Message::Assistant(AssistantMessage {
+                        content: "ok".into(),
+                    })],
+                    None,
+                ))
+            }
+        }
+        let directory = std::path::PathBuf::from("unused");
+        let mut registry = ToolRegistry::default().register(Arc::new(
+            super::super::tools::browser_context::BrowserContextTool {
+                directory: directory.clone(),
+            },
+        ));
+        for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
+            registry = registry.register(Arc::new(
+                super::super::tools::browser_automation::BrowserAutomationTool {
+                    directory: directory.clone(),
+                    action,
+                },
+            ));
+        }
+        let agent = Agent::new(
+            Arc::new(BrowserModel),
+            registry,
+            ContextBuilder::new("rules"),
+        );
+        let mut session = Session::new(SessionId::new("browser-gating"));
+        for durable in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = super::super::session::SqliteSessionStore::open(dir.path().into()).unwrap();
+            for client in [Some("panel".into()), None, Some("panel".into()), None] {
+                let mut checkpoint = Checkpoint::new(&store, session.id(), &session);
+                let input = UserMessage {
+                    content: "message".into(),
+                    browser_client_id: client,
+                    browser_context: None,
+                    images: vec![],
+                    files: vec![],
+                };
+                agent
+                    .run_durable(
+                        &mut session,
+                        input,
+                        None,
+                        None,
+                        durable.then_some(&mut checkpoint),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            tx.send(UserMessage {
+                content: "ordinary steering".into(),
+                browser_client_id: None,
+                browser_context: None,
+                images: vec![],
+                files: vec![],
+            })
+            .unwrap();
+            let input = UserMessage {
+                content: "browser initial".into(),
+                browser_client_id: Some("panel".into()),
+                browser_context: None,
+                images: vec![],
+                files: vec![],
+            };
+            let mut checkpoint = Checkpoint::new(&store, session.id(), &session);
+            agent
+                .run_durable(
+                    &mut session,
+                    input,
+                    None,
+                    Some(&mut rx),
+                    durable.then_some(&mut checkpoint),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
     struct SteeringModel {
         contexts: mpsc::UnboundedSender<Vec<Message>>,
         cancelled: mpsc::UnboundedSender<()>,
@@ -1240,6 +1372,7 @@ mod tests {
                     .run_durable(
                         &mut session,
                         UserMessage {
+                            browser_client_id: None,
                             browser_context: None,
                             content: "initial".into(),
                             files: vec![],
@@ -1286,6 +1419,7 @@ mod tests {
                 } else {
                     input_tx
                         .send(UserMessage {
+                            browser_client_id: None,
                             browser_context: None,
                             content: text.into(),
                             files: vec![file.clone()],
@@ -1393,7 +1527,7 @@ mod tests {
                 store.with_connection(move |_| { acquired.notify_one(); let _ = released.recv(); Ok(()) }).await
             });
             locked.notified().await;
-            input_tx.send(UserMessage { browser_context: None, content: "accepted correction".into(), files: vec![], images: vec![] }).unwrap();
+            input_tx.send(UserMessage { browser_client_id: None, browser_context: None, content: "accepted correction".into(), files: vec![], images: vec![] }).unwrap();
             cancellations.recv().await.unwrap();
             stop.send(()).unwrap();
             release.send(()).unwrap();
@@ -1463,6 +1597,7 @@ mod tests {
             .with_compaction(model.clone(), 80000);
             let mut session = Session::new(SessionId::new("cli:overflow"));
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "old ".repeat(1000),
                 images: vec![],
@@ -1472,6 +1607,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         content: "next".into(),
                         images: vec![],
@@ -1495,12 +1631,14 @@ mod tests {
     fn overflow_history() -> Session {
         let mut session = Session::new(SessionId::new("cli:overflow"));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "old ".repeat(1000),
             images: vec![],
             files: vec![],
         }));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "next".into(),
             images: vec![],
@@ -1535,6 +1673,7 @@ mod tests {
             if mode == "oversized" {
                 session = Session::new(SessionId::new("oversized"));
                 session.push(Message::User(UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "x".repeat(125000),
                     images: vec![],
@@ -1542,6 +1681,7 @@ mod tests {
                 }));
             }
             let input = UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "latest".into(),
                 images: vec![],
@@ -1796,6 +1936,7 @@ mod tests {
                 .run_durable(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         content: "user goal ".repeat(600),
                         images: vec![],
@@ -1881,6 +2022,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "PRIVATE_PROMPT".into(),
                     files: vec![],
@@ -1934,6 +2076,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "work".into(),
                     files: vec![],
@@ -1970,6 +2113,7 @@ mod tests {
         .with_journal(crate::audit::Journal::new(dir.path()));
         let mut session = Session::new(SessionId::new("audit"));
         let input = UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "work".into(),
             files: vec![],
@@ -2011,6 +2155,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         content: "work".into(),
                         files: vec![],
@@ -2083,6 +2228,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: Vec::new(),
                     content: "work".into(),
@@ -2128,6 +2274,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: vec![],
                     content: "work".into(),
@@ -2161,6 +2308,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: vec![],
                     content: "work".into(),
@@ -2195,6 +2343,7 @@ mod tests {
                 .run(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         files: Vec::new(),
                         content: "work".into(),
@@ -2257,6 +2406,7 @@ mod tests {
             .run(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: Vec::new(),
                     content: "work".into(),

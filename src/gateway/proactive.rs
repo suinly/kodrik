@@ -143,6 +143,7 @@ impl Proactive {
             uuid::Uuid::new_v4()
         )));
         let input = UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: format!(
@@ -476,6 +477,7 @@ mod tests {
                 }
                 let mut source = Session::new(SessionId::new("history-source"));
                 source.push(Message::User(UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: Vec::new(),
                     content: "History of cities: settlements grew near rivers.".into(),

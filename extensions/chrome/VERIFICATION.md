@@ -127,3 +127,40 @@ rerun for this documentation refresh; unresolved full-suite failures above remai
   first character or cursor position` failed with an extra leading space under the
   full run, then passed in an isolated rerun. Not claiming the full suite is green.
 - Running gateway/browser installation was not deployed or restarted.
+
+## Browser automation tools
+
+- Added snapshot/click/fill/scroll/evaluate tools through the authenticated sidebar.
+- Real MV3 tests exercise click, all supported field types, scrolling, MAIN JS,
+  stale/detached targets, privacy filtering, form-only pages and denied confirmation.
+- Trusted extension confirmation expires after 55 seconds; cancellation dismisses
+  pending dialogs. Post-approval preflight verifies the broker still owns the request.
+- Target fingerprints and Chrome documentIds reject changed destinations/documents.
+- Poller retries result delivery only, never mutation execution.
+- Final extension + bridge/poller suite: 34/34 passed. Nuxt build/typecheck,
+  cargo fmt and git diff checks passed. Focused Rust browser suite: 19 passed,
+  two ignored browser fixtures.
+- Full web suite before final review hardening: 259/259 passed.
+- Full cargo suite: 1337 passed, 12 ignored, one failure in
+  web_read_timeout_and_cancellation_terminate_child_and_clean_storage; isolated
+  rerun passed. Full cargo suite is not claimed green.
+- Arbitrary MAIN JS is not sandboxed from the website. CSP may reject it;
+  the 15-second extension watchdog bounds waiting, not execution. Infinite
+  synchronous JS can hang its tab and may need manual reload/closure.
+- No running gateway restart, deployment, commit or push performed.
+
+## Request-scoped browser tool availability
+
+- JSON/multipart sends include browser_client_id only after trusted extension
+  handshake and live lease registration. New admissions validate unique live
+  user/session/client ownership; retries retain the original accepted provenance.
+- IncomingMessage/UserMessage persist optional client provenance (old records
+  default to none); current run/steering inputs control the actual registry,
+  including execution. Historical browser context never grants tools.
+- Broker dispatch pins the current request client; another panel cannot take over.
+- Full Rust suite passed: 1341 library tests, 12 ignored, and integration/binary
+  tests passed. A subsequently added admission/retry regression passed 2/2.
+- Real MV3 integration passed, bridge/poller 12/12, Nuxt build and typecheck passed.
+- This is owner-authenticated UI routing, not cryptographic browser attestation:
+  an authenticated owner can manually emulate panel polling and client metadata
+  through the API. A caller-chosen UUID alone without a live unique lease fails.

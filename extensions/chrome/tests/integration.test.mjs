@@ -50,6 +50,7 @@ test('extension sends context only on first message and serves agent requests wi
     const request=await sent;
     assert.match(request.headers()['content-type'],/application\/json/);
     const payload=request.postDataJSON();
+    assert.match(payload.browser_client_id,/^[0-9a-f-]{36}$/);
     assert.equal(payload.browser_context.source,'page');
     assert.match(payload.browser_context.text,/ORIGINAL ARTICLE CONTENT/);
     assert.ok(!payload.files?.length);
@@ -81,7 +82,9 @@ test('extension sends context only on first message and serves agent requests wi
     await input.fill('А сейчас?');
     const second=panel.waitForRequest(req=>req.method()==='POST' && req.url().endsWith('/api/chat/send'));
     await input.press('Enter');
-    assert.equal((await second).postDataJSON().browser_context,null);
+    const secondPayload=(await second).postDataJSON();
+    assert.equal(secondPayload.browser_context,null);
+    assert.equal(secondPayload.browser_client_id,payload.browser_client_id);
     // Simulate only the server request boundary; real iframe bridge and MV3 capture remain live.
     let requested=false;
     await panel.route('**/api/chat/browser-context**',route=>{
@@ -95,6 +98,26 @@ test('extension sends context only on first message and serves agent requests wi
     assert.equal(agentResult.postDataJSON().request_id,'agent-request');
     assert.match(agentResult.postDataJSON().context.text,/UPDATED ARTICLE CONTENT/);
     await panel.unroute('**/api/chat/browser-context**');
+    let commandDone=false;
+    await panel.route('**/api/chat/browser-command**',route=>{
+      if(route.request().method()==='GET') return route.fulfill({json:{request_id:commandDone?null:'snapshot-request',command:commandDone?null:{action:'snapshot'}}});
+      commandDone=true;return route.fulfill({json:{ok:true}});
+    });
+    const snapshotReply=await panel.waitForRequest(req=>req.method()==='POST' && req.url().includes('/api/chat/browser-command'));
+    const freshSnapshot=snapshotReply.postDataJSON().result;
+    assert.ok(freshSnapshot.snapshot_id);
+    assert.match(freshSnapshot.text,/UPDATED ARTICLE CONTENT/);
+    commandDone=false;
+    await panel.unroute('**/api/chat/browser-command**');
+    await panel.route('**/api/chat/browser-command**',route=>{
+      if(route.request().method()==='GET') return route.fulfill({json:{request_id:commandDone?null:'evaluate-request',command:commandDone?null:{action:'evaluate',snapshot_id:freshSnapshot.snapshot_id,code:'return document.title;'}}});
+      commandDone=true;return route.fulfill({json:{ok:true}});
+    });
+    const evaluation=panel.waitForRequest(req=>req.method()==='POST' && req.url().includes('/api/chat/browser-command'));
+    // The native extension confirmation is outside the chat iframe.
+    await panel.getByRole('dialog',{name:/действ|управл|подтвер/i}).getByRole('button',{name:/Разрешить|Выполнить|Подтвердить/i}).click();
+    assert.equal((await evaluation).postDataJSON().result,'Test article');
+    await panel.unroute('**/api/chat/browser-command**');
     await expect(attachment).toHaveCount(1);
     await attachment.getByRole('button').click();
     await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).toContainText('UPDATED ARTICLE CONTENT');

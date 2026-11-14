@@ -686,6 +686,7 @@ mod tests {
         let mut session = Session::new(SessionId::new("cli:compact-jobs"));
         for _ in 0..8 {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "old ".repeat(1500),
                 files: vec![],
@@ -693,6 +694,7 @@ mod tests {
             }));
         }
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "latest".into(),
             files: vec![],
@@ -989,6 +991,7 @@ mod tests {
         first.status = "ready".into();
         for _ in 0..4 {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "suffix ".repeat(1500),
                 files: vec![],

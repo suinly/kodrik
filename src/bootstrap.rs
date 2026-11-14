@@ -103,6 +103,7 @@ api_base = "{base}"
                     .run(
                         &mut session,
                         UserMessage {
+                            browser_client_id: None,
                             browser_context: None,
                             content: "hello".into(),
                             images: vec![],
@@ -274,6 +275,14 @@ pub(crate) async fn build_app_with_access(
         .register(Arc::new(SessionSearchTool::new(data.join("sessions"))))
         .register(Arc::new(ContextReadTool::new(data.join("sessions"))));
     if !isolated && access.is_none() {
+        for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
+            tools = tools.register(Arc::new(
+                crate::agent::tools::browser_automation::BrowserAutomationTool {
+                    directory: data.join("sessions"),
+                    action,
+                },
+            ));
+        }
         tools = tools.register(Arc::new(
             crate::agent::tools::browser_context::BrowserContextTool {
                 directory: data.join("sessions"),
@@ -447,6 +456,7 @@ mod tests {
             let mut session = Session::new(id.clone());
             for _ in 0..8 {
                 session.push(Message::User(UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "history ".repeat(700),
                     images: vec![],
@@ -499,6 +509,7 @@ mod tests {
         let mut session = Session::new(id.clone());
         for _ in 0..8 {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "history ".repeat(700),
                 images: vec![],
@@ -567,6 +578,7 @@ mod tests {
         let store = SqliteSessionStore::open(owner.join("sessions")).unwrap();
         let mut history = Session::new(SessionId::new("private-history"));
         history.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "PRIVATE_SENTINEL".into(),
             images: vec![],

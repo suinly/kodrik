@@ -124,6 +124,7 @@ mod tests {
     fn skips_acknowledgements_but_reviews_substantive_feedback() {
         let user = |text: &str| {
             Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 files: Vec::new(),
                 content: text.into(),

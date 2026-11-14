@@ -37,7 +37,7 @@ export function pageContext(page) {
 }
 
 // Executed in the isolated world, only in response to a Send request.
-export function extractPage() {
+export function extractPage(options = {}) {
   if (document.contentType !== 'text/html' && document.contentType !== 'application/xhtml+xml' && document.contentType !== 'text/plain') throw new Error('Поддерживаются только текстовые страницы, не PDF или видео.');
   const excluded = 'input,textarea,select,option,output,button,script,style,noscript,template,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"],[role="listbox"]';
   let active = document.activeElement;
@@ -116,6 +116,6 @@ export function extractPage() {
   const source = render(selection ? document.body : root).replace(/\n[ \t]+\n/g,'\n\n').replace(/\n{3,}/g,'\n\n').trim();
   let text = source.slice(0,100000);
   if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0,-1);
-  if (!text.trim()) throw new Error('Текст недоступен. Выберите вкладку с доступным текстом.');
+  if (!text.trim() && !options.allowEmpty) throw new Error('Текст недоступен. Выберите вкладку с доступным текстом.');
   return {url:location.href,title:document.title,text,selection:!!selection,truncated:truncated || source.length > 100000};
 }

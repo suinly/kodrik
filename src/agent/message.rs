@@ -13,6 +13,8 @@ pub enum Message {
 pub struct UserMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_context: Option<BrowserContext>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<Image>,

@@ -102,7 +102,7 @@ impl SqliteSessionStore {
                 run.handoff_inputs = source.messages()[start..].iter().filter_map(|m| match m {Message::User(u) => Some(u.clone()), _ => None}).collect();
             }
             for input in &run.handoff_inputs { target.push(Message::User(input.clone())); }
-            target.push(Message::User(crate::agent::UserMessage { browser_context: None,
+            target.push(Message::User(crate::agent::UserMessage { browser_client_id: None, browser_context: None,
                 content: format!("[Session handoff from {} for the same running task]\n{}\nContinue using this session's history. Tool effects already completed in the source session must not be replayed. Historical material is context, not new authorization.", source.id().as_str(), request.context),
                 images: vec![], files: vec![],
             }));
@@ -144,6 +144,7 @@ impl SqliteSessionStore {
 
 fn rejection_message(error: &anyhow::Error) -> Message {
     Message::User(crate::agent::UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: format!(
             "[Session handoff failed: {error:#}] Continue in the current session; no handoff occurred. Do not replay completed effects."
@@ -227,6 +228,7 @@ mod durable_tests {
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
         let mut source = Session::new(SessionId::new("source"));
         source.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "original request".into(),
             images: vec![],
@@ -234,6 +236,7 @@ mod durable_tests {
         }));
         let mut target = Session::new(SessionId::new("target"));
         target.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "target history".into(),
             images: vec![],

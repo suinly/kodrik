@@ -33,6 +33,7 @@ impl SystemOne {
             "Choice options must be nonempty and unique"
         );
         let messages = [Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: serde_json::to_string(&json!({
@@ -89,6 +90,7 @@ impl SystemOne {
             "Invalid criteria"
         );
         let messages = [Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: vec![],
             images: vec![],

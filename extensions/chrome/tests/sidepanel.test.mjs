@@ -112,3 +112,36 @@ test('unresponsive server reveals settings only after timeout and allows correct
   await expect(page.locator('#chat')).toHaveAttribute('src','https://correct.test/kodrik/app/chat?browser_sidebar=1');
   await expect(page.locator('#settings')).not.toBeVisible();
 });
+
+test('browser cancellation closes confirmation and approval requires trusted preflight',async t=>{
+  const {page,chat,send}=await panelFixture(t);
+  await page.evaluate(()=>{
+    testState.actions=0;
+    chrome.scripting.executeScript=async options=>{
+      const command=options.args?.[0];
+      if(command?.action==='snapshot') return [{documentId:'doc',result:{snapshot_id:'snap',url:testState.tab.url,title:'Test',text:'',elements:[{id:'target',name:'Human target',href:'https://destination.test/'}]}}];
+      if(command?.action==='check') return [{documentId:'doc',result:true}];
+      if(command?.action==='click') {testState.actions++;return [{documentId:'doc',result:{ok:true}}];}
+      return [{documentId:'doc',result:{text:'Public'}}];
+    };
+  });
+  await send('kodrik-browser-command',{id:'snap',command:{action:'snapshot'}});
+  await expect.poll(()=>chat().evaluate(()=>messages.find(m=>m.id==='snap')?.result?.snapshot_id)).toBe('snap');
+  const command={action:'click',snapshot_id:'snap',element_id:'target'};
+  await send('kodrik-browser-command',{id:'cancel',command});
+  const dialog=page.getByRole('dialog',{name:'Разрешить действие во вкладке?'});
+  await expect(dialog).toContainText('Human target');
+  await send('kodrik-browser-cancel',{id:'cancel'});
+  await expect(dialog).not.toBeVisible();
+  assert.equal(await page.evaluate(()=>testState.actions),0);
+  await send('kodrik-browser-command',{id:'approve',command});
+  await dialog.getByRole('button',{name:'Разрешить',exact:true}).click();
+  await expect.poll(()=>chat().evaluate(()=>messages.some(m=>m.type==='kodrik-browser-check' && m.id==='approve'))).toBe(true);
+  assert.equal(await page.evaluate(()=>testState.actions),0);
+  await send('kodrik-browser-check-result',{id:'approve',allowed:true});
+  await expect.poll(()=>page.evaluate(()=>testState.actions)).toBe(1);
+  await send('kodrik-browser-command',{id:'expired-check',command});
+  await dialog.getByRole('button',{name:'Разрешить',exact:true}).click();
+  await expect.poll(()=>chat().evaluate(()=>messages.find(m=>m.type==='kodrik-browser-result' && m.id==='expired-check')?.error)).toMatch(/cancelled/);
+  assert.equal(await page.evaluate(()=>testState.actions),1);
+});

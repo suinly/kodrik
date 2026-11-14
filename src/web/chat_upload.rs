@@ -70,7 +70,7 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
         if (!is_file
             && (!matches!(
                 name.as_str(),
-                "id" | "request_id" | "text" | "browser_context"
+                "id" | "request_id" | "text" | "browser_context" | "browser_client_id"
             ) || fields.contains_key(&name)))
             || (is_file && uploads.len() >= MAX_ATTACHMENTS)
         {

@@ -966,6 +966,7 @@ mod tests {
             .run_bounded(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     files: vec![],
                     images: vec![],

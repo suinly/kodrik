@@ -458,6 +458,7 @@ mod tests {
         std::fs::write(assets.join("nested/helper.sh"), "echo old").unwrap();
         let sandbox = Sandbox::new(root.path().to_owned());
         let mut input = super::super::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "hello".into(),
             files: vec![],
@@ -510,6 +511,7 @@ mod tests {
         std::fs::write(skill.join("helper.sh"), "echo obsolete").unwrap();
         let sandbox = Sandbox::new(root.path().to_owned());
         let mut input = super::super::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "hello".into(),
             files: vec![],
@@ -560,6 +562,7 @@ mod tests {
         )
         .unwrap();
         let mut input = UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "read attachment".into(),
             files: vec![own.clone()],

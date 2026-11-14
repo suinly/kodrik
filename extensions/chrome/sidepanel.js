@@ -1,5 +1,21 @@
 import {serverURL, pageContext, extractPage} from './core.mjs';
 import {readDocument} from './documents.mjs';
+import {executeBrowserCommand,confirmBrowserCommand} from './automation.mjs';
+const browserMessageIds = new Set();
+let browserBusy = false;
+const browserControllers = new Map();
+const browserChecks = new Map();
+function browserPreflight(id, signal) {
+  if(signal.aborted) return Promise.resolve(false);
+  return new Promise(resolve=>{
+    const finish=allowed=>{clearTimeout(timer);browserChecks.delete(id);signal.removeEventListener('abort',abort);resolve(allowed);};
+    const abort=()=>finish(false);
+    const timer=setTimeout(()=>finish(false),2000);
+    browserChecks.set(id,finish);
+    signal.addEventListener('abort',abort,{once:true});
+    post({type:'kodrik-browser-check',channel,id});
+  });
+}
 const $ = id => document.getElementById(id);
 const frame = $('chat');
 let server, windowId, channel, ready = false;
@@ -49,6 +65,7 @@ function handshake() {
 async function load(value) {
   server = serverURL(value);
   $('server').value = server.href;
+  for(const controller of browserControllers.values()) controller.abort();
   channel = crypto.randomUUID();
   waitForChat();
   let url = new URL('app/chat', server);
@@ -100,6 +117,39 @@ window.addEventListener('message', async event => {
   }
   if(event.data?.channel !== channel) return;
   const message = event.data;
+  if(message.type === 'kodrik-browser-cancel') {
+    browserControllers.get(message.id)?.abort();
+    return;
+  }
+  if(message.type === 'kodrik-browser-check-result') {
+    browserChecks.get(message.id)?.(message.allowed===true);
+    return;
+  }
+  if(message.type === 'kodrik-browser-command') {
+    if(typeof message.id!=='string' || !message.id || message.id.length>200) return;
+    const responseChannel=channel;
+    const reply=value=>{if(channel===responseChannel) post({type:'kodrik-browser-result',channel:responseChannel,id:message.id,...value});};
+    if(browserMessageIds.has(message.id)) {reply({error:'Duplicate browser command ID'});return;}
+    browserMessageIds.add(message.id);
+    if(browserBusy || browserMessageIds.size>10000) {reply({error:'Browser executor busy or command limit reached'});return;}
+    browserBusy=true;
+    const controller=new AbortController();
+    browserControllers.set(message.id,controller);
+    try {
+      if(!bound) throw new Error('Browser automation requires a bound tab');
+      const tab=await chrome.tabs.get(ownerId);
+      if(new URL(tab.url).origin===server.origin) throw new Error('Cannot automate the chat server');
+      const result=await executeBrowserCommand(ownerId,message.command,async(command,tab)=>{
+        const accepted=await confirmBrowserCommand(command,tab,controller.signal);
+        if(!accepted || controller.signal.aborted || channel!==responseChannel) return false;
+        const allowed=await browserPreflight(message.id,controller.signal);
+        return allowed && !controller.signal.aborted && channel===responseChannel;
+      },{forbiddenOrigin:server.origin,signal:controller.signal});
+      reply({result});
+    } catch(error) {reply({error:error.message});}
+    finally {browserBusy=false;browserControllers.delete(message.id);browserChecks.delete(message.id);}
+    return;
+  }
   if(message.type === 'kodrik-tab-ready') {ready=true;clearTimeout(connectionTimer);$('connection-toolbar').hidden=true;status('');return;}
   if(message.type === 'kodrik-tab-settings') {openSettings();return;}
   if(message.type === 'kodrik-tab-toggle') {

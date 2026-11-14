@@ -178,6 +178,7 @@ mod tests {
         let conversation = SessionId::new("cli:main");
         let mut original = Session::new(conversation.clone());
         original.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: "original".into(),

@@ -90,3 +90,44 @@ test('bridge rejects invalid document attachment instead of silently dropping it
     await assert.rejects(()=>pending);bridge.dispose();
   }
 });
+
+test('browser commands use authenticated channel and return bounded results without recasting page context',async()=>{
+  const {bridge,deliver,parent}=fixture();
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  const pending=bridge.command({action:'snapshot'});
+  const request=parent.sent.at(-1).message;
+  assert.equal(request.type,'kodrik-browser-command');
+  assert.deepEqual(request.command,{action:'snapshot'});
+  deliver({type:'kodrik-browser-result',channel:'wrong',id:request.id,result:{bad:true}});
+  deliver({type:'kodrik-browser-result',channel:'x',id:request.id,result:{snapshot_id:'s',elements:[]}});
+  assert.deepEqual(await pending,{snapshot_id:'s',elements:[]});
+  const rejected=bridge.command({action:'click',snapshot_id:'s',element_id:'e'});
+  deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,error:'User declined'});
+  await assert.rejects(()=>rejected,/declined/);
+  const oversized=bridge.command({action:'snapshot'});
+  deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,result:{text:'a'.repeat(100001)}});
+  await assert.rejects(()=>oversized,/результат/i);
+  bridge.dispose();
+});
+
+test('confirmation preflight checks current broker authority and disposal cancels extension work',async()=>{
+  const {bridge,deliver,parent}=fixture();
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  const pending=bridge.command({action:'click'},'broker-id',async()=>false);
+  deliver({type:'kodrik-browser-check',channel:'x',id:'broker-id'});
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(parent.sent.at(-1).message,{type:'kodrik-browser-check-result',channel:'x',id:'broker-id',allowed:false});
+  const rejected=assert.rejects(()=>pending,/закрыт/i);
+  bridge.dispose();await rejected;
+  assert.equal(parent.sent.at(-1).message.type,'kodrik-browser-cancel');
+});
+
+test('browser request provenance requires a handshake with the trusted extension, not a URL flag',()=>{
+  const {bridge,deliver}=fixture();
+  assert.equal(bridge.connected(),false);
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true},'https://evil.test');
+  assert.equal(bridge.connected(),false);
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  assert.equal(bridge.connected(),true);
+  bridge.dispose();
+});

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
+import {createBrowserCommandPoller} from '../utils/browser-commands'
 import {createTabBridge,type BrowserContext} from '../utils/browser-tab'
 import { api, checkedFetch, endpoint, login, requestStatus, AuthenticationError, ConversationNotFoundError, backoff, watchSnapshots, messageOf, type Conversation, type ConversationDraft, type Snapshot, type ChatMessage, type CommandAuditMode } from '../utils/api'
 import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
@@ -29,6 +30,22 @@ async function toggleTabPreview(){
 const tabClientId=crypto.randomUUID()
 let tabRequestTimer:ReturnType<typeof setTimeout>|undefined
 let tabRequestsStopped=false
+let browserCommandTimer:ReturnType<typeof setTimeout>|undefined
+const browserCommands=createBrowserCommandPoller({
+  poll:()=>api(`browser-command?id=${encodeURIComponent(props.conversation.id)}&client_id=${tabClientId}`),
+  execute:(command,id)=>tabBridge.command(command,id,async()=>{
+    if(tabRequestsStopped || !props.active) return false
+    const pending=await api<{request_id:string|null}>(`browser-command?id=${encodeURIComponent(props.conversation.id)}&client_id=${tabClientId}`)
+    return !tabRequestsStopped && !!props.active && pending.request_id===id
+  }),
+  cancel:id=>tabBridge.cancel(id),
+  complete:reply=>api('browser-command','POST',{id:props.conversation.id,client_id:tabClientId,...reply}),
+})
+async function pollBrowserCommands(){
+  if(tabRequestsStopped) return
+  if(props.active && !home.value) await browserCommands.tick()
+  if(!tabRequestsStopped) browserCommandTimer=setTimeout(pollBrowserCommands,1000)
+}
 async function pollTabRequests(){
   try {
     if(props.browserSidebar && props.active && !home.value) {
@@ -42,8 +59,8 @@ async function pollTabRequests(){
   } catch { /* Reconnect on the next poll; tool requests have their own deadline. */ }
   finally {if(!tabRequestsStopped) tabRequestTimer=setTimeout(pollTabRequests,1000)}
 }
-onMounted(()=>{if(props.browserSidebar) void pollTabRequests()})
-onBeforeUnmount(()=>{tabRequestsStopped=true;clearTimeout(tabRequestTimer);tabBridge.dispose()})
+onMounted(()=>{if(props.browserSidebar) {void pollTabRequests();void pollBrowserCommands()}})
+onBeforeUnmount(()=>{tabRequestsStopped=true;clearTimeout(tabRequestTimer);clearTimeout(browserCommandTimer);browserCommands.stop();tabBridge.dispose()})
 const emit = defineEmits<{ saved: [];new:[];navigate:[id:string];removed:[];'close-search':[];read:[] }>()
 const search=ref(props.initialSearch ?? '')
 const searchInput=useTemplateRef('searchInput')
@@ -500,11 +517,18 @@ async function submit() {
     follow.value = true
     loading.value = true
     sent = true
-    const body = selectedFiles.length ? new FormData() : JSON.stringify({ id: props.conversation.id, request_id: pending.id, text: pending.text, browser_context:pending.browser_context })
+    let browser_client_id:string|undefined
+    if(props.browserSidebar && tabBridge.connected()) {
+      // Register/refresh this panel's lease even on the very first send.
+      await api(`browser-command?id=${encodeURIComponent(props.conversation.id)}&client_id=${tabClientId}`)
+      browser_client_id=tabClientId
+    }
+    const body = selectedFiles.length ? new FormData() : JSON.stringify({ id: props.conversation.id, request_id: pending.id, text: pending.text, browser_context:pending.browser_context, browser_client_id })
     if (body instanceof FormData) {
       body.set('id', props.conversation.id)
       body.set('request_id', pending.id)
       body.set('text', pending.text)
+      if(browser_client_id) body.set('browser_client_id',browser_client_id)
       if(pending.browser_context) body.set('browser_context',JSON.stringify(pending.browser_context))
       selectedFiles.forEach(file => body.append('files', file, file.name))
     }

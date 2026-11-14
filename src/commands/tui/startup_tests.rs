@@ -89,6 +89,7 @@ async fn terminal_recovery_fixture() {
     if case == "draft-startup" {
         let mut previous = Session::new(id.clone());
         previous.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "previous conversation".into(),
             files: vec![],
@@ -127,6 +128,7 @@ async fn terminal_recovery_fixture() {
         }));
     }
     session.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "resume-me".into(),
         files: vec![],
@@ -571,6 +573,7 @@ async fn switching_to_an_unwritten_canceled_version_keeps_the_current_message() 
     let id = SessionId::new("cli:main");
     let mut source = Session::new(id.clone());
     source.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "original".into(),
         files: vec![],
@@ -622,6 +625,7 @@ async fn switching_message_versions_preserves_the_draft_and_groups_the_conversat
     let id = SessionId::new("cli:main");
     let mut source = Session::new(id.clone());
     source.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "original".into(),
         files: vec![],
@@ -681,6 +685,7 @@ async fn rejected_edit_preserves_the_editor_and_the_original_draft() {
     let id = SessionId::new("cli:main");
     let mut session = Session::new(id.clone());
     session.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "original".into(),
         files: vec![],

@@ -45,6 +45,12 @@
 
 ## Что передаётся
 
+Браузерные инструменты доступны только для конкретного запроса, отправленного
+через подключённое расширение. Сервер проверяет живую привязку панели к пользователю
+и диалогу; URL-параметр боковой панели сам по себе доступа не даёт. Обычные сообщения
+из веб-чата, Telegram и CLI не получают эти инструменты, даже если панель остаётся
+открытой или в истории уже есть контекст вкладки.
+
 - Только **первое сообщение диалога** автоматически получает снимок текста страницы
   или выделенного фрагмента. Следующие сообщения, в том числе после перезагрузки
   панели, не перечитывают вкладку. Новый диалог снова получает начальный снимок.
@@ -153,3 +159,50 @@ manifest заранее разрешены только loopback-hosts. Сист
 
 После обновления нужны и новые веб-ресурсы сервера, и перезагрузка расширения.
 Разрешения расширения не расширены; debugger не требуется.
+
+### Browser automation executor
+
+`automation.mjs` exports `executeBrowserCommand(tabId, command, confirm)` and
+`confirmBrowserCommand(command, tab)`. The panel accepts trusted iframe messages
+`{type:'kodrik-browser-command', channel, id, command}` and replies with
+`{type:'kodrik-browser-result', channel, id, result}` or `error` (string).
+Only the panel's bound tab is eligible. Message IDs are single-use; mutations are
+never retried. The panel rejects concurrent commands and caps IDs at 10,000 per
+panel lifetime (reload to reset).
+
+Commands: `snapshot`; `click` with `snapshot_id, element_id`; `fill` additionally
+with string `value`; `scroll` with `snapshot_id`, optional `element_id`, and `x,y`
+pixels (each at most ±10,000); `evaluate` with `snapshot_id, code` (JavaScript
+function body, e.g. `return document.title;`) and optional `timeout_ms` (1–10,000).
+Snapshots return `{snapshot_id,url,title,text,elements}`. JSON results are limited
+to 100,000 UTF-8 bytes; text is capped at 5,000 characters, elements at 150.
+Field values are omitted; password/file filling is blocked. Text uses the existing
+privacy-filtered extractor. Element tokens cover the top document's light DOM
+only, not iframe or shadow-tree controls.
+
+All non-snapshot commands require an extension-owned DOM confirmation dialog that
+expires after 55 seconds. Document and snapshot are checked again after approval;
+Chrome `documentIds` bind injections to the exact original document. MAIN-world
+JavaScript obeys page CSP and fails explicitly if evaluation is blocked. Promise
+timeouts stop waiting, **not execution**: asynchronous side effects may continue,
+and synchronous infinite JavaScript cannot be interrupted by this timeout. Do not
+retry timed-out mutations. Snapshots and tokens are ephemeral and lost on reload.
+
+Automation follow-up safety contract:
+- Snapshot target names exclude editable/hidden descendants and invisible ancestors.
+  Target name, link destination, input type and form destination are fingerprinted;
+  changed targets require a new snapshot. Confirmation displays the human target
+  name and destination, not just its token.
+- `executeBrowserCommand(tabId, command, confirm, {forbiddenOrigin, signal})`
+  rejects the forbidden origin inside isolated checks/injections and MAIN evaluation.
+  Form-only pages may return empty text while retaining actionable elements.
+- Trusted `{type:'kodrik-browser-cancel',channel,id}` aborts pending confirmation.
+  After approval the panel sends `{type:'kodrik-browser-check',channel,id}`;
+  the bridge must reply `{type:'kodrik-browser-check-result',channel,id,allowed:true}`
+  within two seconds. Missing/negative responses fail closed. The bridge must verify
+  that the backend request is still current before approving. This cannot make a
+  distributed backend check and browser execution atomic.
+- An extension-side 15-second watchdog bounds waiting for MAIN injection, including
+  synchronous page hangs. A timeout reports uncertain execution, invalidates the
+  snapshot and releases the executor; it does NOT cancel JavaScript. Execution
+  errors likewise require a fresh snapshot before another mutation.

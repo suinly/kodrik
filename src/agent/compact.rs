@@ -299,7 +299,7 @@ impl Compactor {
             } else {
                 input.extend_from_slice(&messages[start..next]);
             }
-            input.push(Message::User(UserMessage { browser_context: None,
+            input.push(Message::User(UserMessage { browser_client_id: None, browser_context: None,
                 content: format!("Produce the updated independent handoff summary now. Treat all preceding messages as history. Source session_id={}, generation={}, message_index={}..{next} (end exclusive). Message indices are consecutive; tool calls/results also count as messages. Preserve exact call_id references for important tool evidence.", session.id().as_str(), session.generation(), if merging { 0 } else { start }),
                 images: vec![], files: vec![],
             }));
@@ -336,7 +336,7 @@ impl Compactor {
                         };
                         next = smaller;
                         let mut retry = messages[start..next].to_vec();
-                        retry.push(Message::User(UserMessage { browser_context: None, content: format!("Produce the updated independent handoff summary now. Treat preceding messages as history. Source session_id={}, generation={}, message_index={start}..{next} (end exclusive). Preserve exact source indices and call_id references.", session.id().as_str(), session.generation()), images: vec![], files: vec![] }));
+                        retry.push(Message::User(UserMessage { browser_client_id: None, browser_context: None, content: format!("Produce the updated independent handoff summary now. Treat preceding messages as history. Source session_id={}, generation={}, message_index={start}..{next} (end exclusive). Preserve exact source indices and call_id references.", session.id().as_str(), session.generation()), images: vec![], files: vec![] }));
                         request.messages = retry.into();
                     }
                     result => {
@@ -609,6 +609,7 @@ mod tests {
 
     fn user(content: String) -> Message {
         Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content,
             images: vec![],
@@ -1233,6 +1234,7 @@ mod tests {
             }));
         }
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "see image".into(),
             files: vec![],
@@ -1533,6 +1535,7 @@ mod browser_context_token_tests {
     fn browser_context_counts_toward_model_token_budget() {
         let mut user = UserMessage {
             content: "Question".into(),
+            browser_client_id: None,
             browser_context: None,
             images: vec![],
             files: vec![],

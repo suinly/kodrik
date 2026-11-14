@@ -145,6 +145,7 @@ async fn batched_shells_wait_for_their_own_decision_and_execute_in_order() {
                 .run_durable(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         content: "work".into(),
                         files: vec![],
@@ -241,6 +242,7 @@ async fn malformed_batch_requires_separate_permission_for_every_command() {
                 .run_durable(
                     &mut session,
                     UserMessage {
+                        browser_client_id: None,
                         browser_context: None,
                         content: "work".into(),
                         files: vec![],
@@ -357,6 +359,7 @@ async fn isolated_child_agent_inherits_the_command_gate() {
             .run_durable(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "work".into(),
                     files: vec![],
@@ -502,6 +505,7 @@ async fn trusted_default_executes_without_auditor_or_approvals() {
         agent.run_durable(
             &mut session,
             UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "work".into(),
                 files: vec![],
@@ -628,6 +632,7 @@ async fn default_review_allows_safe_tool_calls_and_records_the_review() {
         agent.run_durable(
             &mut session,
             UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "create note".into(),
                 files: vec![],
@@ -966,6 +971,7 @@ async fn tool_approvals_block_patch_and_mcp_effects_until_exact_permission() {
                     .run_durable(
                         &mut session,
                         UserMessage {
+                            browser_client_id: None,
                             browser_context: None,
                             content: "work".into(),
                             files: vec![],
@@ -1477,6 +1483,7 @@ async fn disabling_command_audit_releases_pending_but_preserves_denial() {
             .run_durable(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "work".into(),
                     files: vec![],
@@ -2045,6 +2052,7 @@ async fn unsupported_approval_channels_return_blocked_tool_results_without_effec
             agent.run_durable(
                 &mut session,
                 UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "work".into(),
                     files: vec![],

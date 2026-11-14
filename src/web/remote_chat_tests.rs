@@ -65,6 +65,7 @@ async fn fixture() -> (tempfile::TempDir, Chat, WebState, SessionId) {
     let mut session = Session::new(id.clone());
     session.initialize_system_prompt("secret personality and provider snapshot");
     session.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "from telegram".into(),
         files: vec![],
@@ -623,6 +624,7 @@ async fn native_replies_and_edits_do_not_queue_web_completion_pushes() {
     admit_message(
         chat.clone(),
         Input {
+            browser_client_id: None,
             browser_context: None,
             id: id.as_str().into(),
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -996,6 +998,7 @@ async fn native_attachment_references_include_tool_images_without_inline_blobs()
         crate::agent::FileAttachment::save(dir.path(), "notes.txt", None, b"private file").unwrap();
     let mut session = chat.sessions.load(&id).await.unwrap().unwrap();
     session.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "attachments".into(),
         images: vec![image.clone()],
@@ -1085,6 +1088,7 @@ async fn native_history_bounds_preserve_tool_groups_and_durable_content() {
             content: format!("message {i}"),
         }));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: format!("user {i}"),
             files: vec![],
@@ -1201,6 +1205,7 @@ async fn historical_remote_origins_cover_older_pages_after_new_run() {
     let mut cp = Checkpoint::new(&chat.sessions, &id, &session);
     for index in 0..270 {
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: format!("turn {index}"),
             files: vec![],

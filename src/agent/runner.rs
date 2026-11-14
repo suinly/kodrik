@@ -453,6 +453,7 @@ impl AgentRunner {
                 let webhook_source = message.webhook;
 
                 let input = UserMessage {
+                    browser_client_id: message.browser_client_id,
                     browser_context: message.browser_context,
                     files: message.files,
                     content: message.text,
@@ -763,6 +764,7 @@ mod tests {
         let mut target = Session::new(SessionId::new("target"));
         for session in [&mut source, &mut target] {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "original history".into(),
                 files: vec![],
@@ -1230,6 +1232,7 @@ mod tests {
             let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
             session.initialize_system_prompt("test");
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "recover".into(),
                 files: vec![],
@@ -1334,6 +1337,7 @@ mod tests {
 
     fn user(content: &str) -> UserMessage {
         UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: content.into(),
@@ -1387,7 +1391,7 @@ mod tests {
             })])).unwrap();
             started.notified().await;
             let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png)).unwrap();
-            input_tx.send(UserMessage { browser_context: None, files: Vec::new(), content: "during tool".into(), images: vec![image.clone()] }).unwrap();
+            input_tx.send(UserMessage { browser_client_id: None, browser_context: None, files: Vec::new(), content: "during tool".into(), images: vec![image.clone()] }).unwrap();
             assert!(contexts.try_recv().is_err());
             while let Ok(event) = events.try_recv() {
                 assert!(!matches!(event, AgentEvent::InputConsumed));

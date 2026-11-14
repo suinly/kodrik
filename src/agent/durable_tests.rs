@@ -454,6 +454,7 @@ async fn durable_steering_saved_before_compaction_model_request() {
     let mut session = Session::new(SessionId::new("test:chat"));
     for _ in 0..10 {
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "history ".repeat(1500),
             images: vec![],
@@ -476,6 +477,7 @@ async fn durable_steering_saved_before_compaction_model_request() {
     let r = AgentRunner::new(Arc::new(agent), store);
     let (tx, mut rx) = mpsc::unbounded_channel();
     tx.send(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "steer".into(),
         images: vec![],

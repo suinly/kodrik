@@ -732,6 +732,7 @@ async fn fake_subagents_waits_for_running_child_not_first_completed_result() {
     use crate::agent::message::ToolResult;
     let messages = vec![
         Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "subagents".into(),
             images: vec![],
@@ -945,6 +946,7 @@ impl Fixture {
             if store.load(&id).await.unwrap().is_none() {
                 let mut session = crate::agent::session::Session::new(id);
                 session.push(Message::User(crate::agent::UserMessage {
+                    browser_client_id: None,
                     browser_context: None,
                     content: "История из Telegram".into(),
                     files: vec![],
@@ -1394,6 +1396,7 @@ async fn chat_conversation_pages_keep_pins_branches_and_old_history_search() {
         let mut session =
             crate::agent::session::Session::new(SessionId::new(format!("paged-{index:03}")));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: if index == 2 {
                 "Исторический маяк".into()
@@ -2912,6 +2915,7 @@ async fn chat_recovered_runs_share_four_worker_limit() {
         let id = uuid::Uuid::new_v4().to_string();
         let mut session = Session::new(SessionId::new(&id));
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "wait".into(),
             files: vec![],
@@ -3623,7 +3627,9 @@ async fn browser_context_endpoint_auth_session_and_client_validation() {
 
 #[tokio::test]
 async fn browser_context_endpoint_delivers_only_to_requested_panel_once() {
-    use crate::agent::tools::browser_context::{BrowserContextTool, CURRENT_SESSION};
+    use crate::agent::tools::browser_context::{
+        BrowserContextTool, CURRENT_BROWSER_CLIENT, CURRENT_SESSION,
+    };
     let f = Fixture::new().await;
     let id = f.create().await;
     let other = f.create().await;
@@ -3636,7 +3642,10 @@ async fn browser_context_endpoint_delivers_only_to_requested_panel_once() {
     let session = id.clone();
     let task = tokio::spawn(async move {
         CURRENT_SESSION
-            .scope(session, tool.execute(json!({})))
+            .scope(
+                session,
+                CURRENT_BROWSER_CLIENT.scope(Some(client_id.to_string()), tool.execute(json!({}))),
+            )
             .await
     });
     let request_id = tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -3701,4 +3710,133 @@ async fn browser_context_endpoint_delivers_only_to_requested_panel_once() {
             .status(),
         400
     );
+}
+
+#[tokio::test]
+async fn browser_command_endpoint_auth_session_and_client_validation() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let client = uuid::Uuid::new_v4();
+    let path = format!("browser-command?id={id}&client_id={client}");
+    assert_eq!(
+        f.client
+            .get(format!("{}api/chat/{path}", f.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let response = f.request(reqwest::Method::GET, &path).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.json::<Value>().await.unwrap(),
+        json!({"request_id":null,"command":null})
+    );
+    for (path, status) in [
+        (format!("browser-command?id={id}&client_id=invalid"), 400),
+        (
+            format!(
+                "browser-command?id={}&client_id={client}",
+                uuid::Uuid::new_v4()
+            ),
+            404,
+        ),
+    ] {
+        assert_eq!(
+            f.request(reqwest::Method::GET, &path)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
+    assert_eq!(
+        f.request(reqwest::Method::POST, "browser-command")
+            .json(&json!({"id":id,"client_id":client,"request_id":"missing","result":{}}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+}
+
+#[tokio::test]
+async fn browser_request_admission_rejects_unregistered_client() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .json(&json!({"id":id,"text":"hello","browser_client_id":uuid::Uuid::new_v4()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("sidebar not connected"), "{body}");
+}
+
+#[tokio::test]
+async fn browser_request_admission_persists_panel_only_for_browser_submission() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let client = uuid::Uuid::new_v4();
+    f.request(
+        reqwest::Method::GET,
+        &format!("browser-command?id={id}&client_id={client}"),
+    )
+    .send()
+    .await
+    .unwrap();
+    let request = uuid::Uuid::new_v4().to_string();
+    let payload = json!({"id":id,"request_id":request,"text":"hello","browser_client_id":client});
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let conversation = crate::agent::session::SessionId::new(&id);
+    let record = f
+        .sessions
+        .submission(conversation.as_str(), &request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record.request.message.browser_client_id,
+        Some(client.to_string())
+    );
+    // Retry cannot change an accepted request's provenance, including after panel replacement.
+    let mut retry = payload;
+    retry["browser_client_id"] = json!(uuid::Uuid::new_v4());
+    assert_eq!(
+        f.request(reqwest::Method::POST, "send")
+            .json(&retry)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let ordinary = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        f.request(reqwest::Method::POST, "send")
+            .json(&json!({"id":id,"request_id":ordinary,"text":"ordinary followup"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let record = f
+        .sessions
+        .submission(conversation.as_str(), &ordinary)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.request.message.browser_client_id, None);
 }

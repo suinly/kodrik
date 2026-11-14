@@ -583,6 +583,12 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
                     crate::agent::BrowserContext::MAX_BYTES + 16 * 1024,
                 )),
         )
+        .route(
+            "/api/chat/browser-command",
+            get(browser_context::poll_command)
+                .post(browser_context::complete_command)
+                .layer(DefaultBodyLimit::max(100_000 + 16 * 1024)),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     Router::new()
         .merge(api)
@@ -867,6 +873,8 @@ pub(super) struct Input {
     text: String,
     #[serde(default)]
     browser_context: Option<crate::agent::BrowserContext>,
+    #[serde(default)]
+    browser_client_id: Option<uuid::Uuid>,
 }
 
 fn new_request_id() -> String {
@@ -941,7 +949,7 @@ async fn admit_message(
         return Err(error(StatusCode::BAD_REQUEST, "Invalid request ID"));
     }
     let mut runs = chat.runs.lock().await;
-    chat.session(&input.id).await?;
+    let session = chat.session(&input.id).await?;
     let conversation = web_conversation(&input.id);
     if conversation.as_str() != input.id {
         chat.sessions
@@ -955,6 +963,17 @@ async fn admit_message(
         .await
         .map_err(internal)?;
     if existing.is_none() {
+        if let Some(client) = &input.browser_client_id {
+            crate::agent::tools::browser_context::BROKER
+                .validate_client(
+                    &(
+                        chat.sessions.directory().to_owned(),
+                        session.id().as_str().to_owned(),
+                    ),
+                    &client.to_string(),
+                )
+                .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
+        }
         if !runs.contains(&input.id) && runs.len() >= 4 {
             return Err(error(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -967,6 +986,10 @@ async fn admit_message(
         &input.id,
         &input.text,
     );
+    message.browser_client_id = existing
+        .as_ref()
+        .map(|r| r.request.message.browser_client_id.clone())
+        .unwrap_or_else(|| input.browser_client_id.map(|id| id.to_string()));
     message.browser_context = input.browser_context;
     message.request_id = input.request_id.clone();
     message.from_tui = from_tui;
@@ -1452,6 +1475,7 @@ mod tests {
         let mut source = Session::new(SessionId::new(&id));
         source.push(crate::agent::message::Message::User(
             crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "source question".into(),
                 images: vec![],

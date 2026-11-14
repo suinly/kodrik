@@ -609,6 +609,7 @@ impl GatewayRunner {
             if !durable && !message.is_group && message.guest_query_id.is_none() {
                 for message in pending.drain(..) {
                     input_tx.send(UserMessage {
+                        browser_client_id: message.browser_client_id,
                         browser_context: message.browser_context,
                         files: message.files,
                         content: message.text,
@@ -653,7 +654,7 @@ impl GatewayRunner {
                             if durable || message.is_group || message.guest_query_id.is_some() {
                                 pending.push_back(message);
                             } else {
-                                input_tx.send(UserMessage { browser_context: message.browser_context, files: message.files, content: message.text, images: message.images })?;
+                                input_tx.send(UserMessage { browser_client_id: message.browser_client_id, browser_context: message.browser_context, files: message.files, content: message.text, images: message.images })?;
                             }
                         }
                     }
@@ -670,6 +671,7 @@ impl GatewayRunner {
                     input.content,
                 );
                 message.images = input.images;
+                message.browser_client_id = input.browser_client_id;
                 message.browser_context = input.browser_context;
                 message.files = input.files;
                 pending.push_back(message);
@@ -2301,6 +2303,7 @@ mod tests {
             "Саша: да".into(),
         ] {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content,
                 images: vec![],

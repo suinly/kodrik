@@ -299,12 +299,14 @@ async fn durable_process_worker() {
     if scenario == "compaction" {
         let mut session = Session::new(conversation());
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "old ".repeat(1000),
             files: vec![],
             images: vec![],
         }));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "latest".into(),
             files: vec![],
@@ -702,6 +704,7 @@ async fn durable_storage_readonly_and_full_leave_confirmed_checkpoint() {
             .await
             .unwrap();
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "x".repeat(1_000_000),
             files: vec![],
@@ -748,6 +751,7 @@ async fn durable_process_ready_compaction_preserves_new_suffix() {
     let record = store.unfinished_runs().await.unwrap().remove(0);
     let (_, mut session) = store.load_run(&record.id).await.unwrap().unwrap();
     session.push(Message::User(UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "new suffix".into(),
         files: vec![],
@@ -818,6 +822,7 @@ async fn durable_checkpoint_benchmark() {
         let mut session = Session::new(conversation());
         for _ in 0..messages {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "x".repeat(512),
                 files: vec![],

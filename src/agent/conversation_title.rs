@@ -67,6 +67,7 @@ impl AgentRunner {
             _ => None,
         }).take(6).collect();
         let messages = [Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: serde_json::to_string(&transcript)?,
             files: vec![],
@@ -148,6 +149,7 @@ mod tests {
         let mut session = Session::new(SessionId::new("title-test"));
         for _ in 0..10 {
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "я".repeat(2000),
                 files: vec![],

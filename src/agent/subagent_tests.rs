@@ -76,6 +76,7 @@ async fn setup() -> (
         .initialize_session(&mut session)
         .unwrap();
     session.push(Message::User(crate::agent::UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "PRIVATE OLD CONVERSATION".into(),
         files: vec![],
@@ -245,6 +246,7 @@ async fn interrupted_children_are_not_replayed_and_accept_explicit_followups() {
     manager.store.save(&session).await.unwrap();
     let submission = manager.submit(&id, "original".into()).await.unwrap().id;
     session.push(Message::User(crate::agent::UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "original".into(),
         files: vec![],
@@ -628,6 +630,7 @@ async fn the_real_parent_loop_binds_tools_and_stops_children_on_completion() {
         agent.run(
             &mut session,
             crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "delegate".into(),
                 images: vec![],
@@ -804,6 +807,7 @@ async fn failed_metadata_does_not_hide_an_unfinished_durable_run() {
     manager.store.save(&session).await.unwrap();
     let submission = manager.submit(&id, "original".into()).await.unwrap();
     session.push(Message::User(crate::agent::UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "original".into(),
         images: vec![],

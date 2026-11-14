@@ -163,6 +163,7 @@ mod run_view_tests {
         use crate::agent::{AssistantMessage, UserMessage, session::SessionId};
         let mut session = Session::new(SessionId::new("timestamps"));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "question".into(),
             images: vec![],
@@ -180,6 +181,7 @@ mod run_view_tests {
         let mut branch = restored.fork_before(SessionId::new("branch"), 0).unwrap();
         assert!(branch.message_time(0).is_none());
         branch.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "edited".into(),
             images: vec![],
@@ -193,6 +195,7 @@ mod run_view_tests {
         saved.as_object_mut().unwrap().remove("message_times");
         let mut legacy: Session = serde_json::from_value(saved).unwrap();
         legacy.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "new question".into(),
             images: vec![],

@@ -74,6 +74,7 @@ fn listing_payload(session: &Session) -> anyhow::Result<String> {
         .into_iter()
         .map(|content| {
             Message::User(crate::agent::message::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content,
                 images: vec![],

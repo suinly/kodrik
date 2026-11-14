@@ -441,6 +441,7 @@ mod tests {
             cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
             assert!(store.run_view(&cp.record.id).await.unwrap().plan.is_some());
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "Next request".into(),
                 files: vec![],
@@ -507,6 +508,7 @@ mod tests {
             .unwrap();
         let mut session = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "Telegram question".into(),
             files: vec![],
@@ -606,6 +608,7 @@ mod tests {
             .unwrap();
         let mut session = Session::new(SessionId::new("cli:view"));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "question".into(),
             files: vec![],
@@ -898,6 +901,7 @@ mod tests {
         cp.save(&session, RunPhase::Completed, None).await.unwrap();
         let expected = session.messages().len();
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "next turn".into(),
             files: vec![],

@@ -2,12 +2,41 @@
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn browser_request_cannot_dispatch_to_another_panels_lease() {
+        let broker = Broker::default();
+        let key = (PathBuf::from("alice"), "pin".into());
+        broker.poll(&key, "panel");
+        assert!(broker.begin(key.clone()).is_err());
+        CURRENT_BROWSER_CLIENT
+            .scope(Some("other".into()), async {
+                assert!(broker.begin(key.clone()).is_err());
+                assert!(
+                    broker
+                        .begin_command(key.clone(), json!({"action":"snapshot"}))
+                        .is_err()
+                );
+            })
+            .await;
+        CURRENT_BROWSER_CLIENT
+            .scope(Some("panel".into()), async {
+                assert!(broker.begin(key.clone()).is_ok());
+            })
+            .await;
+    }
+
+    #[tokio::test]
     async fn browser_context_requires_one_live_panel_and_rejects_races() {
         let broker = Broker::default();
         let key = (PathBuf::from("alice"), "session".into());
-        assert!(broker.begin(key.clone()).is_err());
+        assert!(
+            CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("first".into()), || broker.begin(key.clone()))
+                .is_err()
+        );
         broker.poll(&key, "first");
-        let (_guard, rx) = broker.begin(key.clone()).unwrap();
+        let (_guard, rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("first".into()), || broker.begin(key.clone()))
+            .unwrap();
         let id = broker.poll(&key, "first").unwrap();
         assert!(
             broker
@@ -16,7 +45,11 @@ mod tests {
         );
         assert!(broker.poll(&key, "second").is_none());
         assert!(rx.await.unwrap().unwrap_err().contains("Multiple"));
-        assert!(broker.begin(key.clone()).is_err());
+        assert!(
+            CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("first".into()), || broker.begin(key.clone()))
+                .is_err()
+        );
         assert!(
             broker
                 .complete(&key, "first", &id, Err("late".into()))
@@ -28,10 +61,82 @@ mod tests {
                 *seen = std::time::Instant::now() - Duration::from_secs(6);
             }
         }
-        assert!(broker.begin(key.clone()).is_err());
+        assert!(
+            CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("first".into()), || broker.begin(key.clone()))
+                .is_err()
+        );
         broker.poll(&key, "second");
-        let (_guard, _rx) = broker.begin(key.clone()).unwrap();
+        let (_guard, _rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("second".into()), || broker.begin(key.clone()))
+            .unwrap();
         assert!(broker.poll(&key, "second").is_some());
+    }
+
+    #[tokio::test]
+    async fn browser_command_isolation_bounds_shared_leases_and_no_replay() {
+        let broker = Broker::default();
+        let key = (PathBuf::from("alice"), "session".into());
+        let other = (PathBuf::from("bob"), "session".into());
+        assert!(
+            broker
+                .begin_command(key.clone(), json!({"action":"snapshot"}))
+                .is_err()
+        );
+        broker.poll(&key, "panel");
+        let (_guard, rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("panel".into()), || {
+                broker.begin_command(
+                    key.clone(),
+                    json!({"action":"click","snapshot_id":"s","element_id":"e"}),
+                )
+            })
+            .unwrap();
+        assert!(
+            CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("panel".into()), || broker.begin(key.clone()))
+                .is_err()
+        );
+        let (id, command) = broker.poll_command(&key, "panel").unwrap();
+        assert_eq!(command["action"], "click");
+        assert_eq!(broker.poll_command(&key, "panel").unwrap().0, id);
+        assert!(
+            broker
+                .complete_command(&other, "panel", &id, Ok(json!({})))
+                .is_err()
+        );
+        assert!(
+            broker
+                .complete_command(&key, "foreign", &id, Ok(json!({})))
+                .is_err()
+        );
+        assert!(
+            broker
+                .complete_command(&key, "panel", "wrong", Ok(json!({})))
+                .is_err()
+        );
+        assert!(
+            broker
+                .complete_command(&key, "panel", &id, Ok(json!("x".repeat(100_000))))
+                .is_err()
+        );
+        broker
+            .complete_command(&key, "panel", &id, Ok(json!({"ok":true})))
+            .unwrap();
+        assert_eq!(rx.await.unwrap().unwrap(), json!({"ok":true}));
+        assert!(
+            broker
+                .complete_command(&key, "panel", &id, Ok(json!({})))
+                .is_err()
+        );
+        let (_guard, rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("panel".into()), || {
+                broker.begin_command(key.clone(), json!({"action":"snapshot"}))
+            })
+            .unwrap();
+        broker.poll(&key, "second");
+        assert!(rx.await.unwrap().is_err());
+        assert!(broker.poll_command(&key, "panel").is_none());
     }
 
     #[test]
@@ -45,7 +150,9 @@ mod tests {
         let broker = Broker::default();
         let key = (PathBuf::from("alice"), "session".into());
         broker.poll(&key, "panel");
-        let (_guard, _rx) = broker.begin(key.clone()).unwrap();
+        let (_guard, _rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("panel".into()), || broker.begin(key.clone()))
+            .unwrap();
         let id = broker.poll(&key, "panel").unwrap();
         let context = BrowserContext {
             url: "file:///etc/passwd".into(),
@@ -69,9 +176,15 @@ mod tests {
         let broker = Broker::default();
         let key = (std::path::PathBuf::from("alice"), "session".to_string());
         broker.poll(&key, "panel");
-        let (guard, rx) = broker.begin(key.clone()).unwrap();
+        let (guard, rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("panel".into()), || broker.begin(key.clone()))
+            .unwrap();
         let id = broker.poll(&key, "panel").unwrap();
-        assert!(broker.begin(key.clone()).is_err());
+        assert!(
+            CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("panel".into()), || broker.begin(key.clone()))
+                .is_err()
+        );
         let other = (std::path::PathBuf::from("bob"), "session".to_string());
         assert!(broker.poll(&other, "panel").is_none());
         assert!(
@@ -94,7 +207,9 @@ mod tests {
                 .is_err()
         );
         drop(guard);
-        let (guard, _rx) = broker.begin(key.clone()).unwrap();
+        let (guard, _rx) = CURRENT_BROWSER_CLIENT
+            .sync_scope(Some("panel".into()), || broker.begin(key.clone()))
+            .unwrap();
         drop(guard);
         assert!(broker.poll(&key, "panel").is_none());
     }
@@ -113,9 +228,17 @@ use tokio::sync::oneshot;
 
 type Key = (PathBuf, String);
 type Capture = Result<BrowserContext, String>;
+type CommandResult = Result<Value, String>;
+struct PendingCommand {
+    id: String,
+    client: String,
+    command: Value,
+    tx: oneshot::Sender<CommandResult>,
+}
 #[derive(Default)]
 struct State {
     pending: HashMap<Key, (String, String, oneshot::Sender<Capture>)>,
+    commands: HashMap<Key, PendingCommand>,
     clients: HashMap<Key, HashMap<String, std::time::Instant>>,
 }
 impl State {
@@ -141,8 +264,17 @@ pub(crate) struct Broker {
     state: Mutex<State>,
 }
 pub(crate) static BROKER: LazyLock<Arc<Broker>> = LazyLock::new(|| Arc::new(Broker::default()));
+pub(crate) const BROWSER_TOOLS: &[&str] = &[
+    "browser_context",
+    "browser_snapshot",
+    "browser_click",
+    "browser_fill",
+    "browser_scroll",
+    "browser_evaluate",
+];
 tokio::task_local! { pub(crate) static CURRENT_SESSION: String; }
-struct WaitGuard<'a> {
+tokio::task_local! { pub(crate) static CURRENT_BROWSER_CLIENT: Option<String>; }
+pub(super) struct WaitGuard<'a> {
     broker: &'a Broker,
     key: Key,
     id: String,
@@ -157,15 +289,41 @@ impl Drop for WaitGuard<'_> {
         {
             state.pending.remove(&self.key);
         }
+        if state
+            .commands
+            .get(&self.key)
+            .is_some_and(|p| p.id == self.id)
+        {
+            state.commands.remove(&self.key);
+        }
     }
 }
 impl Broker {
+    pub(crate) fn validate_client(&self, key: &Key, client: &str) -> anyhow::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state.prune();
+        anyhow::ensure!(
+            state.unique_client(key)? == client,
+            "Browser request belongs to another panel"
+        );
+        Ok(())
+    }
+    fn pinned_client(client: &str) -> anyhow::Result<()> {
+        let expected = CURRENT_BROWSER_CLIENT.try_with(Clone::clone).ok().flatten();
+        anyhow::ensure!(
+            expected.as_deref() == Some(client),
+            "Browser tools require the current request's Chrome client"
+        );
+        Ok(())
+    }
+
     fn begin(&self, key: Key) -> anyhow::Result<(WaitGuard<'_>, oneshot::Receiver<Capture>)> {
         let mut state = self.state.lock().unwrap();
         state.prune();
         let client = state.unique_client(&key)?;
+        Self::pinned_client(&client)?;
         anyhow::ensure!(
-            !state.pending.contains_key(&key),
+            !state.pending.contains_key(&key) && !state.commands.contains_key(&key),
             "Browser capture already pending for this session"
         );
         let id = uuid::Uuid::new_v4().to_string();
@@ -193,6 +351,9 @@ impl Broker {
             if let Some((_, _, tx)) = state.pending.remove(key) {
                 let _ = tx.send(Err(error.to_string()));
             }
+            if let Some(p) = state.commands.remove(key) {
+                let _ = p.tx.send(Err("Multiple Chrome panels connected".into()));
+            }
             return None;
         }
         state
@@ -200,6 +361,86 @@ impl Broker {
             .get(key)
             .filter(|(_, owner, _)| owner == client)
             .map(|(id, _, _)| id.clone())
+    }
+    pub(crate) fn poll_command(&self, key: &Key, client: &str) -> Option<(String, Value)> {
+        self.poll(key, client);
+        let state = self.state.lock().unwrap();
+        state
+            .commands
+            .get(key)
+            .filter(|p| p.client == client)
+            .map(|p| (p.id.clone(), p.command.clone()))
+    }
+    pub(super) fn begin_command(
+        &self,
+        key: Key,
+        command: Value,
+    ) -> anyhow::Result<(WaitGuard<'_>, oneshot::Receiver<CommandResult>)> {
+        let mut state = self.state.lock().unwrap();
+        state.prune();
+        let client = state.unique_client(&key)?;
+        Self::pinned_client(&client)?;
+        anyhow::ensure!(
+            !state.pending.contains_key(&key) && !state.commands.contains_key(&key),
+            "Browser request already pending"
+        );
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        state.commands.insert(
+            key.clone(),
+            PendingCommand {
+                id: id.clone(),
+                client,
+                command,
+                tx,
+            },
+        );
+        Ok((
+            WaitGuard {
+                broker: self,
+                key,
+                id,
+            },
+            rx,
+        ))
+    }
+    pub(crate) fn complete_command(
+        &self,
+        key: &Key,
+        client: &str,
+        id: &str,
+        result: CommandResult,
+    ) -> anyhow::Result<()> {
+        match &result {
+            Ok(value) => anyhow::ensure!(
+                serde_json::to_vec(value)?.len() <= 100_000,
+                "Browser result exceeds 100000 bytes"
+            ),
+            Err(error) => anyhow::ensure!(
+                !error.trim().is_empty() && error.len() <= 4096,
+                "Invalid browser error"
+            ),
+        }
+        let mut state = self.state.lock().unwrap();
+        state.prune();
+        anyhow::ensure!(
+            state.unique_client(key)? == client,
+            "Browser command belongs to another panel"
+        );
+        anyhow::ensure!(
+            state
+                .commands
+                .get(key)
+                .is_some_and(|p| p.id == id && p.client == client),
+            "No matching pending browser command"
+        );
+        state
+            .commands
+            .remove(key)
+            .unwrap()
+            .tx
+            .send(result)
+            .map_err(|_| anyhow::anyhow!("Browser command no longer pending"))
     }
     pub(crate) fn complete(
         &self,

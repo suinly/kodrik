@@ -242,6 +242,7 @@ async fn push_outbox_commits_only_completed_personal_answers_and_survives_reopen
     ] {
         let mut session = Session::new(SessionId::new(id));
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "question".into(),
             images: vec![],
@@ -347,6 +348,7 @@ async fn completion_push_follows_latest_durable_input_channel() {
                 .unwrap();
             cp.record.submission_ids.push(input.id);
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "question".into(),
                 images: vec![],

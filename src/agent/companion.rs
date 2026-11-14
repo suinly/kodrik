@@ -427,6 +427,7 @@ Facts and interests require direct user evidence, not speculation. Procedures re
         );
         let proposals = loop {
             let messages = [Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 files: Vec::new(),
                 content: serde_json::to_string(&json!({
@@ -898,6 +899,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut session = session();
         session.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: "image context".into(),
@@ -1033,6 +1035,7 @@ mod tests {
     fn session() -> Session {
         let mut s = Session::new(SessionId::new("source"));
         s.push(Message::User(UserMessage {
+            browser_client_id: None,
             browser_context: None,
             files: Vec::new(),
             content: "I prefer concise answers".into(),

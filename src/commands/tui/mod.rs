@@ -742,6 +742,7 @@ fn local_accepted_input_moves_from_queue_to_history_without_duplicates() {
         reconcile_waiting(&mut app, &[serde_json::json!({"text":"same question"})]);
         assert_eq!(app.waiting_messages, ["same question"]);
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: "same question".into(),
             images: vec![],
@@ -1098,6 +1099,7 @@ fn message_navigation_survives_reloaded_history_and_session_identity_changes() {
     let mut session = Session::new(SessionId::new("source"));
     for content in ["first", "second"] {
         session.push(Message::User(crate::agent::UserMessage {
+            browser_client_id: None,
             browser_context: None,
             content: content.into(),
             files: vec![],
@@ -1141,6 +1143,7 @@ fn message_navigation_survives_reloaded_history_and_session_identity_changes() {
     let other = session.fork_before(SessionId::new("other"), 1).unwrap();
     let mut same_messages = other;
     same_messages.push(Message::User(crate::agent::UserMessage {
+        browser_client_id: None,
         browser_context: None,
         content: "second".into(),
         files: vec![],
@@ -1794,6 +1797,7 @@ mod tests {
         let mut target = Session::new(SessionId::new("target"));
         for content in ["target history", "source request"] {
             target.push(Message::User(crate::agent::UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: content.into(),
                 images: vec![],
@@ -2070,6 +2074,7 @@ mod tests {
             restore_history(&mut app, &session);
             assert!(app.plan.is_some());
             session.push(Message::User(UserMessage {
+                browser_client_id: None,
                 browser_context: None,
                 content: "next request".into(),
                 images: Vec::new(),
