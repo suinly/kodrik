@@ -5,7 +5,8 @@ use crate::{
     interfaces::TelegramInterface,
 };
 
-pub async fn run(config: &Config) -> anyhow::Result<()> {
+/// Returns true only after a web-requested restart has drained gateway work.
+pub async fn run(config: &Config) -> anyhow::Result<bool> {
     let data = crate::config::data_dir()?;
     let auth = crate::web::auth::AuthStore::new(&data);
     auth.configure_owner(config.owner.as_ref().map(|owner| owner.user_id.get()))?;
@@ -22,7 +23,9 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         app.agent_runner
             .enable_environments(crate::web::auth::AuthStore::new(&data))?;
     }
+    let control = crate::web::gateway_control::GatewayControl::new();
     let users = std::sync::Arc::new(crate::users::UserSpaces::new(config, &data, app.clone()));
+    let mut web_chat = None;
     let web_server = match crate::web::Settings::from_config(&config.web)? {
         Some(settings) => {
             anyhow::ensure!(
@@ -42,14 +45,21 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
                 .with_push(settings.clone(), crate::web::auth::AuthStore::new(&data))
                 .await?;
             chat.recover_users().await?;
+            web_chat = Some(chat.clone());
             Some((
                 listener,
                 crate::web::server::router_with_resources(
-                    settings,
+                    settings.clone(),
                     &data,
                     Some(chat),
                     Some(app.datasets.clone()),
-                ),
+                )
+                .merge(crate::web::gateway_control::router(
+                    settings,
+                    crate::web::auth::AuthStore::new(&data),
+                    control.clone(),
+                    data.join("config.toml"),
+                )),
             ))
         }
         None => None,
@@ -111,12 +121,22 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         }
     };
     tokio::pin!(work);
-    tokio::select! {
-        result=&mut work=>result,
+    let outcome = tokio::select! {
+        result=&mut work=>{result.map(|_| false)},
+        _=control.wait()=>{
+            log::info!("Suspending gateway for web-requested restart");
+            app.agent_runner.suspend();
+            work.await.map(|_| true)
+        },
         reason=super::shutdown_signal()=>{
             log::info!("Suspending gateway after {reason}");
             app.agent_runner.suspend();
-            work.await
+            work.await.map(|_| false)
         }
+    };
+    app.agent_runner.suspend();
+    if let Some(chat) = web_chat {
+        chat.drain().await;
     }
+    outcome
 }

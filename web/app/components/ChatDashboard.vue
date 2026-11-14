@@ -43,12 +43,17 @@ useHead(()=>({
 const [DefineRail, ReuseRail] = createReusableTemplate()
 const desktop = useMediaQuery('(min-width: 1024px)')
 watch(desktop, value => { if(value) menu.value=false })
-type Section = 'chat'|'pages'|'webhooks'|'wakeups'|'profile'
+type Section = 'chat'|'pages'|'webhooks'|'wakeups'|'profile'|'settings'
 function readLocation():{section:Section;id:string|null} {
   const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
-  return {section:section==='pages' || section==='webhooks' || section==='wakeups' || section==='profile'?section:'chat',id:id?decodeURIComponent(id):null}
+  return {section:section==='pages' || section==='webhooks' || section==='wakeups' || section==='profile' || section==='settings'?section:'chat',id:id?decodeURIComponent(id):null}
 }
 const section = ref<Section>(readLocation().section)
+const owner=ref(false)
+const settingsDirty=ref(false)
+function canLeaveSettings() {
+  return section.value!=='settings' || !settingsDirty.value || window.confirm(t('Отбросить несохранённые изменения конфигурации?'))
+}
 const restoring = ref(false)
 const locationError = ref(false)
 let navigationRevision=0
@@ -82,8 +87,8 @@ function sectionLabel(id:string,label:string) {
   const count=sectionUnread(id)
   return count ? `${t(label)} · ${t('Непрочитанных: {0}',count)}` : t(label)
 }
-const sectionTitle = computed(()=>section.value==='wakeups'?t('Пробуждения'):section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
-const menuLabel = computed(()=>section.value==='wakeups'?t('Показать пробуждения'):section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
+const sectionTitle = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Пробуждения'):section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
+const menuLabel = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Показать пробуждения'):section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
 const pageCatalogRevision = ref(0)
@@ -91,7 +96,7 @@ const pageToDelete = ref<PublishedPage | null>(null)
 const deletingPage = ref(false)
 const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
-const mainTitle = computed(()=>section.value==='wakeups'?t('Пробуждения'):viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
+const mainTitle = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Пробуждения'):viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
@@ -190,6 +195,7 @@ function writeLocation() {
 }
 
 async function restoreLocation() {
+  if(!canLeaveSettings()) {writeLocation();return}
   const revision=++navigationRevision
   const target=readLocation()
   restoring.value=true;locationError.value=false;error.value='';menu.value=false;focusAfterMenu=false
@@ -303,6 +309,7 @@ function selectSidebar(conversation:Conversation) {
 }
 
 function select(conversation: Conversation, preserveView = false) {
+  if(!canLeaveSettings()) return
   if(!preserveView && selected.value?.id !== conversation.id) conversationKey.value++
   section.value = conversation.webhook ? 'webhooks' : 'chat'
   if(conversation.webhook) webhookTab.value='events'
@@ -371,6 +378,7 @@ function bindPageMenuSwipe(event:Event) {
 }
 
 function openPage(page: PublishedPage) {
+  if(!canLeaveSettings()) return
   section.value = 'pages'
   selectedPage.value = page
   pageRevision.value++
@@ -416,11 +424,12 @@ async function deletePage() {
 }
 
 function openSection(next:Section) {
+  if(next===section.value || !canLeaveSettings()) return
   if(next==='chat' && selected.value?.webhook) {selected.value=null;conversationKey.value++}
   section.value=next
   writeLocation()
   focusAfterMenu=false
-  if(next==='profile') menu.value=false
+  if(next==='profile' || next==='settings') menu.value=false
   else if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
 }
 
@@ -489,6 +498,7 @@ function removed() {
 }
 
 function newDraft() {
+  if(!canLeaveSettings()) return
   if(creating.value) return
   section.value='chat'
   selected.value=null
@@ -522,6 +532,7 @@ async function create(fromHome = false) {
 }
 
 onMounted(() => {
+  void checkedFetch(new URL('api/profile',base),{cache:'no-store'}).then(response=>response.json()).then(profile=>{owner.value=profile.owner===true}).catch(()=>{})
   window.addEventListener('popstate',restoreLocation)
   onBeforeUnmount(()=>window.removeEventListener('popstate',restoreLocation))
   void refreshActivity()
@@ -575,7 +586,7 @@ onMounted(() => {
           </template>
         </UButton>
       </nav>
-      <div class="mt-auto"><SidebarProfile :active="section==='profile'" :disabled="webhooks.saving" @settings="openSection('profile')" /></div>
+      <div class="mt-auto"><SidebarProfile :active="section==='profile' || section==='settings'" :owner="owner" :disabled="webhooks.saving" @settings="openSection('profile')" @gateway-settings="openSection('settings')" /></div>
   </DefineRail>
   <div aria-hidden="true" class="chat-screen-edge top-0 lg:hidden" :style="{backgroundColor}" />
   <div aria-hidden="true" class="chat-screen-edge bottom-0 lg:hidden" :style="{backgroundColor}" />
@@ -644,6 +655,10 @@ onMounted(() => {
       <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
+      <div v-else-if="section==='settings'" class="space-y-2 text-sm">
+        <h2 class="font-semibold text-highlighted">{{ t('Настройки') }}</h2>
+        <p class="leading-relaxed text-muted">{{ t('Полная конфигурация и перезапуск шлюза.') }}</p>
+      </div>
       <div v-else-if="section==='profile'" class="space-y-2 text-sm">
         <h2 class="font-semibold text-highlighted">{{ t('Профиль') }}</h2>
         <p class="leading-relaxed text-muted">{{ t('Настройки имени и безопасности аккаунта.') }}</p>
@@ -752,6 +767,9 @@ onMounted(() => {
           <UIcon name="i-lucide-history" class="size-8 text-dimmed" />
           <h2 class="font-semibold text-highlighted">{{ t('Выберите событие') }}</h2>
           <p class="max-w-sm text-sm text-muted">{{ t('Откройте событие из списка слева, чтобы посмотреть запрос и ответ агента.') }}</p>
+        </div>
+        <div v-if="section==='settings' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <LazySettingsPage :owner="owner" @dirty="settingsDirty=$event" />
         </div>
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />

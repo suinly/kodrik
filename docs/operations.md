@@ -212,3 +212,36 @@ A binary rollback requires a compatible coordinated backup. Never delete SQLite
 and restart an old JSON-only binary. Reconcile effects after the backup timestamp
 before restoring execution. See [Storage](storage.md#back-up-and-restore) and the
 [crash matrix](durable-recovery.md#crash-matrix) for the tested guarantees and limits.
+
+### Restart from the web settings
+
+The owner's web settings can restart a running gateway without launchd or a shell.
+The gateway exposes these authenticated endpoints under `web.base_url`'s path
+prefix (for example `/kodrik/api/gateway`):
+
+- `GET /api/gateway`: returns `{ "instance_id": "<UUID>", "pid": 123,
+  "restart_available": true }`. The UUID changes each time the gateway starts;
+  the PID does **not** change during a Unix exec restart. Availability is false
+  on non-Unix platforms and once a restart has been queued.
+- `POST /api/gateway/restart`: requires exactly one `Origin` matching the
+  configured public origin. It validates the saved `~/.kodrik/config.toml`
+  offline before returning `202 Accepted` with the current `instance_id`.
+  A queued restart cannot be queued again (`409 Conflict`); invalid or unreadable
+  saved configuration returns `422 Unprocessable Entity` without configuration
+  contents. Unsupported platforms return `503 Service Unavailable`.
+
+Both endpoints require an owner session (password owner or the configured
+Telegram owner), return `401` for absent/expired sessions and `403` for other
+users, and set `Cache-Control: no-store`. A missing or mismatched POST origin
+returns `403`. Web-only gateways without Telegram interfaces are supported.
+
+An accepted request queues an internal signal, not a subprocess or delayed kill.
+The gateway suspends its agent runners and drains HTTP requests cooperatively,
+including the restart confirmation response. Existing HTTP shutdown has a
+five-second bound for stalled clients. After gateway work returns, the main
+function drops the old Tokio runtime and uses Unix `exec` on the current
+executable with the original arguments. This works for standalone gateways as
+well as services; it neither rebuilds the executable nor changes service setup.
+If exec fails, the process reports the operating-system error and exits.
+The client should reconnect and compare `instance_id`, not PID, to confirm the
+new instance. Reconnecting to an old instance alone is not confirmation.

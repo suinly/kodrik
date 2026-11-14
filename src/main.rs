@@ -57,36 +57,60 @@ enum WebCommands {
     SetPassword,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let restart = runtime.block_on(run());
+    // Drop all async tasks and their sockets before replacing the process image.
+    drop(runtime);
+    if restart? {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let error = std::process::Command::new(std::env::current_exe()?)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            return Err(error.into());
+        }
+        #[cfg(not(unix))]
+        anyhow::bail!("Gateway restart is not supported on this platform");
+    }
+    Ok(())
+}
+
+async fn run() -> anyhow::Result<bool> {
     let cli = Cli::parse();
     if let Some(Commands::RemoteSupervisorWorker) = &cli.command {
-        return commands::remote_supervisor_worker();
+        return commands::remote_supervisor_worker().map(|_| false);
     }
     if let Some(Commands::UiViewWorker { input, output }) = &cli.command {
-        return commands::web::evaluate_views(input, output).await;
+        return commands::web::evaluate_views(input, output)
+            .await
+            .map(|_| false);
     }
     if cli.command.is_some() {
         env_logger::init();
     }
     if let Some(Commands::Invites(args)) = cli.command {
-        return commands::invites::run(args);
+        return commands::invites::run(args).map(|_| false);
     }
     if let Some(Commands::Web {
         command: WebCommands::SetPassword,
     }) = &cli.command
     {
-        return commands::web::set_password();
+        return commands::web::set_password().map(|_| false);
     }
     if let Some(Commands::Connect { remote_config }) = &cli.command {
-        return commands::connect::run(remote_config.as_deref()).await;
+        return commands::connect::run(remote_config.as_deref())
+            .await
+            .map(|_| false);
     }
     if cli.remote {
         return commands::connect::remote_tui(
             cli.remote_config.as_deref(),
             cli.remote_session.as_deref(),
         )
-        .await;
+        .await
+        .map(|_| false);
     }
     let config = Config::load()?;
 
@@ -97,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Invites(_)) => unreachable!("Invitations handled before provider config"),
         None => commands::tui::run(&config, cli.tui_slot).await?,
         Some(Commands::Ask { prompt }) => commands::ask::run(&config, prompt).await?,
-        Some(Commands::Gateway) => commands::gateway::run(&config).await?,
+        Some(Commands::Gateway) => return commands::gateway::run(&config).await,
         Some(Commands::RequestRestart { pid }) => commands::request_restart::run(pid)?,
         Some(Commands::Web { .. }) => {
             unreachable!("Web commands are handled before loading provider config")
@@ -107,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(test)]

@@ -66,6 +66,7 @@ pub(crate) struct Chat {
     runner: Arc<AgentRunner>,
     sessions: Arc<SqliteSessionStore>,
     runs: Arc<Mutex<HashSet<String>>>,
+    workers_done: Arc<tokio::sync::Notify>,
     title_jobs: Arc<Mutex<HashSet<String>>>,
     capacity: Arc<Semaphore>,
     streams: Arc<Semaphore>,
@@ -98,6 +99,7 @@ impl Chat {
             runner: Arc::new(owner.for_web(sessions.clone())),
             sessions,
             runs: Default::default(),
+            workers_done: Default::default(),
             title_jobs: Default::default(),
             capacity: Arc::new(Semaphore::new(4)),
             streams: Arc::new(Semaphore::new(4)),
@@ -133,6 +135,26 @@ impl Chat {
     pub(crate) fn with_datasets(mut self, datasets: crate::agent::datasets::DatasetStore) -> Self {
         self.datasets = Some(datasets);
         self
+    }
+
+    /// Called after HTTP admission has stopped; queued and running work must persist suspension.
+    pub(crate) async fn drain(&self) {
+        let mut chats = vec![self.clone()];
+        chats.extend(self.user_chats.lock().await.values().cloned());
+        for chat in &chats {
+            chat.runner.suspend();
+        }
+        for chat in chats {
+            loop {
+                let notified = chat.workers_done.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if chat.runs.lock().await.is_empty() {
+                    break;
+                }
+                notified.await;
+            }
+        }
     }
 
     pub(crate) async fn recover_users(&self) -> anyhow::Result<()> {
@@ -279,6 +301,7 @@ impl Chat {
                 }
             }
             runs.remove(session_id.as_str());
+            self.workers_done.notify_waiters();
             break;
         }
     }
@@ -575,6 +598,8 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route("/app/wakeups/{id}", get(index))
         .route("/app/profile", get(index))
         .route("/app/profile/", get(index))
+        .route("/app/settings", get(index))
+        .route("/app/settings/", get(index))
         .with_state(state)
 }
 
@@ -1254,6 +1279,86 @@ async fn events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn drain_waits_for_user_worker_clean_suspend_without_http_observer() {
+        use crate::agent::{
+            Agent, ContextBuilder, LlmContext, llm::LlmProvider, message::Message,
+            tools::ToolRegistry,
+        };
+        struct PendingLlm;
+        #[async_trait::async_trait]
+        impl LlmProvider for PendingLlm {
+            async fn generate(
+                &self,
+                _: &LlmContext<'_>,
+                _: &[&dyn crate::agent::tools::Tool],
+                _: Option<&mpsc::Sender<crate::agent::AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                std::future::pending().await
+            }
+        }
+        let data = tempfile::tempdir().unwrap();
+        let owner = super::super::chat_tests::chat(data.path()).await;
+        let sessions = SqliteSessionStore::open(data.path().join("user-sessions")).unwrap();
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(PendingLlm),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            Arc::new(sessions),
+        );
+        let user = Chat::new(&runner, data.path()).await.unwrap();
+        owner.user_chats.lock().await.insert(7, user.clone());
+        let id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        user.runner
+            .submit(crate::agent::inbox::SubmissionRequest::new(
+                &id,
+                crate::gateway::IncomingMessage::new(
+                    crate::gateway::InterfaceId("web".into()),
+                    id.as_str(),
+                    "pending",
+                ),
+                crate::agent::inbox::BusyMode::FollowUp,
+            ))
+            .await
+            .unwrap();
+        user.runs.lock().await.insert(id.as_str().into());
+        let worker = user.clone();
+        let worker_id = id.clone();
+        tokio::spawn(async move {
+            worker.work(worker_id, false).await;
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if user
+                    .sessions
+                    .unfinished_runs()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|run| run.attempt_active)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), owner.drain())
+            .await
+            .unwrap();
+        assert!(user.runs.lock().await.is_empty());
+        let runs = user.sessions.unfinished_runs().await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert!(
+            !runs[0].attempt_active,
+            "drain returned before clean_suspend persisted"
+        );
+        assert!(!runs[0].phase.terminal());
+    }
 
     #[tokio::test]
     async fn snapshot_rejects_private_sessions_before_projecting_history() {

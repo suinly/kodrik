@@ -155,6 +155,11 @@ pub(crate) fn router_with_resources(
         )
         .layer(DefaultBodyLimit::max(4096))
         .with_state(state.clone())
+        .merge(super::configuration::routes(
+            settings.clone(),
+            data,
+            state.auth.clone(),
+        ))
         .merge(super::remote::routes(
             settings.clone(),
             state.auth.clone(),

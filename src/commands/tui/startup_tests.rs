@@ -385,6 +385,9 @@ impl PrivateTerminal {
             ])
             .env("KODRIK_TUI_FIXTURE", directory)
             .env("KODRIK_TUI_CASE", case)
+            // Keep persisted language settings and locale independent of the host.
+            .env("HOME", directory)
+            .env("LC_ALL", "C")
             // Capture OSC 52 in this private PTY; never modify the real clipboard.
             .env("HERDR_ENV", "1")
             .env_remove("HERDR_BIN_PATH")

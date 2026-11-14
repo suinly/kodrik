@@ -319,3 +319,47 @@ system_prompt = "Your custom base instructions."
 
 This override applies only to CLI/TUI and the owner's private chat. Isolated chats use the default base prompt and their own personality and memory. The override still receives Kodrik's memory guidance and session context. Existing
 sessions retain their saved snapshots. Restart and use `/new` to load changes.
+
+## Editing the complete configuration through the web API
+
+The owner-only `GET /api/config` returns JSON with `config` (the complete literal
+TOML source, including comments and **all secrets**) and `revision` (the SHA-256
+hex digest of the file's actual UTF-8 bytes). Routes are relative to the configured
+web URL prefix. Authentication uses the existing web-session cookie and the
+current `AuthStore` owner profile; invited users cannot read or write this API.
+Responses, including errors, have `Cache-Control: no-store`. Clients should keep
+the entire editor masked until the owner explicitly reveals it; do not persist
+its contents in browser storage, analytics or logs.
+
+`PUT /api/config` accepts the same JSON shape, with the last read `revision` and
+the new `config` string. It additionally requires exactly one matching `Origin`
+header and limits the complete request body to 256 KiB. It returns the saved
+source and its new revision. A stale revision returns HTTP 409: fetch again and
+reconcile changes rather than overwriting another edit. Missing/expired sessions
+return 401, nonowners or invalid origins return 403, invalid configuration or
+request JSON returns 400, oversized bodies return 413, and file-access failures
+return 500. Errors never include source excerpts or submitted secrets; parser
+errors may include a line number.
+
+Saving validates the typed configuration and existing sessions, owner, web,
+research and companion rules, requires a primary provider and nonempty provider
+names/models/API keys, and checks provider/MCP URL and MCP header syntax locally.
+It does not contact providers, Telegram, search services or MCP servers, and it
+cannot verify credentials or reachability.
+
+Writes are serialized within the running process and compare the revision with
+the source read from disk immediately before saving. The previous complete source
+is atomically replaced into `config.toml.bak`, then the new source is atomically
+replaced into `config.toml`, using temporary files in the same directory. Both
+files are mode 0600 on Unix and are synced to disk. Keep the backup private: it
+contains the old secrets. Invalid requests and revision conflicts leave both
+files unchanged. A filesystem failure between the two replacements can update
+the backup without updating the main file; the main file is never truncated.
+An external editor is not covered by the in-process lock: avoid writing the file
+externally at the same instant as an API save.
+Saving a symlinked `config.toml` is rejected rather than silently replacing the
+link; edit its managed target on the host instead.
+
+Saving does not apply settings to the running gateway. Restart it to load the
+saved configuration; retain access to the host in case changed web, owner or
+provider settings prevent reconnecting.

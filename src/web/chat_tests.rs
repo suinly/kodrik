@@ -2648,7 +2648,11 @@ async fn chat_rejects_invalid_requests_before_running_agent() {
         (json!({"id":id,"text":""}), 400),
         (json!({"id":id,"text":" \n"}), 400),
         (json!({"id":id,"text":"a".repeat(32769)}), 400),
-        (json!({"id":id,"text":"a".repeat(70000)}), 413),
+        (json!({"id":id,"text":"a".repeat(70000)}), 400),
+        (
+            json!({"id":id,"text":"a".repeat(64 * 1024 + crate::agent::BrowserContext::MAX_BYTES)}),
+            413,
+        ),
         (json!({"id":"../private","text":"hello"}), 400),
         (json!({"id":id.to_uppercase(),"text":"hello"}), 400),
         (

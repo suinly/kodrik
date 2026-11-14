@@ -7,7 +7,9 @@ mod chat_stream;
 #[cfg(test)]
 mod chat_tests;
 mod chat_upload;
+pub(crate) mod configuration;
 pub(crate) mod documents;
+pub(crate) mod gateway_control;
 pub(crate) mod pages;
 pub(crate) mod push_store;
 #[cfg(test)]
