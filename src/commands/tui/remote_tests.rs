@@ -573,7 +573,7 @@ async fn terminal_remote_fixture() {
             }
             ChatCommand::Send { text, request_id } => {
                 assert!(
-                    !text.starts_with("/model"),
+                    !matches!(text.split_whitespace().next(), Some("/model" | "/models")),
                     "Model commands must not reach generation"
                 );
                 view.messages.push(json!({"id":"server-session:2","role":"assistant","parts":[{"type":"text","text":format!("remote echo: {text}")}]}));
@@ -1205,6 +1205,22 @@ fn remote_copy_uses_laptop_terminal_clipboard_without_server_command() {
     terminal.wait_for(b"Copy requested from terminal", 0);
     // Ctrl+C first clears the draft, just as in standalone TUI.
     terminal.send(b"\x03\x03");
+    terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_unknown_slash_commands_are_sent_as_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote");
+    terminal.wait_for(b"server answer", 0);
+    for text in ["/nonexistent hello", "/tmp/example.txt", "/models-extra"] {
+        terminal.send(format!("{text}\r").as_bytes());
+        terminal.wait_for(format!("remote echo: {text}").as_bytes(), 0);
+    }
+    terminal.send(b"/\x1b[27u\r");
+    terminal.wait_for(b"remote echo: /", 0);
+    terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }
 

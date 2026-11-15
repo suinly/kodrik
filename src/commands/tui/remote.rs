@@ -834,10 +834,30 @@ impl Remote {
                     )
                     .await?;
             }
-            input if input.starts_with('/') => anyhow::bail!(
-                "Unknown remote command or arguments: {}",
-                input.split_whitespace().next().unwrap_or("/")
-            ),
+            input
+                if matches!(
+                    input.split_whitespace().next(),
+                    Some(
+                        "/models"
+                            | "/model"
+                            | "/audit"
+                            | "/sessions"
+                            | "/new"
+                            | "/detach"
+                            | "/attach"
+                            | "/older"
+                            | "/retry"
+                            | "/approvals"
+                            | "/approve"
+                            | "/deny"
+                    )
+                ) =>
+            {
+                anyhow::bail!(
+                    "Unknown remote command or arguments: {}",
+                    input.split_whitespace().next().unwrap_or("/")
+                )
+            }
             _ => self.send(app, input).await?,
         }
         Ok(())
