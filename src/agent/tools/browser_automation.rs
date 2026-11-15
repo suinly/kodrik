@@ -34,9 +34,8 @@ impl Tool for BrowserAutomationTool {
             } else {
                 json!({"type":"string","minLength":1})
             };
-            if self.action != "scroll" {
-                required.push("element_id");
-            }
+            // Strict models require nullable fields too; null scrolls the page itself.
+            required.push("element_id");
         }
         if self.action == "fill" {
             properties["value"] = json!({"type":"string"});
@@ -98,6 +97,32 @@ impl Tool for BrowserAutomationTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_schemas_require_all_properties_for_strict_models() {
+        for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
+            let tool = BrowserAutomationTool {
+                directory: "unused".into(),
+                action,
+            };
+            assert!(tool.strict_schema());
+            let schema = tool.parameters();
+            let properties = schema["properties"].as_object().unwrap();
+            let required = schema["required"].as_array().unwrap();
+            for key in properties.keys() {
+                assert!(
+                    required.contains(&json!(key)),
+                    "{action}: {key} must be required in strict mode"
+                );
+            }
+            assert_eq!(properties.len(), required.len());
+            if action == "scroll" {
+                assert_eq!(
+                    schema["properties"]["element_id"]["type"],
+                    json!(["string", "null"])
+                );
+            }
+        }
+    }
     #[tokio::test]
     async fn browser_commands_validate_arguments_before_dispatch() {
         for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
@@ -123,7 +148,16 @@ mod tests {
         assert!(error.to_string().contains("personal agent session"));
         assert!(
             scroll
-                .execute(json!({"snapshot_id":"s","x":"0","y":40}))
+                .execute(json!({"snapshot_id":"s","x":0,"y":40}))
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Missing argument")
+        );
+        assert!(
+            scroll
+                .execute(json!({"snapshot_id":"s","element_id":null,"x":"0","y":40}))
                 .await
                 .err()
                 .unwrap()
