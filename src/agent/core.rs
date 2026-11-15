@@ -636,6 +636,12 @@ impl Agent {
                     .transpose()?;
                 let llm = selected_llm.as_deref().unwrap_or(self.llm.as_ref());
                 let mut context = self.context.build(session);
+                if browser_client_id.is_some() && !self.isolated() {
+                    context
+                        .instructions
+                        .to_mut()
+                        .push_str(super::tools::browser_context::BROWSER_GUIDANCE);
+                }
                 if let Some(cp) = checkpoint.as_ref() {
                     let evidence = cp.store.remote_reconciliation(session.id()).await?;
                     if !evidence.is_empty() {
@@ -1217,6 +1223,11 @@ mod tests {
                         "{name}"
                     );
                 }
+                assert_eq!(
+                    context.instructions.contains("## Connected browser tab"),
+                    current.browser_client_id.is_some(),
+                    "Browser guidance must follow current request availability, not history"
+                );
                 Ok((
                     vec![Message::Assistant(AssistantMessage {
                         content: "ok".into(),

@@ -247,7 +247,7 @@ impl AgentRunner {
                     .await?;
                 report.blocked.push((
                     id,
-                    "Laptop attempt paused; new explicit input required".into(),
+                    "Device attempt paused; new explicit input required".into(),
                 ));
                 continue;
             }

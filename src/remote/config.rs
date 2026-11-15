@@ -132,7 +132,7 @@ impl RemoteConfig {
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid server URL"))?;
         super::client::endpoint(&server)?;
-        let label = settings.label.unwrap_or_else(|| "Laptop".into());
+        let label = settings.label.unwrap_or_else(|| "Device".into());
         ensure!(
             !label.trim().is_empty()
                 && label.trim() == label

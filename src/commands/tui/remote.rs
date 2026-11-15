@@ -344,7 +344,7 @@ impl Remote {
             return Ok(());
         }
         self.snapshot = snapshot;
-        // Follow observation only: a handoff never grants or rebinds laptop access.
+        // Follow observation only: a handoff never grants or rebinds device access.
         for _ in 0..4 {
             let Some(id) = self
                 .snapshot
@@ -1651,7 +1651,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     }
     app.audit_session = Some(snapshot.session_id.clone());
     if run["phase"].get("EnvironmentPaused").is_some() {
-        app.push_kodrik_message(app.language.pick("Laptop disconnected. History is saved; send a new message to continue.","Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.").into());
+        app.push_kodrik_message(app.language.pick("Device disconnected. History is saved; send a new message to continue.","Связь с устройством потеряна. История сохранена; для продолжения отправьте новое сообщение.").into());
     }
     if let Some(reason) = run["blocked_reason"].as_str() {
         app.push_kodrik_message(reason.into());

@@ -1098,6 +1098,7 @@ async fn native_attachment_references_include_tool_images_without_inline_blobs()
         .unwrap()
         .iter()
         .flat_map(|row| row["parts"].as_array().unwrap())
+        .flat_map(|part| part["images"].as_array().into_iter().flatten())
         .filter(|part| {
             part["url"]
                 .as_str()
@@ -1355,7 +1356,8 @@ async fn historical_remote_origins_cover_older_pages_after_new_run() {
         .find(|row| row["parts"][0]["toolCallId"] == "image-0")
         .unwrap()["parts"];
     assert_eq!(first[0]["origin"], expected);
-    assert_eq!(first[1]["origin"], expected);
+    assert_eq!(first[0]["images"][0]["mediaType"], "image/png");
+    assert_eq!(first.as_array().unwrap().len(), 1);
     let page = chat.remote_snapshot(&id).await.unwrap();
     let older = chat
         .remote_history(&id, page.previous_cursor.as_deref().unwrap())

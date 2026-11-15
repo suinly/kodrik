@@ -418,6 +418,8 @@ async fn temporary_overlay_and_one_search_are_scoped_to_exact_session() {
         .unwrap()
         .expect("missing local scope");
     let overlay = scope.context_overlay();
+    assert!(overlay.contains("## Temporary device environment"));
+    assert!(!overlay.contains("Temporary laptop environment"));
     assert!(overlay.contains("/laptop/project/AGENTS.md"));
     assert!(overlay.contains("Run local-check"));
     assert!(overlay.contains("/laptop/skills/review/SKILL.md"));

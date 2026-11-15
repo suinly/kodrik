@@ -193,3 +193,20 @@ rerun for this documentation refresh; unresolved full-suite failures above remai
 - Live gateway was not restarted; real end-to-end vision-provider delivery in the
   user's running Chrome has not been exercised. Update server binary/assets and
   reload the unpacked extension to enable this feature.
+
+## Browser guidance and nested tool images
+
+- Current browser requests receive dynamic guidance: the extension tab may live on
+  another device; use browser_screenshot proactively for visual questions. Guidance
+  follows current request provenance, never old history or isolated agents.
+- Web tool images are nested in collapsed tool results, including errors, multiple
+  images and reloads. Ordinary user photos and native attachment references retain
+  their previous behavior. Image zoom/Escape/focus restoration tested in Chromium;
+  tool-details screenshot visually inspected.
+- Regression tests observed failing before fixes. Full cargo test passed: library
+  1384 passed / 12 ignored plus all other targets. Serial first attempt timed out;
+  subsequent normal full run completed.
+- Full web run:275/276 passed; sole failure was missing Close translation inherited
+  by extracted attachment viewer. Added translation; i18n6/6 and typecheck pass.
+  Full web suite not repeated after that one-key catalog fix.
+- No live model behavior evaluation, commit, deployment or gateway restart.

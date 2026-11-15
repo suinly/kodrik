@@ -15,10 +15,11 @@ export type Conversation = { id: string; root_id?:string; parent_id?:string|null
 export type PublishedPage = {slug: string; title: string; url: string; visibility: 'private' | 'public'; document: boolean};
 export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; model?:string|null; pendingFiles?: {id:string;files:File[]} };
 export type ToolOrigin = {label:string;project_root:string;environment:{connection_id:string;generation:string};tool_id:string};
+export type FilePart = { type: 'file'; filename: string; mediaType: string; url?: string; origin?:ToolOrigin };
 export type MessagePart =
   | { type: 'text'; text: string;format?:'code' }
-  | { type: 'file'; filename: string; mediaType: string; url?: string; origin?:ToolOrigin }
-  | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string; origin?:ToolOrigin; attachment_saved?:boolean };
+  | FilePart
+  | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string; images?:FilePart[]; origin?:ToolOrigin; attachment_saved?:boolean };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; browser_context?:BrowserContext|null; created_at?:string|null; versions?:string[]; version?:number };
 export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;cancel_requested?:boolean};
 export type CommandAuditMode = 'trusted'|'review'|'ask';

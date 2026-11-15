@@ -2,7 +2,34 @@ use crate::agent::{message::Message, session::Session};
 use serde_json::{Value, json};
 
 pub(super) fn history(session: &Session) -> Vec<Value> {
-    history_range(session, 0, session.messages().len())
+    let mut messages = history_range(session, 0, session.messages().len());
+    for message in &mut messages {
+        let parts = message["parts"].as_array_mut().unwrap();
+        // Native history keeps flat attachment references; web snapshots nest tool images.
+        let mut images = Vec::new();
+        parts.retain(|part| {
+            let tool_image = part["type"] == "file"
+                && part["mediaType"]
+                    .as_str()
+                    .is_some_and(|mime| mime.starts_with("image/"))
+                && part["toolCallId"].is_string();
+            if tool_image {
+                images.push(part.clone());
+            }
+            !tool_image
+        });
+        for image in images {
+            if let Some(tool) = parts.iter_mut().find(|part| {
+                part["type"] == "dynamic-tool" && part["toolCallId"] == image["toolCallId"]
+            }) {
+                if !tool["images"].is_array() {
+                    tool["images"] = json!([]);
+                }
+                tool["images"].as_array_mut().unwrap().push(image);
+            }
+        }
+    }
+    messages
 }
 
 pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<Value> {
@@ -136,6 +163,74 @@ impl SnapshotProjection {
 #[cfg(test)]
 mod run_view_tests {
     use super::*;
+    #[test]
+    fn tool_images_stay_inside_web_tool_results_after_reload() {
+        use crate::agent::{
+            Image,
+            message::{ToolCall, ToolOutput, ToolResult},
+            session::SessionId,
+        };
+        let mut session = Session::new(SessionId::new("pictures"));
+        for (id, name, output) in [
+            ("shot", "browser_screenshot", json!({"ok":true})),
+            ("view", "view_image", json!({"error":"partial result"})),
+        ] {
+            session.push(Message::ToolCall(ToolCall {
+                call_id: id.into(),
+                name: name.into(),
+                arguments: json!({}),
+            }));
+            session.push(Message::ToolResult(ToolResult {
+                call_id: id.into(),
+                content: ToolOutput {
+                    output,
+                    images: vec![
+                        Image {
+                            data_url: "data:image/png;base64,aW1hZ2U=".into(),
+                            width: 1,
+                            height: 1
+                        };
+                        2
+                    ],
+                },
+            }));
+        }
+        let restored: Session =
+            serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+        for session in [&session, &restored] {
+            let shown = history(session);
+            let parts = shown[0]["parts"].as_array().unwrap();
+            assert_eq!(
+                parts.len(),
+                2,
+                "tool images must not become standalone chat parts"
+            );
+            for (part, result_index) in parts.iter().zip([1, 3]) {
+                let images = part["images"]
+                    .as_array()
+                    .expect("images belong to their tool result");
+                assert_eq!(images.len(), 2);
+                assert_eq!(images[0]["type"], "file");
+                assert_eq!(images[0]["mediaType"], "image/png");
+                assert_eq!(
+                    images[1]["url"],
+                    format!(
+                        "../api/chat/sessions/pictures/attachments/{result_index}/tool_images/1"
+                    )
+                );
+            }
+            assert_eq!(parts[1]["state"], "output-error");
+        }
+        assert_eq!(
+            history_range(&session, 0, 4)[0]["parts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6,
+            "native history retains flat attachment references"
+        );
+    }
+
     #[test]
     fn child_outcomes_are_preserved_and_null_errors_do_not_fail_tools() {
         use crate::agent::{

@@ -37,6 +37,7 @@ async function collapseSteps() {
           <p class="text-muted"> {{ t("Результат") }} </p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-all">{{ JSON.stringify(tool.output,null,2) }}</pre>
         </template>
+        <ChatAttachment v-for="(image,index) in tool.images" :key="index" :file="image" />
         <p v-if="tool.state==='output-error'" role="alert" class="text-sm whitespace-pre-wrap break-words">{{ tool.errorText }}</p>
       </div>
     </UChatTool>

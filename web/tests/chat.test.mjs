@@ -5095,3 +5095,43 @@ test('browser context stays out of message history', {timeout:60000},async()=>{
     await expect(page.getByRole('link',{name:'browser-tab.txt',exact:true})).toHaveCount(0);
   } finally {await browser.close()}
 });
+
+
+test('tool result images stay collapsed with their output and reuse the attachment viewer',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    const image={type:'file',filename:'Tool image 1',mediaType:'image/png',url:new URL('tool-image.png',base).href};
+    const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+      {id:`${id}:0`,role:'user',parts:[{...image,filename:'User photo'}]},
+      {id:`${id}:1`,role:'assistant',parts:[{type:'dynamic-tool',toolCallId:'shot',toolName:'browser_screenshot',state:'output-available',input:{},output:{ok:true},images:[image]}]},
+    ]};
+    await page.route('**/tool-image.png',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" fill="#89b4fa"/><text x="18" y="65" font-size="20">Tool screenshot</text></svg>'}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    for(let load=0;load<2;load++) {
+      if(load) await page.reload();
+      await expect(page.getByRole('button',{name:'User photo',exact:true})).toBeVisible();
+      const thumbnail=page.getByRole('button',{name:'Tool image 1',exact:true});
+      await expect(thumbnail).toHaveCount(0);
+      await page.getByRole('button',{name:'Выполнено шагов: 1',exact:true}).click();
+      await expect(thumbnail).toHaveCount(0);
+      await page.getByRole('button',{name:'browser_screenshot',exact:true}).click();
+      await expect(thumbnail).toBeVisible();
+      await expect(page.locator('.message img[alt="Tool image 1"]')).toHaveCount(1);
+      await expect(thumbnail.getByRole('img')).toHaveJSProperty('naturalWidth',240);
+      if(!load) await page.screenshot({path:'/tmp/kodrik-tool-images-details.png',animations:'disabled'});
+      await thumbnail.click();
+      const viewer=page.getByRole('dialog',{name:'Tool image 1',exact:true});
+      await expect(viewer).toBeVisible();
+      await expect(viewer.getByRole('img')).toHaveJSProperty('naturalWidth',240);
+      await page.keyboard.press('Escape');
+      await expect(viewer).toHaveCount(0);
+      await expect(thumbnail).toBeFocused();
+      await page.getByRole('button',{name:'Свернуть шаги',exact:true}).click();
+      await expect(thumbnail).toHaveCount(0);
+    }
+  } finally {await browser.close();}
+});

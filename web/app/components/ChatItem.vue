@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {t} from '../utils/i18n'
-import {linkTarget} from '../utils/link-target'
-import {attachmentUrl, type ChatMessage, type EnvironmentStatus} from '../utils/api'
+import {type ChatMessage, type EnvironmentStatus} from '../utils/api'
 import {groupMessageParts,formatMessageTime,handoffNotice} from '../utils/chat-presentation'
 const props=defineProps<{ message: ChatMessage; environment?:EnvironmentStatus|null; actions?:boolean;superseded?:Set<string>;status?:string;editable?:boolean;saving?:boolean;searchSelected?:boolean }>()
 const emit=defineEmits<{prompt:[text:string];edit:[text:string];version:[id:string]}>()
@@ -47,21 +46,7 @@ function beginEdit() {
         <template v-for="(block,index) in blocks" :key="index">
           <template v-if="block.kind==='content'">
             <ChatMessageText v-if="block.part.type==='text' && block.part.text && !editing" :text="block.part.text" :code="block.part.format==='code'" />
-            <div v-else-if="block.part.type==='file'" class="flex flex-col items-start gap-2">
-              <UModal v-if="block.part.url && block.part.mediaType.startsWith('image/')" :title="block.part.filename" :ui="{content:'w-[calc(100vw-2rem)] max-w-6xl',body:'flex min-h-0 items-center justify-center'}">
-                <button type="button" :aria-label="block.part.filename" class="max-w-full cursor-zoom-in rounded-lg focus-visible:outline-2 focus-visible:outline-primary">
-                  <img :src="attachmentUrl(block.part.url)" :alt="block.part.filename" loading="lazy" class="max-h-72 max-w-full rounded-lg object-contain">
-                </button>
-                <template #close="{ui}"><UButton :aria-label="t('Закрыть')" :class="ui.close()" icon="i-lucide-x" color="neutral" variant="ghost" /></template>
-                <template #body>
-                  <img :src="attachmentUrl(block.part.url)" :alt="block.part.filename" class="max-h-[calc(100dvh-12rem)] max-w-full object-contain">
-                </template>
-              </UModal>
-              <UButton v-else :to="attachmentUrl(block.part.url)" :target="linkTarget(attachmentUrl(block.part.url))" :disabled="!block.part.url" external download color="neutral" variant="outline"
-                :icon="block.part.mediaType.startsWith('image/') ? 'i-lucide-image' : 'i-lucide-file'"
-                :label="block.part.filename" class="max-w-full" :ui="{label:'truncate'}" />
-              <p v-if="block.part.origin" class="text-xs text-muted whitespace-pre-wrap break-all">{{ block.part.origin.label }} · {{ block.part.origin.project_root }} · {{ block.part.origin.environment.generation }}</p>
-            </div>
+            <ChatAttachment v-else-if="block.part.type==='file'" :file="block.part" />
           </template>
           <template v-else>
             <ChatToolSteps :tools="block.tools" :environment="environment" />

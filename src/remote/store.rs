@@ -350,7 +350,7 @@ impl SqliteSessionStore {
         let revision = run.revision;
         run.revision += 1;
         run.phase = crate::agent::run_state::RunPhase::EnvironmentPaused {
-            reason: "Laptop environment unavailable; explicit new input required".into(),
+            reason: "Device environment unavailable; explicit new input required".into(),
         };
         run.attempt_active = false;
         self.commit_owned_step(revision, session, &run, None, None)

@@ -261,7 +261,7 @@ impl CommandApproval {
             .unwrap_or_else(|| json!({"cmd":self.cmd,"workdir":self.workdir}).to_string());
         match &self.target {
             Some(target) => format!(
-                "Laptop {} · {:?} · {} · {} / {}\n{arguments}",
+                "Device {} · {:?} · {} · {} / {}\n{arguments}",
                 target.label,
                 target.tool_kind,
                 target.project_root,
