@@ -165,6 +165,24 @@ impl EnvironmentScope {
         let mut call = call.clone();
         self.normalize(&mut call)?;
         let descriptor = &self.descriptors[&call.name];
+        let now = chrono::Utc::now();
+        let deadline = if descriptor.id == "exec_command" {
+            let timeout = match call.arguments.get("timeout_ms") {
+                None | Some(serde_json::Value::Null) => 30_000,
+                Some(value) => value.as_u64().context("Invalid timeout_ms")?,
+            };
+            ensure!(timeout > 0, "timeout_ms must be positive");
+            // Leave time for dispatch, process-group cleanup and the final receipt.
+            let budget = timeout
+                .checked_add(30_000)
+                .and_then(|ms| i64::try_from(ms).ok())
+                .and_then(chrono::Duration::try_milliseconds)
+                .context("timeout_ms is too large")?;
+            now.checked_add_signed(budget)
+                .context("timeout_ms is too large")?
+        } else {
+            now + chrono::Duration::minutes(5)
+        };
         let run_id = crate::agent::run_state::CURRENT_TOOL
             .try_with(Clone::clone)
             .ok()
@@ -178,7 +196,7 @@ impl EnvironmentScope {
             call_id: call.call_id,
             tool_id: descriptor.id.clone(),
             arguments: call.arguments,
-            deadline: chrono::Utc::now() + chrono::Duration::minutes(5),
+            deadline,
         })
     }
 }

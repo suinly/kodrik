@@ -298,6 +298,47 @@ async fn fixture() -> (
 }
 
 #[tokio::test]
+async fn shell_deadline_allows_requested_timeout_and_cleanup() {
+    let (_dir, service, session, _) = fixture().await;
+    let scope = service.step_scope(&session).await.unwrap().unwrap();
+    let tools = scope.tools(&ToolRegistry::default()).unwrap();
+    let name = tools
+        .list()
+        .iter()
+        .find(|tool| tool.name().starts_with("local__exec__"))
+        .unwrap()
+        .name();
+    for (arguments, seconds) in [
+        (json!({"cmd":"true","timeout_ms":600_000}), 630),
+        (json!({"cmd":"true","timeout_ms":null}), 60),
+        (json!({"cmd":"true"}), 60),
+    ] {
+        let before = chrono::Utc::now();
+        let call = scope
+            .validate_call(&ToolCall {
+                call_id: "deadline".into(),
+                name: name.clone(),
+                arguments,
+            })
+            .unwrap();
+        let after = chrono::Utc::now();
+        assert!(call.deadline >= before + chrono::Duration::seconds(seconds));
+        assert!(call.deadline <= after + chrono::Duration::seconds(seconds));
+    }
+    for timeout in [json!(0), json!(-1), json!("600000"), json!(u64::MAX)] {
+        assert!(
+            scope
+                .validate_call(&ToolCall {
+                    call_id: "invalid".into(),
+                    name: name.clone(),
+                    arguments: json!({"cmd":"true","timeout_ms":timeout}),
+                })
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn local_scope_preserves_server_names_and_normalizes_only_to_laptop_root() {
     let (_dir, service, session, key) = fixture().await;
     let scope = service
