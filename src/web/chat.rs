@@ -622,7 +622,9 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
             "/api/chat/browser-command",
             get(browser_context::poll_command)
                 .post(browser_context::complete_command)
-                .layer(DefaultBodyLimit::max(100_000 + 16 * 1024)),
+                .layer(DefaultBodyLimit::max(
+                    crate::agent::tools::browser_context::SCREENSHOT_TRANSPORT_LIMIT,
+                )),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize));
     Router::new()

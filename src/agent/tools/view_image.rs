@@ -30,7 +30,7 @@ impl Tool for ViewImageTool {
     }
 
     fn description(&self) -> String {
-        "View a local PNG, JPEG or WebP image, including screenshots saved by other tools. Sends the image to the model at its original dimensions, with path, width and height metadata. Maximum 10 MiB and 32 million pixels. Requires a vision-capable model. Use this to see images; reading a filename or base64 through exec_command does not display them.".into()
+        "View a local PNG, JPEG or WebP image, including screenshots saved by other tools. Sends the image to the model at its original dimensions, with path, width and height metadata. Maximum 20 MiB and 32 million pixels. Requires a vision-capable model. Use this to see images; reading a filename or base64 through exec_command does not display them.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -46,7 +46,7 @@ impl Tool for ViewImageTool {
                 .open(&args.path).context("Cannot open image")?;
             let metadata = file.metadata()?;
             ensure!(metadata.is_file(), "Image path must be a regular file");
-            ensure!(metadata.len() <= MAX_IMAGE_BYTES as u64, "Image exceeds 10 MiB");
+            ensure!(metadata.len() <= MAX_IMAGE_BYTES as u64, "Image exceeds 20 MiB");
             let mut bytes = Vec::new();
             file.take(MAX_IMAGE_BYTES as u64 + 1).read_to_end(&mut bytes)?;
             let image = Image::from_bytes(&bytes)?;

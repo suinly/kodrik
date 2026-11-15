@@ -64,16 +64,16 @@ test('selection cannot bypass editable and hidden content filtering',async()=>{
   } finally {await browser.close();}
 });
 
-test('capture bounds ordinary page output and selection to 100000 characters',async()=>{
+test('capture bounds ordinary page output and selection to 1048576 characters',async()=>{
   const browser=await chromium.launch({headless:true});
   try {
     const page=await browser.newPage();
-    await page.setContent(`<main><p>${'x'.repeat(100100)}</p></main>`);
+    await page.setContent(`<main><p>${'x'.repeat(1049000)}</p></main>`);
     let capture=await page.evaluate(extractPage);
-    assert.equal(capture.truncated,true);assert.ok(capture.text.length<=100000);
+    assert.equal(capture.truncated,true);assert.ok(capture.text.length<=1048576);
     await page.locator('p').evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);getSelection().removeAllRanges();getSelection().addRange(range)});
     capture=await page.evaluate(extractPage);
-    assert.equal(capture.truncated,true);assert.equal(capture.text.length,100000);
+    assert.equal(capture.truncated,true);assert.equal(capture.text.length,1048576);
   } finally {await browser.close();}
 });
 

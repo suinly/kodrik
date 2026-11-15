@@ -101,6 +101,7 @@ impl Agent {
             "switch_session",
             "browser_context",
             "browser_snapshot",
+            "browser_screenshot",
             "browser_click",
             "browser_fill",
             "browser_scroll",
@@ -1230,7 +1231,14 @@ mod tests {
                 directory: directory.clone(),
             },
         ));
-        for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
+        for action in [
+            "snapshot",
+            "screenshot",
+            "click",
+            "fill",
+            "scroll",
+            "evaluate",
+        ] {
             registry = registry.register(Arc::new(
                 super::super::tools::browser_automation::BrowserAutomationTool {
                     directory: directory.clone(),

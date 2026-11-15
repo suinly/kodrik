@@ -21,13 +21,13 @@ export function pageContext(page) {
   const context={url:url.href,title:String(page.title).slice(0,1024),text:'',source:page.selection?'selection':'page',captured_at:new Date().toISOString(),truncated:!!page.truncated};
   const text=String(page.text);
   context.text=text;
-  if(new TextEncoder().encode(JSON.stringify(context)).length>100000) {
+  if(new TextEncoder().encode(JSON.stringify(context)).length>1048576) {
     context.truncated=true;
     let low=0,high=text.length;
     while(low<high) {
       const mid=Math.ceil((low+high)/2);
       context.text=text.slice(0,mid);
-      if(new TextEncoder().encode(JSON.stringify(context)).length<=100000) low=mid;else high=mid-1;
+      if(new TextEncoder().encode(JSON.stringify(context)).length<=1048576) low=mid;else high=mid-1;
     }
     // Never leave half a UTF-16 surrogate pair at the truncation boundary.
     if(low && /[\uD800-\uDBFF]/.test(text[low-1])) low--;
@@ -56,7 +56,7 @@ export function extractPage(options = {}) {
         element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}));
   };
   const render = (node, pre = false) => {
-    if (length > 100000) { truncated = true; return ''; }
+    if (length > 1048576) { truncated = true; return ''; }
     if (node.nodeType === Node.TEXT_NODE) {
       let text = node.textContent;
       if (selection) {
@@ -114,8 +114,8 @@ export function extractPage(options = {}) {
   };
   // Walk the live composed tree: cloning loses visibility, selection and open shadow roots.
   const source = render(selection ? document.body : root).replace(/\n[ \t]+\n/g,'\n\n').replace(/\n{3,}/g,'\n\n').trim();
-  let text = source.slice(0,100000);
+  let text = source.slice(0,1048576);
   if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0,-1);
   if (!text.trim() && !options.allowEmpty) throw new Error('Текст недоступен. Выберите вкладку с доступным текстом.');
-  return {url:location.href,title:document.title,text,selection:!!selection,truncated:truncated || source.length > 100000};
+  return {url:location.href,title:document.title,text,selection:!!selection,truncated:truncated || source.length > 1048576};
 }

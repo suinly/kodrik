@@ -80,7 +80,13 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
             ));
         }
         let limit = if is_file {
-            MAX_FILE_BYTES
+            let kind = file_type(filename.as_deref().unwrap(), mime.as_deref())
+                .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
+            if kind.starts_with("image/") {
+                crate::agent::image::MAX_IMAGE_BYTES
+            } else {
+                MAX_FILE_BYTES
+            }
         } else if name == "browser_context" {
             crate::agent::BrowserContext::MAX_BYTES
         } else {
@@ -193,7 +199,7 @@ pub(super) fn image_uploads(images: Vec<Image>) -> anyhow::Result<Vec<Upload>> {
                 .ok_or_else(|| anyhow::anyhow!("Invalid image data URL"))?;
             anyhow::ensure!(
                 encoded.len() <= crate::agent::image::MAX_IMAGE_BYTES.div_ceil(3) * 4,
-                "Image exceeds 10 MiB"
+                "Image exceeds 20 MiB"
             );
             let (extension, mime) = match prefix {
                 "data:image/png;base64" => ("png", "image/png"),

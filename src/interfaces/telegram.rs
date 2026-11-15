@@ -572,7 +572,7 @@ impl TelegramInterface {
             anyhow::ensure!(document.file.size != 0, "File is empty");
             anyhow::ensure!(
                 document.file.size == u32::MAX || document.file.size as usize <= limit,
-                "Attachment exceeds {} bytes (images: 10 MiB; documents: 20 MB)",
+                "Attachment exceeds {} bytes (images: 20 MiB; documents: 20 MB)",
                 limit
             );
             let bytes = tokio::time::timeout(

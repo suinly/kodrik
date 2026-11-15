@@ -6,7 +6,7 @@ function validContext(value:unknown):value is BrowserContext {
   if(typeof c.url!=='string' || c.url.length>4096 || typeof c.title!=='string' || c.title.length>1024 || typeof c.text!=='string' || !['page','selection'].includes(c.source) || typeof c.truncated!=='boolean' || typeof c.captured_at!=='string' || !Number.isFinite(Date.parse(c.captured_at))) return false
   try {
     const url=new URL(c.url)
-    return ['http:','https:'].includes(url.protocol) && !url.username && !url.password && new TextEncoder().encode(JSON.stringify(c)).length<=100000
+    return ['http:','https:'].includes(url.protocol) && !url.username && !url.password && new TextEncoder().encode(JSON.stringify(c)).length<=1048576
   } catch {return false}
 }
 // Only the trusted extension parent can provide page data or execute browser commands.
@@ -15,7 +15,7 @@ export function createTabBridge(win:Window, timeout=90000) {
   let state={enabled:true,title:'Текущая вкладка',url:''}
   const subscribers=new Set<(state:{enabled:boolean;title:string;url:string})=>void>()
   const pending=new Map<string,{resolve:(context:BrowserCapture|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
-  const commands=new Map<string,{verify?:()=>Promise<boolean>;resolve:(result:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
+  const commands=new Map<string,{screenshot:boolean;verify?:()=>Promise<boolean>;resolve:(result:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   const framed=win.parent!==win && new URLSearchParams(win.location.search).get('browser_sidebar')==='1'
   function receive(event:MessageEvent) {
     if(!framed || event.source!==win.parent || event.origin!=='chrome-extension://iiajbdommloibgimhfmoojnhknbaklih') return
@@ -47,7 +47,7 @@ export function createTabBridge(win:Window, timeout=90000) {
       else {
         try {
           const encoded=JSON.stringify(data.result)
-          if(encoded===undefined || new TextEncoder().encode(encoded).length>100000) throw new Error('Некорректный результат управления вкладкой.')
+          if(encoded===undefined || new TextEncoder().encode(encoded).length>(request.screenshot ? 28100000 : 1048576)) throw new Error('Некорректный результат управления вкладкой.')
           request.resolve(data.result)
         } catch {request.reject(new Error('Некорректный результат управления вкладкой.'))}
       }
@@ -91,7 +91,7 @@ export function createTabBridge(win:Window, timeout=90000) {
       const id=requestId ?? crypto.randomUUID()
       return new Promise((resolve,reject)=>{
         const timer=setTimeout(()=>{win.parent.postMessage({type:'kodrik-browser-cancel',channel,id},origin);commands.delete(id);reject(new Error('Истекло время управления вкладкой. Исход действия неизвестен; проверьте снимок, не повторяйте действие вслепую.'))},timeout)
-        commands.set(id,{resolve,reject,timer,verify})
+        commands.set(id,{resolve,reject,timer,verify,screenshot:command.action==='screenshot'})
         win.parent.postMessage({type:'kodrik-browser-command',channel,id,command},origin)
       })
     },

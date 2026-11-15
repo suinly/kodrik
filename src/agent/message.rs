@@ -126,7 +126,7 @@ pub struct BrowserContext {
 }
 
 impl BrowserContext {
-    pub const MAX_BYTES: usize = 100_000;
+    pub const MAX_BYTES: usize = 1024 * 1024;
 
     pub fn validate(&self) -> anyhow::Result<()> {
         let url = reqwest::Url::parse(&self.url)?;
@@ -157,7 +157,7 @@ impl BrowserContext {
         );
         anyhow::ensure!(
             serde_json::to_vec(self)?.len() <= Self::MAX_BYTES,
-            "Browser context exceeds 100000 UTF-8 bytes"
+            "Browser context exceeds 1048576 UTF-8 bytes"
         );
         Ok(())
     }
@@ -185,6 +185,11 @@ mod browser_context_tests {
             truncated: false,
         };
         context.validate().unwrap();
+        let mut large = context.clone();
+        large.text = "x".repeat(200_000);
+        large.validate().unwrap();
+        large.text = "x".repeat(1_048_576);
+        assert!(large.validate().is_err());
         let mut query_url = context.clone();
         query_url.url = "https://example.org?email=a@b.org".into();
         query_url.validate().unwrap();

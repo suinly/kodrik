@@ -164,3 +164,32 @@ rerun for this documentation refresh; unresolved full-suite failures above remai
 - This is owner-authenticated UI routing, not cryptographic browser attestation:
   an authenticated owner can manually emulate panel polling and client metadata
   through the API. A caller-chosen UUID alone without a live unique lease fails.
+
+## browser_screenshot and larger limits
+
+- `browser_screenshot {}` returns the bound active HTTP(S) tab viewport as a PNG
+  in ToolOutput.images, never base64 model text. Backend preflight, panel/request
+  pinning, cancellation, tab-switch/navigation/document checks apply. No debugger,
+  screen picker, full-page stitching or automatic tab switching.
+- Text browser context and command results: 1 MiB serialized UTF-8 JSON.
+  Images: 20 MiB / 32 million pixels; screenshot transport: 28,100,000 bytes
+  for base64 plus metadata. Remote laptop view_image retains its explicit 10 MiB
+  limit because its separate remote protocol has 16 MiB frames.
+- Fresh final checks: extension + bridge 36/36 (including actual MV3 Chromium PNG
+  capture and inactive-tab rejection), Rust browser_ 28 passed / 2 ignored,
+  Nuxt typecheck and build, cargo fmt --check, git diff --check passed.
+- Multipart regression accepts an actual 20,500,000-byte PNG (above document quota).
+- Full Rust run: 1380 passed, 3 failed, 12 ignored. Failures all pass separately:
+  owner_migration_merges_sqlite_wal_history_and_keeps_sources;
+  owner_migration_retries_incomplete_import_and_merges_json_into_sqlite;
+  approval_push_retries_only_while_the_request_is_pending.
+  The first two reported migration lock contention; the last a timing assertion.
+- Full web run: 265 passed / 10 failed. Restart fixture failed with kill EPERM,
+  followed by connection-refused failures in logout, short/legacy/invalid invitation,
+  Telegram approval/denial/cancellation and profile tests. Separate rerun: 7/9 passed;
+  Telegram denial and profile tests still missed the Open Telegram link.
+  i18n catalog also fails for the existing missing `Закрыть` key in ChatItem.vue
+  (present at HEAD before this change). These unrelated failures were not edited.
+- Live gateway was not restarted; real end-to-end vision-provider delivery in the
+  user's running Chrome has not been exercised. Update server binary/assets and
+  reload the unpacked extension to enable this feature.

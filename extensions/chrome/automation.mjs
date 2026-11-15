@@ -1,10 +1,10 @@
 import {extractPage} from './core.mjs';
 // Tokens live only in the isolated world; Chrome documentIds prevent navigation races.
 const snapshots = new Map();
-const MAX_BYTES = 100000;
+const MAX_BYTES = 1048576;
 function bounded(value) {
   const json = JSON.stringify(value ?? null);
-  if (new TextEncoder().encode(json).length > MAX_BYTES) throw new Error('Browser result exceeds 100000 bytes');
+  if (new TextEncoder().encode(json).length > MAX_BYTES) throw new Error('Browser result exceeds 1 MiB');
   return JSON.parse(json);
 }
 function isolated(command) {
@@ -75,14 +75,52 @@ async function evaluateMain(code, timeout, forbiddenOrigin) {
     const fn=new Function(code);
     const value=await Promise.race([Promise.resolve().then(()=>fn()),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('JavaScript timed out; execution may still be running')),timeout);})]);
     const json=JSON.stringify(value ?? null);
-    if(new TextEncoder().encode(json).length>100000) throw new Error('Browser result exceeds 100000 bytes');
+    if(new TextEncoder().encode(json).length>1048576) throw new Error('Browser result exceeds 1 MiB');
     return {value:JSON.parse(json)};
   } catch(error) {return {error:`JavaScript execution failed (page CSP may prohibit evaluation): ${error.message}`};}
   finally {clearTimeout(timer);}
 }
+async function screenshot(tabId, confirm, options) {
+  let changed=false;
+  let windowId;
+  const activated=info=>{if(info.windowId===windowId && info.tabId!==tabId) changed=true;};
+  const updated=(id,change)=>{if(id===tabId && (change.url || change.status==='loading')) changed=true;};
+  chrome.tabs.onActivated.addListener(activated);
+  chrome.tabs.onUpdated.addListener(updated);
+  try {
+    const check=async()=>{
+      if(options.signal?.aborted) throw new Error('Browser action cancelled');
+      const tab=await chrome.tabs.get(tabId);
+      windowId ??= tab.windowId;
+      const url=new URL(tab.url);
+      if(!['http:','https:'].includes(url.protocol) || url.username || url.password) throw new Error('Only credential-free HTTP(S) tabs are supported');
+      if(url.origin===options.forbiddenOrigin) throw new Error('Forbidden origin');
+      const [active]=await chrome.tabs.query({active:true,windowId});
+      if(!tab.active || active?.id!==tabId) throw new Error('The bound tab must be active');
+      if(changed || tab.windowId!==windowId) throw new Error('Tab changed during screenshot');
+      const [document]=await chrome.scripting.executeScript({target:{tabId},func:()=>location.href});
+      if(!document?.documentId || document.result!==tab.url) throw new Error('Document changed during screenshot');
+      return {tab,documentId:document.documentId};
+    };
+    await check();
+    if(typeof confirm!=='function' || !await confirm()) throw new Error('Browser action cancelled');
+    const before=await check();
+    const data_url=await chrome.tabs.captureVisibleTab(windowId,{format:'png'});
+    const after=await check();
+    if(changed || before.documentId!==after.documentId || before.tab.url!==after.tab.url) throw new Error('Document changed during screenshot');
+    if(typeof data_url!=='string' || !data_url.startsWith('data:image/png;base64,')) throw new Error('Invalid screenshot image');
+    const encoded=data_url.slice(22);
+    if(encoded.length>27962028 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length%4 || encoded.length/4*3-(encoded.endsWith('==')?2:encoded.endsWith('=')?1:0)>20971520) throw new Error('Screenshot exceeds 20 MiB or is invalid');
+    return {url:before.tab.url,title:(before.tab.title || '').slice(0,1024),captured_at:new Date().toISOString(),data_url};
+  } finally {
+    chrome.tabs.onActivated.removeListener(activated);
+    chrome.tabs.onUpdated.removeListener(updated);
+  }
+}
 export async function executeBrowserCommand(tabId, command, confirm, options={}) {
   if (!Number.isInteger(tabId) || tabId<=0) throw new Error('A bound tab is required');
-  if (!command || !['snapshot','click','fill','scroll','evaluate'].includes(command.action)) throw new Error('Unknown browser action');
+  if (!command || !['snapshot','screenshot','click','fill','scroll','evaluate'].includes(command.action)) throw new Error('Unknown browser action');
+  if(command.action==='screenshot') return screenshot(tabId,confirm,options);
   if(command.action==='fill' && (typeof command.value!=='string' || command.value.length>50000)) throw new Error('Invalid fill value');
   if(command.action==='evaluate' && (typeof command.code!=='string' || command.code.length>50000)) throw new Error('Invalid JavaScript code');
   if(command.action==='scroll' && ['x','y'].some(k=>command[k]!==undefined && (!Number.isFinite(command[k]) || Math.abs(command[k])>10000))) throw new Error('Scroll must be finite pixels within 10000');

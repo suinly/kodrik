@@ -376,8 +376,8 @@ function selectFiles(selected: File[] | null | undefined) {
   }
   for (const file of next) {
     const image = file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name)
-    if (!file.size || file.size > (image ? 10 * 1024 * 1024 : 20_000_000)) {
-      problem.value = t("«{0}»: файл пустой или слишком большой. Фото — до 10 MiB, документ — до 20 MB.", file.name)
+    if (!file.size || file.size > (image ? 20 * 1024 * 1024 : 20_000_000)) {
+      problem.value = t("«{0}»: файл пустой или слишком большой. Фото — до 20 MiB, документ — до 20 MB.", file.name)
       return
     }
   }
@@ -699,7 +699,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
         <ChatCommandApprovals v-if="snapshot?.command_approvals?.length" :approvals="snapshot.command_approvals" :deciding="decidingCommands" :problems="commandProblems" :disabled="editorLocked || savingCommandAudit"
           @decide="decideCommand" @refresh="reload()" />
         <UFileUpload v-if="attachmentsOpen || files.length" :model-value="files" multiple layout="list" :disabled="editorLocked" :dropzone="false"
-          :label="t('Добавить файлы и фото')" :description="t('До 10 вложений · фото до 10 MiB · файлы до 20 MB')"
+          :label="t('Добавить файлы и фото')" :description="t('До 10 вложений · фото до 20 MiB · файлы до 20 MB')"
           icon="i-lucide-paperclip" class="max-h-56 overflow-y-auto" @update:model-value="selectFiles" />
         <ChatSubagents v-if="snapshot?.subagents?.length" :agents="snapshot.subagents" :stopping="childStopping" :problems="childProblems" :disabled="editorLocked"
           @stop="stopChild" @refresh="reload()" />

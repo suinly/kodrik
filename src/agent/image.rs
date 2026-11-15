@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
 use serde::{Deserialize, Serialize};
 
-pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Clone, Deserialize, Serialize)]
 // ponytail: store image bytes in session JSON; use an artifact store if long image histories grow too large.
@@ -27,7 +27,7 @@ impl std::fmt::Debug for Image {
 
 impl Image {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        ensure!(bytes.len() <= MAX_IMAGE_BYTES, "Image exceeds 10 MiB");
+        ensure!(bytes.len() <= MAX_IMAGE_BYTES, "Image exceeds 20 MiB");
         let format = image::guess_format(bytes).context("Unrecognized image format")?;
         ensure!(
             matches!(
@@ -72,6 +72,15 @@ pub(crate) mod tests {
             .write_to(&mut bytes, format)
             .unwrap();
         bytes.into_inner()
+    }
+
+    #[test]
+    fn images_accept_twenty_mib_but_not_more() {
+        let mut bytes = sample(ImageFormat::Png);
+        bytes.resize(20 * 1024 * 1024, 0);
+        assert!(Image::from_bytes(&bytes).is_ok());
+        bytes.push(0);
+        assert!(Image::from_bytes(&bytes).is_err());
     }
 
     #[test]

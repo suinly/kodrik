@@ -275,7 +275,14 @@ pub(crate) async fn build_app_with_access(
         .register(Arc::new(SessionSearchTool::new(data.join("sessions"))))
         .register(Arc::new(ContextReadTool::new(data.join("sessions"))));
     if !isolated && access.is_none() {
-        for action in ["snapshot", "click", "fill", "scroll", "evaluate"] {
+        for action in [
+            "snapshot",
+            "screenshot",
+            "click",
+            "fill",
+            "scroll",
+            "evaluate",
+        ] {
             tools = tools.register(Arc::new(
                 crate::agent::tools::browser_automation::BrowserAutomationTool {
                     directory: data.join("sessions"),

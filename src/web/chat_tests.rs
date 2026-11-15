@@ -3489,7 +3489,7 @@ async fn browser_context_validates_metadata_and_utf8_budget() {
         ("url", json!("not a url")),
         ("source", json!("instruction")),
         ("captured_at", json!("yesterday")),
-        ("text", json!("я".repeat(50_000))),
+        ("text", json!("я".repeat(524_288))),
     ] {
         let mut context = browser_context_fixture();
         context[field] = value;
@@ -3506,7 +3506,7 @@ async fn browser_context_validates_metadata_and_utf8_budget() {
         );
     }
     let mut context = browser_context_fixture();
-    context["text"] = json!("x".repeat(90_000));
+    context["text"] = json!("x".repeat(900_000));
     let response = f
         .request(reqwest::Method::POST, "send")
         .json(&json!({"id":id,"text":"hello","browser_context":context}))
@@ -3988,4 +3988,75 @@ async fn dialogue_model_selection_is_validated_scoped_and_resettable() {
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn browser_screenshot_route_delivers_large_image_and_limits_transport() {
+    use crate::agent::tools::{
+        Tool,
+        browser_automation::BrowserAutomationTool,
+        browser_context::{BROKER, CURRENT_BROWSER_CLIENT, CURRENT_SESSION},
+    };
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let client = uuid::Uuid::new_v4().to_string();
+    let path = format!("browser-command?id={id}&client_id={client}");
+    f.request(reqwest::Method::GET, &path).send().await.unwrap();
+    let key = (f.sessions.directory().to_path_buf(), id.clone());
+    let tool = BrowserAutomationTool {
+        directory: key.0.clone(),
+        action: "screenshot",
+    };
+    let execution = CURRENT_SESSION.scope(
+        id.clone(),
+        CURRENT_BROWSER_CLIENT.scope(Some(client.clone()), tool.execute(json!({}))),
+    );
+    let completion = async {
+        let request = loop {
+            if let Some((request, _)) = BROKER.poll_command(&key, &client) {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        };
+        let payload = crate::agent::tools::browser_automation::tests::screenshot_payload(2_000_000);
+        let response = f
+            .request(reqwest::Method::POST, "browser-command")
+            .json(&json!({"id":id,"client_id":client,"request_id":request,"result":payload}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    };
+    let (output, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(execution, completion)
+    })
+    .await
+    .unwrap();
+    let output = output.unwrap();
+    assert_eq!(output.images.len(), 1);
+    assert!(!output.output.to_string().contains("base64"));
+    let response=f.request(reqwest::Method::POST,"browser-command")
+        .json(&json!({"id":id,"client_id":client,"request_id":"none","result":"x".repeat(28_100_000)})).send().await.unwrap();
+    assert_eq!(response.status(), 413);
+}
+
+#[tokio::test]
+async fn chat_multipart_accepts_image_above_decimal_twenty_mb() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let mut bytes = crate::agent::image::tests::sample(image::ImageFormat::Png);
+    bytes.resize(20_500_000, 0);
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .header("Content-Type", "multipart/form-data; boundary=chat-test")
+        .body(multipart(
+            &id,
+            &uuid::Uuid::new_v4().to_string(),
+            "image",
+            &[("large.png", &bytes)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
 }

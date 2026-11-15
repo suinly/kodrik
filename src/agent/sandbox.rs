@@ -418,7 +418,7 @@ impl Tool for SandboxTool {
         match self.name {
             "exec_command" => "Run Bashkit built-in shell commands in this chat's persistent virtual filesystem. Default workdir /workspace; skills in /skills, imported files in /attachments. No host programs, host files, host environment, or network. Commands do not fall back to a real shell. Files persist; shell variables and cwd reset each call. Timeout 1–300000 ms (default 30000). Cancellation before saving rolls back this call's file changes; an already started atomic save completes. Output limited to 1 MiB per stream; truncated output is not retained elsewhere.".into(),
             "apply_patch" => format!("{} Paths are inside this chat's virtual disk; default workdir /workspace. An error rolls back the whole patch.", ApplyPatchTool.description().replace("path, action, added and removed line counts", "path and action").replace("Writes are atomic per file; an I/O failure reports files already changed.", "The complete patch is committed atomically.")),
-            "view_image" => "View a PNG, JPEG or WebP from this chat's virtual disk. Relative paths start at /workspace. No host file access; maximum 10 MiB and 32 million pixels.".into(),
+            "view_image" => "View a PNG, JPEG or WebP from this chat's virtual disk. Relative paths start at /workspace. No host file access; maximum 20 MiB and 32 million pixels.".into(),
             _ => unreachable!(),
         }
     }

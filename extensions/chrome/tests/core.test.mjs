@@ -13,8 +13,8 @@ test('UTF-8 truncation never splits unicode or exceeds budget',()=>{
   assert.equal(truncateUTF8('🙂',3),'');
 });
 test('page context is structured and serialized byte-bounded including escaped characters',()=>{
-  const context=pageContext({url:'https://example.com',title:'Example',text:'я\"\\'.repeat(90000),selection:false});
-  assert.ok(new TextEncoder().encode(JSON.stringify(context)).length<=100000);
+  const context=pageContext({url:'https://example.com',title:'Example',text:'я\"\\'.repeat(900000),selection:false});
+  assert.ok(new TextEncoder().encode(JSON.stringify(context)).length<=1048576);
   assert.equal(context.url,'https://example.com/');assert.equal(context.source,'page');assert.equal(context.truncated,true);
   assert.ok(Number.isFinite(Date.parse(context.captured_at)));
   assert.equal(pageContext({url:'https://example.com',title:'Example',text:'selection',selection:true}).source,'selection');

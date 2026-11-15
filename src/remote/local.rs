@@ -4,6 +4,8 @@ use crate::agent::{
     session::SessionId,
     tools::{ApplyPatchTool, ExecCommandTool, Tool, ToolOutput, ViewImageTool},
 };
+// Keep base64 images within the 16 MiB remote transport frame.
+pub(super) const LOCAL_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 use anyhow::{Context, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -103,7 +105,12 @@ impl LocalEnvironment {
                     "view_image" => ToolKind::Image,
                     _ => ToolKind::Mcp,
                 },
-                description: tool.description(),
+                description: if name == "view_image" {
+                    tool.description()
+                        .replace("20 MiB", "10 MiB (remote transport limit)")
+                } else {
+                    tool.description()
+                },
                 parameters: tool.parameters(),
                 deferred: tool.deferred(),
             })
@@ -390,7 +397,11 @@ impl LocalEnvironment {
                             .read_artifact(
                                 &call.environment,
                                 path.to_str().context("Non-UTF8 path")?,
-                                if image { 10 * 1024 * 1024 } else { 1024 * 1024 },
+                                if image {
+                                    LOCAL_IMAGE_BYTES
+                                } else {
+                                    1024 * 1024
+                                },
                             )
                             .await?;
                         if image {
@@ -503,7 +514,7 @@ impl LocalEnvironment {
         limit: usize,
     ) -> anyhow::Result<Vec<u8>> {
         ensure!(
-            limit <= 10 * 1024 * 1024,
+            limit <= LOCAL_IMAGE_BYTES,
             "Artifact limit exceeds image quota"
         );
         {

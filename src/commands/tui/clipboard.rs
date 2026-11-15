@@ -268,7 +268,7 @@ pub(super) async fn image_bytes() -> anyhow::Result<Vec<u8>> {
             .await?;
         ensure!(
             bytes.len() <= crate::agent::image::MAX_IMAGE_BYTES,
-            "Clipboard image exceeds 10 MiB"
+            "Clipboard image exceeds 20 MiB"
         );
         ensure!(
             child.wait().await?.success(),

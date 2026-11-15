@@ -34,7 +34,7 @@ test('capture matches exact request and returns structured browser context; disa
   bridge.dispose();assert.equal(listeners.size,0);
 });
 test('capture reports errors, invalid payload and timeout instead of sending without context',async()=>{
-  for(const result of [{error:'Permission denied'},{context:'я'.repeat(100001)},{context:42},{context:{...pageContext,url:'javascript:alert(1)'}},{context:{...pageContext,text:'я'.repeat(100001)}}]) {
+  for(const result of [{error:'Permission denied'},{context:'я'.repeat(1048577)},{context:42},{context:{...pageContext,url:'javascript:alert(1)'}},{context:{...pageContext,text:'я'.repeat(1048577)}}]) {
     const {bridge,deliver,parent}=fixture();
     deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
     const pending=bridge.capture();
@@ -105,7 +105,7 @@ test('browser commands use authenticated channel and return bounded results with
   deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,error:'User declined'});
   await assert.rejects(()=>rejected,/declined/);
   const oversized=bridge.command({action:'snapshot'});
-  deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,result:{text:'a'.repeat(100001)}});
+  deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,result:{text:'a'.repeat(1048576)}});
   await assert.rejects(()=>oversized,/результат/i);
   bridge.dispose();
 });
@@ -129,5 +129,25 @@ test('browser request provenance requires a handshake with the trusted extension
   assert.equal(bridge.connected(),false);
   deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
   assert.equal(bridge.connected(),true);
+  bridge.dispose();
+});
+
+test('bridge permits large text and grants image budget only to requested screenshots',async()=>{
+  const {bridge,deliver,parent}=fixture();
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  for(const [action,result,allowed] of [
+    ['snapshot',{text:'a'.repeat(200000)},true],
+    ['screenshot',{data_url:'a'.repeat(2000000)},true],
+    ['snapshot',{data_url:'a'.repeat(2000000)},false],
+    ['screenshot',{data_url:'a'.repeat(28100000)},false],
+  ]) {
+    const pending=bridge.command({action});
+    deliver({type:'kodrik-browser-result',channel:'x',id:parent.sent.at(-1).message.id,result});
+    if(allowed) assert.deepEqual(await pending,result);
+    else await assert.rejects(pending,/результат/i);
+  }
+  const pending=bridge.capture();
+  deliver({type:'kodrik-tab-result',channel:'x',id:parent.sent.at(-1).message.id,context:{...pageContext,text:'a'.repeat(200000)}});
+  assert.equal((await pending).text.length,200000);
   bridge.dispose();
 });

@@ -668,7 +668,7 @@ async fn bounded_file_and_image_reads_reject_large_and_special_files() {
         .unwrap();
     std::fs::File::create(dir.path().join("large.png"))
         .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
+        .set_len((super::local::LOCAL_IMAGE_BYTES + 1) as u64)
         .unwrap();
     let name =
         std::ffi::CString::new(dir.path().join("fifo").as_os_str().as_encoded_bytes()).unwrap();

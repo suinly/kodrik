@@ -12,7 +12,7 @@ test('real MV3 automation binds tokens to documents, confirms mutations and bloc
     const extension=join(dir,'extension');
     await cp(new URL('../',import.meta.url),extension,{recursive:true});
     const manifest=JSON.parse(await readFile(join(extension,'manifest.json'),'utf8'));
-    manifest.host_permissions=['http://127.0.0.1/*'];
+    manifest.host_permissions=['<all_urls>'];
     await writeFile(join(extension,'manifest.json'),JSON.stringify(manifest));
     context=await chromium.launchPersistentContext(join(dir,'profile'),{headless:true,channel:'chromium',args:[`--disable-extensions-except=${extension}`,`--load-extension=${extension}`]});
     const worker=context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
@@ -26,9 +26,18 @@ test('real MV3 automation binds tokens to documents, confirms mutations and bloc
       const {executeBrowserCommand}=await import('./automation.mjs');
       return executeBrowserCommand(tab,command,async()=>accept);
     },{tab,command,accept});
+    await page.bringToFront();
+    const screenshot=await run({action:'screenshot'});
+    assert.equal(screenshot.url,'http://127.0.0.1:19992/one');
+    assert.equal(screenshot.title,'Actions');
+    assert.ok(Buffer.from(screenshot.data_url.split(',')[1],'base64').subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])));
+    const size=await page.evaluate(async data=>{const image=await createImageBitmap(await (await fetch(data)).blob());return [image.width,image.height];},screenshot.data_url);
+    assert.ok(size[0]>0 && size[1]>0);
+    await panel.bringToFront();
+    await assert.rejects(run({action:'screenshot'}),/active/i);
     const snap=await run({action:'snapshot'});
     assert.ok(snap.snapshot_id);assert.equal(snap.title,'Actions');
-    assert.ok(Buffer.byteLength(JSON.stringify(snap))<=100000);
+    assert.ok(Buffer.byteLength(JSON.stringify(snap))<=1048576);
     assert.doesNotMatch(JSON.stringify(snap),/SECRET/);
     const el=name=>snap.elements.find(e=>e.name===name).id;
     await assert.rejects(run({action:'click',snapshot_id:snap.snapshot_id,element_id:el('Press')},false),/cancel|отмен/i);

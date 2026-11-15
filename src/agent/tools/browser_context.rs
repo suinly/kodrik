@@ -2,6 +2,52 @@
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn browser_screenshot_large_results_require_matching_pending_action() {
+        let broker = Broker::default();
+        let key = (PathBuf::from("alice"), "screenshot".into());
+        for action in ["snapshot", "screenshot"] {
+            broker.poll(&key, "panel");
+            let (_guard, rx) = CURRENT_BROWSER_CLIENT
+                .sync_scope(Some("panel".into()), || {
+                    broker.begin_command(key.clone(), json!({"action":action}))
+                })
+                .unwrap();
+            let (id, _) = broker.poll_command(&key, "panel").unwrap();
+            let payload = super::super::browser_automation::tests::screenshot_payload(1_100_000);
+            assert!(
+                broker
+                    .complete_command(&key, "panel", "wrong", Ok(payload.clone()))
+                    .is_err()
+            );
+            assert!(
+                broker
+                    .complete_command(&key, "foreign", &id, Ok(payload.clone()))
+                    .is_err()
+            );
+            if action == "snapshot" {
+                assert!(
+                    broker
+                        .complete_command(&key, "panel", &id, Ok(payload))
+                        .is_err()
+                );
+                broker
+                    .complete_command(&key, "panel", &id, Ok(json!("x".repeat(200_000))))
+                    .unwrap();
+            } else {
+                broker
+                    .complete_command(&key, "panel", &id, Ok(payload))
+                    .unwrap();
+            }
+            assert!(rx.await.unwrap().is_ok());
+            assert!(
+                broker
+                    .complete_command(&key, "panel", &id, Ok(json!({})))
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn browser_request_cannot_dispatch_to_another_panels_lease() {
         let broker = Broker::default();
         let key = (PathBuf::from("alice"), "pin".into());
@@ -117,7 +163,7 @@ mod tests {
         );
         assert!(
             broker
-                .complete_command(&key, "panel", &id, Ok(json!("x".repeat(100_000))))
+                .complete_command(&key, "panel", &id, Ok(json!("x".repeat(1_048_576))))
                 .is_err()
         );
         broker
@@ -264,9 +310,11 @@ pub(crate) struct Broker {
     state: Mutex<State>,
 }
 pub(crate) static BROKER: LazyLock<Arc<Broker>> = LazyLock::new(|| Arc::new(Broker::default()));
+pub(crate) const SCREENSHOT_TRANSPORT_LIMIT: usize = 28_100_000;
 pub(crate) const BROWSER_TOOLS: &[&str] = &[
     "browser_context",
     "browser_snapshot",
+    "browser_screenshot",
     "browser_click",
     "browser_fill",
     "browser_scroll",
@@ -411,16 +459,6 @@ impl Broker {
         id: &str,
         result: CommandResult,
     ) -> anyhow::Result<()> {
-        match &result {
-            Ok(value) => anyhow::ensure!(
-                serde_json::to_vec(value)?.len() <= 100_000,
-                "Browser result exceeds 100000 bytes"
-            ),
-            Err(error) => anyhow::ensure!(
-                !error.trim().is_empty() && error.len() <= 4096,
-                "Invalid browser error"
-            ),
-        }
         let mut state = self.state.lock().unwrap();
         state.prune();
         anyhow::ensure!(
@@ -434,6 +472,24 @@ impl Broker {
                 .is_some_and(|p| p.id == id && p.client == client),
             "No matching pending browser command"
         );
+        let screenshot = state.commands.get(key).unwrap().command["action"] == "screenshot";
+        match &result {
+            Ok(value) => {
+                let limit = if screenshot {
+                    SCREENSHOT_TRANSPORT_LIMIT
+                } else {
+                    BrowserContext::MAX_BYTES
+                };
+                anyhow::ensure!(
+                    serde_json::to_vec(value)?.len() <= limit,
+                    "Browser result exceeds {limit} bytes"
+                );
+            }
+            Err(error) => anyhow::ensure!(
+                !error.trim().is_empty() && error.len() <= 4096,
+                "Invalid browser error"
+            ),
+        }
         state
             .commands
             .remove(key)
