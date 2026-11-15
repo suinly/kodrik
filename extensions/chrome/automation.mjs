@@ -132,24 +132,3 @@ export async function executeBrowserCommand(tabId, command, confirm, options={})
   const [result]=await chrome.scripting.executeScript({target,world:'ISOLATED',func:isolated,args:[command]});
   return bounded(checked(result));
 }
-
-export function confirmBrowserCommand(command, tab, signal) {
-  if(signal?.aborted) return Promise.resolve(false);
-  return new Promise(resolve=>{
-    const dialog=document.createElement('dialog');
-    dialog.setAttribute('aria-label','Разрешить действие во вкладке?');
-    const title=document.createElement('h2');title.textContent='Разрешить действие во вкладке?';
-    const description=document.createElement('pre');description.style.cssText='white-space:pre-wrap;max-height:45vh;overflow:auto';
-    description.textContent=`${tab.title || ''}\n${tab.url}\n${JSON.stringify(command,null,2)}`;
-    const cancel=document.createElement('button');cancel.textContent='Отмена';
-    const accept=document.createElement('button');accept.textContent='Разрешить';
-    const deadline=Date.now()+55000;
-    const abort=()=>finish(false);
-    const finish=value=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);dialog.remove();resolve(value);};
-    const timer=setTimeout(()=>finish(false),55000);
-    signal?.addEventListener('abort',abort,{once:true});
-    cancel.onclick=()=>finish(false);accept.onclick=()=>finish(Date.now()<deadline && !signal?.aborted);
-    dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});
-    dialog.append(title,description,cancel,accept);document.body.append(dialog);dialog.showModal();cancel.focus();
-  });
-}

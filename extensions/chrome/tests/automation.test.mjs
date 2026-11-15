@@ -65,23 +65,3 @@ test('real MV3 automation binds tokens to documents, confirms mutations and bloc
     await assert.rejects(run({action:'scroll',snapshot_id:snap.snapshot_id,y:1}),/document|frame|stale/i);
   } finally {await context?.close();await rm(dir,{recursive:true,force:true});}
 });
-
-test('confirmation dialog expires without blocking timers and cannot accept late approval',async()=>{
-  const browser=await chromium.launch({headless:true});
-  try {
-    const page=await browser.newPage();
-    await page.route('https://panel.test/**',async route=>{
-      const path=new URL(route.request().url()).pathname;
-      await route.fulfill({contentType:path.endsWith('.mjs')?'text/javascript':'text/html',body:path.endsWith('.mjs')?await readFile(new URL(`..${path}`,import.meta.url)):'<body></body>'});
-    });
-    await page.goto('https://panel.test/');await page.clock.install();
-    await page.evaluate(async()=>{
-      const {confirmBrowserCommand}=await import('/automation.mjs');
-      window.confirmation=confirmBrowserCommand({action:'evaluate',code:'return 1;'}, {title:'Example',url:'https://example.com'}).then(value=>window.answer=value);
-    });
-    assert.equal(await page.locator('dialog[open]').count(),1);
-    await page.clock.fastForward(55001);
-    assert.equal(await page.evaluate(()=>window.answer),false);
-    assert.equal(await page.locator('dialog').count(),0);
-  } finally {await browser.close();}
-});

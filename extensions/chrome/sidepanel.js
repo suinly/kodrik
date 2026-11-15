@@ -1,6 +1,6 @@
 import {serverURL, pageContext, extractPage} from './core.mjs';
 import {readDocument} from './documents.mjs';
-import {executeBrowserCommand,confirmBrowserCommand} from './automation.mjs';
+import {executeBrowserCommand} from './automation.mjs';
 const browserMessageIds = new Set();
 let browserBusy = false;
 const browserControllers = new Map();
@@ -139,9 +139,9 @@ window.addEventListener('message', async event => {
       if(!bound) throw new Error('Browser automation requires a bound tab');
       const tab=await chrome.tabs.get(ownerId);
       if(new URL(tab.url).origin===server.origin) throw new Error('Cannot automate the chat server');
-      const result=await executeBrowserCommand(ownerId,message.command,async(command,tab)=>{
-        const accepted=await confirmBrowserCommand(command,tab,controller.signal);
-        if(!accepted || controller.signal.aborted || channel!==responseChannel) return false;
+      const result=await executeBrowserCommand(ownerId,message.command,async()=>{
+        // The backend dispatches only after the session audit has allowed this call.
+        if(controller.signal.aborted || channel!==responseChannel) return false;
         const allowed=await browserPreflight(message.id,controller.signal);
         return allowed && !controller.signal.aborted && channel===responseChannel;
       },{forbiddenOrigin:server.origin,signal:controller.signal});

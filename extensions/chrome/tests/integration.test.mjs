@@ -114,8 +114,8 @@ test('extension sends context only on first message and serves agent requests wi
       commandDone=true;return route.fulfill({json:{ok:true}});
     });
     const evaluation=panel.waitForRequest(req=>req.method()==='POST' && req.url().includes('/api/chat/browser-command'));
-    // The native extension confirmation is outside the chat iframe.
-    await panel.getByRole('dialog',{name:/действ|управл|подтвер/i}).getByRole('button',{name:/Разрешить|Выполнить|Подтвердить/i}).click();
+    // The backend audit gates dispatch; the extension adds no second prompt.
+    await expect(panel.getByRole('dialog',{name:'Разрешить действие во вкладке?'})).not.toBeVisible();
     assert.equal((await evaluation).postDataJSON().result,'Test article');
     await panel.unroute('**/api/chat/browser-command**');
     await expect(attachment).toHaveCount(1);

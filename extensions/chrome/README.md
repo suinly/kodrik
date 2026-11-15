@@ -162,8 +162,9 @@ manifest заранее разрешены только loopback-hosts. Сист
 
 ### Browser automation executor
 
-`automation.mjs` exports `executeBrowserCommand(tabId, command, confirm)` and
-`confirmBrowserCommand(command, tab)`. The panel accepts trusted iframe messages
+`automation.mjs` exports `executeBrowserCommand(tabId, command, confirm)`. Its
+callback gates non-snapshot execution on a live backend preflight, not another
+permission prompt. The panel accepts trusted iframe messages
 `{type:'kodrik-browser-command', channel, id, command}` and replies with
 `{type:'kodrik-browser-result', channel, id, result}` or `error` (string).
 Only the panel's bound tab is eligible. Message IDs are single-use; mutations are
@@ -180,8 +181,10 @@ Field values are omitted; password/file filling is blocked. Text uses the existi
 privacy-filtered extractor. Element tokens cover the top document's light DOM
 only, not iframe or shadow-tree controls.
 
-All non-snapshot commands require an extension-owned DOM confirmation dialog that
-expires after 55 seconds. Document and snapshot are checked again after approval;
+All browser tools pass through the existing session audit (`trusted`, `review`,
+`ask`) before backend dispatch. The sidepanel adds no second permission dialog.
+Non-snapshot commands require a live backend preflight; document and snapshot
+are checked again afterwards;
 Chrome `documentIds` bind injections to the exact original document. MAIN-world
 JavaScript obeys page CSP and fails explicitly if evaluation is blocked. Promise
 timeouts stop waiting, **not execution**: asynchronous side effects may continue,
@@ -191,13 +194,13 @@ retry timed-out mutations. Snapshots and tokens are ephemeral and lost on reload
 Automation follow-up safety contract:
 - Snapshot target names exclude editable/hidden descendants and invisible ancestors.
   Target name, link destination, input type and form destination are fingerprinted;
-  changed targets require a new snapshot. Confirmation displays the human target
-  name and destination, not just its token.
+  changed targets require a new snapshot. Snapshot results include human target
+  names and destinations, not just tokens.
 - `executeBrowserCommand(tabId, command, confirm, {forbiddenOrigin, signal})`
   rejects the forbidden origin inside isolated checks/injections and MAIN evaluation.
   Form-only pages may return empty text while retaining actionable elements.
-- Trusted `{type:'kodrik-browser-cancel',channel,id}` aborts pending confirmation.
-  After approval the panel sends `{type:'kodrik-browser-check',channel,id}`;
+- Trusted `{type:'kodrik-browser-cancel',channel,id}` aborts pending execution/preflight.
+  Before execution the panel sends `{type:'kodrik-browser-check',channel,id}`;
   the bridge must reply `{type:'kodrik-browser-check-result',channel,id,allowed:true}`
   within two seconds. Missing/negative responses fail closed. The bridge must verify
   that the backend request is still current before approving. This cannot make a
