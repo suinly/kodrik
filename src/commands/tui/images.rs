@@ -115,6 +115,72 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
+    fn images_without_complete_inline_markers_keep_the_count() {
+        for (text, count, expected) in [
+            ("plain", 0, "plain"),
+            ("photo", 1, "photo\n[Images: 1]"),
+            ("", 1, "\n[Images: 1]"),
+            ("[Image x]", 1, "[Image x]\n[Images: 1]"),
+            ("[Image 0]", 1, "[Image 0]\n[Images: 1]"),
+            ("[Image 1", 1, "[Image 1\n[Images: 1]"),
+            ("[Image 3]", 2, "[Image 3]\n[Images: 2]"),
+        ] {
+            assert_eq!(super::super::waiting_summary(text, count), expected);
+        }
+    }
+
+    #[test]
+    fn sent_images_keep_only_inline_markers() {
+        let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+            .unwrap();
+        for (prefix, count, expected) in [
+            ("", 1, "[Image 3]"),
+            ("Compare ", 2, "Compare [Image 3][Image 4]"),
+        ] {
+            let mut app = App::default();
+            app.next_image_id = 2;
+            app.insert_input(prefix);
+            for _ in 0..count {
+                attach(&mut app, image.clone()).unwrap();
+            }
+            assert_eq!(
+                app.update(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                Some(expected.into())
+            );
+            assert_eq!(app.waiting_messages, [expected]);
+            let message = message(&app, "cli:main", expected.into());
+            assert_eq!(message.images.len(), count);
+            super::super::reconcile_waiting(
+                &mut app,
+                &[serde_json::json!({"text": expected, "photos": count})],
+            );
+            assert_eq!(app.waiting_messages, [expected]);
+            app.consume_pending_inputs();
+            assert_eq!(app.messages[0].content, expected);
+        }
+    }
+
+    #[test]
+    fn restored_images_keep_only_inline_markers() {
+        let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+            .unwrap();
+        let mut session = super::super::Session::new(super::super::SessionId::new("inline-images"));
+        for text in ["[Image 3]", "Compare [Image 3][Image 4]"] {
+            session.push(super::super::Message::User(crate::agent::UserMessage {
+                browser_client_id: None,
+                browser_context: None,
+                content: text.into(),
+                images: vec![image.clone(); if text.starts_with("Compare") { 2 } else { 1 }],
+                files: vec![],
+            }));
+        }
+        let mut app = App::default();
+        super::super::restore_history(&mut app, &session);
+        assert_eq!(app.messages[0].content, "[Image 3]");
+        assert_eq!(app.messages[1].content, "Compare [Image 3][Image 4]");
+    }
+
+    #[test]
     fn atomic_image_deletion_keeps_ids_and_literal_text() {
         let mut app = App::default();
         let image = Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))

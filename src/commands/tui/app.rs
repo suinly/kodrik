@@ -700,11 +700,8 @@ impl App {
                     self.plan = None;
                     self.plan_completed = false;
                 }
-                self.waiting_messages.push(if self.input_images.is_empty() {
-                    input.clone()
-                } else {
-                    format!("{}\n[Images: {}]", input, self.input_images.len())
-                });
+                self.waiting_messages
+                    .push(super::waiting_summary(&input, self.input_images.len()));
                 if !matches!(self.status, Status::Working) {
                     self.task_started_at = Some(chrono::Utc::now());
                     self.task_finished_at = None;

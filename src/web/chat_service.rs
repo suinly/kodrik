@@ -403,6 +403,11 @@ impl Chat {
             "remote_operations":view.run.as_ref().map(|r| &r.remote_operations),
             "command_approvals":self.sessions.pending_command_approvals(id.as_str()).await.map_err(internal)?,
             "command_audit_mode":self.sessions.command_audit_mode(id.as_str()).await.map_err(internal)?});
+        run["handoff_session_id"] = json!(
+            self.handoff_target(id.as_str(), &view.session)
+                .await
+                .map_err(internal)?
+        );
         // Output budgets must never erase busy/phase or silently discard pending controls.
         for field in ["live", "remote_operations", "compaction"] {
             bound_value(&mut run[field], 32 * 1024);

@@ -650,7 +650,15 @@ fn reset_session(app: &mut App) {
 }
 
 fn waiting_summary(text: &str, images: usize) -> String {
-    if images == 0 {
+    let inline_images = text
+        .split("[Image ")
+        .skip(1)
+        .filter(|part| {
+            part.split_once(']')
+                .is_some_and(|(id, _)| id.parse::<usize>().is_ok_and(|id| id > 0))
+        })
+        .count();
+    if inline_images >= images {
         text.to_owned()
     } else {
         format!("{text}\n[Images: {images}]")
@@ -1007,11 +1015,9 @@ fn restore_history(app: &mut App, session: &Session) {
     app.plan_completed = false;
     for message in session.messages() {
         match message {
-            Message::User(message) => app.push_user_message(if message.images.is_empty() {
-                message.content.clone()
-            } else {
-                format!("{}\n[Images: {}]", message.content, message.images.len())
-            }),
+            Message::User(message) => {
+                app.push_user_message(waiting_summary(&message.content, message.images.len()))
+            }
             Message::Assistant(message) => app.push_kodrik_message(message.content.clone()),
             Message::ToolCall(call) => {
                 show_progress(

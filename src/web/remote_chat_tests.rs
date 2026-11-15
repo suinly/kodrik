@@ -1977,3 +1977,54 @@ async fn remote_model_commands_validate_persist_reset_and_scope() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn remote_handoff_snapshot_reports_target_without_mixing_history() {
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        tools::session_switch::HandoffRequest,
+    };
+    let (_dir, chat, _state, id) = fixture().await;
+    let mut source = chat.sessions.load(&id).await.unwrap().unwrap();
+    let target_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+    chat.sessions
+        .save(&Session::new(target_id.clone()))
+        .await
+        .unwrap();
+    let mut cp = Checkpoint::new(
+        &chat.sessions,
+        &super::web_conversation(id.as_str()),
+        &source,
+    );
+    cp.record.isolated = Some(false);
+    cp.record.pending_handoff = Some(HandoffRequest {
+        create_new: false,
+        session_id: target_id.as_str().to_owned(),
+        context: "continue".into(),
+    });
+    cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
+    let target = cp
+        .apply_handoff(&mut source, &ContextBuilder::new("rules"))
+        .await
+        .unwrap()
+        .unwrap();
+    for snapshot in [
+        chat.remote_snapshot(&id).await.unwrap(),
+        chat.remote_complete_snapshot(&id).await.unwrap(),
+    ] {
+        assert_eq!(snapshot.session_id, id);
+        assert_eq!(
+            snapshot.run.unwrap()["handoff_session_id"],
+            target_id.as_str()
+        );
+        assert!(
+            !snapshot
+                .messages
+                .iter()
+                .any(|row| row.to_string().contains("Session handoff from"))
+        );
+    }
+    let current = chat.remote_complete_snapshot(target.id()).await.unwrap();
+    assert_eq!(current.run.as_ref().unwrap()["busy"], true);
+    assert!(current.run.unwrap()["handoff_session_id"].is_null());
+}

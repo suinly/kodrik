@@ -317,6 +317,36 @@ impl Chat {
         self.snapshot_view(id, view).await
     }
 
+    pub(super) async fn handoff_target(
+        &self,
+        id: &str,
+        source: &Session,
+    ) -> anyhow::Result<Option<SessionId>> {
+        let active = self.sessions.active_id(&web_conversation(id)).await?;
+        let active = if active.as_str() == id {
+            let source_id = id.to_owned();
+            self.sessions.with_connection(move |db| {
+                use rusqlite::OptionalExtension;
+                let target: Option<String> = db.query_row(
+                    "SELECT r.session_id FROM runs r, json_each(r.payload,'$.handoff_sources') h
+                     WHERE h.value=?1 AND r.session_id<>?1
+                     AND (r.conversation_id=json_extract(r.payload,'$.handoff_sources[0]')
+                          OR r.conversation_id='web:'||json_extract(r.payload,'$.handoff_sources[0]'))
+                     ORDER BY r.rowid DESC LIMIT 1", [&source_id], |row| row.get(0)).optional()?;
+                Ok(target.map(SessionId::new))
+            }).await?.unwrap_or(active)
+        } else {
+            active
+        };
+        if active.as_str() != id
+            && let Some(target) = self.sessions.load(&active).await?
+            && crate::agent::session::handoff::eligible(source, &target)
+        {
+            return Ok(Some(active));
+        }
+        Ok(None)
+    }
+
     async fn snapshot_view(
         &self,
         id: &str,
@@ -338,28 +368,7 @@ impl Chat {
         {
             snapshot["messages"] = json!(history(&view.session));
         }
-        let active = self.sessions.active_id(&web_conversation(id)).await?;
-        let active = if active.as_str() == id {
-            let source_id = id.to_owned();
-            self.sessions.with_connection(move |db| {
-                use rusqlite::OptionalExtension;
-                let target: Option<String> = db.query_row(
-                    "SELECT r.session_id FROM runs r, json_each(r.payload,'$.handoff_sources') h
-                     WHERE h.value=?1 AND r.session_id<>?1
-                     AND (r.conversation_id=json_extract(r.payload,'$.handoff_sources[0]')
-                          OR r.conversation_id='web:'||json_extract(r.payload,'$.handoff_sources[0]'))
-                     ORDER BY r.rowid DESC LIMIT 1", [&source_id], |row| row.get(0)).optional()?;
-                Ok(target.map(SessionId::new))
-            }).await?.unwrap_or(active)
-        } else {
-            active
-        };
-        if active.as_str() != id
-            && let Some(target) = self.sessions.load(&active).await?
-            && crate::agent::session::handoff::eligible(&view.session, &target)
-        {
-            snapshot["handoff_session_id"] = json!(active.as_str());
-        }
+        snapshot["handoff_session_id"] = json!(self.handoff_target(id, &view.session).await?);
         snapshot["read_revision"] = json!(crate::agent::session::activity::read_revision(
             &view.session
         ));

@@ -96,6 +96,7 @@ async fn prepare_reconnect(
 }
 
 struct Binding {
+    session: SessionId,
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
     environment: Arc<LocalEnvironment>,
@@ -126,7 +127,7 @@ impl Binding {
                 "Local environment needs approval"
             );
             let mut client = RemoteClient::connect(config).await?;
-            let key = client.attach(session, manifest).await?;
+            let key = client.attach(session.clone(), manifest).await?;
             let (stop, receiver) = oneshot::channel();
             let (ready, started) = oneshot::channel();
             let local = environment.clone();
@@ -142,6 +143,7 @@ impl Binding {
                     })
             });
             let binding = Self {
+                session,
                 stop: Some(stop),
                 task,
                 environment: environment.clone(),
@@ -311,6 +313,67 @@ struct Remote {
     root: PathBuf,
 }
 impl Remote {
+    async fn receive_update(
+        &mut self,
+        app: &mut App,
+        epoch: u64,
+        update: Update,
+    ) -> anyhow::Result<()> {
+        if !current_observer(self.epoch, epoch) {
+            return Ok(());
+        }
+        let (snapshot, resynchronized) = match update {
+            Update::Snapshot(snapshot) => (snapshot, false),
+            Update::Resynchronized(snapshot) => (snapshot, true),
+            Update::Disconnected(reason) => {
+                self.server_connected = false;
+                app.set_copy_notice(format!(
+                    "Server disconnected: {reason}; reconnecting (no local fallback)"
+                ));
+                return Ok(());
+            }
+        };
+        self.server_connected = true;
+        let snapshot = with_scrollback(&self.snapshot, snapshot);
+        let accepted = if resynchronized {
+            self.projection.resynchronize(app, &snapshot)?
+        } else {
+            self.projection.accept(app, &snapshot)?
+        };
+        if !accepted {
+            return Ok(());
+        }
+        self.snapshot = snapshot;
+        // Follow observation only: a handoff never grants or rebinds laptop access.
+        for _ in 0..4 {
+            let Some(id) = self
+                .snapshot
+                .run
+                .as_ref()
+                .and_then(|run| run["handoff_session_id"].as_str())
+                .filter(|id| *id != self.session.as_str())
+                .map(SessionId::new)
+            else {
+                break;
+            };
+            let snapshot = self.chat.snapshot(&id).await?;
+            self.observer.take();
+            self.epoch += 1;
+            self.session = id;
+            self.projection = Projection::default();
+            self.snapshot = snapshot;
+            app.cancel_message_navigation();
+            app.sessions = None;
+            self.projection.accept(app, &self.snapshot)?;
+            self.observer = Some(observe(
+                self.chat.clone(),
+                self.session.clone(),
+                self.epoch,
+                self.updates.clone(),
+            ));
+        }
+        Ok(())
+    }
     fn load_sessions(&mut self, app: &mut App, reset: bool) {
         if reset {
             self.session_list.take();
@@ -921,30 +984,16 @@ async fn event_loop(
                 app.animation_frame=app.animation_frame.wrapping_add(1);
                 if remote.binding.as_ref().is_some_and(|binding|binding.task.is_finished()){
                     let manifest=remote.binding.as_ref().unwrap().environment.manifest()?;
+                    let session=remote.binding.as_ref().unwrap().session.clone();
                     let result=remote.detach().await;
                     remote.binding_failed=true;
                     report_disconnect(app,result);
-                    remote.reconnect=Some(reconnect(remote.config.clone(),remote.root.clone(),remote.session.clone(),manifest));
+                    remote.reconnect=Some(reconnect(remote.config.clone(),remote.root.clone(),session,manifest));
                 }
             },
             Some((epoch,update))=updates.recv()=>{
-                if !current_observer(remote.epoch,epoch) {continue;}
-                match update {
-                Update::Snapshot(snapshot)=>{
-                    remote.server_connected=true;
-                    let snapshot=with_scrollback(&remote.snapshot,snapshot);
-                    if remote.projection.accept(app,&snapshot)? {remote.snapshot=snapshot;}
-                }
-                Update::Resynchronized(snapshot)=>{
-                    remote.server_connected=true;
-                    let snapshot=with_scrollback(&remote.snapshot,snapshot);
-                    if remote.projection.resynchronize(app,&snapshot)? {remote.snapshot=snapshot;}
-                }
-                Update::Disconnected(reason)=>{
-                    remote.server_connected=false;
-                    app.set_copy_notice(format!("Server disconnected: {reason}; reconnecting (no local fallback)"));
-                }
-            }},
+                remote.receive_update(app,epoch,update).await?;
+            },
             Some(copy)=copies.join_next(),if !copies.is_empty()=>{
                 if let Ok((id,result))=copy {complete_copy(app,id,result,|sequence|tui.copy_to_terminal(sequence));}
             },
@@ -1020,6 +1069,102 @@ fn report_disconnect(app: &mut App, result: anyhow::Result<()>) {
 #[cfg(test)]
 mod binding_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handoff_update_follows_target_and_fences_source_without_granting_access() {
+        use axum::{Json, Router, routing::get};
+        use serde_json::json;
+        let directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = RemoteConfig {
+            server: format!("http://{}/", listener.local_addr().unwrap())
+                .parse()
+                .unwrap(),
+            credential_file: directory.path().join("private/device"),
+            label: "test".into(),
+            allow_shell: false,
+            skill_roots: vec![],
+            mcp: Default::default(),
+            optional_mcp: vec![],
+        };
+        crate::remote::client::Credential {
+            device_id: uuid::Uuid::new_v4(),
+            token: "test".into(),
+        }
+        .save(&config.credential_file)
+        .unwrap();
+        let target: RemoteChatSnapshot = serde_json::from_value(json!({
+            "session_id":"target", "revision":1,"environment_revision":0,"messages":[],
+            "previous_cursor":null,"versions":null,"environment":null,
+            "run":{"busy":true,"live":{"current":{"status":"Active","text":"target working"}}}
+        }))
+        .unwrap();
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/api/remote/chat/sessions/target",
+                    get(move || {
+                        let target = target.clone();
+                        async move { Json(target) }
+                    }),
+                ),
+            )
+            .into_future(),
+        );
+        let source: RemoteChatSnapshot = serde_json::from_value(json!({
+            "session_id":"source","revision":9,"environment_revision":0,"messages":[],
+            "previous_cursor":null,"versions":null,"environment":null,
+            "run":{"busy":false,"phase":"Completed","handoff_session_id":"target"}
+        }))
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(4);
+        let mut remote = Remote {
+            config: config.clone(),
+            chat: ChatClient::new(&config).unwrap(),
+            session: SessionId::new("source"),
+            binding: None,
+            reconnect: None,
+            pending: None,
+            server_connected: true,
+            binding_failed: false,
+            observer: None,
+            updates: tx,
+            epoch: 3,
+            projection: Projection::default(),
+            snapshot: source.clone(),
+            uncertain: None,
+            session_list: None,
+            sessions_offset: 0,
+            root: directory.path().into(),
+        };
+        let mut app = App::default();
+        remote
+            .receive_update(&mut app, 3, Update::Snapshot(source.clone()))
+            .await
+            .unwrap();
+        assert_eq!(remote.session.as_str(), "target");
+        assert_eq!(remote.epoch, 4);
+        assert!(matches!(app.status, Status::Working));
+        assert!(
+            app.messages
+                .iter()
+                .any(|row| row.content == "target working")
+        );
+        assert!(remote.binding.is_none() && remote.pending.is_none());
+        remote
+            .receive_update(&mut app, 3, Update::Resynchronized(source))
+            .await
+            .unwrap();
+        remote
+            .receive_update(&mut app, 3, Update::Disconnected("old stream".into()))
+            .await
+            .unwrap();
+        assert_eq!(remote.session.as_str(), "target");
+        assert!(remote.server_connected);
+        assert!(matches!(app.status, Status::Working));
+        server.abort();
+    }
 
     #[tokio::test]
     async fn reconnect_opens_fresh_binding_and_drop_cancels_pending_retry() {
@@ -1199,6 +1344,7 @@ mod binding_tests {
             local.close().await
         });
         let mut binding = Binding {
+            session: SessionId::new("same"),
             stop: Some(stop),
             task,
             environment,
