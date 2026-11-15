@@ -27,6 +27,7 @@ export async function componentPage(name,props={}) {
       const {h}=VueForTests;
       app.component('UButton',{props:['label','loading','disabled','type'],setup:(p,{slots,attrs})=>()=>h('button',{...attrs,type:p.type||'button',disabled:p.disabled||p.loading},p.label||slots.default?.())});
       app.component('UInput',{props:['modelValue'],emits:['update:modelValue'],setup:(p,{emit,attrs})=>()=>h('input',{...attrs,value:p.modelValue,onInput:e=>emit('update:modelValue',e.target.value)})});
+      app.component('UTextarea',{props:['modelValue'],emits:['update:modelValue'],setup:(p,{emit,attrs})=>()=>h('textarea',{...attrs,value:p.modelValue,onInput:e=>emit('update:modelValue',e.target.value)})});
       app.component('UCheckbox',{props:['modelValue','label'],emits:['update:modelValue'],setup:(p,{emit})=>()=>h('label',[h('input',{type:'checkbox',checked:p.modelValue,onChange:e=>emit('update:modelValue',e.target.checked)}),p.label])});
       for(const name of ['UFormField','UBadge']) app.component(name,{props:['label'],setup:(p,{slots})=>()=>h('div',[p.label,slots.default?.()])});
       for(const name of ['CommandAuditMenu','PushSettings','USeparator']) app.component(name,{render:()=>null});

@@ -274,6 +274,7 @@ base_url = "https://pages.example.com"
 | `listen` | `"0.0.0.0:8080"` | Internal HTTP socket address; numeric IP and port |
 | `base_url` | None | Required when enabled; external HTTPS URL, optionally with a path prefix |
 | `trusted_proxies` | `[]` | Exact proxy socket IPs permitted to supply a single client IP in `X-Forwarded-For`; never trust arbitrary clients |
+| `max_event_streams_per_user` | `4` | Concurrent live chat connections per user, shared by web tabs and Chrome sidepanels; integer 1–64. The server-wide ceiling remains 64. Restart to apply. |
 
 `base_url` cannot contain credentials, query or fragment. Percent-encoded path
 prefixes and double-slash paths are unsupported. HTTP is permitted only for localhost or loopback
@@ -321,6 +322,26 @@ This override applies only to CLI/TUI and the owner's private chat. Isolated cha
 sessions retain their saved snapshots. Restart and use `/new` to load changes.
 
 ## Editing the complete configuration through the web API
+
+The web settings page uses a sectioned form for all supported configuration fields,
+including defaults, optional values, named providers, Telegram gateways and MCP
+servers/headers. Desktop navigation and a mobile section selector show one section
+at a time without discarding edits in other sections. Less common fields are under
+Advanced settings; named connections are expandable cards. Technical keys can be
+shown with Show configuration keys. A sticky save bar saves the complete form.
+Secrets use password inputs; the configuration is loaded only
+after explicit owner disclosure and is never saved in browser storage.
+
+The form uses owner-only `GET /api/config/form`, returning `{values, revision}`.
+`values` is the structured configuration with effective defaults and original
+unrecognized/legacy keys retained. `PUT /api/config/form` accepts the same shape;
+JSON null means an absent optional value. The same origin, revision, validation,
+body-size, symlink, backup and permissions rules described below apply. Invalid
+saved configuration returns 422 on form reads. Saving the form reformats TOML and
+removes comments; the previous original source is retained in `config.toml.bak`.
+Unknown keys are retained by the form roundtrip, but are not presented as supported
+settings. The raw-source API remains available for compatible clients.
+
 
 The owner-only `GET /api/config` returns JSON with `config` (the complete literal
 TOML source, including comments and **all secrets**) and `revision` (the SHA-256

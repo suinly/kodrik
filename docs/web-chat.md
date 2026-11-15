@@ -434,8 +434,9 @@ room for that input. Stop cancels the current run, including pending steering
 bound to it. Independent follow-ups saved by older clients remain paused in the
 queue; retries preserve each saved submission's original admission mode.
 
-SSE subscriptions have a separate pool of 64 streams and a limit of four per
-user across all browser tokens and conversations. Owner-password and owner-Telegram
+SSE subscriptions have a separate pool of 64 streams.
+`web.max_event_streams_per_user` sets the per-user limit across all browser tokens
+and conversations (default `4`, valid range `1..=64`; restart the gateway to apply). Owner-password and owner-Telegram
 access share the same stream limit. Excess streams receive 429 per user or 503
 when the stream pool is full; disconnecting releases capacity. Streams do not
 occupy the separate pool of 64 ordinary HTTP responses, so login and normal API

@@ -2,14 +2,26 @@
 import {base, messageOf} from '../utils/api'
 import {settingsRequest, restartGateway, type ConfigDocument, type GatewayStatus} from '../utils/settings'
 import {t} from '../utils/i18n'
+import ConfigFieldEditor from './ConfigFieldEditor.vue'
+import {configSchema,type ConfigValues} from '../utils/configForm'
 
 const props=defineProps<{owner:boolean}>()
 const emit=defineEmits<{dirty:[value:boolean]}>()
-const document=ref<ConfigDocument|null>(null),text=ref(''),revealed=ref(false)
+const document=ref<ConfigDocument|null>(null),values=ref<ConfigValues>({}),revealed=ref(false)
 const loading=ref(false),saving=ref(false),restarting=ref(false),confirmRestart=ref(false)
 const gateway=ref<GatewayStatus|null>(null)
 const error=ref(''),gatewayError=ref(''),notice=ref(''),restartNotice=ref('')
-const dirty=computed(()=>document.value!==null && text.value!==document.value.config)
+const dirty=computed(()=>document.value!==null && JSON.stringify(values.value)!==JSON.stringify(document.value.values))
+const selected=ref('provider'),showKeys=ref(false)
+const sections=[
+  {id:'provider',label:'Модели',description:'Модели и ключи доступа к провайдерам ИИ.',fields:['provider']},
+  {id:'gateway',label:'Telegram',description:'Боты Telegram и владелец шлюза.',fields:['gateway','owner']},
+  {id:'behavior',label:'Поведение',description:'Общение, инициативные сообщения и работа с контекстом.',fields:['companion','sessions','system_prompt']},
+  {id:'research',label:'Поиск',description:'Поисковый сервис и чтение веб-страниц.',fields:['research']},
+  {id:'web',label:'Веб-сервер',description:'Адрес сервера и подключения веб-чата.',fields:['web']},
+  {id:'mcp',label:'Интеграции',description:'Внешние инструменты через серверы MCP.',fields:['mcp']},
+]
+const currentSection=computed(()=>sections.find(section=>section.id===selected.value)!)
 const controller=new AbortController()
 watch(dirty,value=>emit('dirty',value),{flush:'sync'})
 
@@ -18,8 +30,8 @@ async function load() {
   if(dirty.value && !window.confirm(t('Отбросить несохранённые изменения конфигурации?'))) return
   loading.value=true;error.value='';notice.value=''
   try {
-    document.value=await settingsRequest<ConfigDocument>(base,'config','GET',undefined,controller.signal)
-    text.value=document.value.config;revealed.value=true
+    document.value=await settingsRequest<ConfigDocument>(base,'config/form','GET',undefined,controller.signal)
+    values.value=JSON.parse(JSON.stringify(document.value.values));revealed.value=true
   } catch(reason) {if(!controller.signal.aborted) error.value=messageOf(reason)}
   finally {loading.value=false}
 }
@@ -33,8 +45,8 @@ async function save() {
   if(!dirty.value || !document.value || saving.value || restarting.value) return
   saving.value=true;error.value='';notice.value=''
   try {
-    document.value=await settingsRequest<ConfigDocument>(base,'config','PUT',{config:text.value,revision:document.value.revision},controller.signal)
-    text.value=document.value.config;notice.value=t('Конфигурация сохранена. Изменения вступят в силу после перезапуска шлюза.')
+    document.value=await settingsRequest<ConfigDocument>(base,'config/form','PUT',{values:values.value,revision:document.value.revision},controller.signal)
+    values.value=JSON.parse(JSON.stringify(document.value.values));notice.value=t('Конфигурация сохранена. Изменения вступят в силу после перезапуска шлюза.')
   } catch(reason) {if(!controller.signal.aborted) error.value=messageOf(reason)}
   finally {saving.value=false}
 }
@@ -58,28 +70,54 @@ onBeforeUnmount(()=>{controller.abort();window.removeEventListener('beforeunload
 </script>
 
 <template>
-  <section :aria-label="t('Настройки')" class="mx-auto w-full max-w-4xl space-y-8 p-4 sm:p-8">
+  <section :aria-label="t('Настройки')" class="mx-auto w-full max-w-6xl space-y-8 p-4 sm:p-8">
     <p v-if="!owner" role="alert" class="text-sm text-error">{{ t('Настройки доступны только владельцу.') }}</p>
     <template v-else>
       <section class="space-y-4" :aria-label="t('Конфигурация шлюза')">
         <h2 class="text-lg font-semibold text-highlighted">{{ t('Конфигурация шлюза') }}</h2>
-        <p class="text-sm text-muted">{{ t('Полная конфигурация редактируется как исходный TOML, а не набор отдельных полей. Все ключи и комментарии сохраняются. Изменения применяются после перезапуска.') }}</p>
-        <p class="text-sm text-warning">{{ t('После раскрытия будут видны все ключи, включая пароли и токены. Не показывайте экран посторонним. Конфигурация не сохраняется в хранилище браузера.') }}</p>
+        <p class="text-sm text-muted">{{ t('Все настройки доступны в форме, включая необязательные поля. Значения по умолчанию загружаются с сервера. Изменения применяются после перезапуска.') }}</p>
+        <details class="text-sm text-muted">
+          <summary class="cursor-pointer">{{ t('Хранение и безопасность') }}</summary>
+          <div class="mt-3 space-y-2">
+            <p>{{ t('Конфигурация загружается только по запросу. Пароли, токены и заголовки скрыты. Значения не сохраняются в хранилище браузера.') }}</p>
+            <p>{{ t('При сохранении TOML переформатируется, комментарии не сохраняются. Исходник остаётся в config.toml.bak.') }}</p>
+          </div>
+        </details>
         <div class="flex flex-wrap gap-2">
           <UButton v-if="!revealed" :label="t('Показать полную конфигурацию')" icon="i-lucide-eye" color="neutral" variant="soft" :loading="loading" :disabled="restarting" @click="document?revealed=true:load()" />
           <UButton v-else :label="t('Скрыть конфигурацию')" icon="i-lucide-eye-off" color="neutral" variant="soft" @click="revealed=false" />
           <UButton v-if="document" :label="t('Загрузить с сервера')" color="neutral" variant="ghost" :loading="loading" :disabled="saving || restarting" @click="load" />
         </div>
-        <form v-if="revealed && document" class="space-y-3" @submit.prevent="save">
-          <label for="settings-toml" class="block text-sm font-medium">{{ t('Полная конфигурация TOML') }}</label>
-          <textarea id="settings-toml" v-model="text" :disabled="saving || restarting || loading" :spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" wrap="off" class="block min-h-80 w-full resize-y rounded-md border border-default bg-default p-3 font-mono text-sm focus:outline-2 focus:outline-primary" />
-          <div class="flex flex-wrap items-center gap-3">
-            <UButton type="submit" :label="t('Сохранить конфигурацию')" :loading="saving" :disabled="!dirty || restarting || loading" />
-            <span v-if="dirty" class="text-sm text-warning">{{ t('Есть несохранённые изменения.') }}</span>
+        <UCheckbox v-if="revealed" v-model="showKeys" :label="t('Показывать ключи конфигурации')" />
+        <form v-if="revealed && document" class="space-y-6" novalidate @submit.prevent="save">
+          <div class="grid items-start gap-6 md:grid-cols-[12rem_minmax(0,1fr)]">
+            <nav :aria-label="t('Разделы настроек')" class="space-y-1 md:sticky md:top-4">
+              <label class="block md:hidden">
+                <span class="mb-2 block text-sm text-muted">{{ t('Разделы настроек') }}</span>
+                <select v-model="selected" class="w-full rounded-md border border-default bg-default p-3">
+                  <option v-for="section in sections" :key="section.id" :value="section.id">{{ t(section.label) }}</option>
+                </select>
+              </label>
+              <button v-for="section in sections" :key="section.id" type="button" :aria-current="selected===section.id?'page':undefined" class="hidden w-full rounded-md px-3 py-2.5 text-left text-sm transition-colors md:block" :class="selected===section.id?'bg-primary/10 font-semibold text-primary':'text-muted hover:bg-elevated hover:text-highlighted'" @click="selected=section.id">{{ t(section.label) }}</button>
+            </nav>
+            <section class="min-w-0 space-y-6" :aria-label="t(currentSection.label)">
+              <header class="space-y-2">
+                <h3 class="text-xl font-semibold text-highlighted">{{ t(currentSection.label) }}</h3>
+                <p class="text-sm leading-relaxed text-muted">{{ t(currentSection.description) }}</p>
+              </header>
+              <ConfigFieldEditor v-for="key in currentSection.fields" :key="key" :model-value="values[key]" :schema="configSchema.fields![key]!" :path="key" :show-keys="showKeys" :disabled="saving || restarting || loading" @update:model-value="values[key]=$event" />
+            </section>
           </div>
+          <footer class="sticky bottom-0 z-10 space-y-3 rounded-lg border border-default bg-default/95 p-4 shadow-sm backdrop-blur">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <span class="text-sm" :class="dirty?'text-warning':'text-muted'">{{ t(dirty?'Есть несохранённые изменения.':'Нет несохранённых изменений.') }}</span>
+              <UButton type="submit" :label="t('Сохранить конфигурацию')" :loading="saving" :disabled="!dirty || restarting || loading" />
+            </div>
+            <p v-if="error" role="alert" class="text-sm text-error">{{ error }}</p>
+            <p v-if="notice" role="status" class="text-sm text-success">{{ notice }}</p>
+          </footer>
         </form>
-        <p v-if="error" role="alert" class="text-sm text-error">{{ error }}</p>
-        <p v-if="notice" role="status" class="text-sm text-success">{{ notice }}</p>
+        <p v-if="error && !revealed" role="alert" class="text-sm text-error">{{ error }}</p>
       </section>
       <USeparator />
       <section :aria-label="t('Перезапуск шлюза')" class="space-y-4">

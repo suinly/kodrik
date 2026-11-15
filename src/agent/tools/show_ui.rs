@@ -121,6 +121,7 @@ mod tests {
             enabled: true,
             listen: "127.0.0.1:0".into(),
             base_url: Some("http://127.0.0.1/".into()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();
@@ -148,6 +149,7 @@ mod tests {
             enabled: true,
             listen: "127.0.0.1:0".into(),
             base_url: Some("http://127.0.0.1/kodrik/".into()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();

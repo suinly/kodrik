@@ -2129,6 +2129,7 @@ mod tests {
             enabled: true,
             listen: "127.0.0.1:0".into(),
             base_url: Some(base.clone()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();
@@ -2151,6 +2152,7 @@ mod tests {
             enabled: true,
             listen: address.to_string(),
             base_url: Some(format!("http://{address}/kodrik/")),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();
@@ -2195,6 +2197,7 @@ mod tests {
             enabled: true,
             listen: "127.0.0.1:0".into(),
             base_url: Some(base.clone()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();

@@ -119,6 +119,7 @@ struct ConfigurationState {
 pub(super) fn routes(settings: Settings, data: &Path, auth: AuthStore) -> Router {
     Router::new()
         .route("/api/config", get(read).put(update))
+        .route("/api/config/form", get(read_form).put(update_form))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(ConfigurationState {
             settings,
@@ -221,6 +222,144 @@ async fn update(
     .await
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormDocument {
+    values: serde_json::Value,
+    revision: String,
+}
+
+fn form_document(source: &str) -> anyhow::Result<FormDocument> {
+    let config = validate_source(source)?;
+    let mut values = serde_json::to_value(config)?;
+    // Keep unrecognized legacy/extension keys in the form roundtrip as well.
+    let original: toml::Value = toml::from_str(source)?;
+    fn merge(target: &mut serde_json::Value, original: serde_json::Value) {
+        if let (Some(target), serde_json::Value::Object(original)) =
+            (target.as_object_mut(), original)
+        {
+            for (key, value) in original {
+                if let Some(current) = target.get_mut(&key) {
+                    if current.is_object() && value.is_object() {
+                        merge(current, value);
+                    } else {
+                        *current = value;
+                    }
+                } else {
+                    target.insert(key, value);
+                }
+            }
+        }
+    }
+    merge(&mut values, serde_json::to_value(original)?);
+    Ok(FormDocument {
+        values,
+        revision: document(source.to_owned()).revision,
+    })
+}
+
+async fn read_form(State(state): State<ConfigurationState>, headers: HeaderMap) -> Response {
+    if let Err(response) = owner(&state, &headers) {
+        return response;
+    }
+    run(move || {
+        let _lock = CONFIG_LOCK
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Configuration lock unavailable"))?;
+        let source = std::fs::read_to_string(&state.path)?;
+        match form_document(&source) {
+            Ok(form) => Ok(Json(form).into_response()),
+            Err(_) => Ok(failure(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Invalid saved configuration",
+            )),
+        }
+    })
+    .await
+}
+
+async fn update_form(
+    State(state): State<ConfigurationState>,
+    headers: HeaderMap,
+    input: Result<Json<FormDocument>, JsonRejection>,
+) -> Response {
+    if let Err(response) = owner(&state, &headers) {
+        return response;
+    }
+    if !valid_origin(&state.settings, &headers) {
+        return failure(StatusCode::FORBIDDEN, "Invalid origin");
+    }
+    let mut input = match input {
+        Ok(Json(input)) => input,
+        Err(error) => {
+            return failure(
+                if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+                    StatusCode::PAYLOAD_TOO_LARGE
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                "Invalid configuration request",
+            );
+        }
+    };
+    run(move || {
+        // TOML has no null; nullable form fields mean an absent optional value.
+        fn omit_nulls(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    fields.retain(|_, value| !value.is_null());
+                    for value in fields.values_mut() {
+                        omit_nulls(value);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        omit_nulls(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        omit_nulls(&mut input.values);
+        let source = match serde_json::from_value::<toml::Value>(input.values)
+            .map_err(anyhow::Error::from)
+            .and_then(|value| toml::to_string_pretty(&value).map_err(Into::into))
+        {
+            Ok(source) => source,
+            Err(_) => {
+                return Ok(failure(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid configuration values",
+                ));
+            }
+        };
+        if let Err(error) = validate_source(&source) {
+            return Ok(failure(StatusCode::BAD_REQUEST, &error.to_string()));
+        }
+        let _lock = CONFIG_LOCK
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Configuration lock unavailable"))?;
+        if std::fs::symlink_metadata(&state.path)?.is_symlink() {
+            return Ok(failure(
+                StatusCode::BAD_REQUEST,
+                "Configuration is a managed symlink; edit its target on the host",
+            ));
+        }
+        let current = std::fs::read_to_string(&state.path)?;
+        if document(current.clone()).revision != input.revision {
+            return Ok(failure(
+                StatusCode::CONFLICT,
+                "Configuration changed; reload before saving",
+            ));
+        }
+        let saved = form_document(&source)?;
+        persist(&state.path.with_extension("toml.bak"), current.as_bytes())?;
+        persist(&state.path, source.as_bytes())?;
+        Ok(Json(saved).into_response())
+    })
+    .await
+}
+
 fn persist(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let parent = path
         .parent()
@@ -290,15 +429,17 @@ mod tests {
         (dir, app, owner, guest)
     }
 
-    async fn request(
+    async fn request_at(
+        path: &str,
         app: &Router,
         token: &str,
         input: Option<Value>,
         origin: Option<&str>,
     ) -> (StatusCode, Value) {
-        let mut req = Request::builder()
-            .uri("/api/config")
-            .method(if input.is_some() { "PUT" } else { "GET" });
+        let mut req =
+            Request::builder()
+                .uri(path)
+                .method(if input.is_some() { "PUT" } else { "GET" });
         if !token.is_empty() {
             req = req.header("cookie", format!("kodrik_web_session={token}"));
         }
@@ -319,6 +460,131 @@ mod tests {
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, value)
+    }
+
+    async fn request(
+        app: &Router,
+        token: &str,
+        input: Option<Value>,
+        origin: Option<&str>,
+    ) -> (StatusCode, Value) {
+        request_at("/api/config", app, token, input, origin).await
+    }
+
+    #[tokio::test]
+    async fn configuration_form_defaults_roundtrip_and_access() {
+        let (dir, app, owner, guest) = fixture();
+        assert_eq!(
+            request_at("/api/config/form", &app, &guest, None, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, mut form) = request_at("/api/config/form", &app, &owner, None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(form.get("config").is_none());
+        assert_eq!(form["values"]["web"]["listen"], "0.0.0.0:8080");
+        assert_eq!(form["values"]["companion"]["learning_enabled"], true);
+        assert_eq!(
+            form["values"]["provider"]["primary"]["api_key"],
+            "PRIVATE_KEY"
+        );
+        form["values"]["web"]["listen"] = json!("127.0.0.1:9090");
+        form["values"]["system_prompt"] = json!("Custom prompt");
+        assert_eq!(
+            request_at("/api/config/form", &app, &owner, Some(form.clone()), None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, saved) = request_at(
+            "/api/config/form",
+            &app,
+            &owner,
+            Some(form.clone()),
+            Some("http://127.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(saved["values"]["web"]["listen"], "127.0.0.1:9090");
+        let source = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let config = super::validate_source(&source).unwrap();
+        assert_eq!(config.system_prompt.as_deref(), Some("Custom prompt"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
+            SOURCE
+        );
+        assert_eq!(
+            request_at(
+                "/api/config/form",
+                &app,
+                &owner,
+                Some(form),
+                Some("http://127.0.0.1")
+            )
+            .await
+            .0,
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn configuration_form_keeps_unknown_keys_and_deletes_optional_values() {
+        let (dir, app, owner, _) = fixture();
+        let source = format!("{SOURCE}custom_provider_key='keep'\n[custom_section]\nflag=true\n");
+        std::fs::write(dir.path().join("config.toml"), &source).unwrap();
+        let (_, mut form) = request_at("/api/config/form", &app, &owner, None, None).await;
+        assert_eq!(form["values"]["custom_section"]["flag"], true);
+        form["values"]["provider"]["primary"]["api_base"] = json!("https://example.com/v1");
+        form["values"]["system_prompt"] = json!("prompt");
+        let (status, mut form) = request_at(
+            "/api/config/form",
+            &app,
+            &owner,
+            Some(form),
+            Some("http://127.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        form["values"]["provider"]["primary"]["api_base"] = Value::Null;
+        form["values"]["system_prompt"] = Value::Null;
+        let (status, form) = request_at(
+            "/api/config/form",
+            &app,
+            &owner,
+            Some(form),
+            Some("http://127.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(form["values"]["provider"]["primary"]["api_base"].is_null());
+        assert!(form["values"]["system_prompt"].is_null());
+        assert_eq!(
+            form["values"]["provider"]["primary"]["custom_provider_key"],
+            "keep"
+        );
+        assert_eq!(form["values"]["custom_section"]["flag"], true);
+    }
+
+    #[tokio::test]
+    async fn configuration_form_rejects_invalid_without_secret_diagnostics() {
+        let (dir, app, owner, _) = fixture();
+        let (_, mut form) = request_at("/api/config/form", &app, &owner, None, None).await;
+        form["values"] = json!({"provider":{"primary":{"type":"openai","model":"","api_key":"PRIVATE_KEY"}},"gateway":{}});
+        let (status, error) = request_at(
+            "/api/config/form",
+            &app,
+            &owner,
+            Some(form),
+            Some("http://127.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!error.to_string().contains("PRIVATE_KEY"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
+            SOURCE
+        );
     }
 
     #[tokio::test]

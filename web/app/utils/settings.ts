@@ -1,6 +1,7 @@
+import type {ConfigValues} from './configForm'
 import {locale, t} from './i18n.ts'
 
-export type ConfigDocument = {config:string;revision:string}
+export type ConfigDocument = {values:ConfigValues;revision:string}
 export type GatewayStatus = {instance_id:string;pid:number;restart_available:boolean}
 
 // Config errors deliberately do not use the chat-specific checkedFetch messages.
@@ -11,7 +12,7 @@ export async function settingsRequest<T>(base:URL,path:string,method='GET',body?
   })
   if(!response.ok) {
     if(response.status===409 && path==='gateway/restart') return undefined as T
-    if(response.status===409 && path==='config') throw new Error(t('Конфигурация изменилась на сервере. Скопируйте свои правки, затем загрузите актуальную версию и объедините изменения.'))
+    if(response.status===409 && (path==='config' || path==='config/form')) throw new Error(t('Конфигурация изменилась на сервере. Ваши изменения сохранены в форме. Загрузите актуальную версию, чтобы отбросить их, или перенесите правки вручную.'))
     if(response.status===400 || response.status===422) {
       const detail=await response.json().catch(()=>null)
       // The server sanitizes validation errors; render only as text, never HTML.

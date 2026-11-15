@@ -909,6 +909,7 @@ mod tests {
             enabled: true,
             listen: "0.0.0.0:8080".into(),
             base_url: Some("https://pages.example.com/kodrik/".into()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();

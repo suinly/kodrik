@@ -947,6 +947,7 @@ impl Fixture {
             enabled: true,
             listen: "127.0.0.1:0".into(),
             base_url: Some(base.clone()),
+            ..Default::default()
         })
         .unwrap()
         .unwrap();
@@ -1107,6 +1108,7 @@ async fn chat_slow_multipart_upload_outlives_text_request_timeout() {
         enabled: true,
         listen: "127.0.0.1:0".into(),
         base_url: Some(f.base.clone()),
+        ..Default::default()
     })
     .unwrap()
     .unwrap();

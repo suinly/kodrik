@@ -100,6 +100,7 @@ mod tests {
             enabled: true,
             listen: "0.0.0.0:8080".into(),
             base_url: Some(url.into()),
+            ..Default::default()
         };
         let settings = Settings::from_config(&config("https://pages.example.com/kodrik"))
             .unwrap()

@@ -40,6 +40,7 @@ pub async fn run(config: &Config) -> anyhow::Result<bool> {
             );
             let chat = crate::web::chat::Chat::new(&app.agent_runner, &data)
                 .await?
+                .with_event_stream_limit(config.web.max_event_streams_per_user)?
                 .with_datasets(app.datasets.clone())
                 .with_users(users.clone())
                 .with_push(settings.clone(), crate::web::auth::AuthStore::new(&data))

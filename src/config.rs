@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use anyhow::Context;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub(crate) fn data_dir() -> anyhow::Result<PathBuf> {
     Ok(std::env::home_dir()
@@ -9,7 +9,7 @@ pub(crate) fn data_dir() -> anyhow::Result<PathBuf> {
         .join(".kodrik"))
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     pub owner: Option<OwnerConfig>,
     pub system_prompt: Option<String>,
@@ -27,7 +27,7 @@ pub struct Config {
     pub provider: HashMap<String, ProviderConfig>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum McpServerConfig {
     Http {
@@ -43,14 +43,14 @@ impl std::fmt::Debug for McpServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct OwnerConfig {
     pub interface: String,
     pub user_id: std::num::NonZeroU64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResearchConfig {
     pub searxng_url: Option<String>,
@@ -120,9 +120,11 @@ impl Config {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebConfig {
+    #[serde(deserialize_with = "deserialize_max_event_streams_per_user")]
+    pub max_event_streams_per_user: usize,
     pub trusted_proxies: Vec<std::net::IpAddr>,
     pub enabled: bool,
     pub listen: String,
@@ -133,6 +135,7 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             trusted_proxies: Vec::new(),
+            max_event_streams_per_user: 4,
             enabled: false,
             listen: "0.0.0.0:8080".into(),
             base_url: None,
@@ -140,7 +143,19 @@ impl Default for WebConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+fn deserialize_max_event_streams_per_user<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<usize, D::Error> {
+    let value = usize::deserialize(deserializer)?;
+    if !(1..=64).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "web.max_event_streams_per_user must be between 1 and 64",
+        ));
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct SessionsConfig {
     pub restart_limit: u32,
     pub compact_threshold_tokens: u64,
@@ -212,7 +227,7 @@ fn deserialize_compact_threshold<'de, D: serde::Deserializer<'de>>(
     Ok(value)
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompanionConfig {
     pub learning_enabled: bool,
@@ -316,7 +331,7 @@ impl Config {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum GatewayConfig {
     Telegram {
@@ -330,7 +345,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ProviderConfig {
     OpenAi {
@@ -342,6 +357,35 @@ pub enum ProviderConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn web_event_stream_limit_defaults_and_custom_value() {
+        let config: super::Config = toml::from_str("[gateway]\n[provider]").unwrap();
+        assert_eq!(config.web.max_event_streams_per_user, 4);
+        let web: super::WebConfig = toml::from_str("max_event_streams_per_user = 2").unwrap();
+        assert_eq!(web.max_event_streams_per_user, 2);
+    }
+
+    #[test]
+    fn web_event_stream_limit_rejects_invalid_values() {
+        for value in ["0", "-1", "65", "9223372036854775807", "1.5", "'2'"] {
+            assert!(
+                toml::from_str::<super::WebConfig>(&format!(
+                    "max_event_streams_per_user = {value}"
+                ))
+                .is_err(),
+                "{value}"
+            );
+        }
+        for value in [1, 64] {
+            assert!(
+                toml::from_str::<super::WebConfig>(&format!(
+                    "max_event_streams_per_user = {value}"
+                ))
+                .is_ok()
+            );
+        }
+    }
+
     #[test]
     fn mcp_rejects_unsupported_transport_and_missing_url() {
         for server in [

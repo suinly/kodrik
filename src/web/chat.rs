@@ -75,6 +75,7 @@ pub(crate) struct Chat {
     title_jobs: Arc<Mutex<HashSet<String>>>,
     capacity: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    max_event_streams_per_user: usize,
     attachment_directory: std::path::PathBuf,
     users: Option<Arc<crate::users::UserSpaces>>,
     user_chats: Arc<Mutex<HashMap<u64, Chat>>>,
@@ -107,7 +108,11 @@ impl Chat {
             workers_done: Default::default(),
             title_jobs: Default::default(),
             capacity: Arc::new(Semaphore::new(4)),
-            streams: Arc::new(Semaphore::new(4)),
+            streams: Arc::new(Semaphore::new(
+                crate::config::WebConfig::default().max_event_streams_per_user,
+            )),
+            max_event_streams_per_user: crate::config::WebConfig::default()
+                .max_event_streams_per_user,
             attachment_directory: data.join("web/attachments"),
             users: None,
             user_chats: Default::default(),
@@ -129,6 +134,16 @@ impl Chat {
             }
         }
         Ok(chat)
+    }
+
+    pub(crate) fn with_event_stream_limit(mut self, limit: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            (1..=64).contains(&limit),
+            "web.max_event_streams_per_user must be between 1 and 64"
+        );
+        self.max_event_streams_per_user = limit;
+        self.streams = Arc::new(Semaphore::new(limit));
+        Ok(self)
     }
 
     pub(crate) fn with_users(mut self, users: Arc<crate::users::UserSpaces>) -> Self {
@@ -189,6 +204,7 @@ impl Chat {
         let app = users.app(id).await?;
         let mut chat = Chat::new(&app.agent_runner, &users.directory(id))
             .await?
+            .with_event_stream_limit(self.max_event_streams_per_user)?
             .with_datasets(app.datasets.clone());
         chat.push = self.push.clone();
         chats.insert(id, chat.clone());

@@ -3,26 +3,26 @@ import assert from 'node:assert/strict'
 import {settingsRequest, restartGateway} from '../app/utils/settings.ts'
 
 const base=new URL('https://example.test/nested/')
-test('config save preserves raw TOML and revision and bypasses caches',async()=>{
+test('form save preserves structured values and revision and bypasses caches',async()=>{
   const original=globalThis.fetch
-  const body={config:'# comment\nsecret = "token"\n',revision:'r1'}
+  const body={values:{web:{enabled:true},future:{keep:'untouched'}},revision:'r1'}
   try {
     globalThis.fetch=async(url,init)=>{
-      assert.equal(url.href,'https://example.test/nested/api/config')
+      assert.equal(url.href,'https://example.test/nested/api/config/form')
       assert.equal(init.cache,'no-store');assert.equal(init.method,'PUT')
       assert.deepEqual(JSON.parse(init.body),body)
       return Response.json({...body,revision:'r2'})
     }
-    assert.deepEqual(await settingsRequest(base,'config','PUT',body),{...body,revision:'r2'})
+    assert.deepEqual(await settingsRequest(base,'config/form','PUT',body),{...body,revision:'r2'})
   } finally {globalThis.fetch=original}
 })
 test('config conflicts have settings-specific guidance, validation is text not HTML',async()=>{
   const original=globalThis.fetch
   try {
     globalThis.fetch=async()=>Response.json({error:'dialog busy'},{status:409})
-    await assert.rejects(settingsRequest(base,'config','PUT',{}),/changed|измен/)
+    await assert.rejects(settingsRequest(base,'config/form','PUT',{}),/changed|измен/)
     globalThis.fetch=async()=>Response.json({error:'Invalid TOML (line 3)'},{status:400})
-    await assert.rejects(settingsRequest(base,'config','PUT',{}),/Invalid TOML \(line 3\)/)
+    await assert.rejects(settingsRequest(base,'config/form','PUT',{}),/Invalid TOML \(line 3\)/)
   } finally {globalThis.fetch=original}
 })
 test('restart waits for different instance, not merely a healthy HTTP response',async()=>{
@@ -99,4 +99,34 @@ test('accepted restart retains the server instance baseline',async()=>{
   globalThis.fetch=async()=>Response.json({instance_id:'B'},{status:202})
   assert.deepEqual(await settingsRequest(base,'gateway/restart','POST'),{instance_id:'B'})
  } finally {globalThis.fetch=original}
+})
+
+test('configuration labels follow UI language without translating user names or keys',async()=>{
+ const {configLabel}=await import('../app/utils/configForm.ts')
+ const {setLanguage}=await import('../app/utils/i18n.ts')
+ try {
+  setLanguage('en')
+  assert.equal(configLabel('max_event_streams_per_user'),'Live connections per user')
+  assert.equal(configLabel('provider'),'AI providers')
+  assert.equal(configLabel('my-provider'),'my-provider')
+  setLanguage('ru')
+  assert.equal(configLabel('max_event_streams_per_user'),'Подключения на пользователя')
+  assert.equal(configLabel('provider'),'Провайдеры ИИ')
+  assert.equal(configLabel('my-provider'),'my-provider')
+ } finally {setLanguage('en')}
+})
+
+test('every supported configuration field has localized behavior help',async()=>{
+ const {configSchema}=await import('../app/utils/configForm.ts')
+ const {setLanguage,t}=await import('../app/utils/i18n.ts')
+ function inspect(field,path='') {
+  if(field.fields) for(const [key,value] of Object.entries(field.fields)) inspect(value,path?`${path}.${key}`:key)
+  if(field.kind==='map') inspect(field.item,`${path}.*`)
+  if(!field.fields && field.kind!=='map' || field.kind==='array') {
+   assert.ok(field.description,`missing help: ${path}`)
+   setLanguage('en');assert.notEqual(t(field.description),field.description,`missing English: ${path}`)
+   setLanguage('ru');assert.equal(t(field.description),field.description)
+  }
+ }
+ try {inspect(configSchema)} finally {setLanguage('en')}
 })

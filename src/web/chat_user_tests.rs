@@ -611,7 +611,8 @@ async fn one_user_stream_limit_preserves_http_capacity() {
     for user in [7, 8, 42] {
         AuthStore::new(data.path()).grant_test_user(user).unwrap();
     }
-    let config = user_config();
+    let mut config = user_config();
+    config.web = toml::from_str("max_event_streams_per_user = 2").unwrap();
     let owner = crate::bootstrap::build_app_at(&config, &data.path().join("users/42"), false)
         .await
         .unwrap();
@@ -622,6 +623,8 @@ async fn one_user_stream_limit_preserves_http_capacity() {
     ));
     let chat = Chat::new(&owner.agent_runner, data.path())
         .await
+        .unwrap()
+        .with_event_stream_limit(config.web.max_event_streams_per_user)
         .unwrap()
         .with_users(users);
     let user_chat = chat.for_user(7).await.unwrap();
@@ -657,7 +660,7 @@ async fn one_user_stream_limit_preserves_http_capacity() {
     };
     let router = crate::web::server::router_with_chat(settings, data.path(), Some(chat));
     let mut streams = Vec::new();
-    for index in 0..4 {
+    for index in 0..2 {
         let response = open_events(&router, &ids[index % 2], &tokens[index % 2]).await;
         assert_eq!(response.status(), StatusCode::OK);
         streams.push(response);
@@ -680,7 +683,7 @@ async fn one_user_stream_limit_preserves_http_capacity() {
             .status(),
         StatusCode::OK
     );
-    for index in 0..4 {
+    for index in 0..2 {
         let response = open_events(&router, &owner_id, &owner_tokens[index % 2]).await;
         assert_eq!(response.status(), StatusCode::OK);
         streams.push(response);
