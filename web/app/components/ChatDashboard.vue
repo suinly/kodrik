@@ -258,13 +258,14 @@ watch(webhookTab,()=>{if(section.value==='webhooks' && !restoring.value) writeLo
 
 function draftFor(id:string):ConversationDraft {
   if(!drafts[id]) {
-    let text='',missingFiles:string[]=[]
+    let text='',missingFiles:string[]=[],model:string|null=null
     try {
       const saved=JSON.parse(sessionStorage.getItem(`kodrik.draft.${id}`)||'null')
       if(typeof saved?.text==='string') text=saved.text
+      if(typeof saved?.model==='string') model=saved.model
       if(Array.isArray(saved?.files)) missingFiles=saved.files.filter((file:unknown)=>typeof file==='string')
     } catch {}
-    drafts[id]={text,files:[],missingFiles,revision:0}
+    drafts[id]={text,files:[],missingFiles,revision:0,model}
   }
   return drafts[id]!
 }
@@ -507,7 +508,7 @@ function newDraft() {
   conversationSearchOpen.value=false
   menu.value=false
   const draft=draftFor('new')
-  Object.assign(draft,{text:'',files:[],missingFiles:[],revision:draft.revision+1})
+  Object.assign(draft,{text:'',files:[],missingFiles:[],model:null,revision:draft.revision+1})
   sessionStorage.removeItem('kodrik.draft.new')
   writeLocation()
   void nextTick(()=>conversationView.value?.focusInput())

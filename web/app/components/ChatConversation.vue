@@ -201,13 +201,13 @@ async function editMessage(message:ChatMessage,text:string) {
 function persistDraft() {
   try {
     const names=files.value.length?files.value.map(file=>file.name):props.draftState.missingFiles
-    if(draft.value || names.length) sessionStorage.setItem(`kodrik.draft.${props.conversation.id}`,JSON.stringify({text:draft.value,files:names}))
+    if(draft.value || names.length || props.draftState.model) sessionStorage.setItem(`kodrik.draft.${props.conversation.id}`,JSON.stringify({text:draft.value,files:names,model:props.draftState.model}))
     else sessionStorage.removeItem(`kodrik.draft.${props.conversation.id}`)
     if(homeView && props.conversation.id !== 'new') sessionStorage.removeItem('kodrik.draft.new')
   } catch { hint.value=t("Не удалось сохранить черновик в браузере. Не закрывайте вкладку до отправки.") }
 }
 watch([draft,files],()=>{props.draftState.revision++},{deep:true,flush:'sync'})
-watch([draft,files,()=>props.draftState.missingFiles],persistDraft,{deep:true,flush:'sync'})
+watch([draft,files,()=>props.draftState.missingFiles,()=>props.draftState.model],persistDraft,{deep:true,flush:'sync'})
 
 function scrollToLatest() {
   follow.value=true
@@ -448,6 +448,12 @@ async function submit() {
       if(!conversation || !mounted) return
       await nextTick()
       persistDraft()
+    }
+    if(props.draftState.model) {
+      await api(`sessions/${props.conversation.id}/model`,'POST',{model:props.draftState.model})
+      props.draftState.model=null
+      await refreshModel()
+      if(!mounted) return
     }
     if (pending) {
       const saved = await requestStatus(props.conversation.id, pending.id)
@@ -733,12 +739,8 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
         </div>
       </section>
       <p v-if="conversation.subagent" class="text-center text-sm text-muted">{{ t('Сабагент · только просмотр') }}</p>
-      <ChatModelPicker v-if="!home && !conversation.subagent" :session-id="conversation.id" :key="conversation.id"
-        :model="snapshot?.model" :model-override="snapshot?.model_override" :refresh="refreshModel"
-        :disabled="!snapshot || locked || busy || !!snapshot?.queued.length || !!snapshot?.blocked_reason || !!editingMessage || savingCommandAudit"
-        @saving="savingModel=$event" />
       <UChatPrompt v-if="!conversation.subagent" v-model="draft" as="div" :placeholder="t('Напишите Кодрику…')"
-        class="chat-prompt shrink-0 flex-row items-end gap-1.5 p-1"
+        class="chat-prompt shrink-0 gap-1.5 p-2" :ui="{footer:'flex items-center gap-1.5'}"
         @submit="submit">
         <template #body>
           <UEditor ref="prompt" v-model="draft" content-type="markdown" :placeholder="{placeholder:()=>t('Напишите Кодрику…'),mode:'firstLine'}"
@@ -749,10 +751,12 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
             name="chat-message" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" class="chat-editor min-w-0 flex-1"
             :ui="{base:'min-h-8 max-h-26 overflow-auto px-0! py-1 text-base/6 text-default [scrollbar-width:none] *:my-0 [&_p]:leading-6 [&_li]:my-0'}" />
         </template>
-        <template #header>
-          <UButton type="button" icon="i-lucide-paperclip" color="neutral" variant="ghost" size="md" :aria-label="t('Прикрепить файлы и фото')" :disabled="editorLocked" @click="attachmentsOpen = !attachmentsOpen" />
-        </template>
         <template #footer>
+          <UButton type="button" icon="i-lucide-paperclip" color="neutral" variant="ghost" size="md" :aria-label="t('Прикрепить файлы и фото')" :disabled="editorLocked" @click="attachmentsOpen = !attachmentsOpen" />
+          <ChatModelPicker :session-id="home ? null : conversation.id" :key="conversation.id"
+            :model="snapshot?.model" :model-override="draftState.model ?? snapshot?.model_override" :refresh="refreshModel" class="ml-auto max-w-[65%]"
+            :disabled="(!home && !snapshot) || locked || busy || !!snapshot?.queued.length || !!snapshot?.blocked_reason || !!editingMessage || savingCommandAudit"
+            @update:model-override="draftState.model=$event" @saving="savingModel=$event" />
           <UButton v-if="busy && !hasDraft" type="button" icon="i-lucide-square" color="neutral" variant="outline"
             :aria-label="stopping ? t('Останавливаю') : t('Остановить')" size="md" :disabled="submitting || stopping || !!snapshot?.cancel_requested || authExpired" @click="stop" />
           <UButton v-else type="button" icon="i-lucide-arrow-up" :aria-label="t('Отправить')" size="md" :disabled="locked || !hasInput" @click="submit" />

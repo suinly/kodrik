@@ -77,6 +77,34 @@ for (const action of ['button','command']) test(`new chat ${action} stays a draf
   } finally {await browser.close()}
 });
 
+test('new chat applies the draft model before sending and preserves it across reload',{timeout:60000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser),actions=[];
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['alpha','beta'],default_model:'alpha'}}));
+    await page.route('**/api/chat/sessions/*/model',r=>{actions.push(['model',r.request().postDataJSON()]);return r.fulfill({status:204})});
+    page.on('request',r=>{
+      if(r.method()==='POST' && new URL(r.url()).pathname.endsWith('/api/chat/sessions')) actions.push(['create']);
+      if(r.method()==='POST' && new URL(r.url()).pathname.endsWith('/api/chat/send')) actions.push(['send']);
+    });
+    await page.goto(new URL('app/chat',base).href);
+    const composer=page.locator('.chat-prompt');
+    await composer.getByRole('button',{name:'Модель диалога',exact:true}).click();
+    await page.getByRole('button',{name:'beta',exact:true}).click();
+    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('beta');
+    assert.deepEqual(actions,[]);
+    await page.reload();
+    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('beta');
+    await page.setViewportSize({width:320,height:720});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await page.screenshot({path:'/tmp/kodrik-model-composer.png',animations:'disabled'});
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await input.fill('Первое сообщение с выбранной моделью');await input.press('Enter');
+    await expect.poll(()=>actions).toEqual([['create'],['model',{model:'beta'}],['send']]);
+    await expect(page.locator('.message').getByText('Первое сообщение с выбранной моделью',{exact:true})).toHaveCount(1);
+  } finally {await browser.close()}
+});
+
 test('mobile header hides conversation title and audit text without hiding the control',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -2591,7 +2619,7 @@ test('mobile profile stays above the home indicator beside the composer',{timeou
       await expect(menu).toBeVisible();
       await expect(async()=>{
         const profile=await menu.getByRole('button',{name:'Профиль',exact:true}).boundingBox();
-        const prompt=await page.locator('.chat-prompt').boundingBox();
+        const prompt=await page.locator('.chat-prompt [data-slot="footer"]').boundingBox();
         assert.ok(profile.y+profile.height<=height-34,`Profile clears the home indicator: ${JSON.stringify(profile)}`);
         assert.ok(Math.abs(profile.y+profile.height/2-prompt.y-prompt.height/2)<=8,'Profile aligns with the input row');
       }).toPass({timeout:5000});
@@ -2857,7 +2885,7 @@ test('composer switches one action and keeps its plan and hints attached on mobi
       const rect=selector=>el.querySelector(selector).getBoundingClientRect().toJSON();
       return {upload:rect('[aria-label="Прикрепить файлы и фото"]'),input:rect('[role="textbox"]'),send:rect('[aria-label="Отправить"]')};
     });
-    assert.ok(layout.upload.right<=layout.input.x && layout.input.right<=layout.send.x,JSON.stringify(layout));
+    assert.ok(layout.input.bottom<=layout.upload.y && layout.upload.right<=layout.send.x,JSON.stringify(layout));
     assert.ok(Math.abs(layout.upload.y-layout.send.y)<2,JSON.stringify(layout));
     await input.fill('');
     await expect.poll(()=>input.evaluate(el=>el.getBoundingClientRect().height)).toBe(initialHeight);

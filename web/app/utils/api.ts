@@ -13,7 +13,7 @@ export const messageOf = (error: unknown) => error instanceof TypeError ? t('–ù–
 
 export type Conversation = { id: string; root_id?:string; parent_id?:string|null; title: string; title_default?:boolean; title_pending?: boolean; pinned?:boolean; busy: boolean; unread:boolean; unread_session_id:string|null; updated_at: string | null; snippet?:string|null; match_message?:string|null;webhook?:{id:string;name:string}|null;subagent?:boolean };
 export type PublishedPage = {slug: string; title: string; url: string; visibility: 'private' | 'public'; document: boolean};
-export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; pendingFiles?: {id:string;files:File[]} };
+export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; model?:string|null; pendingFiles?: {id:string;files:File[]} };
 export type ToolOrigin = {label:string;project_root:string;environment:{connection_id:string;generation:string};tool_id:string};
 export type MessagePart =
   | { type: 'text'; text: string;format?:'code' }

@@ -2,8 +2,8 @@
 import {api,messageOf} from '../utils/api'
 import {t} from '../utils/i18n'
 
-const props=defineProps<{sessionId:string;model?:string|null;modelOverride?:string|null;disabled:boolean;refresh:()=>Promise<void>}>()
-const emit=defineEmits<{saving:[value:boolean]}>()
+const props=defineProps<{sessionId?:string|null;model?:string|null;modelOverride?:string|null;disabled:boolean;refresh:()=>Promise<void>}>()
+const emit=defineEmits<{saving:[value:boolean];'update:modelOverride':[value:string|null]}>()
 const open=ref(false)
 const models=ref<string[]|null>(null)
 const defaultModel=ref<string|null>(null)
@@ -13,7 +13,13 @@ const saving=ref(false)
 const problem=ref('')
 const locked=computed(()=>props.disabled || saving.value)
 const filtered=computed(()=>(models.value ?? []).filter(model=>model.toLowerCase().includes(search.value.trim().toLowerCase())))
-const label=computed(()=>props.modelOverride ?? (props.model ? t('По умолчанию · {0}',props.model) : t('По умолчанию')))
+const currentModel=computed(()=>props.modelOverride ?? props.model ?? defaultModel.value)
+const label=computed(()=>props.modelOverride ? modelName(props.modelOverride) : currentModel.value ? t('По умолчанию · {0}',modelName(currentModel.value)) : t('По умолчанию'))
+
+function modelName(model:string) {
+  return model.replace(/^openai:/,'')
+}
+onMounted(()=>{if(!currentModel.value) void load()})
 
 async function load() {
   if(loading.value) return
@@ -30,6 +36,11 @@ function opened(value:boolean) {
 }
 async function select(model:string|null) {
   if(locked.value || loading.value || model===(props.modelOverride ?? null)) return
+  if(!props.sessionId) {
+    emit('update:modelOverride',model)
+    open.value=false
+    return
+  }
   saving.value=true;emit('saving',true);problem.value=''
   try {
     await api(`sessions/${props.sessionId}/model`,'POST',{model})
@@ -43,7 +54,7 @@ async function select(model:string|null) {
 <template>
   <div class="min-w-0">
     <UPopover :open="open" :content="{align:'start'}" @update:open="opened">
-      <UButton :label="label" :title="label" :aria-label="t('Модель диалога')" icon="i-lucide-cpu" trailing-icon="i-lucide-chevron-down"
+      <UButton :label="currentModel ? modelName(currentModel) : t('По умолчанию')" :title="label" :aria-label="t('Модель диалога')" icon="i-lucide-cpu" trailing-icon="i-lucide-chevron-down"
         color="neutral" variant="ghost" size="xs" class="max-w-full" :ui="{label:'truncate'}" :loading="saving" :disabled="locked" />
       <template #content>
         <div class="w-72 max-w-[calc(100vw-2rem)] space-y-2 p-2" :aria-busy="loading || saving">
@@ -53,11 +64,11 @@ async function select(model:string|null) {
             <p role="alert" class="text-sm text-error break-words">{{ t(problem) }}</p>
             <UButton v-if="models===null" :label="t('Повторить')" color="neutral" variant="link" size="xs" :disabled="locked || loading" @click="load" />
           </div>
-            <UButton :label="defaultModel ? t('Использовать по умолчанию · {0}',defaultModel) : t('Использовать по умолчанию')" color="neutral" variant="ghost" size="sm"
+            <UButton :label="defaultModel ? t('Использовать по умолчанию · {0}',modelName(defaultModel)) : t('Использовать по умолчанию')" color="neutral" variant="ghost" size="sm"
               class="w-full justify-start" :disabled="locked || loading" :aria-pressed="!modelOverride" @click="select(null)" />
           <template v-if="models!==null">
             <div class="max-h-60 space-y-1 overflow-y-auto">
-              <UButton v-for="model in filtered" :key="model" :label="model" :title="model" color="neutral" variant="ghost" size="sm"
+              <UButton v-for="model in filtered" :key="model" :label="modelName(model)" :title="modelName(model)" color="neutral" variant="ghost" size="sm"
                 class="w-full justify-start" :ui="{label:'truncate'}" :disabled="locked || loading" :aria-pressed="modelOverride===model" @click="select(model)" />
               <p v-if="!filtered.length" role="status" class="px-2 text-sm text-muted">{{ t('Модели не найдены') }}</p>
             </div>

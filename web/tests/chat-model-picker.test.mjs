@@ -94,6 +94,56 @@ test('reset to default remains available when the model list fails',async()=>{
   } finally {await browser.close()}
 });
 
+test('new chat shows its default model before opening the picker without provider prefixes',async()=>{
+  const {page,browser,mount}=await picker({sessionId:null,model:null,modelOverride:null});
+  try {
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['anthropic/claude-sonnet:free'],default_model:'openai:anthropic/claude-sonnet:free'}}));
+    await mount();
+    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
+    await expect(trigger).toHaveText('anthropic/claude-sonnet:free');
+    await expect(trigger).toHaveAttribute('title','Default · anthropic/claude-sonnet:free');
+    await trigger.click();
+    await expect(page.getByRole('button',{name:'Use default · anthropic/claude-sonnet:free',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'anthropic/claude-sonnet:free',exact:true})).toBeVisible();
+  } finally {await browser.close()}
+});
+
+test('model labels hide the provider but save the full model ID',async()=>{
+  const {page,browser,mount}=await picker({model:'openai:vendor/old',modelOverride:null});
+  try {
+    const saves=[];
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['vendor/new'],default_model:'openai:vendor/old'}}));
+    await page.route('**/api/chat/sessions/session-one/model',r=>{saves.push(r.request().postDataJSON());return r.fulfill({status:204})});
+    await mount();
+    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
+    await expect(trigger).toHaveText('vendor/old');
+    await trigger.click();
+    await page.getByRole('textbox',{name:'Search models',exact:true}).fill('vendor/');
+    await page.getByRole('button',{name:'vendor/new',exact:true}).click();
+    await expect.poll(()=>saves).toEqual([{model:'vendor/new'}]);
+  } finally {await browser.close()}
+});
+
+test('draft model selection stays local, updates the trigger and can reset to default',async()=>{
+  const {page,browser,mount}=await picker({sessionId:null,model:null,modelOverride:null});
+  try {
+    const saves=[];
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['alpha','beta'],default_model:'alpha'}}));
+    await page.route('**/api/chat/sessions/**',r=>{saves.push(r.request().url());return r.fulfill({status:500})});
+    await page.addScriptTag({content:`props['onUpdate:modelOverride']=value=>{props.modelOverride=value}`});
+    await mount();
+    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
+    await trigger.click();
+    await page.getByRole('button',{name:'beta',exact:true}).click();
+    await expect(trigger).toContainText('beta');
+    await trigger.click();
+    await page.getByRole('button',{name:'Use default · alpha',exact:true}).click();
+    await expect(trigger).not.toContainText('beta');
+    assert.deepEqual(saves,[]);
+    assert.equal(await page.evaluate(()=>window.refreshes||0),0);
+  } finally {await browser.close()}
+});
+
 test('existing conversation keeps its composer next to the model picker; subagents remain read only',async()=>{
   const {page,browser,mount}=await componentPage('ChatConversation',{
     conversation:{id:'session-one',busy:false},draftState:{text:'',files:[],missingFiles:[],revision:0},blocked:false,active:false,
