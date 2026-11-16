@@ -48,18 +48,19 @@ test('minimatch bounds globstar preprocessing', () => {
 });
 
 test('archiver consumers keep glob matching and exclusions after dependency overrides', async () => {
-  const require = createRequire(import.meta.url);
+  const { JsonArchive } = await import('archiver');
   const root = mkdtempSync(join(tmpdir(), 'kodrik-glob-'));
   try {
     mkdirSync(join(root, 'nested'));
     for (const file of ['top.txt', 'nested/keep.txt', 'nested/skip.txt', 'nested/other.js']) {
       writeFileSync(join(root, file), 'test');
     }
-    const patterns = ['**/*.txt', '!**/skip.txt'];
-    assert.deepEqual(require('archiver-utils').file.expand({ cwd: root }, patterns).sort(), ['nested/keep.txt', 'top.txt']);
-    const matches = await new Promise((resolve, reject) => require('readdir-glob')(root, {
-      pattern: '**/*.txt', ignore: '**/skip.txt', nodir: true,
-    }, (error, files) => error ? reject(error) : resolve(files)));
+    const archive = new JsonArchive();
+    const matches = [];
+    archive.on('entry', entry => matches.push(entry.name));
+    archive.resume();
+    archive.glob('**/*.txt', { cwd: root, ignore: '**/skip.txt' });
+    await archive.finalize();
     assert.deepEqual(matches.sort(), ['nested/keep.txt', 'top.txt']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -5,14 +5,19 @@ The registry has no patched release for `braces@3.0.3`
 `deepmerge@4.3.1`
 ([GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)) as of
 2026-11-02. Nuxt still brings in these packages, so this project applies the
-fixes below locally. Nuxt is updated to 4.6.3 and `node-forge` to 1.4.2;
+fixes below locally. Nuxt is updated to 4.6.4 and `node-forge` to 1.4.3;
 the former Forge RSA backport is removed in favor of the upstream fix.
+The KaTeX override resolves all consumers to the direct dependency (`^0.19.1`),
+removing vulnerable 0.16.x copies used by the Markdown math plugins.
 
 `npm install`/`npm ci` applies the backports through `postinstall`. The `dev`,
 `build`, `typecheck`, and `test` npm commands verify them again before running,
 including after an install with lifecycle scripts disabled. Direct `npx nuxt`
 invocations bypass these hooks; use the package scripts or run
 `npm run security:patch` first.
+Do not keep `ignore-scripts` enabled for build/dev/test: it also skips their
+pre-hooks. If lifecycle scripts must remain disabled, explicitly run
+`node scripts/security-patch.mjs` before invoking tooling.
 
 The patcher checks package versions and complete original/patched SHA-256 hashes
 for every matching lockfile installation, including nested copies. An unexpected
