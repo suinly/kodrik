@@ -244,7 +244,10 @@ export default defineComponent({
       if(props.tag!=='u-form') return node
       return h('div',{class:'space-y-3'},[node,
         action()&&!action()?.url?h(UAlert,{color:'info',description:t("Сохранение этой формы недоступно.")}):null,
-        message.value?h(UAlert,{color:problem.value?'error':pending.value?'info':'success',description:t(message.value),role:'status'},problem.value?{actions:()=>h(UButton,{label:t('Повторить'),color:'neutral',variant:'outline',onClick:()=>submit(true)})}:undefined):null])
+        message.value?automatic()&&!problem.value
+          ?h('p',{class:'flex items-center gap-1 text-xs text-muted',role:'status'},[
+            pending.value?null:h('span',{'aria-hidden':'true'},'✓'),t(message.value)])
+          :h(UAlert,{color:problem.value?'error':pending.value?'info':'success',description:t(message.value),role:'status'},problem.value?{actions:()=>h(UButton,{label:t('Повторить'),color:'neutral',variant:'outline',onClick:()=>submit(true)})}:undefined):null])
     }
   },
 })

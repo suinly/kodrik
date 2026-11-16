@@ -4905,10 +4905,17 @@ test('autosaving questionnaires preserve edits during writes and retry uncertain
     await page.goto(url);const name=page.getByLabel('Ваше имя',{exact:true});await expect(name).toBeVisible();
     await page.waitForTimeout(600);assert.equal(requests.length,0);
     await name.fill('First');await expect.poll(()=>requests.length).toBe(1);
+    const status=page.getByRole('status');
+    await expect(status).toContainText('Сохраняется');
+    const savingStyle=await status.evaluate(el=>({height:el.getBoundingClientRect().height,background:getComputedStyle(el).backgroundColor}));
+    assert.ok(savingStyle.height<=28,`Autosave status is too tall: ${savingStyle.height}`);
+    assert.equal(savingStyle.background,'rgba(0, 0, 0, 0)');
     await expect(name).toBeEditable();await name.fill('Second');await page.getByRole('radio',{name:'5',exact:true}).check();
     assert.equal(requests.length,1);releaseFirst();await expect.poll(()=>requests.length).toBe(2);
     await expect(page.getByRole('status')).toContainText('Запись сохранена');
     assert.deepEqual(requests[1].values,{name:'Second',rating:'5'});assert.equal(requests[1].expected_revision,1);
+    await expect(status).toContainText('✓');
+    assert.ok((await status.boundingBox()).height<=28);
     await expect(page.getByRole('radio',{name:'5',exact:true})).toBeFocused();
     await page.reload();await expect(name).toHaveValue('Second');await expect(page.getByRole('radio',{name:'5',exact:true})).toBeChecked();
     await page.waitForTimeout(600);assert.equal(requests.length,2);
