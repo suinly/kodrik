@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Кодрик — чат с вкладкой",
+  "name": "__MSG_extensionName__",
   "version": "0.1.0",
-  "description": "Спросить Кодрика об открытой странице в боковой панели Chrome.",
+  "description": "__MSG_extensionDescription__",
   "minimum_chrome_version": "123",
   "icons": {
     "16": "icons/icon-16.png",
@@ -21,7 +21,7 @@
     "http://*/*"
   ],
   "action": {
-    "default_title": "Открыть Кодрика",
+    "default_title": "__MSG_extensionAction__",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -38,5 +38,6 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; frame-src https: http://localhost:* http://127.0.0.1:*; base-uri 'none'"
   },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzpI69a4y/VryYKNQYGZsnOD1cpKt3bfsWH5DWrGTtRwz2V6jCbvctk45hVCvreqhL9oNJFEDXVudUrZRtdarV7dtcDm3yyq6J1XR4woH3fFdvTcwS8A33TE3OMwpX32ozSuCAgYPJ+MpOXCgGUJFisk1ZiwQPl7KM9DiJz1di5ox18+s32LN9kd4Ie4la5WBccmek6wxFq5gmDEFrSPWYkOKXx+F5Yz/75bEiZXQAHzvh3niM4hIP6zZhSHy5Wjzy5J+keGY7HyOyfk9DCPtSA+jGKGr0IolN6ju/5N162/MvK2wGW3wfN+LmN/qbJxzd2DeaGyWPoPQKx/QzHGPBQIDAQAB"
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzpI69a4y/VryYKNQYGZsnOD1cpKt3bfsWH5DWrGTtRwz2V6jCbvctk45hVCvreqhL9oNJFEDXVudUrZRtdarV7dtcDm3yyq6J1XR4woH3fFdvTcwS8A33TE3OMwpX32ozSuCAgYPJ+MpOXCgGUJFisk1ZiwQPl7KM9DiJz1di5ox18+s32LN9kd4Ie4la5WBccmek6wxFq5gmDEFrSPWYkOKXx+F5Yz/75bEiZXQAHzvh3niM4hIP6zZhSHy5Wjzy5J+keGY7HyOyfk9DCPtSA+jGKGr0IolN6ju/5N162/MvK2wGW3wfN+LmN/qbJxzd2DeaGyWPoPQKx/QzHGPBQIDAQAB",
+  "default_locale": "en"
 }

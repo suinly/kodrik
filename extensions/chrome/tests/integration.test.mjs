@@ -59,9 +59,9 @@ test('extension sends context only on first message and serves agent requests wi
     await expect(chat.getByRole('switch',{name:'Включить контекст вкладки'})).toHaveCount(0);
     await expect(chat.getByTestId('browser-context')).toHaveCount(0);
     await attachment.getByRole('button').click();
-    await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).toContainText('ORIGINAL ARTICLE CONTENT');
+    await expect(chat.getByRole('region',{name:/^(Содержимое вкладки|Tab content)$/})).toContainText('ORIGINAL ARTICLE CONTENT');
     await attachment.getByRole('button').click();
-    const settings=chat.getByRole('button',{name:'Настройки расширения',exact:true});
+    const settings=chat.getByRole('button',{name:/^(Настройки расширения|Extension settings)$/,exact:true});
     const search=chat.getByRole('button',{name:/^(Найти в диалоге|Find in conversation)$/,exact:true});
     const menu=chat.getByRole('button',{name:/^(Показать диалоги|Show conversations)$/,exact:true});
     const header=chat.locator('header').last();
@@ -69,7 +69,7 @@ test('extension sends context only on first message and serves agent requests wi
     await settings.click();
     await expect(panel.getByRole('dialog')).toBeVisible();
     await expect(panel.locator('#server')).toHaveValue(base);
-    await panel.getByRole('button',{name:'Закрыть настройки',exact:true}).click();
+    await panel.getByRole('button',{name:/^(Закрыть настройки|Close settings)$/,exact:true}).click();
     await expect(panel.getByRole('dialog')).not.toBeVisible();
     const settingsBox=await settings.boundingBox(),searchBox=await search.boundingBox(),menuBox=await menu.boundingBox();
     assert.ok(Math.abs(settingsBox.y-searchBox.y)<4 && settingsBox.x<searchBox.x);
@@ -120,8 +120,8 @@ test('extension sends context only on first message and serves agent requests wi
     await panel.unroute('**/api/chat/browser-command**');
     await expect(attachment).toHaveCount(1);
     await attachment.getByRole('button').click();
-    await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).toContainText('UPDATED ARTICLE CONTENT');
-    await expect(chat.getByRole('region',{name:'Содержимое вкладки'})).not.toContainText('ORIGINAL ARTICLE CONTENT');
+    await expect(chat.getByRole('region',{name:/^(Содержимое вкладки|Tab content)$/})).toContainText('UPDATED ARTICLE CONTENT');
+    await expect(chat.getByRole('region',{name:/^(Содержимое вкладки|Tab content)$/})).not.toContainText('ORIGINAL ARTICLE CONTENT');
     await attachment.getByRole('button').click();
     await menu.click();
     await chat.getByRole('button',{name:/^(Новый диалог|New conversation)$/,exact:true}).first().click();

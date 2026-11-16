@@ -1,7 +1,8 @@
+import {translate as t} from './i18n.mjs';
 export function serverURL(value) {
   const url = new URL(value.trim());
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) || url.username || url.password || url.search || url.hash) {
-    throw new Error('Укажите HTTPS-адрес Кодрика без пароля, параметров и # (HTTP разрешён только для localhost).');
+    throw new Error(t('Укажите HTTPS-адрес Кодрика без пароля, параметров и # (HTTP разрешён только для localhost).'));
   }
   if (!url.pathname.endsWith('/')) url.pathname += '/';
   return url;
@@ -17,7 +18,7 @@ export function truncateUTF8(text, budget) {
 
 export function pageContext(page) {
   const url = new URL(page.url);
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.href.length>4096) throw new Error('Эту вкладку прочитать нельзя.');
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.href.length>4096) throw new Error(t('Эту вкладку прочитать нельзя.'));
   const context={url:url.href,title:String(page.title).slice(0,1024),text:'',source:page.selection?'selection':'page',captured_at:new Date().toISOString(),truncated:!!page.truncated};
   const text=String(page.text);
   context.text=text;
@@ -38,7 +39,8 @@ export function pageContext(page) {
 
 // Executed in the isolated world, only in response to a Send request.
 export function extractPage(options = {}) {
-  if (document.contentType !== 'text/html' && document.contentType !== 'application/xhtml+xml' && document.contentType !== 'text/plain') throw new Error('Поддерживаются только текстовые страницы, не PDF или видео.');
+  const t = text => options.messages?.[text] || text;
+  if (document.contentType !== 'text/html' && document.contentType !== 'application/xhtml+xml' && document.contentType !== 'text/plain') throw new Error(t('Поддерживаются только текстовые страницы, не PDF или видео.'));
   const excluded = 'input,textarea,select,option,output,button,script,style,noscript,template,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="searchbox"],[role="combobox"],[role="spinbutton"],[role="slider"],[role="listbox"]';
   let active = document.activeElement;
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
@@ -46,7 +48,7 @@ export function extractPage(options = {}) {
   const selection = !active?.matches(excluded) && !!selected?.toString().trim();
   const ranges = selection ? Array.from({length:selected.rangeCount}, (_, i) => selected.getRangeAt(i)) : [];
   const root = document.querySelector('article, main, [role="main"]') || document.body;
-  if (!root) throw new Error('У страницы нет доступного текста.');
+  if (!root) throw new Error(t('У страницы нет доступного текста.'));
   let length = 0, truncated = false;
   const visible = element => {
     // display:contents has no box itself, but its children can still be visible.
@@ -116,6 +118,6 @@ export function extractPage(options = {}) {
   const source = render(selection ? document.body : root).replace(/\n[ \t]+\n/g,'\n\n').replace(/\n{3,}/g,'\n\n').trim();
   let text = source.slice(0,1048576);
   if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0,-1);
-  if (!text.trim() && !options.allowEmpty) throw new Error('Текст недоступен. Выберите вкладку с доступным текстом.');
+  if (!text.trim() && !options.allowEmpty) throw new Error(t('Текст недоступен. Выберите вкладку с доступным текстом.'));
   return {url:location.href,title:document.title,text,selection:!!selection,truncated:truncated || source.length > 1048576};
 }

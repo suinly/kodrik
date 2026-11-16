@@ -28,7 +28,13 @@ pub(super) fn message(app: &App, session: &str, text: String) -> IncomingMessage
 }
 
 fn attach(app: &mut App, image: Image) -> anyhow::Result<()> {
-    ensure!(app.input_images.len() < 4, "At most 4 images per message");
+    ensure!(
+        app.input_images.len() < 4,
+        app.language.pick(
+            "At most 4 images per message",
+            "Не более 4 изображений в сообщении"
+        )
+    );
     app.snap_image_cursor(true);
     let start = app.input_cursor;
     app.next_image_id += 1;
@@ -69,9 +75,10 @@ pub(super) async fn paste(app: &mut App, text: &str) {
         return;
     }
     let result = async {
-        let file = tokio::fs::File::open(&path)
-            .await
-            .context("Cannot open image")?;
+        let file = tokio::fs::File::open(&path).await.context(
+            app.language
+                .pick("Cannot open image", "Не удалось открыть изображение"),
+        )?;
         let mut bytes = Vec::new();
         file.take((crate::agent::image::MAX_IMAGE_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
@@ -81,7 +88,10 @@ pub(super) async fn paste(app: &mut App, text: &str) {
     }
     .await;
     if let Err(error) = result {
-        app.set_copy_notice(format!("Image: {error:#}"));
+        app.set_copy_notice(format!(
+            "{}: {error:#}",
+            app.language.pick("Image", "Изображение")
+        ));
     }
 }
 
@@ -96,7 +106,11 @@ pub(super) async fn clipboard(app: &mut App) {
     }
     .await;
     if let Err(error) = result {
-        app.set_copy_notice(format!("Clipboard image: {error:#}"));
+        app.set_copy_notice(format!(
+            "{}: {error:#}",
+            app.language
+                .pick("Clipboard image", "Изображение из буфера обмена")
+        ));
     }
 }
 
@@ -113,6 +127,45 @@ mod tests {
     use super::*;
     use crate::commands::tui::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[tokio::test]
+    async fn bilingual_image_errors_keep_draft_and_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        for (language, prefix, open, limit) in [
+            (
+                crate::i18n::Language::En,
+                "Image:",
+                "Cannot open image",
+                "At most 4 images",
+            ),
+            (
+                crate::i18n::Language::Ru,
+                "Изображение:",
+                "Не удалось открыть изображение",
+                "Не более 4 изображений",
+            ),
+        ] {
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            app.insert_input("draft");
+            paste(&mut app, dir.path().join("missing.png").to_str().unwrap()).await;
+            let notice = &app.copy_notice.as_ref().unwrap().0;
+            assert!(notice.starts_with(prefix), "{notice}");
+            assert!(notice.contains(open), "{notice}");
+            assert_eq!(app.input, "draft");
+            let image =
+                Image::from_bytes(&crate::agent::image::tests::sample(image::ImageFormat::Png))
+                    .unwrap();
+            for _ in 0..4 {
+                attach(&mut app, image.clone()).unwrap();
+            }
+            assert!(app.input.contains("[Image 1]"));
+            let error = attach(&mut app, image).unwrap_err().to_string();
+            assert!(error.contains(limit), "{error}");
+        }
+    }
 
     #[test]
     fn images_without_complete_inline_markers_keep_the_count() {

@@ -12,7 +12,11 @@ pub async fn run(config: &Config, prompt: impl Into<String>) -> anyhow::Result<(
             println!("{}", answer.content);
         }
         for (id, reason) in report.blocked {
-            eprintln!("Recovery blocked for {id}: {reason}");
+            eprintln!(
+                "{} {id}: {reason}",
+                crate::i18n::Language::from_environment()
+                    .pick("Recovery blocked for", "Восстановление заблокировано для")
+            );
         }
         app.agent_runner.run_once(prompt).await
     };

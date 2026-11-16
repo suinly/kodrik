@@ -327,9 +327,11 @@ impl Remote {
             Update::Resynchronized(snapshot) => (snapshot, true),
             Update::Disconnected(reason) => {
                 self.server_connected = false;
-                app.set_copy_notice(format!(
+                app.set_copy_notice(app.language.pick(&format!(
                     "Server disconnected: {reason}; reconnecting (no local fallback)"
-                ));
+                ), &format!(
+                    "Сервер отключён: {reason}; переподключение (без локального резервного режима)"
+                )).to_owned());
                 return Ok(());
             }
         };
@@ -420,7 +422,13 @@ impl Remote {
                     }
                 }
             }
-            Err(error) => app.sessions_error = Some(error.to_string()),
+            Err(error) => {
+                app.sessions_error = Some(format!(
+                    "{}: {error}",
+                    app.language
+                        .pick("Could not load sessions", "Не удалось загрузить диалоги")
+                ))
+            }
         }
     }
 
@@ -457,43 +465,42 @@ impl Remote {
             self.binding = Some(Binding::open(&self.config, prepared, self.session.clone()).await?);
             self.binding_failed = false;
             app.remote_connection = Some("connected");
-            app.push_kodrik_message("Local environment attached to this session.".into());
+            app.push_kodrik_message(
+                app.language
+                    .pick(
+                        "Local environment attached to this session.",
+                        "Локальное окружение подключено к этому диалогу.",
+                    )
+                    .into(),
+            );
         } else {
             let literal = |text: &str| {
                 text.chars()
                     .flat_map(char::escape_debug)
                     .collect::<String>()
             };
+            let language = app.language;
             let details = format!(
-                "Grant local environment access?\nServer: {}\nProject: {}\nShell: {} (not sandboxed)\nSelected HTTP MCP: {}\nShared tools: {}\nSkills: {}\nProject instructions: {}\n{}\n\nTool arguments, file contents, skill instructions and command/MCP outputs may be sent to the server and its model. Shell and MCP can affect resources outside this project; cleanup is best effort, not rollback. Access follows the selected conversation and ends when this TUI closes.",
-                literal(self.config.server.as_str()),
-                literal(&manifest.project_root),
-                self.config.allow_shell,
-                self.config
-                    .mcp
-                    .keys()
-                    .map(|s| literal(s))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                manifest
-                    .tools
-                    .iter()
-                    .map(|tool| literal(&tool.id))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                manifest
-                    .skills
-                    .iter()
-                    .map(|skill| literal(&skill.name))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                manifest.project_instructions.is_some(),
-                manifest
-                    .warnings
-                    .iter()
-                    .map(|warning| literal(warning))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                "{}\n{}: {}\n{}: {}\n{}: {} ({})\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}\n\n{}",
+                language.pick("Grant local environment access?", "Предоставить доступ к локальному окружению?"),
+                language.pick("Server", "Сервер"), literal(self.config.server.as_str()),
+                language.pick("Project", "Проект"), literal(&manifest.project_root),
+                language.pick("Shell", "Оболочка"), language.pick(
+                    if self.config.allow_shell { "enabled" } else { "disabled" },
+                    if self.config.allow_shell { "включена" } else { "выключена" },
+                ), language.pick("not sandboxed", "без песочницы"),
+                language.pick("Selected HTTP MCP", "Выбранные HTTP MCP"), self.config.mcp.keys().map(|s| literal(s)).collect::<Vec<_>>().join(", "),
+                language.pick("Shared tools", "Общие инструменты"), manifest.tools.iter().map(|tool| literal(&tool.id)).collect::<Vec<_>>().join(", "),
+                language.pick("Skills", "Навыки"), manifest.skills.iter().map(|skill| literal(&skill.name)).collect::<Vec<_>>().join(", "),
+                language.pick("Project instructions", "Инструкции проекта"), language.pick(
+                    if manifest.project_instructions.is_some() { "present" } else { "none" },
+                    if manifest.project_instructions.is_some() { "есть" } else { "нет" },
+                ),
+                manifest.warnings.iter().map(|warning| literal(warning)).collect::<Vec<_>>().join("\n"),
+                language.pick(
+                    "Tool arguments, file contents, skill instructions and command/MCP outputs may be sent to the server and its model. Shell and MCP can affect resources outside this project; cleanup is best effort, not rollback. Access follows the selected conversation and ends when this TUI closes.",
+                    "Аргументы инструментов, содержимое файлов, инструкции навыков и вывод команд/MCP могут отправляться на сервер и его модели. Оболочка и MCP могут воздействовать на ресурсы вне этого проекта; очистка выполняется по возможности, это не откат изменений. Доступ следует за выбранным диалогом и прекращается при закрытии этого TUI.",
+                ),
             );
             self.pending = Some(prepared);
             self.binding_failed = false;
@@ -505,14 +512,14 @@ impl Remote {
     }
 
     async fn decide_grant(&mut self, app: &mut App, allow: bool) -> anyhow::Result<()> {
-        let prepared = self
-            .pending
-            .take()
-            .context("No local access request pending")?;
+        let prepared = self.pending.take().context(app.language.pick(
+            "No local access request pending",
+            "Нет ожидающего запроса локального доступа",
+        ))?;
         app.remote_grant = None;
         if !allow {
             app.remote_connection = Some("detached");
-            app.push_kodrik_message("Local access declined; server chat remains available. Use /attach to review again.".into());
+            app.push_kodrik_message(app.language.pick("Local access declined; server chat remains available. Use /attach to review again.", "Локальный доступ отклонён; чат на сервере доступен. Для повторного просмотра используйте /attach.").into());
             return Ok(());
         }
         self.binding_failed = true;
@@ -521,7 +528,14 @@ impl Remote {
         self.binding = Some(Binding::open(&self.config, prepared, self.session.clone()).await?);
         self.binding_failed = false;
         app.remote_connection = Some("connected");
-        app.push_kodrik_message("Local environment attached to this session.".into());
+        app.push_kodrik_message(
+            app.language
+                .pick(
+                    "Local environment attached to this session.",
+                    "Локальное окружение подключено к этому диалогу.",
+                )
+                .into(),
+        );
         Ok(())
     }
 
@@ -530,13 +544,16 @@ impl Remote {
             let mut older = self.chat.history(&self.session, &cursor).await?;
             ensure!(
                 older.revision == self.snapshot.revision,
-                "History changed; wait for a fresh snapshot before loading older messages"
+                app.language.pick("History changed; wait for a fresh snapshot before loading older messages", "История изменилась; дождитесь нового снимка перед загрузкой предыдущих сообщений")
             );
             older.messages.extend(self.snapshot.messages.clone());
             ensure!(
                 older.messages.len() <= 4000
                     && serde_json::to_vec(&older)?.len() <= 16 * 1024 * 1024,
-                "Scrollback limit reached; older history remains on server"
+                app.language.pick(
+                    "Scrollback limit reached; older history remains on server",
+                    "Достигнут лимит прокрутки; предыдущая история остаётся на сервере"
+                )
             );
             older.run = self.snapshot.run.clone();
             older.environment = self.snapshot.environment.clone();
@@ -560,11 +577,10 @@ impl Remote {
     async fn select(&mut self, app: &mut App, command: ChatCommand) -> anyhow::Result<()> {
         self.detach().await?;
         let response = self.chat.command(&self.session, command).await?;
-        let id = SessionId::new(
-            response["id"]
-                .as_str()
-                .context("Server returned no session ID")?,
-        );
+        let id = SessionId::new(response["id"].as_str().context(app.language.pick(
+            "Server returned no session ID",
+            "Сервер не вернул ID диалога",
+        ))?);
         let snapshot = self.chat.snapshot(&id).await?;
         self.observer.take();
         self.epoch += 1;
@@ -591,14 +607,20 @@ impl Remote {
             app.discard_pending_input(&text, app.input_images.len());
             app.input = text;
             app.input_cursor = app.input.len();
-            anyhow::bail!(
-                "Previous input is unconfirmed; use /retry to check the same request ID first"
-            );
+            anyhow::bail!(app.language.pick(
+                "Previous input is unconfirmed; use /retry to check the same request ID first",
+                "Предыдущий ввод не подтверждён; сначала проверьте исходный ID запроса через /retry"
+            ));
         }
         let editing = app.navigation.editing.as_ref();
         let is_edit = editing.is_some();
         let command = if let Some(edit) = editing {
-            let turn = self.absolute_turn(edit.user_turn)?;
+            let turn = self
+                .absolute_turn(edit.user_turn)
+                .context(app.language.pick(
+                    "User message is not loaded",
+                    "Сообщение пользователя не загружено",
+                ))?;
             self.detach().await?;
             ChatCommand::Edit {
                 request_id: uuid::Uuid::new_v4(),
@@ -624,8 +646,10 @@ impl Remote {
                 self.uncertain = None;
                 app.clear_input_images();
                 if is_edit {
-                    let id =
-                        SessionId::new(response["id"].as_str().context("Edit returned no branch")?);
+                    let id = SessionId::new(response["id"].as_str().context(app.language.pick(
+                        "Edit returned no branch",
+                        "Сервер не вернул ветку после редактирования",
+                    ))?);
                     self.select(app, ChatCommand::Select { session_id: id })
                         .await?;
                 }
@@ -687,7 +711,10 @@ impl Remote {
                         Status::Working | Status::Recovering | Status::Stopping
                     ) && app.waiting_messages.is_empty()
                         && self.uncertain.is_none(),
-                    "Wait for the current request before changing models"
+                    app.language.pick(
+                        "Wait for the current request before changing models",
+                        "Дождитесь завершения текущего запроса перед сменой модели"
+                    )
                 );
                 let model = input.strip_prefix("/model ").map(str::to_owned);
                 self.chat
@@ -709,10 +736,17 @@ impl Remote {
                 app.sessions = None;
                 app.view.clear_selection();
             }
-            "/audit status" => app.push_kodrik_message(format!(
-                "Current server tool mode: {}",
-                app.audit_mode.code()
-            )),
+            "/audit status" => app.push_kodrik_message(
+                app.language
+                    .pick(
+                        &format!("Current server tool mode: {}", app.audit_mode.code()),
+                        &format!(
+                            "Текущий режим инструментов на сервере: {}",
+                            app.audit_mode.code()
+                        ),
+                    )
+                    .to_owned(),
+            ),
             "/sessions" => {
                 self.load_sessions(app, true);
             }
@@ -722,7 +756,12 @@ impl Remote {
                 self.detach().await?;
                 app.remote_connection = Some("detached");
                 app.push_kodrik_message(
-                    "Local access detached; server conversation remains available.".into(),
+                    app.language
+                        .pick(
+                            "Local access detached; server conversation remains available.",
+                            "Локальный доступ отключён; диалог на сервере доступен.",
+                        )
+                        .into(),
                 );
             }
             "/attach" | "/attach yes" => self.attach(app).await?,
@@ -730,7 +769,10 @@ impl Remote {
             "/attach deny" => self.decide_grant(app, false).await?,
             "/older" => self.older(app).await?,
             "/retry" => {
-                let command = self.uncertain.clone().context("No unconfirmed input")?;
+                let command = self.uncertain.clone().context(
+                    app.language
+                        .pick("No unconfirmed input", "Нет неподтверждённого ввода"),
+                )?;
                 let request_id = match &command {
                     ChatCommand::Send { request_id, .. }
                     | ChatCommand::SendImages { request_id, .. }
@@ -748,19 +790,26 @@ impl Remote {
                         self.select(
                             app,
                             ChatCommand::Select {
-                                session_id: SessionId::new(
-                                    response["id"].as_str().context("Edit returned no branch")?,
-                                ),
+                                session_id: SessionId::new(response["id"].as_str().context(
+                                    app.language.pick(
+                                        "Edit returned no branch",
+                                        "Сервер не вернул ветку после редактирования",
+                                    ),
+                                )?),
                             },
                         )
                         .await?;
                     }
                 } else {
                     self.uncertain = None;
-                    app.push_kodrik_message(format!(
-                        "Original input confirmed: {}",
-                        status["status"]
-                    ));
+                    app.push_kodrik_message(
+                        app.language
+                            .pick(
+                                &format!("Original input confirmed: {}", status["status"]),
+                                &format!("Исходный ввод подтверждён: {}", status["status"]),
+                            )
+                            .to_owned(),
+                    );
                     if matches!(command, ChatCommand::Edit { .. })
                         && let Some(id) = status["session_id"].as_str()
                     {
@@ -783,15 +832,27 @@ impl Remote {
             input if input.starts_with("/approve ") || input.starts_with("/deny ") => {
                 let mut parts = input.split_whitespace();
                 let allow = parts.next() == Some("/approve");
-                let id = parts.next().context("Approval ID required")?;
-                ensure!(parts.next().is_none(), "Unexpected approval arguments");
+                let id = parts.next().context(
+                    app.language
+                        .pick("Approval ID required", "Требуется ID запроса разрешения"),
+                )?;
+                ensure!(
+                    parts.next().is_none(),
+                    app.language.pick(
+                        "Unexpected approval arguments",
+                        "Неожиданные аргументы запроса разрешения"
+                    )
+                );
                 ensure!(
                     !allow
                         || app
                             .approval
                             .as_ref()
                             .is_some_and(|approval| approval.id == id),
-                    "Review the complete pending approval with /approvals before allowing it"
+                    app.language.pick(
+                        "Review the complete pending approval with /approvals before allowing it",
+                        "Перед разрешением просмотрите полный ожидающий запрос через /approvals"
+                    )
                 );
                 self.chat
                     .command(
@@ -812,7 +873,10 @@ impl Remote {
                                 .approval
                                 .as_ref()
                                 .is_some_and(|approval| approval.id == *approval_id),
-                        "Approval is no longer displayed in this session"
+                        app.language.pick(
+                            "Approval is no longer displayed in this session",
+                            "Запрос разрешения больше не отображается в этом диалоге"
+                        )
                     );
                     self.chat
                         .command(
@@ -824,7 +888,12 @@ impl Remote {
                         .await?;
                     return Ok(());
                 }
-                let mode = audit_mode(input)?;
+                let mode = audit_mode(input).map_err(|_| {
+                    anyhow::anyhow!(app.language.pick(
+                        "Use /audit trusted|review|ask for the current server session",
+                        "Используйте /audit trusted|review|ask для текущего диалога на сервере"
+                    ))
+                })?;
                 self.chat
                     .command(
                         &self.session,
@@ -854,7 +923,11 @@ impl Remote {
                 ) =>
             {
                 anyhow::bail!(
-                    "Unknown remote command or arguments: {}",
+                    "{}: {}",
+                    app.language.pick(
+                        "Unknown remote command or arguments",
+                        "Неизвестная удалённая команда или аргументы"
+                    ),
                     input.split_whitespace().next().unwrap_or("/")
                 )
             }
@@ -874,6 +947,10 @@ pub(crate) async fn run_with(
     config_path: Option<&Path>,
     resume: Option<&str>,
 ) -> anyhow::Result<()> {
+    let language = load_language(
+        &crate::config::data_dir()?.join("tui-language"),
+        Language::from_environment(),
+    )?;
     let chat = ChatClient::new(config)?;
     let session = if let Some(id) = resume {
         SessionId::new(id)
@@ -882,7 +959,10 @@ pub(crate) async fn run_with(
             chat.command(&SessionId::new("new"), ChatCommand::New)
                 .await?["id"]
                 .as_str()
-                .context("Server returned no session ID")?,
+                .context(language.pick(
+                    "Server returned no session ID",
+                    "Сервер не вернул ID диалога",
+                ))?,
         )
     };
     let snapshot = chat.snapshot(&session).await?;
@@ -907,10 +987,7 @@ pub(crate) async fn run_with(
         root: std::env::current_dir()?.canonicalize()?,
     };
     let mut app = App {
-        language: load_language(
-            &crate::config::data_dir()?.join("tui-language"),
-            Language::from_environment(),
-        )?,
+        language,
         ..Default::default()
     };
     remote.projection.accept(&mut app, &remote.snapshot)?;
@@ -939,6 +1016,7 @@ async fn event_loop(
     remote.connection_status(app);
     reporter.update(app);
     tui.draw(app)?;
+    let language = app.language;
     let startup = {
         let attach = remote.attach(app);
         tokio::pin!(attach);
@@ -949,7 +1027,7 @@ async fn event_loop(
                 event = next_terminal_event() => {
                     let event = event?;
                     if matches!(event, Event::Key(key) if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'|'C'|'с'|'С'))) { break None; }
-                    if deferred.len() >= 64 || matches!(&event, Event::Paste(text) if text.len()>64*1024) { break Some(Err(anyhow::anyhow!("Pending UI input limit reached"))); }
+                    if deferred.len() >= 64 || matches!(&event, Event::Paste(text) if text.len()>64*1024) { break Some(Err(anyhow::anyhow!(language.pick("Pending UI input limit reached", "Достигнут лимит ожидающего ввода")))); }
                     deferred.push_back(event);
                 }
             }
@@ -957,9 +1035,11 @@ async fn event_loop(
     };
     match startup {
         None => return Ok(()),
-        Some(Err(error)) => app.push_kodrik_message(format!(
+        Some(Err(error)) => app.push_kodrik_message(app.language.pick(&format!(
             "Local attachment failed: {error}. Server chat remains available; use /attach to retry."
-        )),
+        ), &format!(
+            "Не удалось подключить локальное окружение: {error}. Чат на сервере доступен; для повтора используйте /attach."
+        )).to_owned()),
         Some(Ok(())) => {}
     }
     while !app.should_quit {
@@ -979,6 +1059,7 @@ async fn event_loop(
         remote.connection_status(app);
         reporter.update(app);
         tui.draw(app)?;
+        let language = app.language;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
             result=async {match remote.session_list.as_mut() {
@@ -994,9 +1075,9 @@ async fn event_loop(
                     Ok(binding)=>{
                         remote.binding=Some(binding);
                         remote.binding_failed=false;
-                        app.push_kodrik_message("Local environment reconnected with a fresh generation; interrupted work was not replayed or resumed.".into());
+                        app.push_kodrik_message(app.language.pick("Local environment reconnected with a fresh generation; interrupted work was not replayed or resumed.", "Локальное окружение переподключено с новым поколением; прерванная работа не повторялась и не возобновлялась.").into());
                     },
-                    Err(error)=>app.push_kodrik_message(format!("Automatic local reconnect stopped: {error}; use /attach to review access.")),
+                    Err(error)=>app.push_kodrik_message(app.language.pick(&format!("Automatic local reconnect stopped: {error}; use /attach to review access."), &format!("Автоматическое переподключение локального окружения остановлено: {error}; проверьте доступ через /attach.")).to_owned()),
                 }
             },
             _=tick.tick()=>{
@@ -1037,7 +1118,7 @@ async fn event_loop(
                         if let Some(input)=app.update(key){remote.input(app,input).await?;}
                         if !granting && key.code==KeyCode::PageUp && app.navigation.selected.is_none() {remote.older(app).await?;}
                         if let Some(id)=app.navigation.pending_version.take() && let Some(turn)=turn {
-                            let user_turn=remote.absolute_turn(turn)?;
+                            let user_turn=remote.absolute_turn(turn).context(app.language.pick("User message is not loaded", "Сообщение пользователя не загружено"))?;
                             remote.select(app,ChatCommand::SelectVersion{session_id:SessionId::new(id),user_turn}).await?;
                         }
                         Ok::<_,anyhow::Error>(())
@@ -1055,7 +1136,7 @@ async fn event_loop(
                                     }
                                     // Bound pending UI input while serializing a server action.
                                     if deferred.len()>=64 || matches!(&event,Event::Paste(text) if text.len()>64*1024) {
-                                        break Some(Err(anyhow::anyhow!("Pending UI input limit reached; action may be unconfirmed")));
+                                        break Some(Err(anyhow::anyhow!(language.pick("Pending UI input limit reached; action may be unconfirmed", "Достигнут лимит ожидающего ввода; действие может быть не подтверждено"))));
                                     }
                                     deferred.push_back(event);
                                 }
@@ -1063,7 +1144,7 @@ async fn event_loop(
                         }
                     };
                     let Some(operation)=operation else {app.should_quit=true;continue;};
-                    if let Err(error)=operation {app.status=Status::Error;app.push_kodrik_message(format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."));}
+                    if let Err(error)=operation {app.status=Status::Error;app.push_kodrik_message(app.language.pick(&format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."), &format!("Удалённое действие не подтверждено: {error}. Для неподтверждённого ввода /retry проверяет исходный ID запроса.")).to_owned());}
                 }
                 Event::Paste(text)=>{super::images::paste(app, &text).await;},
                 Event::Mouse(mouse)=>{
@@ -1079,11 +1160,17 @@ async fn event_loop(
 
 fn report_disconnect(app: &mut App, result: anyhow::Result<()>) {
     let reason = match result {
-        Ok(()) => "Connection ended without an error".into(),
+        Ok(()) => app
+            .language
+            .pick(
+                "Connection ended without an error",
+                "Соединение завершено без ошибки",
+            )
+            .into(),
         Err(error) => format!("{error:#}"),
     };
     let reason: String = reason.chars().flat_map(char::escape_debug).collect();
-    app.push_kodrik_message(format!("Local environment disconnected: {reason}; reconnecting if the original grant remains valid (or use /attach). Server chat remains available."));
+    app.push_kodrik_message(app.language.pick(&format!("Local environment disconnected: {reason}; reconnecting if the original grant remains valid (or use /attach). Server chat remains available."), &format!("Локальное окружение отключено: {reason}; переподключение, если исходное разрешение ещё действует (или используйте /attach). Чат на сервере доступен.")).to_owned());
 }
 
 #[cfg(test)]
@@ -1306,6 +1393,295 @@ mod binding_tests {
         changed.close().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn bilingual_remote_commands_and_consent_render_without_granting_access() {
+        use ratatui::{Terminal, backend::TestBackend};
+        for language in [Language::En, Language::Ru] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join("AGENTS.md"), "project policy").unwrap();
+            let config = RemoteConfig {
+                server: "http://localhost/".parse().unwrap(),
+                credential_file: directory.path().join("private/device"),
+                label: "test".into(),
+                allow_shell: false,
+                skill_roots: vec![],
+                mcp: Default::default(),
+                optional_mcp: vec![],
+            };
+            crate::remote::client::Credential {
+                device_id: uuid::Uuid::new_v4(),
+                token: "test".into(),
+            }
+            .save(&config.credential_file)
+            .unwrap();
+            let snapshot: RemoteChatSnapshot = serde_json::from_value(serde_json::json!({
+                "session_id":"localized", "revision":1, "environment_revision":0,
+                "messages":[], "previous_cursor":null, "versions":null, "environment":null, "run":null
+            })).unwrap();
+            let (tx, _rx) = mpsc::channel(4);
+            let mut remote = Remote {
+                config: config.clone(),
+                chat: ChatClient::new(&config).unwrap(),
+                session: SessionId::new("localized"),
+                binding: None,
+                reconnect: None,
+                pending: None,
+                server_connected: true,
+                binding_failed: false,
+                observer: None,
+                updates: tx,
+                epoch: 0,
+                projection: Projection::default(),
+                snapshot,
+                uncertain: None,
+                session_list: None,
+                sessions_offset: 0,
+                root: directory.path().into(),
+            };
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            for (command, en, ru) in [
+                (
+                    "/retry",
+                    "No unconfirmed input",
+                    "Нет неподтверждённого ввода",
+                ),
+                (
+                    "/attach deny",
+                    "No local access request pending",
+                    "Нет ожидающего запроса локального доступа",
+                ),
+                ("/audit invalid", "Use /audit", "Используйте /audit"),
+                (
+                    "/retry extra",
+                    "Unknown remote command",
+                    "Неизвестная удалённая команда",
+                ),
+                (
+                    "/approve",
+                    "Unknown remote command",
+                    "Неизвестная удалённая команда",
+                ),
+                (
+                    "/approve id extra",
+                    "Unexpected approval arguments",
+                    "Неожиданные аргументы запроса разрешения",
+                ),
+                (
+                    "/approve id",
+                    "Review the complete",
+                    "Перед разрешением просмотрите",
+                ),
+                (
+                    "/audit trusted wrong id",
+                    "Approval is no longer",
+                    "Запрос разрешения больше не",
+                ),
+            ] {
+                let error = remote
+                    .input(&mut app, command.into())
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(language.pick(en, ru)), "{command}: {error}");
+            }
+            remote
+                .input(&mut app, "/audit status".into())
+                .await
+                .unwrap();
+            assert!(app.messages.last().unwrap().content.contains(language.pick(
+                "Current server tool mode",
+                "Текущий режим инструментов на сервере"
+            )));
+            remote.attach(&mut app).await.unwrap();
+            assert!(remote.binding.is_none());
+            let details = &app.remote_grant.as_ref().unwrap().details;
+            for (en, ru) in [
+                (
+                    "Grant local environment access?",
+                    "Предоставить доступ к локальному окружению?",
+                ),
+                ("Server:", "Сервер:"),
+                ("Project:", "Проект:"),
+                (
+                    "Shell: disabled (not sandboxed)",
+                    "Оболочка: выключена (без песочницы)",
+                ),
+                ("Selected HTTP MCP:", "Выбранные HTTP MCP:"),
+                ("Shared tools:", "Общие инструменты:"),
+                ("Skills:", "Навыки:"),
+                ("Project instructions: present", "Инструкции проекта: есть"),
+                (
+                    "Tool arguments, file contents",
+                    "Аргументы инструментов, содержимое файлов",
+                ),
+                ("outside this project", "вне этого проекта"),
+                ("not rollback", "не откат изменений"),
+                (
+                    "ends when this TUI closes",
+                    "прекращается при закрытии этого TUI",
+                ),
+            ] {
+                assert!(details.contains(language.pick(en, ru)), "{details}");
+            }
+            let mut terminal = Terminal::new(TestBackend::new(180, 60)).unwrap();
+            terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                screen.contains(language.pick(
+                    "Grant local environment access?",
+                    "Предоставить доступ к локальному окружению?"
+                )),
+                "{screen}"
+            );
+            remote.decide_grant(&mut app, false).await.unwrap();
+            assert!(remote.pending.is_none() && remote.binding.is_none());
+            assert!(
+                app.messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains(language.pick("Local access declined", "Локальный доступ отклонён"))
+            );
+            remote.input(&mut app, "/detach".into()).await.unwrap();
+            assert!(
+                app.messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains(language.pick("Local access detached", "Локальный доступ отключён"))
+            );
+            remote
+                .receive_update(
+                    &mut app,
+                    0,
+                    Update::Disconnected("raw server reason".into()),
+                )
+                .await
+                .unwrap();
+            let notice = &app.copy_notice.as_ref().unwrap().0;
+            assert!(notice.contains(language.pick("Server disconnected:", "Сервер отключён:")));
+            assert!(notice.contains("raw server reason"));
+        }
+    }
+
+    #[test]
+    fn projected_generic_attachment_labels_follow_language_and_keep_real_filenames() {
+        for language in [Language::En, Language::Ru] {
+            for role in ["user", "assistant"] {
+                let mut app = App {
+                    language,
+                    ..Default::default()
+                };
+                let snapshot: RemoteChatSnapshot = serde_json::from_value(serde_json::json!({
+                    "session_id":"labels", "revision":1, "environment_revision":0,
+                    "messages":[{"role":role,"parts":[
+                        {"type":"file","filename":"Фото 1","genericLabel":"photo","genericIndex":1},
+                        {"type":"file","filename":"Tool image 2","genericLabel":"tool-image","genericIndex":2},
+                        {"type":"file","filename":"Фото 3.png"},
+                        {"type":"file","filename":"zero.png","genericLabel":"photo","genericIndex":0},
+                        {"type":"file","filename":"fraction.png","genericLabel":"photo","genericIndex":1.5},
+                        {"type":"file","filename":"unknown.png","genericLabel":"unknown","genericIndex":1}
+                    ]}], "previous_cursor":null,"versions":null,"environment":null,"run":null
+                })).unwrap();
+                project(&mut app, &snapshot).unwrap();
+                let text = app
+                    .messages
+                    .iter()
+                    .map(|row| row.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for expected in [
+                    language.pick("Attachment: Photo 1 —", "Вложение: Фото 1 —"),
+                    language.pick(
+                        "Attachment: Tool image 2 —",
+                        "Вложение: Изображение инструмента 2 —",
+                    ),
+                    "Фото 3.png",
+                    "zero.png",
+                    "fraction.png",
+                    "unknown.png",
+                ] {
+                    assert!(
+                        text.contains(expected),
+                        "{role}: missing {expected}: {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bilingual_remote_disconnect_and_history_wrappers() {
+        for (language, disconnected, full, attachment, approval) in [
+            (
+                Language::En,
+                "Local environment disconnected:",
+                "Full message remains in server history",
+                "Attachment:",
+                "exceeds the terminal review limit",
+            ),
+            (
+                Language::Ru,
+                "Локальное окружение отключено:",
+                "Полное сообщение остаётся в истории на сервере",
+                "Вложение:",
+                "превышает лимит просмотра в терминале",
+            ),
+        ] {
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            report_disconnect(&mut app, Err(anyhow::anyhow!("raw diagnostic")));
+            assert!(
+                app.messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .starts_with(disconnected)
+            );
+            assert!(
+                app.messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("raw diagnostic")
+            );
+            let snapshot: RemoteChatSnapshot = serde_json::from_value(serde_json::json!({
+                "session_id":"localized", "revision":1, "environment_revision":0,
+                "messages":[{"role":"user","parts":[{"type":"text","text":"literal [Image 1]","truncated":true},{"type":"file","filename":"photo.png"}]}],
+                "previous_cursor":null,"versions":null,"environment":null,
+                "run":{"approval_unavailable":{"id":"approval-id"}}
+            })).unwrap();
+            project(&mut app, &snapshot).unwrap();
+            let text = app
+                .messages
+                .iter()
+                .map(|row| row.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for expected in [
+                full,
+                attachment,
+                approval,
+                "literal [Image 1]",
+                "photo.png",
+                "/deny approval-id",
+            ] {
+                assert!(text.contains(expected), "missing {expected}: {text}");
+            }
+        }
+    }
+
     #[test]
     fn disconnect_reports_error_chain_without_terminal_controls() {
         let mut app = App::default();
@@ -1432,6 +1808,25 @@ impl Projection {
     }
 }
 
+fn attachment_label(part: &serde_json::Value, language: Language) -> String {
+    if let Some(index) = part["genericIndex"].as_u64().filter(|index| *index > 0) {
+        match part["genericLabel"].as_str() {
+            Some("photo") => return format!("{} {index}", language.pick("Photo", "Фото")),
+            Some("tool-image") => {
+                return format!(
+                    "{} {index}",
+                    language.pick("Tool image", "Изображение инструмента")
+                );
+            }
+            _ => {}
+        }
+    }
+    part["filename"]
+        .as_str()
+        .unwrap_or(language.pick("file", "файл"))
+        .to_owned()
+}
+
 pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::Result<()> {
     use crate::agent::{
         AssistantMessage, UserMessage,
@@ -1466,15 +1861,28 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                         "{}{}",
                         part["text"].as_str().unwrap_or(""),
                         if part["truncated"] == true {
-                            "\n[Full message remains in server history]"
+                            app.language.pick(
+                                "\n[Full message remains in server history]",
+                                "\n[Полное сообщение остаётся в истории на сервере]",
+                            )
                         } else {
                             ""
                         }
                     )),
-                    Some("file") => Some(format!(
-                        "[Attachment: {} — available in server history]",
-                        part["filename"].as_str().unwrap_or("file")
-                    )),
+                    Some("file") => Some(
+                        app.language
+                            .pick(
+                                &format!(
+                                    "[Attachment: {} — available in server history]",
+                                    attachment_label(part, app.language)
+                                ),
+                                &format!(
+                                    "[Вложение: {} — доступно в истории на сервере]",
+                                    attachment_label(part, app.language)
+                                ),
+                            )
+                            .to_owned(),
+                    ),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1493,7 +1901,10 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                 Some("text") => {
                     let mut text = part["text"].as_str().unwrap_or("").to_owned();
                     if part["truncated"] == true {
-                        text.push_str("\n[Full message remains in server history]");
+                        text.push_str(app.language.pick(
+                            "\n[Full message remains in server history]",
+                            "\n[Полное сообщение остаётся в истории на сервере]",
+                        ));
                     }
                     session.push(if row["role"] == "user" {
                         Message::User(UserMessage {
@@ -1529,9 +1940,15 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                                     })
                             });
                             let text = if connected {
-                                "[Local file is not saved on the server]"
+                                app.language.pick(
+                                    "[Local file is not saved on the server]",
+                                    "[Локальный файл не сохранён на сервере]",
+                                )
                             } else {
-                                "[The file remains on the disconnected device]"
+                                app.language.pick(
+                                    "[The file remains on the disconnected device]",
+                                    "[Файл остаётся на отключённом устройстве]",
+                                )
                             };
                             session.push(Message::Assistant(AssistantMessage {
                                 content: text.into(),
@@ -1560,10 +1977,19 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                     }
                 }
                 Some("file") => {
-                    let text = format!(
-                        "[Attachment: {} — available in server history]",
-                        part["filename"].as_str().unwrap_or("file")
-                    );
+                    let text = app
+                        .language
+                        .pick(
+                            &format!(
+                                "[Attachment: {} — available in server history]",
+                                attachment_label(part, app.language)
+                            ),
+                            &format!(
+                                "[Вложение: {} — доступно в истории на сервере]",
+                                attachment_label(part, app.language)
+                            ),
+                        )
+                        .to_owned();
                     session.push(Message::Assistant(AssistantMessage { content: text }));
                 }
                 _ => (),
@@ -1587,13 +2013,19 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         run["queued"].as_array().map(Vec::as_slice).unwrap_or(&[]),
     );
     if let Some(error) = run["history_error"].as_str() {
-        app.set_copy_notice(error.to_owned());
+        app.set_copy_notice(format!(
+            "{}: {error}",
+            app.language.pick("History", "История")
+        ));
     }
     if run["clear_completed_plan"] == true && app.plan_completed {
         app.plan = None;
         app.plan_completed = false;
     }
-    app.model = run["model"].as_str().unwrap_or("server agent").into();
+    app.model = run["model"]
+        .as_str()
+        .unwrap_or(app.language.pick("server agent", "агент на сервере"))
+        .into();
     app.model_override = run["model_override"].as_str().map(str::to_owned);
     app.context_tokens = run["context_tokens"].as_u64();
     if app.remote_environment.is_none() {
@@ -1647,7 +2079,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
     app.approval = approval;
     if let Some(id) = run["approval_unavailable"]["id"].as_str() {
         let id = id.escape_debug().to_string();
-        app.push_kodrik_message(format!("Approval {id} exceeds the terminal review limit. Allow is unavailable; review the complete call in Web Chat or reject with /deny {id}."));
+        app.push_kodrik_message(app.language.pick(&format!("Approval {id} exceeds the terminal review limit. Allow is unavailable; review the complete call in Web Chat or reject with /deny {id}."), &format!("Запрос {id} превышает лимит просмотра в терминале. Разрешение недоступно; просмотрите полный вызов в веб-чате или отклоните через /deny {id}.")).to_owned());
     }
     app.audit_session = Some(snapshot.session_id.clone());
     if run["phase"].get("EnvironmentPaused").is_some() {

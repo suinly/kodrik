@@ -228,3 +228,22 @@ Automation follow-up safety contract:
   synchronous page hangs. A timeout reports uncertain execution, invalidates the
   snapshot and releases the executor; it does NOT cancel JavaScript. Execution
   errors likewise require a fresh snapshot before another mutation.
+
+## Язык интерфейса
+
+Панель использует русский для `navigator.language=ru` (включая `ru-RU`),
+английский — для остальных языков. После подключения язык синхронизируется
+с выбором в веб-чате: доверенный iframe передаёт
+`{type:'kodrik-tab-language',channel,language:'ru'|'en'}`. Проверяются источник,
+origin сервера и текущий канал; смена языка обновляет подписи, aria-label,
+заголовок iframe и текущий статус без перезагрузки.
+
+Название, описание и подсказка значка используют стандартные Chrome `_locales`
+с английским `default_locale`; они следуют языку Chrome, а не выбору в чате.
+Словари панели загружаются из тех же файлов, без библиотек.
+Внедряемые `extractPage` и `readDocument` получают простой словарь аргументом,
+не замыкаясь на импорты. Собственные ошибки чтения переводятся; диагностические
+ошибки инструментов автоматизации и сообщения Chrome/сети остаются исходными.
+
+Проверка: `node --test extensions/chrome/tests/*.test.mjs` (включает настоящий
+Chromium/MV3; интеграционная фикстура также собирает Rust и требует веб-ассеты).

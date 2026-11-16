@@ -15,17 +15,17 @@ const props = defineProps<{ conversation: Conversation; draftState: Conversation
 const home = computed(() => !!props.start)
 const homeView = !!props.start
 const tabBridge = createTabBridge(window)
-const tabState=ref({enabled:true,title:'Текущая вкладка',url:''})
+const tabState=ref({enabled:true,title:'',url:''})
 const tabExpanded=ref(false)
 const tabPreview=ref<BrowserContext|null>(null)
 const tabPreviewLoading=ref(false)
-const tabPreviewError=ref('')
+const tabPreviewError=shallowRef<unknown>(null)
 tabBridge.subscribe(value=>{tabState.value=value;if(tabPreview.value?.url!==value.url) tabPreview.value=null})
 async function toggleTabPreview(){
   tabExpanded.value=!tabExpanded.value
   if(!tabExpanded.value) return
-  tabPreviewLoading.value=true;tabPreviewError.value='';tabPreview.value=null
-  try {tabPreview.value=await tabBridge.preview()} catch(error){tabPreviewError.value=messageOf(error)} finally {tabPreviewLoading.value=false}
+  tabPreviewLoading.value=true;tabPreviewError.value=null;tabPreview.value=null
+  try {tabPreview.value=await tabBridge.preview()} catch(error){tabPreviewError.value=error} finally {tabPreviewLoading.value=false}
 }
 const tabClientId=crypto.randomUUID()
 let tabRequestTimer:ReturnType<typeof setTimeout>|undefined
@@ -123,7 +123,7 @@ const queuedMessages = computed<ChatMessage[]>(()=>(snapshot.value?.queued ?? []
   id:item.id,role:'user',browser_context:item.browser_context,parts:[
     {type:'text',text:item.text,format:(item.webhook ?? (props.conversation.webhook && !snapshot.value?.messages.some(message=>message.role==='user') && index===0)) ? 'code' : undefined},
     ...(item.files ?? []).map(filename=>({type:'file' as const,filename,mediaType:'application/octet-stream'})),
-    ...Array.from({length:item.photos ?? 0},(_,index)=>({type:'file' as const,filename:t("Фото {0}", index+1),mediaType:'image/png'})),
+    ...Array.from({length:item.photos ?? 0},(_,index)=>({type:'file' as const,filename:`Фото ${index+1}`,genericLabel:'photo' as const,genericIndex:index+1,mediaType:'image/png'})),
   ],
 })))
 const planSummary = computed(()=>{
@@ -515,7 +515,7 @@ async function submit() {
         keys=await fingerprints(selectedFiles)
         if(!mounted) return
       }
-      if(selectedFiles.length>10 || selectedFiles.reduce((sum,file)=>sum+file.size,0)>49_000_000) throw new Error('С учётом документа вкладки разрешено не более 10 вложений и 49 MB суммарно.')
+      if(selectedFiles.length>10 || selectedFiles.reduce((sum,file)=>sum+file.size,0)>49_000_000) throw new Error(t('С учётом документа вкладки разрешено не более 10 вложений и 49 MB суммарно.'))
       pending = { id: crypto.randomUUID(), text, files: keys, browser_context }
     }
     sessionStorage.setItem(pendingKey.value, JSON.stringify(pending))
@@ -721,19 +721,19 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
         </UAccordion>
       </div>
       <section v-if="browserSidebar" data-testid="tab-context" class="relative shrink-0 rounded-lg border border-default bg-default">
-        <div v-if="tabExpanded" id="tab-context-preview" class="absolute bottom-full inset-x-0 mb-2 max-h-[45vh] overflow-auto rounded-lg border border-default bg-default p-3 shadow-lg" role="region" aria-label="Содержимое вкладки">
-          <p v-if="tabPreviewLoading" role="status" class="text-sm text-muted">Читаю вкладку…</p>
-          <p v-else-if="tabPreviewError" role="alert" class="text-sm text-error">{{ tabPreviewError }}</p>
+        <div v-if="tabExpanded" id="tab-context-preview" class="absolute bottom-full inset-x-0 mb-2 max-h-[45vh] overflow-auto rounded-lg border border-default bg-default p-3 shadow-lg" role="region" :aria-label="t('Содержимое вкладки')">
+          <p v-if="tabPreviewLoading" role="status" class="text-sm text-muted">{{ t('Читаю вкладку…') }}</p>
+          <p v-else-if="tabPreviewError" role="alert" class="text-sm text-error">{{ messageOf(tabPreviewError) }}</p>
           <template v-else-if="tabPreview">
             <p class="text-sm font-medium break-words">{{ tabPreview.title }}</p>
             <p class="mt-1 text-xs text-muted break-all">{{ tabPreview.url }}</p>
-            <p v-if="tabPreview.truncated" class="mt-1 text-xs text-muted">Снимок усечён</p>
+            <p v-if="tabPreview.truncated" class="mt-1 text-xs text-muted">{{ t('Снимок усечён') }}</p>
             <pre class="mt-3 whitespace-pre-wrap break-words text-xs">{{ tabPreview.text }}</pre>
           </template>
         </div>
         <div class="flex min-w-0 items-center gap-2 px-2 py-1">
           <button type="button" class="flex min-w-0 flex-1 items-center gap-2 text-left text-xs py-1" :aria-expanded="tabExpanded" aria-controls="tab-context-preview" @click="toggleTabPreview">
-            <span class="min-w-0 flex-1 truncate" :title="tabState.url">Вкладка: {{ tabState.title }}</span>
+            <span class="min-w-0 flex-1 truncate" :title="tabState.url">{{ t('Вкладка: {0}', tabState.title || t('Текущая вкладка')) }}</span>
             <UIcon :name="tabExpanded?'i-lucide-chevron-down':'i-lucide-chevron-up'" class="size-4 shrink-0" />
           </button>
         </div>

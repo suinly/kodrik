@@ -1,3 +1,4 @@
+use crate::i18n::Language;
 use crate::remote::{client::Credential, config::RemoteConfig};
 use anyhow::{Context, ensure};
 use std::{
@@ -20,23 +21,31 @@ pub async fn run(path: Option<&Path>) -> anyhow::Result<()> {
 }
 
 pub async fn remote_tui(path: Option<&Path>, session: Option<&str>) -> anyhow::Result<()> {
+    let language = Language::from_environment();
     let config = config(path)?;
     ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
-        "Remote TUI requires an interactive terminal"
+        language.pick(
+            "Remote TUI requires an interactive terminal",
+            "Для удалённого TUI нужен интерактивный терминал"
+        )
     );
     super::tui::remote::run_with(&config, path, session).await
 }
 
 async fn response(request: reqwest::RequestBuilder) -> anyhow::Result<serde_json::Value> {
+    let language = Language::from_environment();
     use futures::StreamExt;
-    let response = request
-        .send()
-        .await
-        .map_err(|_| anyhow::anyhow!("Cannot reach pairing server"))?;
+    let response = request.send().await.map_err(|_| {
+        anyhow::anyhow!(language.pick(
+            "Cannot reach pairing server",
+            "Не удалось подключиться к серверу сопряжения"
+        ))
+    })?;
     ensure!(
         response.status().is_success(),
-        "Pairing request denied ({})",
+        "{} ({})",
+        language.pick("Pairing request denied", "Запрос сопряжения отклонён"),
         response.status()
     );
     let mut stream = response.bytes_stream();
@@ -44,22 +53,28 @@ async fn response(request: reqwest::RequestBuilder) -> anyhow::Result<serde_json
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| {
             anyhow::anyhow!(
-                "Pairing response interrupted; do not retry an uncertain token response"
+                language.pick("Pairing response interrupted; do not retry an uncertain token response", "Ответ сопряжения прерван; не повторяйте запрос, если неизвестно, был ли выдан токен")
             )
         })?;
         ensure!(
             bytes.len() + chunk.len() <= 16 * 1024,
-            "Pairing response exceeds limit"
+            language.pick(
+                "Pairing response exceeds limit",
+                "Ответ сопряжения превышает лимит"
+            )
         );
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid pairing response"))
+    serde_json::from_slice(&bytes).map_err(|_| {
+        anyhow::anyhow!(language.pick("Invalid pairing response", "Некорректный ответ сопряжения"))
+    })
 }
 
 async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
+    let language = Language::from_environment();
     ensure!(
         !config.credential_file.try_exists()?,
-        "Device credential already exists; revoke it and explicitly remove it before pairing again"
+        language.pick("Device credential already exists; revoke it and explicitly remove it before pairing again", "Учётные данные устройства уже существуют; отзовите доступ и явно удалите их перед повторным сопряжением")
     );
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -74,28 +89,45 @@ async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
     let request = start["request_id"]
         .as_str()
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
-        .context("Invalid pairing ID")?;
+        .context(language.pick("Invalid pairing ID", "Некорректный ID сопряжения"))?;
     let secret = start["polling_secret"]
         .as_str()
-        .context("Missing polling secret")?;
-    let code = start["code"].as_str().context("Missing pairing code")?;
+        .context(language.pick("Missing polling secret", "Отсутствует секрет опроса"))?;
+    let code = start["code"]
+        .as_str()
+        .context(language.pick("Missing pairing code", "Отсутствует код сопряжения"))?;
     ensure!(
         code.len() == 8 && code.bytes().all(|b| b.is_ascii_alphanumeric()),
-        "Invalid pairing code"
+        language.pick("Invalid pairing code", "Некорректный код сопряжения")
     );
     eprintln!(
-        "Open {} and approve device pairing.\nRequest ID: {request}\nCompare this code on both devices: {code}",
-        config.server.join("app/profile")?
+        "{}\n{}: {request}\n{}: {code}",
+        language.pick(
+            &format!(
+                "Open {} and approve device pairing.",
+                config.server.join("app/profile")?
+            ),
+            &format!(
+                "Откройте {} и подтвердите подключение устройства.",
+                config.server.join("app/profile")?
+            )
+        ),
+        language.pick("Request ID", "ID запроса"),
+        language.pick(
+            "Compare this code on both devices",
+            "Сравните этот код на обоих устройствах"
+        )
     );
     std::io::stderr().flush()?;
-    let expires = start["expires_at"]
-        .as_i64()
-        .context("Missing pairing expiry")?;
+    let expires = start["expires_at"].as_i64().context(language.pick(
+        "Missing pairing expiry",
+        "Отсутствует срок действия сопряжения",
+    ))?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     loop {
         ensure!(
             tokio::time::Instant::now() < deadline && chrono::Utc::now().timestamp() < expires,
-            "Pairing expired"
+            language.pick("Pairing expired", "Срок сопряжения истёк")
         );
         tokio::time::sleep(Duration::from_secs(2)).await;
         // An uncertain poll can consume the token; never retry this request automatically.
@@ -112,19 +144,27 @@ async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
                     device_id: poll["device_id"]
                         .as_str()
                         .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                        .context("Invalid device ID")?,
+                        .context(
+                            language.pick("Invalid device ID", "Некорректный ID устройства"),
+                        )?,
                     token: poll["token"]
                         .as_str()
-                        .context("Missing device credential")?
+                        .context(language.pick(
+                            "Missing device credential",
+                            "Отсутствуют учётные данные устройства",
+                        ))?
                         .into(),
                 };
                 credential.save(&config.credential_file)?;
                 eprintln!(
-                    "Device paired. Credential saved privately; no model configuration is needed."
+                    "{}", language.pick("Device paired. Credential saved privately; no model configuration is needed.", "Устройство подключено. Учётные данные сохранены приватно; настройка модели не требуется.")
                 );
                 return Ok(());
             }
-            _ => anyhow::bail!("Pairing expired or invalid; start a new pairing request"),
+            _ => anyhow::bail!(language.pick(
+                "Pairing expired or invalid; start a new pairing request",
+                "Сопряжение недействительно или его срок истёк; создайте новый запрос"
+            )),
         }
     }
 }

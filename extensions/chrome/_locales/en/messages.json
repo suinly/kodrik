@@ -1,0 +1,116 @@
+{
+  "text0": {
+    "message": "Kodrik"
+  },
+  "text1": {
+    "message": "Connection settings"
+  },
+  "text2": {
+    "message": "Close settings"
+  },
+  "text3": {
+    "message": "Your Kodrik"
+  },
+  "text4": {
+    "message": "Shared history, a separate chat for each tab"
+  },
+  "text5": {
+    "message": "Server address"
+  },
+  "text6": {
+    "message": "Connect"
+  },
+  "text7": {
+    "message": "Sign in ↗"
+  },
+  "text8": {
+    "message": "Sign-in opens in a regular browser tab."
+  },
+  "text9": {
+    "message": "Allow reading websites"
+  },
+  "text10": {
+    "message": "Kodrik chat"
+  },
+  "text11": {
+    "message": "Connecting to chat…"
+  },
+  "text12": {
+    "message": "The chat did not respond. Open “Connection settings”, check the address and click “Sign in ↗” if needed."
+  },
+  "text13": {
+    "message": "No active tab."
+  },
+  "text14": {
+    "message": "Access to the Kodrik server address is required to connect."
+  },
+  "text15": {
+    "message": "Access granted. Send your question again."
+  },
+  "text16": {
+    "message": "This tab cannot be read. Select a regular HTTP(S) page."
+  },
+  "text17": {
+    "message": "Document: $1 ($2). The file will be attached when you send the message."
+  },
+  "text18": {
+    "message": "Could not read the document."
+  },
+  "text19": {
+    "message": "The tab document changed while being read."
+  },
+  "text20": {
+    "message": "Could not read the tab content."
+  },
+  "text21": {
+    "message": "The tab changed while being read. Send your message again."
+  },
+  "text22": {
+    "message": " If Chrome denied access, click “Allow reading websites” or click the extension icon again on the desired tab."
+  },
+  "text23": {
+    "message": "Enter a Kodrik HTTPS address without credentials, query parameters or # (HTTP is only allowed for localhost)."
+  },
+  "text24": {
+    "message": "This tab cannot be read."
+  },
+  "text25": {
+    "message": "Only text pages are supported, not PDFs or videos."
+  },
+  "text26": {
+    "message": "The page has no accessible text."
+  },
+  "text27": {
+    "message": "Text is unavailable. Select a tab with accessible text."
+  },
+  "text28": {
+    "message": "The tab changed while being read."
+  },
+  "text29": {
+    "message": "Document address is unavailable."
+  },
+  "text30": {
+    "message": "Could not download the document. Check access and export permissions."
+  },
+  "text31": {
+    "message": "The server returned a sign-in page or a different format instead of the document."
+  },
+  "text32": {
+    "message": "The document exceeds 20 MB."
+  },
+  "text33": {
+    "message": "The server returned an invalid document."
+  },
+  "text34": {
+    "message": "Invalid server address. Enter a full HTTPS URL."
+  },
+  "extensionName": {
+    "message": "Kodrik — chat with your tab"
+  },
+  "extensionDescription": {
+    "message": "Ask Kodrik about the open page in the Chrome side panel."
+  },
+  "extensionAction": {
+    "message": "Open Kodrik"
+  }
+}

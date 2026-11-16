@@ -210,3 +210,30 @@ rerun for this documentation refresh; unresolved full-suite failures above remai
   by extracted attachment viewer. Added translation; i18n6/6 and typecheck pass.
   Full web suite not repeated after that one-key catalog fix.
 - No live model behavior evaluation, commit, deployment or gateway restart.
+
+## ru/en localization follow-up
+
+- Chrome manifest and panel now have English/Russian catalogs; panel follows the
+  authenticated web language bridge. Serialized page/document readers receive
+  translations explicitly, with no imported closures. Browser tab UI/errors and
+  generated image labels are localized without translating user filenames/content.
+- Remote TUI consent, status, notices and image labels use its selected language;
+  standalone pairing/invitation/run/password CLI uses LC_ALL/LC_MESSAGES/LANG.
+- Regression tests observed failing before implementation. Final extension suite:
+  28/28; web localization/bridge units:22/22; CLI integration:2/2; Nuxt typecheck,
+  build, cargo fmt --check and git diff --check passed.
+- First complete Rust run passed1390 library tests plus all other targets. After
+  review fixes, repeat full run:1387 passed/4 failed/12 ignored. Failing tests:
+  reports_lifecycle_selected_session_resume_and_release;
+  requires_a_complete_herdr_environment;
+  approval_push_retries_only_while_the_request_is_pending;
+  sender_encrypts_generic_payload_retries_temporarily_and_removes_expired_subscriptions.
+  Isolated push group14/14; herdr serial6 passed/1 failed/1 ignored (lifecycle still
+  fails). These unrelated timing/environment tests were not modified.
+- Full web:270/281. One stale device-disconnection assertion fixed. Other failures:
+  typing restores composer focus; backend process restart (kill EPERM); subsequent
+  logout, short/legacy/invalid invitation, Telegram approval/denial/cancellation,
+  and profile tests (connection refused after fixture restart failed). Separate
+  rerun9/11: only Telegram denial/profile still missing Open Telegram link.
+- Known raw external diagnostics, protocol identifiers and user content remain
+  literal by design. No deployment, commit or gateway restart performed.

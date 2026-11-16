@@ -1,3 +1,4 @@
+use crate::i18n::Language;
 use anyhow::{Context, ensure};
 use clap::{Args as ClapArgs, Subcommand};
 
@@ -25,6 +26,7 @@ enum Command {
 }
 
 pub fn run(args: Args) -> anyhow::Result<()> {
+    let language = Language::from_environment();
     let root = crate::config::data_dir()?;
     let auth = crate::web::auth::AuthStore::new(&root);
     match args.command {
@@ -34,31 +36,68 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         } => {
             let config = crate::config::Config::load()?;
             config.validate_owner()?;
-            ensure!(!config.gateway.is_empty(), "A Telegram gateway is required");
-            let settings = crate::web::Settings::from_config(&config.web)?
-                .context("Enable web access before creating invitations")?;
+            ensure!(
+                !config.gateway.is_empty(),
+                language.pick("A Telegram gateway is required", "Необходим Telegram-шлюз")
+            );
+            let settings =
+                crate::web::Settings::from_config(&config.web)?.context(language.pick(
+                    "Enable web access before creating invitations",
+                    "Включите веб-доступ перед созданием приглашений",
+                ))?;
             let now = chrono::Utc::now().timestamp();
             let invite =
                 auth.create_invite(&label, now + i64::from(expires_in_hours) * 3600, now)?;
             let url = invitation_url(&settings, &invite.token)?;
             let expires = chrono::DateTime::from_timestamp(invite.expires, 0)
-                .context("Invalid invitation expiry")?
+                .context(language.pick(
+                    "Invalid invitation expiry",
+                    "Некорректный срок действия приглашения",
+                ))?
                 .with_timezone(&chrono::Local);
             println!(
-                "Приглашение для «{}»\n\n{url}\n\nДействует до: {}\nСсылка одноразовая. Передайте её лично.\n\nОтозвать: kodrik invites revoke {}",
+                "{} «{}»\n\n{url}\n\n{}: {}\n{}\n\n{}: kodrik invites revoke {}",
+                language.pick("Invitation for", "Приглашение для"),
                 label.trim(),
-                expires.format("%d.%m.%Y %H:%M %:z"),
+                language.pick("Expires", "Действует до"),
+                expires.format(language.pick("%Y-%m-%d %H:%M %:z", "%d.%m.%Y %H:%M %:z")),
+                language.pick(
+                    "This link is single-use. Share it privately.",
+                    "Ссылка одноразовая. Передайте её лично."
+                ),
+                language.pick("Revoke", "Отозвать"),
                 invite.id,
             );
         }
         Command::List => println!("{}", serde_json::to_string_pretty(&auth.list_invites()?)?),
         Command::Revoke { id } => {
-            ensure!(auth.revoke_invite(&id)?, "Invitation not found");
-            println!("Invitation and its granted access revoked.");
+            ensure!(
+                auth.revoke_invite(&id)?,
+                language.pick("Invitation not found", "Приглашение не найдено")
+            );
+            println!(
+                "{}",
+                language.pick(
+                    "Invitation and its granted access revoked.",
+                    "Приглашение и выданный через него доступ отозваны."
+                )
+            );
         }
         Command::RevokeUser { user_id } => {
-            ensure!(auth.revoke_user(user_id)?, "User has no invitation access");
-            println!("User access and web sessions revoked.");
+            ensure!(
+                auth.revoke_user(user_id)?,
+                language.pick(
+                    "User has no invitation access",
+                    "У пользователя нет доступа по приглашению"
+                )
+            );
+            println!(
+                "{}",
+                language.pick(
+                    "User access and web sessions revoked.",
+                    "Доступ пользователя и веб-сессии отозваны."
+                )
+            );
         }
     }
     Ok(())

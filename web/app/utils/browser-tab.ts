@@ -1,3 +1,6 @@
+import {watch} from 'vue'
+import {language,LocalizedError} from './i18n.ts'
+
 export type BrowserCapture=BrowserContext & {document?:File}
 export type BrowserContext={url:string;title:string;text:string;source:'page'|'selection';captured_at:string;truncated:boolean}
 function validContext(value:unknown):value is BrowserContext {
@@ -12,7 +15,7 @@ function validContext(value:unknown):value is BrowserContext {
 // Only the trusted extension parent can provide page data or execute browser commands.
 export function createTabBridge(win:Window, timeout=90000) {
   let origin='',channel='',enabled=true
-  let state={enabled:true,title:'Текущая вкладка',url:''}
+  let state={enabled:true,title:'',url:''}
   const subscribers=new Set<(state:{enabled:boolean;title:string;url:string})=>void>()
   const pending=new Map<string,{resolve:(context:BrowserCapture|null)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
   const commands=new Map<string,{screenshot:boolean;verify?:()=>Promise<boolean>;resolve:(result:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>()
@@ -24,9 +27,10 @@ export function createTabBridge(win:Window, timeout=90000) {
     if(data.type==='kodrik-tab-init' && typeof data.channel==='string' && data.channel.length<=100 && typeof data.enabled==='boolean') {
       if(origin && (origin!==event.origin || channel!==data.channel)) return
       origin=event.origin;channel=data.channel;enabled=data.enabled
-      state={enabled,title:typeof data.tab?.title==='string'?data.tab.title.slice(0,1024):'Текущая вкладка',url:typeof data.tab?.url==='string'?data.tab.url.slice(0,4096):''}
+      state={enabled,title:typeof data.tab?.title==='string'?data.tab.title.slice(0,1024):'',url:typeof data.tab?.url==='string'?data.tab.url.slice(0,4096):''}
       for(const listener of subscribers) listener(state)
       win.parent.postMessage({type:'kodrik-tab-ready',channel},origin)
+      syncLanguage()
       return
     }
     if(event.origin!==origin || data.channel!==channel) return
@@ -57,7 +61,8 @@ export function createTabBridge(win:Window, timeout=90000) {
     const request=pending.get(data.id)
     if(!request) return
     clearTimeout(request.timer);pending.delete(data.id)
-    if(typeof data.error==='string') request.reject(new Error(data.error.slice(0,2000)))
+    if(Array.isArray(data.errorParts) && data.errorParts.length>0 && data.errorParts.length<=2 && data.errorParts.every((part:unknown)=>typeof part==='string' && part.length<=2000)) request.reject(new LocalizedError(data.errorParts))
+    else if(typeof data.error==='string') request.reject(new Error(data.error.slice(0,2000)))
     else if(data.context===null) request.resolve(null)
     else if(validContext(data.context)) {
       try {
@@ -72,6 +77,8 @@ export function createTabBridge(win:Window, timeout=90000) {
       } catch {request.reject(new Error('Некорректное вложение вкладки. Повторите отправку.'))}
     } else request.reject(new Error('Некорректный контекст вкладки. Повторите отправку.'))
   }
+  function syncLanguage() {if(origin) win.parent.postMessage({type:'kodrik-tab-language',channel,language:language.value},origin)}
+  const stopLanguage=watch(language,syncLanguage,{flush:'sync'})
   win.addEventListener('message',receive)
   if(framed) win.parent.postMessage({type:'kodrik-tab-connect'},'*')
   async function request(preview=false):Promise<BrowserCapture|null> {
@@ -107,6 +114,7 @@ export function createTabBridge(win:Window, timeout=90000) {
     toggle(value:boolean){if(origin) win.parent.postMessage({type:'kodrik-tab-toggle',channel,enabled:value},origin)},
     subscribe(listener:(state:{enabled:boolean;title:string;url:string})=>void){subscribers.add(listener);listener(state);return ()=>subscribers.delete(listener)},
     dispose() {
+      stopLanguage()
       win.removeEventListener('message',receive)
       for(const request of pending.values()) {clearTimeout(request.timer);request.reject(new Error('Чат закрыт.'))}
       for(const [id,request] of commands) {if(origin) win.parent.postMessage({type:'kodrik-browser-cancel',channel,id},origin);clearTimeout(request.timer);request.reject(new Error('Чат закрыт. Исход действия может быть неизвестен.'))}

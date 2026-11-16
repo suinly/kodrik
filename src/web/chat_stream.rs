@@ -51,7 +51,7 @@ pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<
                     .strip_prefix("data:")
                     .and_then(|s| s.split(';').next())
                     .unwrap_or("image/png");
-                parts.push(json!({"type":"file", "filename":format!("Фото {}",image_index + 1), "mediaType":mime,
+                parts.push(json!({"type":"file", "filename":format!("Фото {}",image_index + 1), "genericLabel":"photo", "genericIndex":image_index + 1, "mediaType":mime,
                     "url":format!("../api/chat/sessions/{}/attachments/{index}/images/{image_index}", session.id().as_str())}));
             }
             messages.push(
@@ -109,7 +109,7 @@ pub(super) fn history_range(session: &Session, start: usize, end: usize) -> Vec<
                         .strip_prefix("data:")
                         .and_then(|data| data.split(';').next())
                         .unwrap_or("image/png");
-                    parts.push(json!({"type":"file","filename":format!("Tool image {}",image_index+1),
+                    parts.push(json!({"type":"file","filename":format!("Tool image {}",image_index+1), "genericLabel":"tool-image", "genericIndex":image_index + 1,
                         "mediaType":mime,"toolCallId":result.call_id,
                         "url":format!("../api/chat/sessions/{}/attachments/{index}/tool_images/{image_index}",session.id().as_str())}));
                 }
@@ -212,6 +212,8 @@ mod run_view_tests {
                 assert_eq!(images.len(), 2);
                 assert_eq!(images[0]["type"], "file");
                 assert_eq!(images[0]["mediaType"], "image/png");
+                assert_eq!(images[0]["genericLabel"], "tool-image");
+                assert_eq!(images[1]["genericIndex"], 2);
                 assert_eq!(
                     images[1]["url"],
                     format!(

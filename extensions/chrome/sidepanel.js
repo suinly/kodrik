@@ -1,6 +1,9 @@
+import {translate as t, loadTranslations, setLanguage, injectionMessages, localizeDocument} from './i18n.mjs';
 import {serverURL, pageContext, extractPage} from './core.mjs';
 import {readDocument} from './documents.mjs';
 import {executeBrowserCommand} from './automation.mjs';
+await loadTranslations();
+localizeDocument(document);
 const browserMessageIds = new Set();
 let browserBusy = false;
 const browserControllers = new Map();
@@ -26,7 +29,8 @@ function openSettings() { if (!connection.open) connection.showModal(); }
 const ownerId = Number(new URLSearchParams(location.search).get('tab'));
 const bound = Number.isInteger(ownerId) && ownerId > 0;
 const storageKey = `tab-chat:${ownerId}`;
-const status = text => { $('status').textContent = text; };
+let statusText = '';
+const status = text => { statusText = text; $('status').textContent = t(text); };
 function waitForChat() {
   ready = false;
   clearTimeout(connectionTimer);
@@ -117,6 +121,9 @@ window.addEventListener('message', async event => {
   }
   if(event.data?.channel !== channel) return;
   const message = event.data;
+  if(message.type === 'kodrik-tab-language' && typeof message.language === 'string') {
+    setLanguage(message.language);localizeDocument(document);status(statusText);return;
+  }
   if(message.type === 'kodrik-browser-cancel') {
     browserControllers.get(message.id)?.abort();
     return;
@@ -163,17 +170,17 @@ window.addEventListener('message', async event => {
     if(!/^https?:/.test(tab.url || '') || (tab.url && new URL(tab.url).origin === server.origin)) throw new Error('Эта вкладка недоступна для чтения. Выберите обычную HTTP(S)-страницу.');
     const snapshotChannel = channel;
     const isPreview = message.type === 'kodrik-tab-preview';
-    const [documentResult] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:readDocument,args:[tab.url,isPreview]});
+    const [documentResult] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:readDocument,args:[tab.url,isPreview,injectionMessages()]});
     const document = documentResult?.result;
     let page, attachment;
     if (document?.mime) {
-      page = {url:document.url,title:document.title,text:`Документ: ${document.name} (${document.mime}). При отправке файл прикладывается к сообщению.`,selection:false};
+      page = {url:document.url,title:document.title,text:t('Документ: $1 ($2). При отправке файл прикладывается к сообщению.',[document.name,document.mime]),selection:false};
       if (!isPreview) {
         if (typeof document.base64 !== 'string') throw new Error('Не удалось прочитать документ.');
         attachment = {name:document.name,mime:document.mime,base64:document.base64};
       }
     } else {
-      const [result] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:extractPage});
+      const [result] = await chrome.scripting.executeScript({target:{tabId:tab.id},func:extractPage,args:[{messages:injectionMessages()}]});
       if (documentResult?.documentId && result?.documentId !== documentResult.documentId) throw new Error('Документ вкладки изменился во время чтения.');
       page = result?.result;
     }
@@ -188,9 +195,10 @@ window.addEventListener('message', async event => {
     status('');
     post({type:'kodrik-tab-result',channel,id:message.id,context:pageContext(page),...(attachment ? {document:attachment} : {})});
   } catch(error) {
-    const text = `${error.message} Если Chrome не дал доступ — нажмите «Разрешить чтение сайтов» или ещё раз значок расширения на нужной вкладке.`;
+    const errorParts = [error.message, 'Если Chrome не дал доступ — нажмите «Разрешить чтение сайтов» или ещё раз значок расширения на нужной вкладке.'];
+    const text = errorParts.join(' ');
     status(text);$('access').hidden=false;
-    post({type:'kodrik-tab-result',channel,id:message.id,error:text});
+    post({type:'kodrik-tab-result',channel,id:message.id,error:t(text),errorParts});
   }
 });
 chrome.tabs.onActivated.addListener(info=>{if(!bound && info.windowId===windowId) void preview();});

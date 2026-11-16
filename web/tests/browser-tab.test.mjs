@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 const pageContext={url:'https://example.com/',title:'Example',text:'Page content',source:'page',captured_at:'2026-11-13T17:00:00.000Z',truncated:false};
 
+import {setLanguage} from '../app/utils/i18n.ts';
 import {createTabBridge} from '../app/utils/browser-tab.ts';
 
 function fixture() {
@@ -149,5 +150,35 @@ test('bridge permits large text and grants image budget only to requested screen
   const pending=bridge.capture();
   deliver({type:'kodrik-tab-result',channel:'x',id:parent.sent.at(-1).message.id,context:{...pageContext,text:'a'.repeat(200000)}});
   assert.equal((await pending).text.length,200000);
+  bridge.dispose();
+});
+
+ test('trusted extension receives selected language at handshake and after changes; missing tab title stays presentation-only',()=>{
+  setLanguage('en');
+  const {bridge,deliver,parent}=fixture();
+  let state;bridge.subscribe(value=>{state=value});
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  assert.equal(state.title,'');
+  assert.ok(parent.sent.some(({message})=>message.type==='kodrik-tab-language'&&message.channel==='x'&&message.language==='en'));
+  setLanguage('ru');
+  assert.equal(parent.sent.at(-1).message.language,'ru');
+  bridge.dispose();
+  const count=parent.sent.length;setLanguage('en');assert.equal(parent.sent.length,count);
+ });
+
+test('failed preview keeps structured error parts translatable after switching language',async()=>{
+  globalThis.window={location:new URL('http://localhost/app/chat')};
+  globalThis.document={getElementById:()=>({textContent:'{}'})};
+  const {messageOf}=await import('../app/utils/api.ts');
+  const {bridge,deliver,parent}=fixture();
+  deliver({type:'kodrik-tab-init',channel:'x',enabled:true});
+  setLanguage('en');
+  const pending=bridge.preview();
+  deliver({type:'kodrik-tab-result',channel:'x',id:parent.sent.at(-1).message.id,error:'legacy translated composite',errorParts:['This tab cannot be read. Select a regular HTTP(S) page.','Если Chrome не дал доступ — нажмите «Разрешить чтение сайтов» или ещё раз значок расширения на нужной вкладке.']});
+  const error=await pending.catch(error=>error);
+  assert.match(messageOf(error),/^This tab cannot be read/);
+  setLanguage('ru');
+  assert.match(messageOf(error),/^Эта вкладка недоступна/);
+  assert.doesNotMatch(messageOf(error),/This tab/);
   bridge.dispose();
 });

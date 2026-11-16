@@ -458,7 +458,7 @@ test('chat shows compaction progress and terminal states', {timeout:60000},async
   } finally {await browser.close();}
 });
 
-test('disconnected laptop pause leaves chat writable and explains explicit continuation', {timeout:60000},async()=>{
+test('disconnected device pause leaves chat writable and explains explicit continuation', {timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
   try {
@@ -467,7 +467,7 @@ test('disconnected laptop pause leaves chat writable and explains explicit conti
     await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
-    await expect(page.getByText('Связь с ноутбуком потеряна. История сохранена; для продолжения отправьте новое сообщение.',{exact:true})).toBeVisible();
+    await expect(page.getByText('Связь с устройством потеряна. История сохранена; для продолжения отправьте новое сообщение.',{exact:true})).toBeVisible();
     await expect(page.locator('[contenteditable="true"]').first()).toBeEditable();
   } finally {await browser.close();}
 });
@@ -5134,4 +5134,34 @@ test('tool result images stay collapsed with their output and reuse the attachme
       await expect(thumbnail).toHaveCount(0);
     }
   } finally {await browser.close();}
+});
+
+test('generic attachment labels render in ru/en without translating user filenames',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    for(const locale of ['ru-RU','en-US']) {
+      const page=await signedPage(browser,{locale});
+      const image={type:'file',filename:'Фото 1',genericLabel:'photo',genericIndex:1,mediaType:'image/png',url:new URL('localized-image.png',base).href};
+      const snapshot={type:'snapshot',session_id:id,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},queued:[],messages:[
+        {id:'generated-photo',role:'user',parts:[image]},
+        {id:'generated-tool',role:'assistant',parts:[{...image,filename:'Tool image 2',genericLabel:'tool-image',genericIndex:2}]},
+        {id:'user-filename',role:'user',parts:[{...image,filename:'Новый диалог',genericLabel:undefined,genericIndex:undefined}]},
+      ]};
+      await page.route('**/localized-image.png',r=>r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="12"/>'}));
+      await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+      await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+      await page.goto(new URL(`app/chat/${id}?browser_sidebar=1`,base).href);
+      await expect(page.getByTestId('tab-context')).toContainText(locale==='ru-RU'?'Вкладка: Текущая вкладка':'Tab: Current tab');
+      await expect(page.getByRole('button',{name:locale==='ru-RU'?'Настройки расширения':'Extension settings',exact:true})).toBeVisible();
+      await page.getByTestId('tab-context').getByRole('button').click();
+      await expect(page.getByRole('region',{name:locale==='ru-RU'?'Содержимое вкладки':'Tab content',exact:true})).toBeVisible();
+      await expect(page.locator('[data-message-id="generated-photo"]').getByRole('button',{name:locale==='ru-RU'?'Фото 1':'Photo 1',exact:true})).toBeVisible();
+      await expect(page.locator('[data-message-id="generated-tool"]').getByRole('button',{name:locale==='ru-RU'?'Изображение инструмента 2':'Tool image 2',exact:true})).toBeVisible();
+      await expect(page.locator('[data-message-id="user-filename"]').getByRole('button',{name:'Новый диалог',exact:true})).toBeVisible();
+      await page.locator('[data-message-id="generated-photo"]').getByRole('button',{name:locale==='ru-RU'?'Фото 1':'Photo 1',exact:true}).click();
+      await expect(page.getByRole('dialog',{name:locale==='ru-RU'?'Фото 1':'Photo 1',exact:true})).toBeVisible();
+      await page.close();
+    }
+  } finally {await browser.close()}
 });

@@ -1,4 +1,5 @@
 import type {BrowserContext} from './browser-tab'
+import {LocalizedError} from './i18n.ts'
 import {locale,t} from './i18n.ts'
 const config = JSON.parse(document.getElementById('kodrik-config')!.textContent!);
 export const base = new URL(config.prefix, window.location.href);
@@ -9,13 +10,13 @@ export const attachmentUrl = (url?: string) => url ? new URL(url, new URL('chat/
 
 export class AuthenticationError extends Error {}
 export class ConversationNotFoundError extends Error {}
-export const messageOf = (error: unknown) => error instanceof TypeError ? t('Не удалось подключиться к серверу.') : error instanceof Error ? t(error.message) : t("Не удалось подключиться к серверу.");
+export const messageOf = (error: unknown) => error instanceof TypeError ? t('Не удалось подключиться к серверу.') : error instanceof LocalizedError ? error.localizedMessage() : error instanceof Error ? t(error.message) : t("Не удалось подключиться к серверу.");
 
 export type Conversation = { id: string; root_id?:string; parent_id?:string|null; title: string; title_default?:boolean; title_pending?: boolean; pinned?:boolean; busy: boolean; unread:boolean; unread_session_id:string|null; updated_at: string | null; snippet?:string|null; match_message?:string|null;webhook?:{id:string;name:string}|null;subagent?:boolean };
 export type PublishedPage = {slug: string; title: string; url: string; visibility: 'private' | 'public'; document: boolean};
 export type ConversationDraft = { text: string; files: File[]; missingFiles: string[]; revision: number; model?:string|null; pendingFiles?: {id:string;files:File[]} };
 export type ToolOrigin = {label:string;project_root:string;environment:{connection_id:string;generation:string};tool_id:string};
-export type FilePart = { type: 'file'; filename: string; mediaType: string; url?: string; origin?:ToolOrigin };
+export type FilePart = { type: 'file'; filename: string; genericLabel?:'photo'|'tool-image'; genericIndex?:number; mediaType: string; url?: string; origin?:ToolOrigin };
 export type MessagePart =
   | { type: 'text'; text: string;format?:'code' }
   | FilePart

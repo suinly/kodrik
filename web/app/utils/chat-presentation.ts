@@ -1,5 +1,5 @@
 import {locale,t} from './i18n.ts'
-import type {ChatMessage,MessagePart,EnvironmentStatus} from './api'
+import type {ChatMessage,MessagePart,EnvironmentStatus,FilePart} from './api'
 
 export type ToolPart = Extract<MessagePart,{type:'dynamic-tool'}>
 type MessageBlock = {kind:'tools';tools:ToolPart[]} | {kind:'content';part:Exclude<MessagePart,ToolPart>}
@@ -125,4 +125,12 @@ export function shortConversationTitle(title:string):string {
   if(text.length<=48) return text
   const start=text.slice(0,47),boundary=start.lastIndexOf(' ')
   return `${boundary>24?start.slice(0,boundary):start}…`
+}
+
+// Only server-marked generated labels are UI copy; filenames remain user content.
+export function attachmentLabel(file:Pick<FilePart,'filename'|'genericLabel'|'genericIndex'>):string {
+  if(!Number.isInteger(file.genericIndex) || file.genericIndex! < 1) return file.filename
+  if(file.genericLabel==='photo') return t('Фото {0}',file.genericIndex)
+  if(file.genericLabel==='tool-image') return t('Изображение инструмента {0}',file.genericIndex)
+  return file.filename
 }

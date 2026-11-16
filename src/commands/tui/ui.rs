@@ -827,6 +827,12 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
     };
     let audit = format!("{mode_icon} {}", app.audit_mode.label(language));
     if let Some(connection) = app.remote_connection {
+        let connection = match connection {
+            "connected" => language.pick("connected", "подключено"),
+            "disconnected" => language.pick("disconnected", "нет связи"),
+            "detached" => language.pick("detached", "отключено"),
+            other => other,
+        };
         let model = app
             .model
             .split_once('/')
@@ -986,6 +992,38 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn bilingual_remote_footer_labels_preserve_protocol_state() {
+        for (language, labels) in [
+            (
+                crate::i18n::Language::En,
+                ["connected", "disconnected", "detached"],
+            ),
+            (
+                crate::i18n::Language::Ru,
+                ["подключено", "нет связи", "отключено"],
+            ),
+        ] {
+            for (state, label) in ["connected", "disconnected", "detached"]
+                .into_iter()
+                .zip(labels)
+            {
+                let mut app = App {
+                    language,
+                    remote_connection: Some(state),
+                    ..Default::default()
+                };
+                let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+                terminal.draw(|frame| render(&mut app, frame)).unwrap();
+                let row = (0..100)
+                    .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+                    .collect::<String>();
+                assert!(row.contains(label), "{row}");
+                assert_eq!(app.remote_connection, Some(state));
+            }
+        }
+    }
 
     #[test]
     fn consuming_submitted_message_keeps_history_layout_and_style() {

@@ -6,6 +6,12 @@ use std::{
 
 #[test]
 fn pairing_cli_works_without_provider_keeps_prefix_and_never_prints_token() {
+    for locale in ["en_US.UTF-8", "ru_RU.UTF-8"] {
+        pairing_for_locale(locale);
+    }
+}
+
+fn pairing_for_locale(locale: &str) {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let server = format!("http://{}/kodrik/", listener.local_addr().unwrap());
@@ -62,6 +68,7 @@ fn pairing_cli_works_without_provider_keeps_prefix_and_never_prints_token() {
         .args(["connect", "--remote-config"])
         .arg(&path)
         .env("HOME", dir.path())
+        .env("LC_ALL", locale)
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -70,6 +77,22 @@ fn pairing_cli_works_without_provider_keeps_prefix_and_never_prints_token() {
     assert!(output.status.success(), "{text}");
     assert!(text.contains(&format!("{server}app/profile")) && text.contains("ABCD2345"));
     assert!(text.contains(&request.to_string()));
+    assert!(
+        text.contains(if locale.starts_with("ru") {
+            "Сравните этот код"
+        } else {
+            "Compare this code"
+        }),
+        "{text}"
+    );
+    assert!(
+        text.contains(if locale.starts_with("ru") {
+            "Устройство подключено"
+        } else {
+            "Device paired"
+        }),
+        "{text}"
+    );
     assert!(!text.contains("private-device-token") && !text.contains("private-poll-secret"));
     let credential: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.path().join("remote/device.json")).unwrap())
@@ -80,10 +103,54 @@ fn pairing_cli_works_without_provider_keeps_prefix_and_never_prints_token() {
         .args(["--remote", "--remote-config"])
         .arg(&path)
         .env("HOME", dir.path())
+        .env("LC_ALL", locale)
         .stdin(Stdio::null())
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("interactive terminal"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(if locale.starts_with("ru") {
+            "интерактивный терминал"
+        } else {
+            "interactive terminal"
+        })
+    );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("config.toml"));
+}
+
+#[test]
+fn invitation_validation_uses_cli_locale_without_changing_json_output() {
+    for (locale, expected) in [
+        ("en_US.UTF-8", "Invitation not found"),
+        ("ru_RU.UTF-8", "Приглашение не найдено"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_kodrik"))
+            .args([
+                "invites",
+                "revoke",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ])
+            .env("HOME", &home)
+            .env("LC_ALL", locale)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{:?}",
+            output
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_kodrik"))
+            .args(["invites", "list"])
+            .env("HOME", &home)
+            .env("LC_ALL", locale)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+        let _: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    }
 }

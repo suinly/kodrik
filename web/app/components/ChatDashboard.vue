@@ -735,10 +735,10 @@ onMounted(() => {
               </UPopover>
               <CommandAuditMenu compact-mobile :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
-              <UButton v-if="browserSidebar" icon="i-lucide-settings" aria-label="Настройки расширения" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
+              <UButton v-if="browserSidebar" icon="i-lucide-settings" :aria-label="t('Настройки расширения')" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
               <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
             </template>
-            <UButton v-else-if="browserSidebar && viewingConversation" icon="i-lucide-settings" aria-label="Настройки расширения" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
+            <UButton v-else-if="browserSidebar && viewingConversation" icon="i-lucide-settings" :aria-label="t('Настройки расширения')" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
           </template>
         </UDashboardNavbar>
       </template>

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chromium,expect} from '../../../web/node_modules/@playwright/test/index.mjs';
 
-async function panelFixture(t, configured=true, responds=true) {
+async function panelFixture(t, configured=true, responds=true, locale='ru-RU') {
   const browser=await chromium.launch({headless:true});
   t.after(()=>browser.close());
-  const page=await browser.newPage();
+  const page=await browser.newPage({locale});
   if(!responds) await page.clock.install();
   await page.addInitScript(configured=>{
     window.testState={tab:{id:7,title:'Example article',url:'https://article.test/read'},captures:0,updates:[],opened:[]};
@@ -27,6 +27,7 @@ async function panelFixture(t, configured=true, responds=true) {
     addEventListener('message',event=>{messages.push(event.data);if(${responds} && event.data.type==='kodrik-tab-init') parent.postMessage({type:'kodrik-tab-ready',channel:event.data.channel},'*');});
   </script>`}));
   await page.goto('https://panel.test/sidepanel.html?tab=7');
+  if(configured) await expect(page.locator('#chat')).toHaveAttribute('src', /server\.test/);
   if(configured && responds) await expect(page.locator('#status')).toHaveText('');
   const chat=()=>page.frames().find(frame=>frame.url().startsWith('https://server.test/'));
   const send=(type,extra={})=>chat().evaluate(({type,extra})=>parent.postMessage({type,channel:messages.find(m=>m.type==='kodrik-tab-init').channel,...extra},'*'),{type,extra});
@@ -152,4 +153,29 @@ test('audited browser commands need no second dialog and require trusted preflig
   await expect(dialog).not.toBeVisible();
   await expect.poll(()=>chat().evaluate(()=>messages.find(m=>m.type==='kodrik-browser-result' && m.id==='expired-check')?.error)).toMatch(/cancelled/);
   assert.equal(await page.evaluate(()=>testState.actions),1);
+});
+
+// Catches navigator locale being ignored and untrusted iframe locale changes.
+test('panel translates English UI and capture errors, then syncs trusted chat language',async t=>{
+  const {page,send,chat}=await panelFixture(t,true,true,'en-US');
+  await send('kodrik-tab-settings');
+  await expect(page.getByRole('dialog',{name:'Connection settings'})).toBeVisible();
+  await expect(page.getByLabel('Server address')).toBeVisible();
+  await expect(page.locator('#chat')).toHaveAttribute('title','Kodrik chat');
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
+  await send('kodrik-tab-language',{language:'ru',channel:'wrong'});
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
+  await page.evaluate(()=>{testState.tab.url='chrome://settings/';});
+  await send('kodrik-tab-preview',{id:'localized-error'});
+  await expect.poll(()=>chat().evaluate(()=>messages.find(m=>m.id==='localized-error')?.error)).toMatch(/cannot be read/);
+  await expect(page.locator('#status')).toContainText('Allow reading websites');
+  const parts=await chat().evaluate(()=>messages.find(m=>m.id==='localized-error')?.errorParts);
+  assert.equal(parts.length,2);
+  assert.match(parts[0],/недоступна/);
+  assert.match(parts[1],/Если Chrome/);
+  await send('kodrik-tab-language',{language:'ru'});
+  await expect(page.getByRole('dialog',{name:'Настройки подключения'})).toBeVisible();
+  await expect(page.locator('#status')).toContainText('недоступна');
+  await send('kodrik-tab-language',{language:'de'});
+  await expect(page.locator('html')).toHaveAttribute('lang','en');
 });

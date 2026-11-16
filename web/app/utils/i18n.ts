@@ -202,3 +202,10 @@ export function t(key: string, ...values: unknown[]): string {
   }
   return key
 }
+
+// Structured system errors retain their parts across language changes.
+export class LocalizedError extends Error {
+  readonly parts:string[]
+  constructor(parts:string[]) {super(parts.map(part=>t(part)).join(' '));this.parts=parts}
+  localizedMessage() {return this.parts.map(part=>t(part)).join(' ')}
+}

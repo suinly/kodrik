@@ -105,3 +105,38 @@ test('API errors send the selected language and localize known payloads while pr
     await assert.rejects(checkedFetch('/api'),/Сессия истекла/);
   } finally {globalThis.fetch=original;delete globalThis.window;delete globalThis.document;}
 });
+
+test('browser sidebar has no untranslated Russian template text or static accessible labels',async()=>{
+  for(const name of ['ChatConversation.vue','ChatDashboard.vue']) {
+    const source=(await readFile(new URL(`../app/components/${name}`,import.meta.url),'utf8')).split('<template>')[1];
+    assert.doesNotMatch(source,/(?<![:\w-])(?:aria-label|title|label)="[^"\n]*[А-Яа-яЁё][^"\n]*"/,name);
+    assert.doesNotMatch(source,/>[^<{\n]*[А-Яа-яЁё][^<{\n]*(?:<|\{\{)/,name);
+  }
+});
+
+test('every bridge error and tab attachment quota has ru/en translations, including dynamic messageOf paths',async()=>{
+  const bridge=await readFile(new URL('../app/utils/browser-tab.ts',import.meta.url),'utf8');
+  const conversation=await readFile(new URL('../app/components/ChatConversation.vue',import.meta.url),'utf8');
+  const errors=[...bridge.matchAll(/new Error\('([^']+)'\)/g)].map(match=>match[1]);
+  errors.push('С учётом документа вкладки разрешено не более 10 вложений и 49 MB суммарно.');
+  const {messageOf}=await import('../app/utils/api.ts');
+  for(const text of errors) {
+    assert.ok(Object.hasOwn(catalogs.en,text),text);
+    setLanguage('en');assert.equal(messageOf(new Error(text)),catalogs.en[text]);
+    setLanguage('ru');assert.equal(messageOf(new Error(catalogs.en[text])),text);
+  }
+  assert.match(conversation,/t\(['"]С учётом документа вкладки/);
+});
+
+test('generic attachment metadata localizes labels but never user filenames',async()=>{
+  const {attachmentLabel}=await import('../app/utils/chat-presentation.ts');
+  const source=await readFile(new URL('../../src/web/chat_stream.rs',import.meta.url),'utf8');
+  assert.match(source,/"genericLabel":"photo"/);
+  assert.match(source,/"genericLabel":"tool-image"/);
+  for(const lang of ['ru','en']) {
+    setLanguage(lang);
+    assert.equal(attachmentLabel({filename:'Фото 1',genericLabel:'photo',genericIndex:1}),lang==='ru'?'Фото 1':'Photo 1');
+    assert.equal(attachmentLabel({filename:'Tool image 2',genericLabel:'tool-image',genericIndex:2}),lang==='ru'?'Изображение инструмента 2':'Tool image 2');
+    for(const filename of ['Фото 1','Tool image 2','Новый диалог','Мой файл.pdf']) assert.equal(attachmentLabel({filename}),filename);
+  }
+});
