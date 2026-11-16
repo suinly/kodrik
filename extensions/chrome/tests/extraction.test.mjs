@@ -2,6 +2,42 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {chromium} from '../../../web/node_modules/@playwright/test/index.mjs';
 import {extractPage} from '../core.mjs';
+import {parseChatMarkdown} from '../../../web/app/utils/chat-markdown.ts';
+
+test('captured table cells preserve literal backslashes and pipes when rendered as Markdown',async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await browser.newPage();
+    await page.setContent('<main><table><tr><th>Name</th><th>Value</th></tr><tr><td></td><td>42</td></tr></table></main>');
+    for(const value of ['a|b',String.raw`a\|b`,String.raw`a\\|b`,String.raw`a\*b`,'trailing\\']) {
+      await page.locator('td').first().evaluate((cell,value)=>{cell.textContent=value},value);
+      const {text}=await page.evaluate(extractPage);
+      const {body}=await parseChatMarkdown(text);
+      const table=body.children.find(node=>node.tag==='table');
+      assert.ok(table,`table preserved for ${JSON.stringify(value)}`);
+      const row=table.children.find(node=>node.tag==='tbody').children[0];
+      assert.equal(row.children.length,2);
+      assert.deepEqual(row.children[0].children,[{type:'text',value}]);
+      assert.deepEqual(row.children[1].children,[{type:'text',value:'42'}]);
+    }
+  } finally {await browser.close();}
+});
+
+test('captured preformatted table cells preserve literal backslashes',async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await browser.newPage();
+    await page.setContent('<main><table><tr><th>Name</th><th>Value</th></tr><tr><td><pre></pre></td><td>42</td></tr></table></main>');
+    const value=String.raw`C:\temp\file.txt`;
+    await page.locator('pre').evaluate((node,value)=>{node.textContent=value},value);
+    const {text}=await page.evaluate(extractPage);
+    const {body}=await parseChatMarkdown(text);
+    const nodes=node=>[node,...(node.children||[]).flatMap(nodes)];
+    const code=nodes(body).find(node=>node.tag==='code');
+    assert.ok(code);
+    assert.equal(code.children.map(node=>node.value||'').join(''),value);
+  } finally {await browser.close();}
+});
 
 test('capture excludes hidden content, form fields and editable secrets; prefers selection',async()=>{
   const browser=await chromium.launch({headless:true});

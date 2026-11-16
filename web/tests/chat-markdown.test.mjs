@@ -36,5 +36,16 @@ $\href{javascript:alert(1)}{click}$ and $\htmlClass{injected}{x}$ and $\unknownc
 Still visible`);
   const all=nodes(parsed.body);
   assert.ok(all.some(node=>node.type==='text' && node.value.includes('Still visible')));
-  assert.equal(all.some(node=>node.tag==='script' || node.props?.onerror || String(node.props?.href || '').startsWith('javascript:') || hasClass(node,'injected')),false);
+  assert.equal(all.some(node=>node.tag==='script' || node.props?.onerror || hasClass(node,'injected')),false);
+  for(const node of all.filter(node=>node.props?.href)) {
+    assert.ok(['http:','https:','mailto:'].includes(new URL(node.props.href,'https://example.com').protocol),node.props.href);
+  }
+});
+
+test('chat links reject unsafe schemes and preserve HTTPS links',async()=>{
+  for(const href of ['javascript:alert%281%29','JaVaScRiPt:alert%281%29','java&#x73;cript:alert%281%29','java&#x09;script:alert%281%29','data:text/html,unsafe','vbscript:unsafe']) {
+    const all=nodes((await parseChatMarkdown(`[unsafe](${href}) and [safe](https://example.com/path)`)).body);
+    assert.ok(all.some(node=>node.type==='text' && node.value==='unsafe'),href);
+    assert.deepEqual(all.filter(node=>node.props?.href).map(node=>node.props.href),['https://example.com/path'],href);
+  }
 });

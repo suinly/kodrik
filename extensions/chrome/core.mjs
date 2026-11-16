@@ -57,7 +57,7 @@ export function extractPage(options = {}) {
       (style.display === 'contents' ? style.visibility === 'visible' && Number(style.opacity) !== 0 :
         element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}));
   };
-  const render = (node, pre = false) => {
+  const render = (node, pre = false, cell = false) => {
     if (length > 1048576) { truncated = true; return ''; }
     if (node.nodeType === Node.TEXT_NODE) {
       let text = node.textContent;
@@ -70,6 +70,7 @@ export function extractPage(options = {}) {
         }).join('');
       }
       text = pre ? text : text.replace(/\s+/g,' ');
+      if (cell && !pre && !selection) text = text.replace(/\\/g,'\\\\');
       length += text.length;
       return text;
     }
@@ -78,13 +79,14 @@ export function extractPage(options = {}) {
     if (tag === 'br') return '\n';
     if (tag === 'img') {
       if (selection && !ranges.some(range => range.intersectsNode(node))) return '';
-      const alt = (node.getAttribute('alt') || '').replace(/\s+/g,' ');
+      let alt = (node.getAttribute('alt') || '').replace(/\s+/g,' ');
+      if (cell && !pre && !selection) alt = alt.replace(/\\/g,'\\\\');
       length += alt.length;
       return alt;
     }
     const children = tag === 'slot' ? (node.assignedNodes().length ? node.assignedNodes() : node.childNodes) :
       (node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes);
-    const text = Array.from(children, child => render(child, pre || tag === 'pre')).join('');
+    const text = Array.from(children, child => render(child, pre || tag === 'pre', cell || tag === 'th' || tag === 'td')).join('');
     if (!text.trim()) return text;
     if (selection) return /^(p|div|section|article|main|li|tr|h[1-6])$/.test(tag) ? `\n${text.trim()}\n` : text;
     if (/^h[1-6]$/.test(tag)) return `\n\n${'#'.repeat(Number(tag[1]))} ${text.trim()}\n\n`;
