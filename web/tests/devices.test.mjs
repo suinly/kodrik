@@ -14,7 +14,7 @@ export async function componentPage(name,props={}) {
     name:'vue-test',setup(builder){builder.onLoad({filter:/\.vue$/},async({path})=>{
       const {descriptor}=parse(await readFile(path,'utf8'),{filename:path});
       const compiled=compileScript(descriptor,{id:path,inlineTemplate:true});
-      return {contents:`import {ref,reactive,computed,onMounted,onUnmounted,onBeforeUnmount,watch,toRef,useTemplateRef,nextTick} from 'vue';${compiled.content}`,loader:'ts'};
+      return {contents:`import {ref,shallowRef,reactive,computed,onMounted,onUnmounted,onBeforeUnmount,watch,toRef,useTemplateRef,nextTick} from 'vue';${compiled.content}`,loader:'ts'};
     })},
   }]});
   const browser=await chromium.launch({headless:true});
