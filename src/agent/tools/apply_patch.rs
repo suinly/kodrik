@@ -7,7 +7,6 @@ use std::{
     collections::{BTreeMap, btree_map::Entry},
     fs,
     io::{ErrorKind, Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -306,9 +305,10 @@ struct Change {
 }
 
 fn read_file(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut file = match fs::OpenOptions::new()
+    let mut file = match crate::platform::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .no_follow()
+        .nonblock()
         .open(path)
     {
         Ok(file) => file,
@@ -491,7 +491,9 @@ fn line_count(content: Option<&[u8]>) -> usize {
 mod tests {
     use crate::agent::tools::{ApplyPatchTool, Tool};
     use serde_json::{Value, json};
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, path::Path};
 
     async fn run(root: &Path, patch: &str) -> anyhow::Result<Value> {
         ApplyPatchTool
@@ -513,7 +515,6 @@ mod tests {
         assert_eq!(output["changed_files"][0]["added"], 1);
         assert_eq!(output["changed_files"][0]["removed"], 1);
     }
-
     #[tokio::test]
     async fn applies_add_update_move_and_delete() {
         let directory = tempfile::tempdir().unwrap();
@@ -523,7 +524,7 @@ mod tests {
             "fn first() {\n    old();\n}\nfn second() {\n    old();\n}\n",
         )
         .unwrap();
-        fs::set_permissions(root.join("old.rs"), fs::Permissions::from_mode(0o755)).unwrap();
+        crate::platform::set_private(root.join("old.rs"), 0o755).unwrap();
         fs::write(root.join("remove.txt"), "remove me").unwrap();
         let output = run(
             root,
@@ -546,6 +547,7 @@ mod tests {
             fs::read_to_string(root.join("nested/new.rs")).unwrap(),
             "fn first() {\n    old();\n}\nfn second() {\n    new();\n}\n// done\n"
         );
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(root.join("nested/new.rs"))
                 .unwrap()
@@ -651,7 +653,7 @@ mod tests {
             "after\n"
         );
     }
-
+    #[cfg(unix)]
     #[tokio::test]
     async fn rejects_paths_and_symlinks_outside_workdir() {
         let directory = tempfile::tempdir().unwrap();
@@ -718,7 +720,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&absolute).unwrap(), "second\n");
         assert_eq!(fs::read(directory.path().join("empty")).unwrap(), b"");
     }
-
+    #[cfg(unix)]
     #[tokio::test]
     async fn failed_move_keeps_source_file() {
         // SAFETY: geteuid has no arguments; root bypasses directory permissions.
@@ -729,18 +731,19 @@ mod tests {
         let root = directory.path();
         fs::write(root.join("a"), "keep me\n").unwrap();
         fs::create_dir(root.join("z")).unwrap();
-        fs::set_permissions(root.join("z"), fs::Permissions::from_mode(0o555)).unwrap();
+        crate::platform::set_private(root.join("z"), 0o555).unwrap();
         let result = run(
             root,
             "*** Begin Patch\n*** Update File: a\n*** Move to: z/new\n*** End Patch",
         )
         .await;
-        fs::set_permissions(root.join("z"), fs::Permissions::from_mode(0o755)).unwrap();
+        crate::platform::set_private(root.join("z"), 0o755).unwrap();
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "keep me\n");
         assert!(!root.join("z/new").exists());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn rejects_fifo_without_blocking() {
         let directory = tempfile::tempdir().unwrap();

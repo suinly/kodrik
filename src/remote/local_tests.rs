@@ -247,7 +247,7 @@ async fn local_effect_is_once_across_retry_restart_and_changed_arguments() {
     assert!(env.execute(call).await.is_err());
     env.close().await.unwrap();
 }
-
+#[cfg(unix)]
 #[tokio::test]
 async fn read_and_patch_cannot_choose_a_new_root_or_follow_symlinks() {
     let dir = tempfile::tempdir().unwrap();
@@ -585,7 +585,7 @@ fn aborting_patch_waiter_does_not_release_an_unfinished_file_effect() {
         );
     });
 }
-
+#[cfg(unix)]
 #[tokio::test]
 async fn replaced_project_root_symlink_cannot_expose_outside_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -660,6 +660,7 @@ async fn same_device_restart_returns_evidence_and_retains_unacked_receipts() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn bounded_file_and_image_reads_reject_large_and_special_files() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::File::create(dir.path().join("large"))
@@ -716,7 +717,7 @@ async fn bounded_file_and_image_reads_reject_large_and_special_files() {
     );
     env.close().await.unwrap();
 }
-
+#[cfg(unix)]
 #[tokio::test]
 async fn skill_metadata_does_not_follow_an_external_symlink() {
     let dir = tempfile::tempdir().unwrap();
@@ -753,6 +754,7 @@ async fn skill_metadata_does_not_follow_an_external_symlink() {
 }
 
 #[test]
+#[cfg(unix)]
 fn skill_fifo_cannot_block_environment_startup() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("skills/stalled")).unwrap();
@@ -797,6 +799,7 @@ fn skill_fifo_cannot_block_environment_startup() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn skill_fifo_worker() {
     let Some(dir) = std::env::var_os("KODRIK_SKILL_FIFO_FIXTURE") else {
         return;
@@ -849,6 +852,7 @@ async fn repeated_cancel_does_not_exhaust_supervisor_registrations() {
 
 // Killing the future instead of coordinating TERM loses the flush and the two-second grace.
 #[tokio::test]
+#[cfg(unix)]
 async fn remote_shell_cancellation_preserves_term_grace() {
     for mode in ["cancel", "deadline", "timeout", "close", "abort"] {
         for ignores_term in [false, true] {

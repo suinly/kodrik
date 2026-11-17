@@ -8,13 +8,7 @@ use super::{
 use crate::agent::session::SessionId;
 use anyhow::{Context, ensure};
 use futures::{SinkExt, StreamExt};
-use std::{
-    collections::HashMap,
-    io::Read,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, io::Read, sync::Arc, time::Duration};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
@@ -28,16 +22,15 @@ pub(crate) struct Credential {
 }
 impl Credential {
     pub(crate) fn load(path: &std::path::Path) -> anyhow::Result<Self> {
-        let file = std::fs::OpenOptions::new()
+        let file = crate::platform::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .no_follow()
+            .nonblock()
             .open(path)
             .context("Cannot open device credential; run kodrik connect")?;
         let metadata = file.metadata()?;
         ensure!(
-            metadata.is_file()
-                && metadata.len() <= 4096
-                && metadata.permissions().mode() & 0o077 == 0,
+            metadata.is_file() && metadata.len() <= 4096 && crate::platform::is_private(&file)?,
             "Credential must be a private bounded regular file"
         );
         let mut bytes = Vec::new();
@@ -56,16 +49,16 @@ impl Credential {
         use std::io::Write;
         let parent = path.parent().context("Credential directory missing")?;
         private_directory(parent)?;
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = crate::platform::OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(path)
             .context("Cannot save credential; existing credentials are never overwritten")?;
         file.write_all(&serde_json::to_vec(self)?)?;
         file.sync_all()?;
-        std::fs::File::open(parent)?.sync_all()?;
+        crate::platform::sync_directory(parent)?;
         Ok(())
     }
 }
@@ -73,14 +66,14 @@ impl Credential {
 pub(crate) fn private_directory(path: &std::path::Path) -> anyhow::Result<()> {
     // System ancestors may be aliases (macOS /var); reject the actual storage directory.
     if !path.try_exists()? {
-        std::fs::DirBuilder::new()
+        crate::platform::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(path)?;
     }
     let metadata = std::fs::symlink_metadata(path)?;
     ensure!(
-        metadata.is_dir() && metadata.permissions().mode() & 0o077 == 0,
+        metadata.is_dir() && crate::platform::path_is_private(path)?,
         "Credential directory must be private and not a symlink"
     );
     Ok(())
@@ -720,6 +713,7 @@ mod cancellation_tests {
     use serde_json::json;
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn client_shutdown_preserves_remote_shell_term_grace() {
         for mode in ["detach", "transport", "abort"] {
             for ignores_term in [false, true] {

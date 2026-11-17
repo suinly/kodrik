@@ -1,4 +1,4 @@
-use std::{fs, os::unix::fs::DirBuilderExt, path::Path};
+use std::{fs, path::Path};
 
 use anyhow::{Context, ensure};
 use rusqlite::{Connection, OpenFlags, types::Value};
@@ -14,7 +14,7 @@ pub(crate) fn stage_owner_datasets(
     if !source_present {
         return Ok(());
     }
-    fs::DirBuilder::new()
+    crate::platform::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(staging)?;
@@ -63,7 +63,7 @@ pub(crate) fn stage_owner_datasets(
     drop(source_db);
     original.as_file().sync_all()?;
     original.persist(staging.join("state.sqlite3"))?;
-    fs::File::open(staging)?.sync_all()?;
+    crate::platform::sync_directory(staging)?;
     Ok(())
 }
 

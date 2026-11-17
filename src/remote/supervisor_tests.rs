@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use super::supervisor::{Supervisor, gated_command};
 use std::{
     path::Path,

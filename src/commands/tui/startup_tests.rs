@@ -468,7 +468,7 @@ impl PrivateTerminal {
         self.master.as_mut().unwrap().write_all(bytes).unwrap();
     }
 }
-
+#[cfg(unix)]
 #[test]
 fn herdr_follows_real_tui_work_cancellation_and_exit() {
     use std::os::unix::fs::PermissionsExt;

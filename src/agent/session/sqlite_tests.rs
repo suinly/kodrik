@@ -159,7 +159,7 @@ async fn sqlite_new_session_is_atomic_when_mapping_write_fails() {
         "old"
     );
 }
-
+#[cfg(unix)]
 #[test]
 fn sqlite_refuses_future_schema_and_symlink_database() {
     let root = tempfile::tempdir().unwrap();
@@ -177,7 +177,7 @@ fn sqlite_refuses_future_schema_and_symlink_database() {
     std::os::unix::fs::symlink(&path, link_dir.path().join("state.sqlite3")).unwrap();
     assert!(SqliteSessionStore::open(link_dir.path().into()).is_err());
 }
-
+#[cfg(unix)]
 #[test]
 fn sqlite_database_and_sidecars_are_private() {
     use std::os::unix::fs::PermissionsExt;
@@ -200,7 +200,7 @@ fn sqlite_database_and_sidecars_are_private() {
         );
     }
 }
-
+#[cfg(unix)]
 #[test]
 fn sqlite_import_refuses_symlinked_active_directory() {
     let root = tempfile::tempdir().unwrap();

@@ -133,7 +133,6 @@ fn suspend_gap_invalidates_live_authority_even_before_fifteen_second_expiry() {
     timer.renew();
     assert!(timer.expired(), "resume requires a fresh handshake");
 }
-
 #[tokio::test]
 async fn client_runs_local_effect_once_and_closes_environment_when_socket_drops() {
     use super::{client::RemoteClient, config::RemoteConfig, local::LocalEnvironment};
@@ -147,8 +146,7 @@ async fn client_runs_local_effect_once_and_closes_environment_when_socket_drops(
         serde_json::to_vec(&json!({"device_id":Uuid::new_v4(),"token":"fixture-token"})).unwrap(),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
@@ -284,7 +282,6 @@ fn bounded_peer_rejects_fifth_call_and_closes_on_cancel_backpressure() {
         "lost cancellation left local calls authorized"
     );
 }
-
 #[tokio::test]
 async fn aborted_client_future_closes_environment_while_caller_retains_it() {
     use super::{client::RemoteClient, config::RemoteConfig, local::LocalEnvironment};
@@ -298,8 +295,7 @@ async fn aborted_client_future_closes_environment_while_caller_retains_it() {
         serde_json::to_vec(&json!({"device_id":Uuid::new_v4(),"token":"fixture"})).unwrap(),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
@@ -361,7 +357,6 @@ async fn aborted_client_future_closes_environment_while_caller_retains_it() {
         "aborting serve_local left the retained environment authorized"
     );
 }
-
 #[tokio::test]
 async fn client_missing_heartbeat_ack_revokes_local_environment_after_fifteen_seconds() {
     use super::{client::RemoteClient, config::RemoteConfig, local::LocalEnvironment};
@@ -375,8 +370,7 @@ async fn client_missing_heartbeat_ack_revokes_local_environment_after_fifteen_se
         serde_json::to_vec(&json!({"device_id":Uuid::new_v4(),"token":"fixture"})).unwrap(),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
@@ -440,7 +434,6 @@ async fn client_missing_heartbeat_ack_revokes_local_environment_after_fifteen_se
     assert!(expired, "client retained authority without heartbeat ACK");
     assert!(result.unwrap().unwrap().is_err());
 }
-
 #[tokio::test]
 async fn client_rejects_untrusted_tls_certificate_without_plaintext_fallback() {
     use super::{client::RemoteClient, config::RemoteConfig};
@@ -470,8 +463,7 @@ async fn client_rejects_untrusted_tls_certificate_without_plaintext_fallback() {
         serde_json::to_vec(&json!({"device_id":Uuid::new_v4(),"token":"fixture"})).unwrap(),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
         server: format!("https://{}/", listener.local_addr().unwrap())
             .parse()
@@ -507,6 +499,7 @@ async fn client_rejects_untrusted_tls_certificate_without_plaintext_fallback() {
     server.await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn slow_reader_exhausts_bounded_writer_and_closes_local_authority() {
     use super::{client::RemoteClient, config::RemoteConfig, local::LocalEnvironment};
@@ -522,7 +515,7 @@ async fn slow_reader_exhausts_bounded_writer_and_closes_local_authority() {
         serde_json::to_vec(&json!({"device_id":Uuid::new_v4(),"token":"fixture"})).unwrap(),
     )
     .unwrap();
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()

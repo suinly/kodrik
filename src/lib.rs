@@ -6,6 +6,7 @@ pub mod config;
 mod gateway;
 pub mod i18n;
 mod interfaces;
+pub(crate) mod platform;
 mod remote;
 mod spaces;
 mod users;

@@ -1,6 +1,6 @@
+use crate::platform::OpenOptions;
 use std::{
-    fs::{self, File, OpenOptions},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    fs::{self, File},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, UNIX_EPOCH},
@@ -122,7 +122,7 @@ impl SqliteSessionStore {
 
     /// Blocking initialization; async callers must use `open_async`.
     pub fn open(directory: PathBuf) -> anyhow::Result<Self> {
-        fs::DirBuilder::new()
+        crate::platform::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&directory)?;
@@ -130,7 +130,7 @@ impl SqliteSessionStore {
             fs::symlink_metadata(&directory)?.is_dir(),
             "Session directory is not a regular directory"
         );
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_private(&directory, 0o700)?;
         let ownership = ownership_lock(&directory, false)?;
         // journal_mode cannot reliably upgrade concurrently even with busy_timeout.
         // Serialize initialization/import, not ordinary operations on open stores.
@@ -140,7 +140,7 @@ impl SqliteSessionStore {
             .read(true)
             .write(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(directory.join("init.lock"))?;
         initialization.lock()?;
         let path = directory.join(DATABASE);
@@ -150,19 +150,19 @@ impl SqliteSessionStore {
             .read(true)
             .write(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(&path)?;
         ensure!(
             file.metadata()?.is_file(),
             "Session database is not a regular file"
         );
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_file_private(&file, 0o600)?;
         for name in ["state.sqlite3-wal", "state.sqlite3-shm"] {
             let sidecar = directory.join(name);
             match OpenOptions::new()
                 .read(true)
                 .write(true)
-                .custom_flags(libc::O_NOFOLLOW)
+                .no_follow()
                 .open(&sidecar)
             {
                 Ok(file) => {
@@ -173,7 +173,7 @@ impl SqliteSessionStore {
                     );
                     // The last connection can unlink its sidecars while a new store opens.
                     // Set permissions through the handle, not a now-stale pathname.
-                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                    crate::platform::set_file_private(&file, 0o600)?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
@@ -294,7 +294,7 @@ impl SqliteSessionStore {
         tx.commit()?;
         import_legacy(&mut db, &directory)?;
         // SQLite derives sidecar permissions from the already-private main database.
-        File::open(&directory)?.sync_all()?;
+        crate::platform::sync_directory(&directory)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(db)),
             compaction_errors: Default::default(),
@@ -410,7 +410,7 @@ fn valid_id(id: &str) -> anyhow::Result<()> {
 }
 
 pub(crate) fn ownership_lock(directory: &Path, exclusive: bool) -> anyhow::Result<File> {
-    fs::DirBuilder::new()
+    crate::platform::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(directory)?;
@@ -420,7 +420,7 @@ pub(crate) fn ownership_lock(directory: &Path, exclusive: bool) -> anyhow::Resul
         .read(true)
         .write(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .no_follow()
         .open(directory.join("store.lock"))?;
     let result = if exclusive {
         lock.try_lock()

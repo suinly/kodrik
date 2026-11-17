@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Command, Stdio},

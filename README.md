@@ -61,6 +61,10 @@ or start a background service. Continue with **Configure and run** below.
 
 ### Build from source
 
+Native Windows build instructions and CI artifact details are available in
+[Windows support](docs/windows.md). Windows support is under development;
+the existing Homebrew distribution remains macOS-only.
+
 Source builds require a current stable Rust toolchain with Rust 2024 edition
 support, npm, and Node.js 22.22.3+ on 22.x, 24.15+ on 24.x, or 26+.
 

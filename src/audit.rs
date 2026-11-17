@@ -1,8 +1,7 @@
+use crate::platform::OpenOptions;
 use std::{
     cell::RefCell,
-    fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -62,7 +61,7 @@ impl Journal {
         let mut bytes = serde_json::to_vec(&record)?;
         anyhow::ensure!(bytes.len() <= 16_384, "Journal record exceeds 16 KiB");
         bytes.push(b'\n');
-        std::fs::DirBuilder::new()
+        crate::platform::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&self.directory)?;
@@ -76,11 +75,11 @@ impl Journal {
             .read(true)
             .append(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(file)?;
         // ponytail: one lock per daily file; use a writer queue if fsync throughput matters.
         file.lock()?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_file_private(&file, 0o600)?;
         if file.metadata()?.len() > 0 {
             file.seek(SeekFrom::End(-1))?;
             let mut last = [0];
@@ -98,7 +97,7 @@ impl Journal {
             .ancestors()
             .filter(|path| !path.as_os_str().is_empty())
         {
-            File::open(directory)?.sync_all()?;
+            crate::platform::sync_directory(directory)?;
         }
         Ok(())
     }
@@ -211,7 +210,7 @@ impl Span {
 
 // No Drop record: a cancelled future or crash cannot confirm an external outcome.
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -1,4 +1,5 @@
-use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt};
+use crate::platform::OpenOptions;
+use std::io::Read;
 
 use anyhow::{Context, ensure};
 use schemars::{JsonSchema, schema_for};
@@ -42,7 +43,7 @@ impl Tool for ViewImageTool {
         ensure!(!args.path.trim().is_empty(), "path must not be empty");
         tokio::task::spawn_blocking(move || {
             // O_NONBLOCK prevents FIFOs from hanging before the regular-file check.
-            let file = OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK)
+            let file = OpenOptions::new().read(true).nonblock()
                 .open(&args.path).context("Cannot open image")?;
             let metadata = file.metadata()?;
             ensure!(metadata.is_file(), "Image path must be a regular file");
@@ -58,7 +59,7 @@ impl Tool for ViewImageTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::agent::image::tests::sample;

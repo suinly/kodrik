@@ -2811,6 +2811,7 @@ async fn chat_provider_failure_still_saves_user_message() {
 
 #[tokio::test]
 #[ignore = "Local fake-model server for frontend and browser tests"]
+#[cfg(unix)]
 async fn browser_fixture() {
     if let Ok(parent) = std::env::var("CHAT_TEST_PARENT_PID") {
         let parent: i32 = parent.parse().expect("Invalid CHAT_TEST_PARENT_PID");

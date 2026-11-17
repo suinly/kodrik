@@ -66,7 +66,7 @@ async fn fixture(replies: Vec<Response>) -> Fixture {
         axum::serve(listener, app).await.unwrap();
     });
     let dir = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::platform::set_private(dir.path(), 0o700).unwrap();
     let credential_file = dir.path().join("device");
     Credential {
         device_id: uuid::Uuid::new_v4(),

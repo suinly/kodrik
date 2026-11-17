@@ -1,0 +1,66 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, feat/windows-native]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build embedded web frontend
+        run: |
+          npm ci --prefix web
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build --prefix web
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile all tests
+        run: cargo test --no-run --locked --target x86_64-pc-windows-msvc
+      - name: Test Windows filesystem protections
+        run: 'cargo test --locked --target x86_64-pc-windows-msvc --lib platform::'
+      - name: Test native Windows processes
+        run: cargo test --locked --target x86_64-pc-windows-msvc --lib windows_tests
+      - name: Test restart PID validation
+        run: cargo test --locked --target x86_64-pc-windows-msvc --lib commands::request_restart::tests
+      - name: Build native executable
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Package and smoke test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = 'target/x86_64-pc-windows-msvc/release/kodrik.exe'
+          & $binary --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $binary --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content Cargo.toml | Select-String '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $archive = "dist/kodrik-$version-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Path $binary, LICENSE -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -Encoding ascii dist/SHA256SUMS
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: kodrik-windows-x86_64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error

@@ -466,7 +466,14 @@ fn copy_legacy(source: &Path, destination: &Path) -> anyhow::Result<()> {
     let metadata = fs::symlink_metadata(source)?;
     if metadata.is_symlink() {
         // Preserve trusted owner links without traversing arbitrary trees during migration.
+        #[cfg(not(unix))]
+        anyhow::bail!(
+            "Cannot migrate symbolic link {} on this platform; migrate it manually before restarting",
+            source.display()
+        );
+        #[cfg(unix)]
         let target = fs::read_link(source)?;
+        #[cfg(unix)]
         std::os::unix::fs::symlink(
             source.parent().context("Missing parent")?.join(target),
             destination,
@@ -501,6 +508,19 @@ fn copy_legacy(source: &Path, destination: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn copy_legacy_preserves_link_without_copying_target() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, "original").unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        std::os::unix::fs::symlink("target", &source).unwrap();
+        super::copy_legacy(&source, &destination).unwrap();
+        assert_eq!(std::fs::read_link(destination).unwrap(), target);
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "original");
+    }
     #[test]
     #[ignore = "Offline migration check against a private temporary data snapshot"]
     fn migration_snapshot_fixture() {

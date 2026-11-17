@@ -1,7 +1,7 @@
+use crate::platform::OpenOptions;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    fs::{self, File},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -130,7 +130,7 @@ pub(crate) struct DatasetStore {
 
 impl DatasetStore {
     pub(crate) fn open(directory: PathBuf) -> anyhow::Result<Self> {
-        fs::DirBuilder::new()
+        crate::platform::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&directory)?;
@@ -138,7 +138,7 @@ impl DatasetStore {
             fs::symlink_metadata(&directory)?.is_dir(),
             "Invalid dataset directory"
         );
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_private(&directory, 0o700)?;
         let ownership = super::session::ownership_lock(&directory, false)?;
         let initialization = OpenOptions::new()
             .create(true)
@@ -146,24 +146,20 @@ impl DatasetStore {
             .read(true)
             .write(true)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(directory.join("init.lock"))?;
         initialization.lock()?;
         database_present(&directory)?;
         for name in ["state.sqlite3", "state.sqlite3-wal", "state.sqlite3-shm"] {
             let mut options = OpenOptions::new();
-            options
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW);
+            options.read(true).write(true).mode(0o600).no_follow();
             if name == "state.sqlite3" {
                 options.create(true).truncate(false);
             }
             match options.open(directory.join(name)) {
                 Ok(file) => {
                     ensure!(file.metadata()?.is_file(), "Invalid dataset database file");
-                    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                    crate::platform::set_file_private(&file, 0o600)?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
@@ -204,7 +200,7 @@ impl DatasetStore {
             "SELECT dataset,id,revision,record_date,values_json,sequence FROM records LIMIT 0",
         )?;
         db.prepare("SELECT request_id,payload,response FROM receipts LIMIT 0")?;
-        File::open(&directory)?.sync_all()?;
+        crate::platform::sync_directory(&directory)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(db)),
             _ownership: Arc::new(ownership),

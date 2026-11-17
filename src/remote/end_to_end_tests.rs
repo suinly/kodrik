@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Private loopback acceptance fixture: no real model, user data or external services.
 use super::{
     client::{ChatClient, Credential, RemoteClient},

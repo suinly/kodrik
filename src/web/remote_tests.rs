@@ -251,8 +251,7 @@ async fn fixture() -> Fixture {
         serde_json::to_vec(&serde_json::json!({"device_id":device_id,"token":token})).unwrap(),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&credential, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::platform::set_private(&credential, 0o600).unwrap();
     let config = crate::remote::config::RemoteConfig {
         server: format!("http://{address}/").parse().unwrap(),
         credential_file: credential,
@@ -834,6 +833,7 @@ async fn child_agent_executes_only_with_parent_lease() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn revoking_parent_lease_stops_child_laptop_process_before_later_effect() {
     use crate::{
         agent::{

@@ -783,7 +783,7 @@ async fn durable_process_ready_compaction_preserves_new_suffix() {
     assert!(session.compaction().is_some());
     assert!(matches!(session.messages().last(),Some(Message::User(u)) if u.content=="new suffix"));
 }
-
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "manual checkpoint latency/RSS/cancellation measurement, not a timing assertion"]
 async fn durable_checkpoint_benchmark() {

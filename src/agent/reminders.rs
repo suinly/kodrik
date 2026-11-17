@@ -249,7 +249,7 @@ impl ReminderStore {
             file.write_all(&bytes)?;
             file.as_file().sync_all()?;
             file.persist(self.directory.join(format!("{}.json", self.journal)))?;
-            File::open(&self.directory)?.sync_all()?;
+            crate::platform::sync_directory(&self.directory)?;
         }
         Ok(result)
     }

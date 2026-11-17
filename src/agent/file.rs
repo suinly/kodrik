@@ -60,7 +60,7 @@ impl FileAttachment {
         stored.as_file().sync_all()?;
         let path = directory.join(uuid::Uuid::new_v4().to_string());
         stored.persist_noclobber(&path)?;
-        std::fs::File::open(directory)?.sync_all()?;
+        crate::platform::sync_directory(directory)?;
         Ok(Self {
             filename: filename.to_owned(),
             mime_type: mime_type.to_owned(),

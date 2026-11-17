@@ -2,7 +2,6 @@ use crate::config::McpServerConfig;
 use anyhow::{Context, ensure};
 use std::{
     collections::HashMap,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -29,10 +28,11 @@ impl RemoteConfig {
         let parent = path.parent().context("Grant directory missing")?;
         super::client::private_directory(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        crate::platform::set_file_private(file.as_file(), 0o600)?;
         file.write_all(fingerprint.as_bytes())?;
         file.as_file().sync_all()?;
         file.persist(&path)?;
-        std::fs::File::open(parent)?.sync_all()?;
+        crate::platform::sync_directory(parent)?;
         Ok(())
     }
 
@@ -71,9 +71,10 @@ impl RemoteConfig {
 
     fn grant_matches(&self, fingerprint: &str) -> anyhow::Result<bool> {
         use std::io::Read;
-        let file = match std::fs::OpenOptions::new()
+        let file = match crate::platform::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .no_follow()
+            .nonblock()
             .open(self.credential_file.with_extension("grant"))
         {
             Ok(file) => file,
@@ -82,9 +83,7 @@ impl RemoteConfig {
         };
         let metadata = file.metadata()?;
         ensure!(
-            metadata.is_file()
-                && metadata.len() <= 64
-                && metadata.permissions().mode() & 0o077 == 0,
+            metadata.is_file() && metadata.len() <= 64 && crate::platform::is_private(&file)?,
             "Grant must be a private bounded regular file"
         );
         let mut saved = String::new();
@@ -109,9 +108,9 @@ impl RemoteConfig {
             optional_mcp: Vec<String>,
         }
         use std::io::Read;
-        let file = std::fs::OpenOptions::new()
+        let file = crate::platform::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK)
+            .nonblock()
             .open(path)
             .context("Cannot read remote configuration")?;
         ensure!(

@@ -47,6 +47,8 @@ impl LeaseTimer {
     }
 }
 pub(crate) struct LeaseClock {
+    #[cfg(windows)]
+    awake_start: std::time::Duration,
     start: tokio::time::Instant,
     renewed: tokio::time::Instant,
     timer: LeaseTimer,
@@ -54,13 +56,19 @@ pub(crate) struct LeaseClock {
 impl LeaseClock {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(windows)]
+            awake_start: windows_awake_time(),
             start: tokio::time::Instant::now(),
             renewed: tokio::time::Instant::now(),
             timer: LeaseTimer::new(std::time::Duration::ZERO, continuous_time()),
         }
     }
     pub(crate) fn live(&mut self) -> bool {
-        let live = self.timer.observe(self.start.elapsed(), continuous_time());
+        #[cfg(not(windows))]
+        let awake = self.start.elapsed();
+        #[cfg(windows)]
+        let awake = windows_awake_time().saturating_sub(self.awake_start);
+        let live = self.timer.observe(awake, continuous_time());
         if self.renewed.elapsed() >= super::service::LEASE {
             self.timer.invalid = true;
         }
@@ -75,8 +83,27 @@ impl LeaseClock {
         live
     }
 }
+#[cfg(windows)]
+fn windows_awake_time() -> std::time::Duration {
+    let mut ticks = 0u64;
+    // SAFETY: the kernel writes one live u64 in 100 ns units; failure is fail-closed.
+    assert_ne!(
+        unsafe {
+            windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut ticks)
+        },
+        0
+    );
+    std::time::Duration::from_nanos(ticks.saturating_mul(100))
+}
 #[allow(deprecated)] // libc exposes the native clock; no additional Mach dependency is needed.
 fn continuous_time() -> std::time::Duration {
+    #[cfg(windows)]
+    {
+        // GetTickCount64 includes suspended time, unlike the awake lease clock.
+        std::time::Duration::from_millis(unsafe {
+            windows_sys::Win32::System::SystemInformation::GetTickCount64()
+        })
+    }
     #[cfg(target_os = "macos")]
     {
         unsafe extern "C" {

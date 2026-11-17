@@ -1,4 +1,5 @@
 use super::config::RemoteConfig;
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[test]
@@ -40,6 +41,7 @@ fn remote_config_rejects_insecure_urls_unknown_options_and_unselected_optional_m
     assert!(RemoteConfig::load(&path).is_ok());
 }
 
+#[cfg(unix)]
 #[test]
 fn credential_save_is_private_one_shot_and_rejects_symlinks_or_public_files() {
     use super::client::Credential;
@@ -145,12 +147,14 @@ fn manifest_authorized_recognizes_cached_grant_without_writing() {
     let saved = std::fs::read(&path).unwrap();
     assert_eq!(saved.len(), 64);
     assert!(saved.iter().all(u8::is_ascii_hexdigit));
+    #[cfg(unix)]
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
     assert!(config.manifest_authorized(&manifest).unwrap());
     config
         .authorize_manifest(&manifest, || panic!("cached grant asked again"))
         .unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), saved);
+    #[cfg(unix)]
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o400
@@ -179,6 +183,7 @@ fn manifest_authorized_requires_exact_manifest_and_config() {
     assert_eq!(std::fs::read(&path).unwrap(), saved);
 }
 
+#[cfg(unix)]
 #[test]
 fn manifest_authorized_propagates_unsafe_grant_errors() {
     for case in [

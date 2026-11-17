@@ -1,9 +1,9 @@
+use crate::platform::OpenOptions;
 use anyhow::{Context, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -63,7 +63,7 @@ pub(super) fn data_root(data: &Path) -> PathBuf {
 pub(super) fn reject_symlinks(path: &Path) -> std::io::Result<()> {
     for ancestor in path.ancestors() {
         match fs::symlink_metadata(ancestor) {
-            Ok(meta) if meta.is_symlink() => {
+            Ok(meta) if crate::platform::is_link(&meta) => {
                 return Err(std::io::Error::other("Symlink is forbidden"));
             }
             Ok(_) => {}
@@ -84,7 +84,8 @@ pub(super) fn open_regular(path: &Path) -> std::io::Result<File> {
     reject_symlinks(path)?;
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .no_follow()
+        .nonblock()
         .open(path)?;
     if !file.metadata()?.is_file() {
         return Err(std::io::Error::other("Not a regular file"));
@@ -191,7 +192,7 @@ impl PageStore {
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .no_follow()
             .open(lock_path)?;
         lock.lock()?;
         Ok(lock)
@@ -234,7 +235,7 @@ impl PageStore {
         };
         if let Some(bytes) = &document {
             fs::write(staging.path().join("document.json"), bytes)?;
-            File::open(staging.path().join("document.json"))?.sync_all()?;
+            crate::platform::sync_directory(staging.path().join("document.json"))?;
         } else {
             copy_tree(&draft, staging.path(), 0, &mut budget)?;
         }
@@ -343,7 +344,7 @@ fn copy_tree(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -365,7 +366,7 @@ mod tests {
         assert_eq!(published.visibility, Visibility::Private);
         assert_eq!(store.list().unwrap().len(), 1);
     }
-
+    #[cfg(unix)]
     #[test]
     fn deletion_rejects_manifest_and_directory_symlinks() {
         use std::os::unix::fs::symlink;
@@ -384,7 +385,7 @@ mod tests {
         assert!(store.delete("report").is_err());
         assert_eq!(fs::read(outside.join("report.json")).unwrap(), b"keep");
     }
-
+    #[cfg(unix)]
     #[test]
     fn catalog_ignores_unrelated_files_and_rejects_manifest_symlinks() {
         use std::os::unix::fs::symlink;
@@ -442,7 +443,7 @@ mod tests {
         assert!(store.read("nutrition", &second, "../index.html").is_err());
         assert_eq!(first.visibility, Visibility::Public);
     }
-
+    #[cfg(unix)]
     #[test]
     fn publishing_rejects_symlinks_limits_and_private_by_default() {
         use std::os::unix::fs::symlink;

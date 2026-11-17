@@ -71,8 +71,12 @@ fn main() -> anyhow::Result<()> {
                 .exec();
             return Err(error.into());
         }
-        #[cfg(not(unix))]
-        anyhow::bail!("Gateway restart is not supported on this platform");
+        #[cfg(windows)]
+        {
+            std::process::Command::new(std::env::current_exe()?)
+                .args(std::env::args_os().skip(1))
+                .spawn()?;
+        }
     }
     Ok(())
 }

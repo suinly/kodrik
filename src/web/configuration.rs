@@ -374,7 +374,7 @@ fn persist(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path)?;
-    std::fs::File::open(parent)?.sync_all()?;
+    crate::platform::sync_directory(parent)?;
     Ok(())
 }
 
@@ -586,7 +586,6 @@ mod tests {
             SOURCE
         );
     }
-
     #[tokio::test]
     async fn configuration_owner_origin_and_revision() {
         let (dir, app, owner, guest) = fixture();

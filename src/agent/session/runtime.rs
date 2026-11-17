@@ -1,13 +1,10 @@
 use super::{Session, SqliteSessionStore};
 use crate::agent::run_state::{RunRecord, ToolExecution};
+use crate::platform::OpenOptions;
 use anyhow::{Context, ensure};
 use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
-use std::{
-    fs::{File, OpenOptions},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    sync::Arc,
-};
+use std::{fs::File, sync::Arc};
 
 pub(crate) struct ExecutionOwnership {
     pub(super) _locks: Vec<File>,
@@ -35,7 +32,7 @@ impl SqliteSessionStore {
         let wait = namespace == "recovery";
         tokio::task::spawn_blocking(move || {
             let dir = dir.join("execution-locks");
-            std::fs::DirBuilder::new()
+            crate::platform::DirBuilder::new()
                 .recursive(true)
                 .mode(0o700)
                 .create(&dir)?;
@@ -49,7 +46,7 @@ impl SqliteSessionStore {
                 .read(true)
                 .write(true)
                 .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
+                .no_follow()
                 .open(dir.join(format!("{:x}.lock", Sha256::digest(key.as_bytes()))))?;
             if wait {
                 file.lock().context("Cannot acquire recovery scan lock")?;

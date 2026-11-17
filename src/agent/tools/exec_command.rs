@@ -11,7 +11,7 @@ use tokio::{
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecCommandArgs {
-    /// Shell command to execute through /bin/sh -c.
+    /// Shell command: /bin/sh -c on Unix, PowerShell on Windows.
     pub(crate) cmd: String,
     /// Working directory for this call only. Null uses Kodrik's current directory,
     /// not a directory selected by cd in an earlier call. Prefer setting workdir
@@ -31,7 +31,7 @@ impl Tool for ExecCommandTool {
     }
 
     fn description(&self) -> String {
-        "Run a shell command through /bin/sh -c with Kodrik's process permissions. Returns stdout, stderr, exit_code (null if signaled), timed_out, stdout_truncated and stderr_truncated. Retains the first and last 512 KiB per stream with a marker when the middle is omitted. Full raw output of truncated streams is saved in private temporary files, returned as stdout_path/stderr_path (null for untruncated streams). Read sections with sed or tail through exec_command; files remain until removed or the OS cleans its temporary directory. Timeout defaults to 30 seconds; returns captured output on timeout. Timeout and cancellation stop the process group. No interactive input or persistent sessions.".into()
+        "Run a shell command through /bin/sh -c on Unix or PowerShell on Windows with Kodrik's process permissions. Returns stdout, stderr, exit_code (null if signaled), timed_out, stdout_truncated and stderr_truncated. Retains the first and last 512 KiB per stream with a marker when the middle is omitted. Full raw output of truncated streams is saved in private temporary files, returned as stdout_path/stderr_path (null for untruncated streams). Read sections with sed or tail through exec_command; files remain until removed or the OS cleans its temporary directory. Timeout defaults to 30 seconds; returns captured output on timeout. Timeout and cancellation stop the process group. No interactive input or persistent sessions.".into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -71,6 +71,11 @@ pub(crate) async fn execute_until(
         .checked_add(Duration::from_millis(timeout_ms))
         .context("timeout_ms is too large")?;
 
+    #[cfg(windows)]
+    let supervisor = Some(match supervisor {
+        Some(supervisor) => supervisor,
+        None => std::sync::Arc::new(crate::remote::supervisor::Supervisor::spawn()?),
+    });
     let mut command = if supervisor.is_some() {
         Command::from(crate::remote::supervisor::prepared_command(
             &args.cmd,
@@ -82,8 +87,9 @@ pub(crate) async fn execute_until(
             .args(["-c", &args.cmd])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
         command
     };
     command.kill_on_drop(true);
@@ -105,7 +111,7 @@ pub(crate) async fn execute_until(
     let mut child = command.spawn().context("Failed to start shell command")?;
     let pid = child.id().context("Shell has no process ID")?;
     let mut group = ProcessGroup {
-        pid: Some(pid.try_into().context("Shell process ID is too large")?),
+        pid: Some(pid),
         supervisor: supervisor.clone(),
     };
     if let Some(supervisor) = &supervisor {
@@ -184,28 +190,36 @@ pub(crate) async fn execute_until(
     ))
 }
 
-// /bin/sh is Unix-only; kill its group so cancellation also stops descendants.
+// Stop the Unix process group or Windows Job Object, including descendants.
 struct ProcessGroup {
-    pid: Option<libc::pid_t>,
+    pid: Option<u32>,
     supervisor: Option<std::sync::Arc<crate::remote::supervisor::Supervisor>>,
 }
 
 impl ProcessGroup {
     async fn terminate(&mut self) -> std::io::Result<()> {
         if let Some(pid) = self.pid {
-            crate::remote::supervisor::signal_group(pid as u32, libc::SIGTERM)?;
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            #[cfg(unix)]
+            {
+                crate::remote::supervisor::signal_group(pid, libc::SIGTERM)?;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            #[cfg(windows)]
+            crate::remote::supervisor::signal_group(pid, 0)?;
         }
         Ok(())
     }
 
     fn stop(&mut self) -> std::io::Result<()> {
         if let Some(pid) = self.pid {
-            crate::remote::supervisor::signal_group(pid as u32, libc::SIGKILL)?;
+            #[cfg(unix)]
+            crate::remote::supervisor::signal_group(pid, libc::SIGKILL)?;
+            #[cfg(windows)]
+            crate::remote::supervisor::signal_group(pid, 0)?;
             self.pid = None;
             if let Some(supervisor) = &self.supervisor {
                 supervisor
-                    .unregister_group(pid as u32)
+                    .unregister_group(pid)
                     .map_err(std::io::Error::other)?;
             }
         }
@@ -299,7 +313,7 @@ async fn read_limited(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use crate::agent::tools::{ExecCommandTool, Tool};
     use serde_json::json;
@@ -455,6 +469,40 @@ mod tests {
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!directory.path().join("marker").exists());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn powershell_returns_output_and_explicit_exit_status() {
+        let output = execute(
+            json!({"cmd": "[Console]::Write('hello'); [Console]::Error.Write('error'); exit 7"}),
+            None,
+        )
+        .await
+        .unwrap()
+        .output;
+        assert_eq!(output["stdout"], "hello");
+        assert_eq!(output["stderr"], "error");
+        assert_eq!(output["exit_code"], 7);
+        assert_eq!(output["timed_out"], false);
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_powershell_and_descendants() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = execute(json!({
+            "cmd": "[Console]::Write('ready'); Start-Process powershell.exe -ArgumentList '-NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 3; Set-Content marker leaked\"' -NoNewWindow -Wait",
+            "workdir": directory.path(),
+            "timeout_ms": 1500,
+        }), None).await.unwrap().output;
+        assert_eq!(output["timed_out"], true);
+        tokio::time::sleep(Duration::from_secs(4)).await;
         assert!(!directory.path().join("marker").exists());
     }
 }

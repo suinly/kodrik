@@ -321,7 +321,7 @@ fn concurrent_connections_do_not_overwrite_each_others_revision() {
     let row = run(&store, json!({"action":"query","dataset":"meals"})).unwrap();
     assert_eq!(row["records"][0]["revision"], 2);
 }
-
+#[cfg(unix)]
 #[test]
 fn fails_closed_on_corruption_newer_versions_and_symlinks() {
     for newer in [false, true] {
@@ -346,7 +346,6 @@ fn fails_closed_on_corruption_newer_versions_and_symlinks() {
     assert!(DatasetStore::open(store).is_err());
     assert_eq!(fs::read(outside).unwrap(), b"do not overwrite");
 }
-
 #[test]
 fn list_paging_and_spaces_are_independent() {
     let dir = tempfile::tempdir().unwrap();
@@ -379,23 +378,26 @@ fn list_paging_and_spaces_are_independent() {
             .is_err()
         );
     }
-    use std::os::unix::fs::PermissionsExt;
-    assert_eq!(
-        fs::metadata(dir.path().join("owner"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o700
-    );
-    assert_eq!(
-        fs::metadata(dir.path().join("owner/state.sqlite3"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(dir.path().join("owner"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(dir.path().join("owner/state.sqlite3"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 }
 
 #[test]

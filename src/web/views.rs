@@ -146,100 +146,107 @@ pub(crate) fn evaluate(
             data: source_rows(&source["data"])?,
         });
     }
-    let bytes = serde_json::to_vec(&jobs)?;
-    ensure!(bytes.len() <= MAX_DOCUMENT, "View inputs exceed 512 KiB");
-    WORKERS
-        .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-            (count < 4).then_some(count + 1)
-        })
-        .map_err(|_| anyhow::anyhow!("UI view workers are busy; retry shortly"))?;
-    let _slot = WorkerSlot;
-    let mut input = tempfile::NamedTempFile::new()?;
-    input.write_all(&bytes)?;
-    let output = tempfile::NamedTempFile::new()?;
-    let errors = tempfile::NamedTempFile::new()?;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .env_clear()
-        .current_dir("/")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(errors.reopen()?);
-    #[cfg(not(test))]
-    command
-        .arg("ui-view-worker")
-        .arg(input.path())
-        .arg(output.path());
-    #[cfg(test)]
-    command
-        .args([
-            "--exact",
-            "web::views::tests::worker",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("KODRIK_UI_INPUT", input.path())
-        .env("KODRIK_UI_OUTPUT", output.path());
-    use std::os::unix::process::CommandExt;
-    // The jq iterator cannot be preempted inside an async task; enforce limits in a disposable process.
-    unsafe {
-        command.pre_exec(|| {
-            for (resource, limit) in [
-                (libc::RLIMIT_CPU, 2),
-                (libc::RLIMIT_CORE, 0),
-                (libc::RLIMIT_FSIZE, MAX_DOCUMENT as u64 + 16384),
-            ] {
-                let limits = libc::rlimit {
-                    rlim_cur: limit as libc::rlim_t,
-                    rlim_max: limit as libc::rlim_t,
-                };
-                if libc::setrlimit(resource, &limits) != 0 {
-                    return Err(std::io::Error::last_os_error());
+    #[cfg(not(unix))]
+    anyhow::bail!(
+        "UI views are unavailable: native process resource limits are not implemented on this platform"
+    );
+    #[cfg(unix)]
+    {
+        let bytes = serde_json::to_vec(&jobs)?;
+        ensure!(bytes.len() <= MAX_DOCUMENT, "View inputs exceed 512 KiB");
+        WORKERS
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                (count < 4).then_some(count + 1)
+            })
+            .map_err(|_| anyhow::anyhow!("UI view workers are busy; retry shortly"))?;
+        let _slot = WorkerSlot;
+        let mut input = tempfile::NamedTempFile::new()?;
+        input.write_all(&bytes)?;
+        let output = tempfile::NamedTempFile::new()?;
+        let errors = tempfile::NamedTempFile::new()?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .env_clear()
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(errors.reopen()?);
+        #[cfg(not(test))]
+        command
+            .arg("ui-view-worker")
+            .arg(input.path())
+            .arg(output.path());
+        #[cfg(test)]
+        command
+            .args([
+                "--exact",
+                "web::views::tests::worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("KODRIK_UI_INPUT", input.path())
+            .env("KODRIK_UI_OUTPUT", output.path());
+        use std::os::unix::process::CommandExt;
+        // The jq iterator cannot be preempted inside an async task; enforce limits in a disposable process.
+        unsafe {
+            command.pre_exec(|| {
+                for (resource, limit) in [
+                    (libc::RLIMIT_CPU, 2),
+                    (libc::RLIMIT_CORE, 0),
+                    (libc::RLIMIT_FSIZE, MAX_DOCUMENT as u64 + 16384),
+                ] {
+                    let limits = libc::rlimit {
+                        rlim_cur: limit as libc::rlim_t,
+                        rlim_max: limit as libc::rlim_t,
+                    };
+                    if libc::setrlimit(resource, &limits) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let mut worker = Worker(command.spawn().context("Cannot start UI view worker")?);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            if let Some(status) = worker.0.try_wait()? {
+                break status;
+            }
+            match resident_bytes(worker.0.id()) {
+                Ok(bytes) => ensure!(bytes <= 256 * 1024 * 1024, "UI view memory limit exceeded"),
+                Err(error) => {
+                    if let Some(status) = worker.0.try_wait()? {
+                        break status;
+                    }
+                    // A process may disappear from RSS inspection before waitpid reports its exit.
+                    if error.raw_os_error() != Some(libc::ESRCH)
+                        && error.kind() != std::io::ErrorKind::NotFound
+                    {
+                        return Err(error.into());
+                    }
                 }
             }
-            Ok(())
-        });
-    }
-    let mut worker = Worker(command.spawn().context("Cannot start UI view worker")?);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let status = loop {
-        if let Some(status) = worker.0.try_wait()? {
-            break status;
+            ensure!(Instant::now() < deadline, "UI view computation timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let mut error = String::new();
+        errors.reopen()?.take(4096).read_to_string(&mut error)?;
+        ensure!(
+            status.success(),
+            "UI view computation failed ({status}; invalid jq or resource limit): {}",
+            error.trim()
+        );
+        ensure!(
+            output.as_file().metadata()?.len() <= MAX_DOCUMENT as u64,
+            "View output exceeds 512 KiB"
+        );
+        let result: BTreeMap<String, Value> =
+            serde_json::from_reader(output.reopen()?).context("Invalid view worker result")?;
+        for value in result.values() {
+            validate_value(value, 0)?;
         }
-        match resident_bytes(worker.0.id()) {
-            Ok(bytes) => ensure!(bytes <= 256 * 1024 * 1024, "UI view memory limit exceeded"),
-            Err(error) => {
-                if let Some(status) = worker.0.try_wait()? {
-                    break status;
-                }
-                // A process may disappear from RSS inspection before waitpid reports its exit.
-                if error.raw_os_error() != Some(libc::ESRCH)
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    return Err(error.into());
-                }
-            }
-        }
-        ensure!(Instant::now() < deadline, "UI view computation timed out");
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let mut error = String::new();
-    errors.reopen()?.take(4096).read_to_string(&mut error)?;
-    ensure!(
-        status.success(),
-        "UI view computation failed ({status}; invalid jq or resource limit): {}",
-        error.trim()
-    );
-    ensure!(
-        output.as_file().metadata()?.len() <= MAX_DOCUMENT as u64,
-        "View output exceeds 512 KiB"
-    );
-    let result: BTreeMap<String, Value> =
-        serde_json::from_reader(output.reopen()?).context("Invalid view worker result")?;
-    for value in result.values() {
-        validate_value(value, 0)?;
+        Ok(result)
     }
-    Ok(result)
 }
 
 struct Worker(Child);

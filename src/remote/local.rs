@@ -4,6 +4,10 @@ use crate::agent::{
     session::SessionId,
     tools::{ApplyPatchTool, ExecCommandTool, Tool, ToolOutput, ViewImageTool},
 };
+#[cfg(windows)]
+use crate::platform::OpenOptions;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
 // Keep base64 images within the 16 MiB remote transport frame.
 pub(super) const LOCAL_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 use anyhow::{Context, ensure};
@@ -12,8 +16,6 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     io::Read,
-    os::fd::{AsRawFd, FromRawFd},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -644,7 +646,7 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 
 fn open_journal(directory: &Path) -> anyhow::Result<Connection> {
-    std::fs::DirBuilder::new()
+    crate::platform::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(directory)?;
@@ -652,23 +654,19 @@ fn open_journal(directory: &Path) -> anyhow::Result<Connection> {
         std::fs::symlink_metadata(directory)?.is_dir(),
         "Receipt directory cannot be a symlink"
     );
-    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
+    crate::platform::set_private(directory, 0o700)?;
     let directory = directory.canonicalize()?;
     let path = directory.join("receipts.sqlite3");
     let marker = directory.join("journal-created");
-    let mut marker_file = std::fs::OpenOptions::new()
+    let mut marker_file = crate::platform::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .no_follow()
         .open(&marker)?;
-    // SAFETY: lock the live marker descriptor while initializing/checking journal identity.
-    ensure!(
-        unsafe { libc::flock(marker_file.as_raw_fd(), libc::LOCK_EX) } == 0,
-        "Cannot lock receipt identity"
-    );
+    marker_file.lock()?;
     let mut identity = String::new();
     marker_file
         .by_ref()
@@ -678,28 +676,31 @@ fn open_journal(directory: &Path) -> anyhow::Result<Connection> {
         identity.is_empty() || path.try_exists()?,
         "Local receipt journal was lost; reconcile unknown operations before resetting the remote receipt directory"
     );
-    let file = std::fs::OpenOptions::new()
+    let file = crate::platform::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .no_follow()
         .open(&path)?;
     ensure!(file.metadata()?.is_file(), "Receipt journal must be a file");
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    crate::platform::set_file_private(&file, 0o600)?;
     let db = Connection::open_with_flags(
         &path,
         rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    use std::os::unix::fs::MetadataExt;
-    let current = std::fs::symlink_metadata(&path)?;
-    ensure!(
-        current.is_file()
-            && current.ino() == file.metadata()?.ino()
-            && current.dev() == file.metadata()?.dev(),
-        "Receipt journal replaced during open"
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let current = std::fs::symlink_metadata(&path)?;
+        ensure!(
+            current.is_file()
+                && current.ino() == file.metadata()?.ino()
+                && current.dev() == file.metadata()?.dev(),
+            "Receipt journal replaced during open"
+        );
+    }
     db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.pragma_update(None, "synchronous", "FULL")?;
     if !identity.is_empty() {
@@ -716,7 +717,7 @@ fn open_journal(directory: &Path) -> anyhow::Result<Connection> {
         use std::io::Write;
         marker_file.write_all(identity.as_bytes())?;
         marker_file.sync_all()?;
-        std::fs::File::open(&directory)?.sync_all()?;
+        crate::platform::sync_directory(&directory)?;
     }
     let page_size: i64 = db.pragma_query_value(None, "page_size", |r| r.get(0))?;
     db.pragma_update(None, "max_page_count", JOURNAL_BYTES as i64 / page_size)?;
@@ -728,6 +729,7 @@ fn open_journal(directory: &Path) -> anyhow::Result<Connection> {
     Ok(db)
 }
 
+#[cfg(unix)]
 fn read_scoped(roots: &[PathBuf], path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
     let root = roots
         .iter()
@@ -740,7 +742,7 @@ fn read_scoped(roots: &[PathBuf], path: &Path, limit: usize) -> anyhow::Result<V
             .all(|c| matches!(c, Component::Normal(_))),
         "Path traversal rejected"
     );
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = crate::platform::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
         .open(root)?;
@@ -897,4 +899,39 @@ mod tests {
         }
         server.abort();
     }
+}
+
+#[cfg(windows)]
+fn read_scoped(roots: &[PathBuf], path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
+    let root = roots
+        .iter()
+        .find(|root| path.starts_with(root))
+        .context("Path outside selected roots")?;
+    let relative = path.strip_prefix(root)?;
+    ensure!(
+        relative
+            .components()
+            .all(|c| matches!(c, Component::Normal(_))),
+        "Path traversal rejected"
+    );
+    let mut held = Vec::new();
+    let mut current = PathBuf::new();
+    // Pin every ancestor without share-delete, including ancestors of the selected root.
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
+        let file = OpenOptions::new().read(true).no_follow().open(&current)?;
+        held.push(file);
+    }
+    let file = held.last().context("Missing file")?;
+    ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= limit as u64,
+        "Not a regular bounded file"
+    );
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= limit, "File exceeds read limit");
+    Ok(bytes)
 }

@@ -2,17 +2,19 @@ use super::{
     Settings,
     pages::{checked_dir, data_root, open_regular, reject_symlinks},
 };
+use crate::platform::OpenOptions;
 use anyhow::ensure;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::http::{HeaderMap, header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs;
 use std::{
     collections::{BTreeMap, VecDeque},
-    fs::{self, File, OpenOptions},
+    fs::File,
     io::{Read, Write},
     net::IpAddr,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -235,7 +237,7 @@ impl AuthStore {
 
     fn lock(&self) -> anyhow::Result<File> {
         checked_dir(&self.root)?;
-        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
+        crate::platform::set_private(&self.root, 0o700)?;
         let path = self.root.join("auth.lock");
         reject_symlinks(&path)?;
         let file = OpenOptions::new()
@@ -244,10 +246,11 @@ impl AuthStore {
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .no_follow()
+            .nonblock()
             .open(path)?;
         ensure!(file.metadata()?.is_file(), "Invalid auth lock");
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_file_private(&file, 0o600)?;
         file.lock()?;
         Ok(file)
     }
@@ -285,8 +288,7 @@ impl AuthStore {
 
     fn save(&self, journal: &Journal) -> anyhow::Result<()> {
         let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        crate::platform::set_file_private(&file.as_file(), 0o600)?;
         let bytes = serde_json::to_vec(journal)?;
         ensure!(bytes.len() <= 1024 * 1024, "Auth journal exceeds limit");
         file.write_all(&bytes)?;
@@ -472,7 +474,7 @@ impl LoginLimiter {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::config::WebConfig;

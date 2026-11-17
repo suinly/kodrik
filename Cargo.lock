@@ -2606,6 +2606,7 @@ dependencies = [
  "tui-markdown",
  "uuid",
  "web-push-native",
+ "windows-sys 0.61.2",
  "yaml-rust",
 ]
 

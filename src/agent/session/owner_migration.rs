@@ -246,7 +246,7 @@ pub(crate) fn stage_personal_sessions(
     tx.commit()?;
     drop(db);
     drop(store); // Last connection checkpoints/removes staging WAL before rename.
-    fs::File::open(staging)?.sync_all()?;
+    crate::platform::sync_directory(staging)?;
     Ok(())
 }
 

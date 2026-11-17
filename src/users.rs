@@ -15,7 +15,7 @@ pub(crate) struct UserSpaces {
 mod tests {
     use super::*;
     use std::sync::Arc;
-
+    #[cfg(unix)]
     #[tokio::test]
     async fn discovers_only_canonical_saved_personal_users() {
         let root = tempfile::tempdir().unwrap();

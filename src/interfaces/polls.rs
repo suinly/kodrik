@@ -277,7 +277,7 @@ impl PollStore {
         file.write_all(&serde_json::to_vec(record)?)?;
         file.as_file().sync_all()?;
         file.persist(self.root.join(format!("{}.json", record.id)))?;
-        File::open(&self.root)?.sync_all()?;
+        crate::platform::sync_directory(&self.root)?;
         Ok(())
     }
 }
