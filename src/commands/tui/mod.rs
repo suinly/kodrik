@@ -13,6 +13,7 @@ mod remote_tests;
 #[cfg(all(test, unix))]
 mod startup_tests;
 mod terminal;
+mod transcript;
 mod ui;
 mod view;
 
@@ -198,6 +199,7 @@ async fn run_session_inner(
                 }
                 let session = runner.load_session(session_id.clone()).await?;
                 app.messages.clear();
+                app.full_tools.clear();
                 app.shown_approvals.clear();
                 app.pending_tools.clear();
                 app.streaming_message = None;
@@ -224,6 +226,7 @@ async fn run_session_inner(
                         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
                             continue;
                         }
+                        if app.tool_details_key(key) { redraw = true; continue; }
                         if images::key(key) { images::clipboard(&mut app).await; redraw = true; continue; }
                         match selection_command(&mut app, key) {
                             Some(SelectionCommand::Clear) => { app.navigation.escape = None; redraw = true; continue; }
@@ -1058,6 +1061,7 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
     restore_history(&mut saved, session);
     let source_changed = app.session != saved.session;
     if !source_changed
+        && app.full_tools == saved.full_tools
         && app.plan == saved.plan
         && app.plan_details == saved.plan_details
         && app.plan_completed == saved.plan_completed
@@ -1089,6 +1093,10 @@ fn refresh_history(app: &mut App, session: &Session) -> bool {
         app.compaction_progress = None;
     }
     app.messages = saved.messages;
+    app.full_tools = saved.full_tools;
+    if source_changed {
+        app.tools_expanded = false;
+    }
     app.plan = saved.plan;
     app.plan_details = saved.plan_details;
     if source_changed {
@@ -1216,6 +1224,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
         AgentEvent::InputConsumed => {
             if let Some(index) = app.streaming_message.take() {
                 app.messages.remove(index);
+                app.remove_full_tool(index);
                 for pending in app.pending_tools.values_mut() {
                     if *pending > index {
                         *pending -= 1;
@@ -1248,6 +1257,11 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
                 .map(|(i, _)| i)
                 .unwrap_or(app.messages.len());
             app.messages = app.messages.split_off(boundary);
+            app.full_tools = std::mem::take(&mut app.full_tools)
+                .into_iter()
+                .filter_map(|(i, value)| i.checked_sub(boundary).map(|i| (i, value)))
+                .collect();
+            app.tools_expanded = false;
             app.context_tokens = None;
             app.streaming_message = None;
             app.pending_tools.clear();
@@ -1315,6 +1329,23 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             if name == "update_plan" {
                 return true;
             }
+            app.full_tools.insert(
+                app.messages.len(),
+                if name.split(" · ").next() == Some("exec_command") {
+                    let mut metadata = arguments.clone();
+                    let command = metadata.as_object_mut().and_then(|o| o.remove("cmd"));
+                    format!(
+                        "$ {}\nArguments\n{}",
+                        command
+                            .as_ref()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default(),
+                        transcript::payload(&metadata)
+                    )
+                } else {
+                    transcript::payload(&arguments)
+                },
+            );
             let detail = match name
                 .split_once(" · ")
                 .map_or(name.as_str(), |(tool, _)| tool)
@@ -1325,10 +1356,29 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
                 _ => None,
             }
             .and_then(|value| value.as_str())
-            .map(|value| format!(": {}", short(value, 120)))
+            .map(|value| {
+                if name.split(" · ").next() == Some("exec_command") {
+                    let command: String = value.trim().chars().take(120).collect();
+                    format!(
+                        "\n$ {}{}",
+                        command.replace('\n', "\n  "),
+                        if value.trim().chars().count() > 120 {
+                            "…"
+                        } else {
+                            ""
+                        }
+                    )
+                } else {
+                    format!(": {}", short(value, 120))
+                }
+            })
             .unwrap_or_default();
             app.pending_tools.insert(call_id, app.messages.len());
-            app.push_tool_message(format!("{name}{detail}"));
+            app.push_tool_message(if name == "wait_agent" {
+                format!("{name} — running")
+            } else {
+                format!("{name}{detail}")
+            });
         }
         AgentEvent::ToolFinished {
             call_id,
@@ -1338,6 +1388,19 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
             if !failed && output == serde_json::json!("Plan updated") {
                 return false;
             }
+            let full_index = app
+                .pending_tools
+                .get(&call_id)
+                .copied()
+                .unwrap_or(app.messages.len());
+            app.full_tools
+                .entry(full_index)
+                .or_default()
+                .push_str(&format!(
+                    "\n{}\n{}",
+                    if failed { "Error" } else { "Result" },
+                    transcript::payload(&output)
+                ));
             let (failed, status, details) = if failed {
                 (
                     true,
@@ -1390,18 +1453,37 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
                     ),
                     details,
                 )
+            } else if app
+                .messages
+                .get(full_index)
+                .is_some_and(|m| m.content.starts_with("wait_agent —"))
+            {
+                let status = match output["status"].as_str() {
+                    Some(status @ ("running" | "completed" | "stopped" | "failed")) => status,
+                    _ if output.get("error").is_some_and(|error| !error.is_null()) => "failed",
+                    _ => "completed",
+                };
+                (status == "failed", status.into(), String::new())
             } else {
                 (false, short(&output.to_string(), 160), String::new())
             };
             if let Some(index) = app.pending_tools.remove(&call_id) {
                 app.messages[index].role = AppMessageRole::Tool(if failed {
                     ToolState::Failed
+                } else if status == "running"
+                    && app.messages[index].content.starts_with("wait_agent —")
+                {
+                    ToolState::Running
                 } else {
                     ToolState::Success
                 });
-                app.messages[index]
-                    .content
-                    .push_str(&format!(" — {status}"));
+                let content = &mut app.messages[index].content;
+                if content.starts_with("wait_agent —") {
+                    *content = format!("wait_agent — {status}");
+                } else {
+                    let header_end = content.find('\n').unwrap_or(content.len());
+                    content.insert_str(header_end, &format!(" — {status}"));
+                }
                 if !details.is_empty() {
                     app.messages[index].content.push('\n');
                     app.messages[index].content.push_str(&details);
@@ -1435,29 +1517,32 @@ fn short(text: &str, limit: usize) -> String {
 }
 
 fn command_output(output: &serde_json::Value) -> String {
-    let stream = if output["stderr"]
-        .as_str()
-        .is_some_and(|text| !text.trim().is_empty())
-    {
-        "stderr"
-    } else {
-        "stdout"
-    };
-    let lines = output[stream]
-        .as_str()
-        .unwrap_or("")
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect::<Vec<_>>();
-    lines
+    ["stdout", "stderr"]
         .into_iter()
-        .rev()
-        .take(4)
-        .rev()
-        .enumerate()
-        .map(|(index, line)| {
-            let label = if index == 0 { stream } else { "      " };
-            format!("  {label} │ {}", short(line, 160))
+        .filter_map(|stream| {
+            let lines = output[stream]
+                .as_str()
+                .unwrap_or("")
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>();
+            if lines.is_empty() {
+                return None;
+            }
+            Some(
+                lines
+                    .into_iter()
+                    .rev()
+                    .take(4)
+                    .rev()
+                    .enumerate()
+                    .map(|(index, line)| {
+                        let label = if index == 0 { stream } else { "      " };
+                        format!("  {label} │ {}", short(line, 160))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1466,6 +1551,60 @@ fn command_output(output: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_refresh_changes_full_data_with_identical_compact_tail() {
+        use crate::agent::message::{ToolCall, ToolResult};
+        let history = |prefix: &str| {
+            let mut session = Session::new(SessionId::new("transcript"));
+            session.push(Message::ToolCall(ToolCall {
+                call_id: "c".into(),
+                name: "exec_command".into(),
+                arguments: serde_json::json!({"cmd":"echo test"}),
+            }));
+            session.push(Message::ToolResult(ToolResult { call_id: "c".into(), content: serde_json::json!({"exit_code":0,"stdout":format!("{prefix}\na\nb\nc\nd"),"stdout_truncated":true,"stdout_path":"/available/output"}).into() }));
+            session
+        };
+        let mut app = App::default();
+        restore_history(&mut app, &history("old prefix"));
+        let compact = app.messages[0].content.clone();
+        assert!(refresh_history(&mut app, &history("new prefix")));
+        assert_eq!(app.messages[0].content, compact);
+        assert!(app.full_tools[&0].contains("new prefix"));
+        assert!(app.full_tools[&0].contains("stdout_truncated"));
+        assert!(!refresh_history(&mut app, &history("new prefix")));
+        reset_session(&mut app);
+        assert!(app.full_tools.is_empty());
+    }
+
+    #[test]
+    fn transcript_keeps_full_tool_payload() {
+        let mut app = App::default();
+        let cmd = "long command ".repeat(100) + "\nprintf done";
+        show_progress(
+            &mut app,
+            AgentEvent::ToolStarted {
+                call_id: "full".into(),
+                name: "exec_command".into(),
+                arguments: serde_json::json!({"cmd": cmd}),
+            },
+        );
+        show_progress(
+            &mut app,
+            AgentEvent::ToolFinished {
+                call_id: "full".into(),
+                failed: false,
+                output: serde_json::json!({"exit_code":0,"stdout":"stdout sentinel\nsecond stdout","stderr":"stderr sentinel\nsecond stderr"}),
+            },
+        );
+        assert!(
+            app.full_tools[&0].contains(&cmd),
+            "full command must be available"
+        );
+        assert!(app.full_tools[&0].contains("stdout sentinel"));
+        assert!(app.full_tools[&0].contains("stderr sentinel\nsecond stderr"));
+        assert!(app.full_tools[&0].contains("stdout sentinel\nsecond stdout"));
+    }
 
     #[test]
     fn completed_native_copy_clears_its_selection() {
@@ -1945,7 +2084,7 @@ mod tests {
             [
                 "initial",
                 "correction",
-                "exec_command: pwd — exit 0",
+                "exec_command — exit 0\n$ pwd",
                 "corrected answer"
             ]
         );
@@ -2137,6 +2276,76 @@ mod tests {
     }
 
     #[test]
+    fn wait_timeout_keeps_running_status() {
+        let mut app = App::default();
+        show_progress(
+            &mut app,
+            AgentEvent::ToolStarted {
+                call_id: "w".into(),
+                name: "wait_agent".into(),
+                arguments: serde_json::json!({}),
+            },
+        );
+        show_progress(
+            &mut app,
+            AgentEvent::ToolFinished {
+                call_id: "w".into(),
+                failed: false,
+                output: serde_json::json!({"status": "running"}),
+            },
+        );
+        assert_eq!(app.messages[0].content, "wait_agent — running");
+        assert!(matches!(
+            app.messages[0].role,
+            AppMessageRole::Tool(ToolState::Running)
+        ));
+    }
+
+    #[test]
+    fn hierarchy_keeps_status_in_header_and_wait_payload_raw() {
+        let mut app = App::default();
+        show_progress(
+            &mut app,
+            AgentEvent::ToolStarted {
+                call_id: "shell".into(),
+                name: "exec_command · mac".into(),
+                arguments: serde_json::json!({"cmd": "echo first\necho second"}),
+            },
+        );
+        show_progress(
+            &mut app,
+            AgentEvent::ToolFinished {
+                call_id: "shell".into(),
+                failed: false,
+                output: serde_json::json!({"exit_code": 0}),
+            },
+        );
+        assert_eq!(
+            app.messages[0].content,
+            "exec_command · mac — exit 0\n$ echo first\n  echo second"
+        );
+        show_progress(
+            &mut app,
+            AgentEvent::ToolStarted {
+                call_id: "wait".into(),
+                name: "wait_agent".into(),
+                arguments: serde_json::json!({}),
+            },
+        );
+        assert_eq!(app.messages[1].content, "wait_agent — running");
+        show_progress(
+            &mut app,
+            AgentEvent::ToolFinished {
+                call_id: "wait".into(),
+                failed: false,
+                output: serde_json::json!({"agents": [{"status": "completed", "result": "raw sentinel"}]}),
+            },
+        );
+        assert_eq!(app.messages[1].content, "wait_agent — completed");
+        assert!(app.full_tools[&1].contains("raw sentinel"));
+    }
+
+    #[test]
     fn compact_tool_history() {
         let mut app = App::default();
         show_progress(
@@ -2158,7 +2367,7 @@ mod tests {
         assert_eq!(app.messages.len(), 1);
         assert_eq!(
             app.messages[0].content,
-            "exec_command: cargo test -q — exit 1\n  stdout │ first\n         │ second\n         │ third\n         │ fourth"
+            "exec_command — exit 1\n$ cargo test -q\n  stdout │ first\n         │ second\n         │ third\n         │ fourth"
         );
         assert!(matches!(
             app.messages[0].role,
@@ -2188,8 +2397,8 @@ mod tests {
             }
         ));
         assert_eq!(app.messages.len(), 2);
-        assert_eq!(app.messages[0].content, "exec_command: a — exit 0");
-        assert_eq!(app.messages[1].content, "exec_command: b");
+        assert_eq!(app.messages[0].content, "exec_command — exit 0\n$ a");
+        assert_eq!(app.messages[1].content, "exec_command\n$ b");
         assert!(matches!(
             app.messages[0].role,
             AppMessageRole::Tool(ToolState::Success)
@@ -2201,14 +2410,14 @@ mod tests {
     }
 
     #[test]
-    fn command_output_prefers_stderr_when_both_streams_have_output() {
+    fn command_output_keeps_both_stream_tails() {
         let output = serde_json::json!({
             "stdout": "one\ntwo\nthree\nfour",
             "stderr": "warning\nerror"
         });
         assert_eq!(
             command_output(&output),
-            "  stderr │ warning\n         │ error"
+            "  stdout │ one\n         │ two\n         │ three\n         │ four\n  stderr │ warning\n         │ error"
         );
     }
 

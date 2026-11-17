@@ -116,7 +116,101 @@ struct Block {
     rows: Vec<Row>,
 }
 
+// Tool output may exceed u16::MAX rows. Build semantic rows directly, never a full buffer.
+fn tool_block(message: &AppMessage, width: u16) -> Block {
+    let mut rows = Vec::new();
+    if width > 0 {
+        rows.push(Row::blank(width, Color::Reset));
+        let x = 3.min(width.saturating_sub(1));
+        let available = (width - x) as usize;
+        let (icon, color) = match message.role {
+            AppMessageRole::Tool(super::app::ToolState::Running) => ("○", Color::Yellow),
+            AppMessageRole::Tool(super::app::ToolState::Failed) => ("●", Color::Red),
+            _ => ("●", Color::Green),
+        };
+        for (index, line) in message.content.split('\n').enumerate() {
+            let source: Arc<str> = Arc::from(
+                line.replace('\t', "    ")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>(),
+            );
+            let command_line = ui::tool_command_line(message, index);
+            let mut start = 0;
+            let mut end = 0;
+            let mut cells = 0;
+            let mut display = Vec::new();
+            let mut emit = |start, end, display: Vec<Span<'static>>| {
+                let row_x = x + if start > 0 && command_line {
+                    2.min(width.saturating_sub(x + 1))
+                } else {
+                    0
+                };
+                let prefix = if rows.len() == 1 && x >= 2 {
+                    format!(" {icon}{}", " ".repeat(x as usize - 2))
+                } else {
+                    " ".repeat(row_x as usize)
+                };
+                rows.push(Row {
+                    display: Line::from(
+                        std::iter::once(Span::styled(prefix, Style::default().fg(color)))
+                            .chain(display)
+                            .collect::<Vec<_>>(),
+                    ),
+                    source: source.clone(),
+                    range: start..end,
+                    x: row_x,
+                    semantic: true,
+                });
+            };
+            let styled = ui::tool_line(message, index, source.as_ref());
+            for grapheme in styled.styled_graphemes(Style::default()) {
+                let size = Span::raw(grapheme.symbol).width();
+                let margin = if start > 0 && command_line {
+                    2.min(available.saturating_sub(1))
+                } else {
+                    0
+                };
+                if cells + size > available - margin && end > start {
+                    emit(start, end, std::mem::take(&mut display));
+                    start = end;
+                    cells = 0;
+                }
+                end += grapheme.symbol.len();
+                let margin = if start > 0 && command_line {
+                    2.min(available.saturating_sub(1))
+                } else {
+                    0
+                };
+                let symbol = if size > available - margin {
+                    "�"
+                } else {
+                    grapheme.symbol
+                };
+                if let Some(last) = display
+                    .last_mut()
+                    .filter(|last| last.style == grapheme.style)
+                {
+                    last.content.to_mut().push_str(symbol);
+                } else {
+                    display.push(Span::styled(symbol.to_owned(), grapheme.style));
+                }
+                cells += if symbol == "�" { 1 } else { size };
+            }
+            emit(start, end, display);
+        }
+    }
+    Block {
+        content: message.content.clone(),
+        role: Some(message.role),
+        rows,
+    }
+}
+
 fn message_block(message: &AppMessage, width: u16) -> Block {
+    if matches!(message.role, AppMessageRole::Tool(_)) {
+        return tool_block(message, width);
+    }
     let text = ui::message_text(message);
     let paragraph = Paragraph::new(text.clone()).wrap(Wrap { trim: false });
     let height = ui::message_height(message, &paragraph, width);
@@ -627,6 +721,115 @@ mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn inline_full_tool_reaches_100k_rows_with_normal_editor_and_copy() {
+        let mut app = App {
+            input: "draft sentinel".into(),
+            input_cursor: 14,
+            ..Default::default()
+        };
+        app.push_tool_message("compact tail".into());
+        app.full_tools.insert(
+            0,
+            "first sentinel\n".to_owned() + &"界ab\n".repeat(100_000) + "last sentinel",
+        );
+        app.tools_expanded = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert!(app.view.document.history_len() > 100_000);
+        find(&terminal, "last sentinel");
+        find(&terminal, "draft sentinel");
+        let from = find(&terminal, "last sentinel");
+        select(&mut app, from, (from.0 + 12, from.1));
+        assert!(app.view.selected_text().unwrap().contains("last sentinel"));
+        app.view.clear_selection();
+        app.scroll = usize::MAX;
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        find(&terminal, "first sentinel");
+        assert_eq!(app.messages[0].content, "compact tail");
+    }
+
+    #[test]
+    fn expanded_command_rows_preserve_every_argument_character() {
+        let commands = [
+            "abcdef".repeat(20_000),
+            "界🙂e\u{301} ".repeat(200),
+            "echo 'Arguments'\nArguments\necho ' │ ' ; echo ' — ' ; echo ' · '".into(),
+            "printf '  a\tb\r\nc  ' ; echo tail".into(),
+            "echo ".to_owned() + &" ".repeat(200) + "tail",
+        ];
+        for (case, command) in commands.into_iter().enumerate() {
+            let mut app = App::default();
+            super::super::show_progress(
+                &mut app,
+                crate::agent::AgentEvent::ToolStarted {
+                    call_id: "check".into(),
+                    name: ["exec_command", "local__exec__device", "generic_tool"][case % 3].into(),
+                    arguments: serde_json::json!({"cmd": command, "workdir": "/tmp"}),
+                },
+            );
+            assert!(app.full_tools[&0].contains(&command));
+            app.tools_expanded = true;
+            let message = app.display_messages().remove(0);
+            assert!(message.content.contains(&command));
+            for width in [8, 12, 20, 80] {
+                let block = tool_block(&message, width);
+                for row in block.rows.iter().filter(|row| row.semantic) {
+                    assert!(
+                        row.display.width() <= width as usize,
+                        "overflow width={width}, row={:?}",
+                        row.display
+                    );
+                    let actual: String = row
+                        .display
+                        .spans
+                        .iter()
+                        .skip(1)
+                        .map(|s| s.content.as_ref())
+                        .collect();
+                    assert_eq!(
+                        &actual,
+                        &row.source[row.range.clone()],
+                        "lost semantic text at width {width}"
+                    );
+                    let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
+                    (&row.display).render(buffer.area, &mut buffer);
+                    let mut rendered = String::new();
+                    let mut x = row.x;
+                    while x < width {
+                        let symbol = buffer[(x, 0)].symbol();
+                        rendered.push_str(symbol);
+                        x += Span::raw(symbol).width().max(1) as u16;
+                    }
+                    assert_eq!(
+                        rendered.trim_end(),
+                        row.source[row.range.clone()].trim_end(),
+                        "lost rendered text at width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tool_rows_handle_zero_width_unicode_and_controls() {
+        let message = AppMessage {
+            role: AppMessageRole::Tool(super::super::app::ToolState::Success),
+            content: "界e\u{301}\t\u{1b}hello".into(),
+        };
+        assert!(tool_block(&message, 0).rows.is_empty());
+        for width in 1..8 {
+            let block = tool_block(&message, width);
+            assert!(
+                block
+                    .rows
+                    .iter()
+                    .all(|row| row.display.width() <= width as usize)
+            );
+            assert!(block.rows.iter().all(|row| !row.source.contains('\u{1b}')));
+        }
+    }
 
     #[test]
     fn logo_block_height_tracks_terminal_width() {

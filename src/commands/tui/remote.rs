@@ -1100,6 +1100,7 @@ async fn event_loop(
             },
             event=async {match deferred.pop_front(){Some(event)=>Ok(event),None=>next_terminal_event().await}}=>match event? {
                 Event::Key(key) if matches!(key.kind,KeyEventKind::Press|KeyEventKind::Repeat)=>{
+                    if app.tool_details_key(key) { continue; }
                     if super::images::key(key) { super::images::clipboard(app).await; continue; }
                     match selection_command(app,key) {
                         Some(SelectionCommand::Clear)=>continue,
@@ -2002,9 +2003,11 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         .filter(|index| *index < app.messages.len())
     {
         app.messages.remove(index);
+        app.remove_full_tool(index);
     }
     app.messages
         .retain(|row| row.role != AppMessageRole::Approval);
+    app.full_tools.clear();
     refresh_history(app, &session);
     app.versions = versions;
     let run = snapshot.run.as_ref().unwrap_or(&serde_json::Value::Null);

@@ -133,6 +133,7 @@ the first message saves the conversation; attaching alone does not save it.
 | `/older` | Load another server history page; PageUp also requests older history |
 | `/audit`, `/audit trusted`, `/audit review`, `/audit ask`, `/audit status` | Inspect/change the current server session's command audit mode |
 | `/approvals`, `/approve <id>`, `/deny <id>` | Refresh pending approvals or decide one for this session |
+| Ctrl+T | Expand/collapse complete received tool arguments and results inline; keep the normal editor and scrolling |
 | Esc while working, with no menu/editor open | Stop the current server request |
 
 The session picker opens immediately with a loading indicator. Near the end,

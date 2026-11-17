@@ -36,6 +36,8 @@ pub struct App {
     pub versions: HashMap<usize, crate::agent::session::branches::MessageVersions>,
     pub navigation: super::navigation::Navigation,
     pub messages: Vec<AppMessage>,
+    pub full_tools: HashMap<usize, String>,
+    pub tools_expanded: bool,
     pub plan: Option<String>,
     pub plan_details: String,
     pub waiting_messages: Vec<String>,
@@ -478,6 +480,9 @@ impl App {
     }
 
     pub fn update(&mut self, key: KeyEvent) -> Option<String> {
+        if self.tool_details_key(key) {
+            return None;
+        }
         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) && key.kind != KeyEventKind::Press {
             return None;
         }

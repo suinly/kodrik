@@ -228,21 +228,12 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     };
     let history_height = area.height.saturating_sub(footer_height + plan_height);
     // Pending inputs use the same layout as confirmed messages to avoid a jump on acceptance.
-    let messages;
-    let history = if app.waiting_messages.is_empty() {
-        &app.messages
-    } else {
-        messages = app
-            .messages
-            .iter()
-            .cloned()
-            .chain(app.waiting_messages.iter().map(|text| AppMessage {
-                role: AppMessageRole::User,
-                content: text.clone(),
-            }))
-            .collect::<Vec<_>>();
-        &messages
-    };
+    let mut messages = app.display_messages();
+    messages.extend(app.waiting_messages.iter().map(|text| AppMessage {
+        role: AppMessageRole::User,
+        content: text.clone(),
+    }));
+    let history = &messages;
     app.view
         .prepare(history, area, history_height, &mut app.scroll, false);
     if let Some(index) = app.navigation.focus.take() {
@@ -467,12 +458,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Span::raw(format!(" {animation_frame} {state}")),
             Span::styled(
                 format!(
-                    "{done_at}{elapsed}{}",
+                    "{done_at}{elapsed}{} · {}",
                     if app.input_images.is_empty() {
                         String::new()
                     } else {
                         format!(" · Images: {} · Ctrl+C clear", app.input_images.len())
-                    }
+                    },
+                    language.pick("Ctrl+T tool details", "Ctrl+T детали")
                 ),
                 Style::default().fg(if app.selected_versions().is_some() {
                     Color::Cyan
@@ -936,36 +928,119 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
     }
 }
 
+pub(super) fn tool_command_line(message: &AppMessage, index: usize) -> bool {
+    let mut lines = message.content.lines();
+    lines.next();
+    if !lines.next().is_some_and(|line| line.starts_with("$ ")) {
+        return false;
+    }
+    if let Some(end) = message.content.lines().position(|line| line == "Arguments") {
+        return index > 0 && index < end;
+    }
+    index > 0
+        && message
+            .content
+            .lines()
+            .skip(2)
+            .take(index.saturating_sub(1))
+            .all(|line| line.starts_with("  ") && !line.contains(" │ "))
+}
+
+// Shared by buffered short messages and unbounded semantic transcript rows.
+pub(super) fn tool_line(message: &AppMessage, index: usize, line: &str) -> Line<'static> {
+    let neutral = Style::default().fg(Color::Gray);
+    let dim = neutral.dim();
+    if index == 0 {
+        let (header, status) = line.split_once(" — ").unwrap_or((line, ""));
+        let (name, device) = header.split_once(" · ").unwrap_or((header, ""));
+        let mut spans = vec![Span::styled(name.to_owned(), Style::default().bold())];
+        if !device.is_empty() {
+            spans.push(Span::styled(format!(" · {device}"), dim));
+        }
+        if !status.is_empty() {
+            let color = match message.role {
+                AppMessageRole::Tool(ToolState::Failed) => Color::Red,
+                AppMessageRole::Tool(ToolState::Running) => Color::Yellow,
+                _ => Color::Green,
+            };
+            spans.push(Span::styled(
+                format!(" — {status}"),
+                Style::default().fg(color),
+            ));
+        }
+        return Line::from(spans);
+    }
+    if tool_command_line(message, index) {
+        return Line::from(Span::styled(
+            line.to_owned(),
+            Style::default().fg(Color::Rgb(140, 180, 220)),
+        ));
+    }
+    if matches!(line, "stdout:" | "stderr:") {
+        return Line::from(Span::styled(
+            line.to_owned(),
+            if line == "stderr:" {
+                Style::default().fg(Color::Yellow)
+            } else {
+                dim
+            },
+        ));
+    }
+    if let Some((label, body)) = line.split_once(" │ ") {
+        return Line::from(vec![
+            Span::styled(
+                label.to_owned(),
+                if label.trim() == "stderr" {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    dim
+                },
+            ),
+            Span::styled(" │ ", dim),
+            Span::styled(body.to_owned(), neutral),
+        ]);
+    }
+    if message.content.starts_with("apply_patch")
+        && let Some((path, counts)) = line.rsplit_once("  +")
+        && let Some((added, removed)) = counts.split_once(" -")
+        && !added.is_empty()
+        && added.bytes().all(|b| b.is_ascii_digit())
+        && !removed.is_empty()
+        && removed.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Line::from(vec![
+            Span::styled(format!("{path}  "), neutral),
+            Span::styled(
+                format!("+{added}"),
+                Style::default().fg(Color::Rgb(105, 160, 115)),
+            ),
+            Span::styled(
+                format!(" -{removed}"),
+                Style::default().fg(Color::Rgb(180, 110, 110)),
+            ),
+        ]);
+    }
+    Line::from(Span::styled(line.to_owned(), neutral))
+}
+
 pub fn message_text(message: &AppMessage) -> Text<'static> {
     let source = message.content.replace('\t', "    ");
+    let source = if matches!(message.role, AppMessageRole::Tool(_)) {
+        source
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .collect::<String>()
+    } else {
+        source
+    };
     if matches!(message.role, AppMessageRole::Tool(_)) {
-        let mut lines = source.lines();
-        let mut text = vec![Line::raw(lines.next().unwrap_or_default().to_owned())];
-        text.extend(lines.map(|line| {
-            if message.content.starts_with("apply_patch")
-                && let Some((path, counts)) = line.rsplit_once("  +")
-                && let Some((added, removed)) = counts.split_once(" -")
-                && added.bytes().all(|byte| byte.is_ascii_digit())
-                && !added.is_empty()
-                && removed.bytes().all(|byte| byte.is_ascii_digit())
-                && !removed.is_empty()
-            {
-                Line::from(vec![
-                    Span::styled(format!("{path}  "), Style::default().fg(Color::Gray)),
-                    Span::styled(
-                        format!("+{added}"),
-                        Style::default().fg(Color::Rgb(105, 160, 115)),
-                    ),
-                    Span::styled(
-                        format!(" -{removed}"),
-                        Style::default().fg(Color::Rgb(180, 110, 110)),
-                    ),
-                ])
-            } else {
-                Line::styled(line.to_owned(), Style::default().fg(Color::Gray))
-            }
-        }));
-        ratatui::text::Text::from(text)
+        Text::from(
+            source
+                .lines()
+                .enumerate()
+                .map(|(index, line)| tool_line(message, index, line))
+                .collect::<Vec<_>>(),
+        )
     } else if matches!(message.role, AppMessageRole::Approval) {
         Text::from(
             source
@@ -1322,6 +1397,33 @@ mod tests {
                 render_logo(&mut buffer);
             }
         }
+    }
+
+    #[test]
+    fn tool_hierarchy_styles_header_command_and_stderr_label_only() {
+        let text = message_text(&AppMessage {
+            role: AppMessageRole::Tool(ToolState::Success),
+            content: "exec_command · mac — exit 0\n$ echo hi\n  stdout │ hi\n  stderr │ warning"
+                .into(),
+        });
+        assert!(
+            text.lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(
+            text.lines[1].spans[0].style.fg,
+            Some(Color::Rgb(140, 180, 220))
+        );
+        let stderr = &text.lines[3];
+        assert!(
+            stderr
+                .spans
+                .iter()
+                .any(|s| s.content.contains("stderr") && s.style.fg == Some(Color::Yellow))
+        );
+        assert_eq!(stderr.spans.last().unwrap().style.fg, Some(Color::Gray));
     }
 
     #[test]

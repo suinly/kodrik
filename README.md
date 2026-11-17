@@ -113,6 +113,15 @@ Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
 Multiple terminal UI instances keep independent session selections.
 Launch from the directory where you want shell and file tools to work.
 
+Use Ctrl+T to expand or collapse full received commands and tool results inline
+in the conversation. The editor and normal chat scrolling remain available;
+there is no separate viewer. Output omitted by the tool itself cannot be
+restored; truncation markers and temporary-file paths remain visible.
+Tool headers separate the device and completion status from the command.
+Commands use a soft-blue `$` line; output stays neutral, with an amber stderr
+label. The compact view keeps the tail of both streams, and Ctrl+T reveals the
+full received arguments and result.
+
 To keep the agent and memory on a server instead, pair your device with
 `kodrik connect`, then launch `kodrik --remote`. Local access starts detached and
 requires `/attach` followed by `/attach yes`. See [Remote TUI](docs/remote-tui.md)

@@ -336,7 +336,7 @@ fn remote_tool_display_uses_short_name_and_device_without_internal_ids() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        text.contains("exec_command · macbook-pro: cargo test -q — exit 0"),
+        text.contains("exec_command · macbook-pro — exit 0\n$ cargo test -q"),
         "{text}"
     );
     for hidden in ["local__", "27a00aff", "/Volumes/", "[Device:"] {
@@ -1407,4 +1407,28 @@ fn remote_models_picker_selects_and_resets_without_sending_model_input() {
     );
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
+}
+
+#[test]
+fn remote_transcript_rebuilds_full_tool_data_without_stale_indices() {
+    let mut app = App::default();
+    let mut view = snapshot();
+    remote::project(&mut app, &view).unwrap();
+    assert!(
+        app.full_tools
+            .values()
+            .any(|text| text.contains("contents"))
+    );
+    view.messages[1]["parts"][0]["output"] = json!({"error":"first line\nsecond line"});
+    remote::project(&mut app, &view).unwrap();
+    assert!(
+        app.full_tools
+            .values()
+            .any(|text| text.contains("first line\nsecond line"))
+    );
+    assert!(
+        !app.full_tools
+            .values()
+            .any(|text| text.contains("contents"))
+    );
 }
