@@ -349,7 +349,6 @@ export const en = {
   'Фото {0}': 'Photo {0}',
   'План · {0} из {1} · {2}': 'Plan · {0} of {1} · {2}',
   'План · {0} из {1}': 'Plan · {0} of {1}',
-  'Сообщение превышает 32 KiB текста.': 'Message exceeds 32 KiB of text.',
   'Не удалось сохранить черновик в браузере. Не закрывайте вкладку до отправки.': 'Could not save the draft in your browser. Keep this tab open until you send it.',
   'Очередь приостановлена. Нажмите «Продолжить очередь».': 'Queue paused. Select “Resume queue”.',
   'Останавливаю и сохраняю историю…': 'Stopping and saving history…',

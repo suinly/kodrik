@@ -571,10 +571,6 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         )
         .route("/api/chat/sessions/{id}/select", post(management::select))
         .route("/api/chat/sessions/{id}/pin", post(management::pin))
-        .route(
-            "/api/chat/sessions/{id}/messages/{message}/edit",
-            post(management::edit),
-        )
         .route("/api/chat/sessions/{id}/stop", post(stop))
         .route(
             "/api/chat/sessions/{id}/forms/{call}/{action}",
@@ -606,6 +602,12 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
             get(request_status),
         )
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .route(
+            "/api/chat/sessions/{id}/messages/{message}/edit",
+            post(management::edit).layer(DefaultBodyLimit::max(
+                super::chat_upload::MESSAGE_BODY_LIMIT,
+            )),
+        )
         .route(
             "/api/chat/send",
             post(send).layer(DefaultBodyLimit::max(super::chat_upload::BODY_LIMIT)),
@@ -973,12 +975,10 @@ async fn admit_message(
             .validate()
             .map_err(|e| error(StatusCode::BAD_REQUEST, &e.to_string()))?;
     }
-    if (input.text.trim().is_empty() && uploads.is_empty() && input.browser_context.is_none())
-        || input.text.len() > 32 * 1024
-    {
+    if input.text.trim().is_empty() && uploads.is_empty() && input.browser_context.is_none() {
         return Err(error(
             StatusCode::BAD_REQUEST,
-            "Message must contain text or attachments; text limit is 32768 bytes",
+            "Message must contain text or attachments",
         ));
     }
     if !uuid::Uuid::parse_str(&input.request_id).is_ok_and(|id| id.to_string() == input.request_id)

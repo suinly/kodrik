@@ -391,7 +391,7 @@ All API paths below are relative to the configured base prefix:
   history index from a user message ID (`session:index`). A canonical UUID
   `request_id` is also the new branch ID. Repeating the same edit is idempotent;
   changed input with the same ID returns 409. Branch history and admission commit
-  atomically. Attachments stay attached; the text keeps the 32 KiB limit.
+  atomically. Attachments stay attached. The edit request body is limited to 1 MiB.
 - `POST /api/chat/send` accepts `request_id`, `id` and `text`, and returns JSON
   `{request_id, submission_id, run_id, status}` after durable admission. `run_id`
   is null until the first checkpoint binds an idle request; steering during a
@@ -457,7 +457,8 @@ four worker slots are occupied. New conversation execution and inbox overflow
 return 429; a duplicate accepted request remains idempotent at these limits.
 Recovered work reserves capacity before HTTP admission; excess recovery jobs
 wait for a slot. Provider retry waits occupy their conversation's slot.
-Messages are limited to 32 KiB of UTF-8 text, 10 attachments and 50 MB total upload.
+JSON sends have a 2 MiB request-body limit, including any browser context.
+Multipart sends allow a text field up to 1 MiB, 10 attachments and 50 MB total upload.
 Multipart sends have a 300-second request timeout; other requests retain the
 10-second timeout. Once admission starts, disconnecting does not cancel it.
 Documents are limited to 20 MB each, photos to 10 MiB. Supported files use the

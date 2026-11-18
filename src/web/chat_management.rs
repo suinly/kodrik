@@ -594,12 +594,6 @@ pub(super) async fn edit_message(
         {
             return Err(error(StatusCode::BAD_REQUEST, "Invalid request ID"));
         }
-        if input.text.len() > 32768 {
-            return Err(error(
-                StatusCode::BAD_REQUEST,
-                "Message exceeds 32768 bytes",
-            ));
-        }
         let mut runs = chat.runs.lock().await;
         let session = chat.session(&id).await?;
         let Some(Message::User(user)) = session.messages().get(index) else {

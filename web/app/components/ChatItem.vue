@@ -66,7 +66,7 @@ function beginEdit() {
         </template>
         <p v-if="status" class="text-xs text-muted">{{ status }}</p>
         <div v-if="editing" class="space-y-3 min-w-64">
-          <UTextarea v-model="text" :aria-label="t('Редактирование сообщения')" autoresize :rows="3" :maxrows="12" :maxlength="32768" :disabled="saving" class="w-full" autofocus />
+          <UTextarea v-model="text" :aria-label="t('Редактирование сообщения')" autoresize :rows="3" :maxrows="12" :disabled="saving" class="w-full" autofocus />
           <p class="text-xs text-muted"> {{ t("Новый ответ появится в отдельной версии. Исходная переписка сохранится.") }} </p>
           <div class="flex justify-end gap-2">
             <UButton :label="t('Отмена')" color="neutral" variant="ghost" :disabled="saving" @click="editing=false" />

@@ -46,6 +46,29 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('the composer sends and edits text longer than 32 KiB without truncation',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const text='abcdefghij '.repeat(6500)+'конец';
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
+    await pasteText(input,text);
+    await input.press('Enter');
+    const message=page.locator('.message[data-role="user"]');
+    await expect(message).toContainText(text,{timeout:10000});
+    await message.getByRole('button',{name:'Редактировать сообщение',exact:true}).click();
+    const edit=page.getByRole('textbox',{name:'Редактирование сообщения',exact:true});
+    await expect(edit).toHaveValue(text);
+    await edit.evaluate(el=>el.setSelectionRange(el.value.length,el.value.length));
+    await edit.press('!');
+    await expect(edit).toHaveValue(`${text}!`);
+    await page.getByRole('button',{name:'Сохранить и отправить',exact:true}).click();
+    await expect(message).toContainText(`${text}!`);
+  } finally {await browser.close()}
+});
+
 for (const action of ['button','command']) test(`new chat ${action} stays a draft until the first message`,{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const before=await(await request('sessions?limit=100')).json();

@@ -1099,6 +1099,75 @@ pub(super) fn multipart(id: &str, request: &str, text: &str, files: &[(&str, &[u
 }
 
 #[tokio::test]
+async fn chat_accepts_long_json_messages() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let text = "строка ".repeat(6000);
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .json(&json!({"id":id,"text":text}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(f.idle(&id).await["messages"][0]["parts"][0]["text"], text);
+}
+
+#[tokio::test]
+async fn chat_accepts_long_multipart_messages() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let text = "строка ".repeat(6000);
+    let response = f
+        .request(reqwest::Method::POST, "send")
+        .header("Content-Type", "multipart/form-data; boundary=chat-test")
+        .body(multipart(
+            &id,
+            &uuid::Uuid::new_v4().to_string(),
+            &text,
+            &[("note.txt", b"attachment")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(f.idle(&id).await["messages"][0]["parts"][0]["text"], text);
+}
+
+#[tokio::test]
+async fn chat_accepts_long_message_edits() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let mut session =
+        crate::agent::session::Session::new(crate::agent::session::SessionId::new(&id));
+    session.push(Message::User(crate::agent::UserMessage {
+        content: "Original".into(),
+        files: vec![],
+        images: vec![],
+        browser_context: None,
+        browser_client_id: None,
+    }));
+    f.sessions.save(&session).await.unwrap();
+
+    let branch = uuid::Uuid::new_v4().to_string();
+    let text = "строка ".repeat(6000);
+    let response = f
+        .request(
+            reqwest::Method::POST,
+            &format!("sessions/{id}/messages/0/edit"),
+        )
+        .json(&json!({"request_id":branch,"text":text}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        f.idle(&branch).await["messages"][0]["parts"][0]["text"],
+        text
+    );
+}
+
+#[tokio::test]
 async fn chat_slow_multipart_upload_outlives_text_request_timeout() {
     use tower::ServiceExt;
     let f = Fixture::new().await;
@@ -2685,12 +2754,7 @@ async fn chat_rejects_invalid_requests_before_running_agent() {
     for (payload, expected) in [
         (json!({"id":id,"text":""}), 400),
         (json!({"id":id,"text":" \n"}), 400),
-        (json!({"id":id,"text":"a".repeat(32769)}), 400),
-        (json!({"id":id,"text":"a".repeat(70000)}), 400),
-        (
-            json!({"id":id,"text":"a".repeat(64 * 1024 + crate::agent::BrowserContext::MAX_BYTES)}),
-            413,
-        ),
+        (json!({"id":id,"text":"a".repeat(2 * 1024 * 1024)}), 413),
         (json!({"id":"../private","text":"hello"}), 400),
         (json!({"id":id.to_uppercase(),"text":"hello"}), 400),
         (

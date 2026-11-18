@@ -11,8 +11,9 @@ use axum::{
 };
 use std::path::Path;
 
-pub(super) const BODY_LIMIT: usize =
-    MAX_REQUEST_FILE_BYTES + 64 * 1024 + crate::agent::BrowserContext::MAX_BYTES;
+pub(super) const MESSAGE_BODY_LIMIT: usize = 1024 * 1024;
+const SEND_JSON_LIMIT: usize = MESSAGE_BODY_LIMIT + crate::agent::BrowserContext::MAX_BYTES;
+pub(super) const BODY_LIMIT: usize = MAX_REQUEST_FILE_BYTES + SEND_JSON_LIMIT + 64 * 1024;
 pub(super) const MAX_ATTACHMENTS: usize = 10;
 
 pub(super) struct Upload {
@@ -38,12 +39,12 @@ pub(super) fn is_multipart(request: &Request) -> bool {
 pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Response> {
     if !is_multipart(&request) {
         let (parts, body) = request.into_parts();
-        let bytes = axum::body::to_bytes(body, 64 * 1024 + crate::agent::BrowserContext::MAX_BYTES)
+        let bytes = axum::body::to_bytes(body, SEND_JSON_LIMIT)
             .await
             .map_err(|_| {
                 error(
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    "Message body exceeds browser context and text budget",
+                    "Message request body is too large",
                 )
             })?;
         let request = Request::from_parts(parts, axum::body::Body::from(bytes));
@@ -89,6 +90,8 @@ pub(super) async fn parse(request: Request) -> Result<(Input, Vec<Upload>), Resp
             }
         } else if name == "browser_context" {
             crate::agent::BrowserContext::MAX_BYTES
+        } else if name == "text" {
+            MESSAGE_BODY_LIMIT
         } else {
             32 * 1024
         };

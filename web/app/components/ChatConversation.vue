@@ -7,7 +7,6 @@ import {supersededDocuments,matchingMessages} from '../utils/chat-presentation'
 import {compactionActive,formatCompaction} from '../utils/compaction'
 import { TableKit } from '@tiptap/extension-table'
 import { TaskList, TaskItem } from '@tiptap/extension-list'
-import { CharacterCount } from '@tiptap/extensions/character-count'
 import { Slice } from '@tiptap/pm/model'
 import {useDocumentVisibility, useWindowFocus} from '@vueuse/core'
 
@@ -111,7 +110,7 @@ async function markRead() {
 }
 watch([()=>snapshot.value,()=>props.active,visibility,focused],()=>{void markRead()},{flush:'post'})
 const prompt = useTemplateRef('prompt')
-const editorExtensions = [TableKit, TaskList, TaskItem, CharacterCount.configure({limit:32768,autoTrim:false})]
+const editorExtensions = [TableKit, TaskList, TaskItem]
 const transcript = useTemplateRef('transcript')
 const transcriptContent = useTemplateRef('transcriptContent')
 const editorLocked = computed(() => loading.value || submitting.value || savingModel.value || props.blocked || authExpired.value || !!props.conversation.subagent)
@@ -185,7 +184,6 @@ async function editMessage(message:ChatMessage,text:string) {
   editingMessage.value=message.id
   const key=`kodrik.edit.${message.id}`
   try {
-    if(new TextEncoder().encode(text).length>32768) throw new Error(t("Сообщение превышает 32 KiB текста."))
     let pendingEdit:{request_id:string;text:string}|null=null
     try {pendingEdit=JSON.parse(sessionStorage.getItem(key)||'null')} catch {}
     if(!pendingEdit || pendingEdit.text!==text) pendingEdit={request_id:crypto.randomUUID(),text}
@@ -440,7 +438,6 @@ async function submit() {
   let sent = false
   let sentRevision = -1
   try {
-    if (new TextEncoder().encode(text).length > 32768) throw new Error(t("Сообщение превышает 32 KiB текста."))
     let keys = await fingerprints(selectedFiles)
     if (!mounted) return
     if(props.start) {
