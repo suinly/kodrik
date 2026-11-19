@@ -1,0 +1,2 @@
+# Security patch contexts must match npm's LF sources, including on Windows.
+web/scripts/security-patches/*.patch text eol=lf

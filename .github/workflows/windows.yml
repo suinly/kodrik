@@ -9,10 +9,33 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: windows-2025
-    timeout-minutes: 60
+    name: Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            vs_arch: amd64
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            vs_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TARGET: ${{ matrix.target }}
+      VS_ARCH: ${{ matrix.vs_arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,41 +48,76 @@ jobs:
       - name: Set up Rust
         run: |
           rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup target add $env:TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure MSVC and ARM64 Clang
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          if (!$vs) { throw 'Visual Studio installation not found' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=$env:VS_ARCH -host_arch=$env:VS_ARCH"
+          # DevShell changes must survive into subsequent Actions steps.
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            "$name=$([Environment]::GetEnvironmentVariable($name))" >> $env:GITHUB_ENV
+          }
+          Get-Command cl.exe, link.exe | Format-Table Name, Source
+          if ($env:TARGET -eq 'aarch64-pc-windows-msvc') {
+            $clang = (Get-Command clang-cl.exe -ErrorAction SilentlyContinue).Source
+            if (!$clang) {
+              $clang = @(
+                "$vs\VC\Tools\Llvm\ARM64\bin\clang-cl.exe",
+                "$vs\VC\Tools\Llvm\bin\clang-cl.exe",
+                "$env:ProgramFiles\LLVM\bin\clang-cl.exe"
+              ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (!$clang) { throw 'Windows ARM64 requires clang-cl for aws-lc-sys' }
+            & $clang --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            "CC_aarch64_pc_windows_msvc=$clang" >> $env:GITHUB_ENV
+          }
       - name: Build embedded web frontend
         run: |
           npm ci --prefix web
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test web/tests/security-dependencies.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build --prefix web
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Compile all tests
-        run: cargo test --no-run --locked --target x86_64-pc-windows-msvc
+        run: cargo test --no-run --locked --target $env:TARGET
       - name: Test Windows filesystem protections
-        run: 'cargo test --locked --target x86_64-pc-windows-msvc --lib platform::'
+        run: 'cargo test --locked --target $env:TARGET --lib platform::'
       - name: Test native Windows processes
-        run: cargo test --locked --target x86_64-pc-windows-msvc --lib windows_tests
+        run: cargo test --locked --target $env:TARGET --lib windows_tests
+      - name: Test Windows process supervisor
+        run: 'cargo test --locked --target $env:TARGET --lib remote::supervisor::'
       - name: Test restart PID validation
-        run: cargo test --locked --target x86_64-pc-windows-msvc --lib commands::request_restart::tests
+        run: cargo test --locked --target $env:TARGET --lib commands::request_restart::tests
       - name: Build native executable
-        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked --target $env:TARGET
       - name: Package and smoke test
         run: |
           $ErrorActionPreference = 'Stop'
-          $binary = 'target/x86_64-pc-windows-msvc/release/kodrik.exe'
+          $binary = "target/$env:TARGET/release/kodrik.exe"
           & $binary --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $binary --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $version = (Get-Content Cargo.toml | Select-String '^version = "([^"]+)"').Matches[0].Groups[1].Value
           New-Item -ItemType Directory -Force dist | Out-Null
-          $archive = "dist/kodrik-$version-x86_64-pc-windows-msvc.zip"
+          $archive = "dist/kodrik-$version-$env:TARGET.zip"
           Compress-Archive -Path $binary, LICENSE -DestinationPath $archive
           $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -Encoding ascii dist/SHA256SUMS
       - name: Upload Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: kodrik-windows-x86_64
+          name: kodrik-windows-${{ matrix.arch }}
           path: |
             dist/*.zip
             dist/SHA256SUMS

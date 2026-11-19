@@ -3,8 +3,7 @@
 Work on native Windows support is developed in `feat/windows-native`.
 It is a Windows executable, not a WSL wrapper. The initial build target is
 `x86_64-pc-windows-msvc`; Windows service installation is not part of the
-initial port. ARM64 source-build instructions are below; ARM64 CI packaging
-has not yet been configured.
+initial port. Both x64 and ARM64 packages are built by GitHub Actions.
 
 ## Build from source
 
@@ -31,27 +30,40 @@ under the user's home directory. Start the gateway in a terminal with
 ### Windows ARM64 virtual machine
 
 Install the ARM64 Rust MSVC toolchain and the Visual Studio C++ ARM64 build
-tools. Use the same frontend commands above, then build for the native target:
+tools, Windows SDK and the **C++ Clang Compiler for Windows** component.
+Open Developer PowerShell for Visual Studio with the ARM64 environment.
+Use the same frontend commands above, then build for the native target:
 
 ```powershell
 rustup target add aarch64-pc-windows-msvc
+$env:CC_aarch64_pc_windows_msvc = (Get-Command clang-cl.exe -ErrorAction Stop).Source
 cargo build --release --locked --target aarch64-pc-windows-msvc
 .\target\aarch64-pc-windows-msvc\release\kodrik.exe --version
 cargo test --locked --target aarch64-pc-windows-msvc --lib platform::
 cargo test --locked --target aarch64-pc-windows-msvc --lib windows_tests
 ```
 
-These ARM64 commands need validation in a Windows VM; a successful x64
-cross-check does not establish ARM64 runtime support.
+An ARM64 source build and Windows tests have been verified by the user in a
+Windows VM. Native CI validation is separate from that manual verification.
 
 ## Automated verification
 
-The **Windows** workflow builds the frontend, compiles all Rust tests and runs
+The **Windows** workflow runs a matrix on `windows-2025` (x64) and
+`windows-11-arm` (native ARM64). It configures MSVC and ARM64 Clang, builds the
+frontend, checks security backports, compiles all Rust tests and runs
 the platform filesystem, Windows process and restart-PID tests on a native
 Windows runner, builds the release executable, checks `--version` and `--help`,
 and uploads a ZIP containing `kodrik.exe` and the license plus `SHA256SUMS`.
 This produces a CI artifact, not a published GitHub release. A successful
 cross-check on macOS does not replace a successful native workflow run.
+
+Download `kodrik-windows-x86_64` or `kodrik-windows-arm64` from the successful
+run's **Artifacts** section. Each contains a target-specific ZIP and its
+`SHA256SUMS`. The workflow runs on pushes to `main` and `feat/windows-native`,
+on pull requests, and manually via **Actions → Windows → Run workflow**.
+
+Security patch files are checked out with LF via `.gitattributes`, including
+on Windows; do not disable the security-patch postinstall check.
 
 Shell commands use Windows PowerShell syntax, not POSIX shell syntax. Existing
 skills and scripts that require macOS or Unix tools need platform-specific
