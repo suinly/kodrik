@@ -532,10 +532,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         layout[1].x.saturating_add(3),
         layout[1].y.saturating_add(1),
         layout[1].width.saturating_sub(3),
-        layout[1]
-            .height
-            .saturating_sub(1)
-            .saturating_sub(summary_height),
+        layout[1].height.saturating_sub(2),
     );
     let cursor_x = cursor_x.min(u16::MAX as usize) as u16;
     let cursor_y = cursor_y.min(u16::MAX as usize) as u16;
@@ -2231,6 +2228,35 @@ mod tests {
         assert!(!text.contains("Plan ·"));
         assert!(!text.contains("Inspect"));
         assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn wrapped_plan_keeps_composer_cursor_visible_without_inserting_a_newline() {
+        let mut app = App::default();
+        app.update_plan(
+            crate::agent::tools::TaskPlan::parse(serde_json::json!({
+                "plan": [{"step": "Inspect the implementation carefully", "status": "in_progress"}]
+            }))
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(24, 16)).unwrap();
+        for text in ["", "hello", "one\ntwo\nthree"] {
+            app.input.clear();
+            app.input_cursor = 0;
+            app.insert_input(text);
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            assert!(terminal.backend().cursor_visible(), "input: {text:?}");
+            let cursor = terminal.get_cursor_position().unwrap();
+            assert_eq!(cursor.y, 13);
+            assert_eq!(cursor.x, if text.is_empty() { 3 } else { 8 });
+            if !text.is_empty() {
+                assert_eq!(
+                    terminal.backend().buffer()[(3, cursor.y)].symbol(),
+                    if text == "hello" { "h" } else { "t" }
+                );
+            }
+            assert_eq!(app.input, text);
+        }
     }
 
     #[test]
