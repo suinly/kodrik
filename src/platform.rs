@@ -257,7 +257,7 @@ mod win {
             }
         }
     }
-    fn descriptor() -> io::Result<Descriptor> {
+    fn descriptor(directory: bool) -> io::Result<Descriptor> {
         unsafe {
             let mut token = null_mut();
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -288,7 +288,8 @@ mod win {
             }
             let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid, len));
             LocalFree(sid.cast());
-            let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid_string})")
+            let inheritance = if directory { "OICI" } else { "" };
+            let sddl: Vec<u16> = format!("D:P(A;{inheritance};FA;;;{sid_string})")
                 .encode_utf16()
                 .chain(Some(0))
                 .collect();
@@ -326,7 +327,7 @@ mod win {
     }
     pub(super) fn set_private(file: &File) -> io::Result<()> {
         unsafe {
-            let sd = descriptor()?;
+            let sd = descriptor(file.metadata()?.is_dir())?;
             // tempfile/std handles need not carry WRITE_DAC; reopen the same object,
             // never its pathname, so ACL updates cannot be redirected by a rename.
             let handle = ReOpenFile(
@@ -356,7 +357,7 @@ mod win {
     }
     pub(super) fn is_private(file: &File) -> io::Result<bool> {
         unsafe {
-            let expected = descriptor()?;
+            let expected = descriptor(file.metadata()?.is_dir())?;
             let mut sd = null_mut();
             let mut actual = null_mut();
             let status = GetSecurityInfo(
@@ -376,11 +377,35 @@ mod win {
             if actual.is_null() {
                 return Ok(false);
             }
+            let (mut control, mut revision) = (0, 0);
+            if GetSecurityDescriptorControl(sd, &mut control, &mut revision) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if control & SE_DACL_PROTECTED == 0 || IsValidAcl(actual) == 0 {
+                return Ok(false);
+            }
             let wanted = acl(expected.0)?;
-            Ok(
-                std::slice::from_raw_parts(actual.cast::<u8>(), (*actual).AclSize as usize)
-                    == std::slice::from_raw_parts(wanted.cast::<u8>(), (*wanted).AclSize as usize),
-            )
+            if (*actual).AceCount != (*wanted).AceCount {
+                return Ok(false);
+            }
+            // Windows may resize an ACL or change reserved header bytes. Compare
+            // the ACEs, including trustee, rights and flags, not allocator slack.
+            for index in 0..u32::from((*wanted).AceCount) {
+                let (mut actual_ace, mut wanted_ace) = (null_mut(), null_mut());
+                if GetAce(actual, index, &mut actual_ace) == 0
+                    || GetAce(wanted, index, &mut wanted_ace) == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                let actual_size = (*actual_ace.cast::<ACE_HEADER>()).AceSize as usize;
+                let wanted_size = (*wanted_ace.cast::<ACE_HEADER>()).AceSize as usize;
+                if std::slice::from_raw_parts(actual_ace.cast::<u8>(), actual_size)
+                    != std::slice::from_raw_parts(wanted_ace.cast::<u8>(), wanted_size)
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
     }
     fn handle(
@@ -392,7 +417,11 @@ mod win {
     ) -> io::Result<File> {
         unsafe {
             let path = wide(path)?;
-            let sd = if private { Some(descriptor()?) } else { None };
+            let sd = if private {
+                Some(descriptor(false)?)
+            } else {
+                None
+            };
             let sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: sd.as_ref().map_or(null_mut(), |s| s.0),
@@ -461,7 +490,7 @@ mod win {
     pub(super) fn create_dir(path: &Path, private: bool) -> io::Result<()> {
         unsafe {
             let p = wide(path)?;
-            let sd = descriptor()?;
+            let sd = descriptor(true)?;
             let sa = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: sd.0,
@@ -578,6 +607,27 @@ mod windows_tests {
             .open(&path)
             .unwrap();
         assert!(is_private(&file).unwrap());
+        // An additional trustee must never be accepted as an equivalent ACL.
+        assert!(
+            std::process::Command::new("icacls.exe")
+                .arg(&path)
+                .args(["/grant", "*S-1-1-0:R"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(!is_private(&file).unwrap());
+        set_file_private(&file, 0o600).unwrap();
+        assert!(is_private(&file).unwrap());
+        assert!(
+            std::process::Command::new("icacls.exe")
+                .arg(&path)
+                .arg("/inheritance:e")
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(!is_private(&file).unwrap());
         set_file_private(&file, 0o600).unwrap();
         assert!(is_private(&file).unwrap());
     }
