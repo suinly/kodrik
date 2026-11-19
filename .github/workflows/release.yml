@@ -3,17 +3,25 @@ name: Release
 on:
   push:
     tags: ["v[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild without moving it
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   windows:
     uses: ./.github/workflows/windows.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
   release:
     runs-on: macos-15
     timeout-minutes: 60
@@ -22,11 +30,12 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
       HOMEBREW_NO_AUTO_UPDATE: "1"
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -64,7 +73,7 @@ jobs:
           brew tap-new --no-git kodrik/local
           tap=$(brew --repository kodrik/local)
           cp dist/kodrik.rb "$tap/Formula/kodrik.rb"
-          brew style --formula "$tap/Formula/kodrik.rb"
+          brew style --formula kodrik/local/kodrik
           ruby -e 'text = File.read("dist/kodrik.rb"); text.sub!(/^  url .+$/, "  url #{("file://" + Dir.glob("#{Dir.pwd}/dist/*.tar.gz").fetch(0)).inspect}"); File.write(ARGV.fetch(0), text)' "$tap/Formula/kodrik.rb"
           brew install kodrik/local/kodrik
           brew test kodrik/local/kodrik
@@ -84,7 +93,7 @@ jobs:
     permissions:
       contents: write
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
