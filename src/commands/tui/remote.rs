@@ -2089,7 +2089,17 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         app.push_kodrik_message(app.language.pick("Device disconnected. History is saved; send a new message to continue.","Связь с устройством потеряна. История сохранена; для продолжения отправьте новое сообщение.").into());
     }
     if let Some(reason) = run["blocked_reason"].as_str() {
-        app.push_kodrik_message(reason.into());
+        let translated = match reason {
+            "Stopped by user" => "Остановлено пользователем",
+            "Stopped by user; queued follow-ups require new input" => {
+                "Остановлено пользователем; для продолжения очереди отправьте новое сообщение"
+            }
+            "Stopped by user; queued follow-ups require new input or continue" => {
+                "Остановлено пользователем; для продолжения очереди отправьте новое сообщение или используйте /continue"
+            }
+            _ => reason,
+        };
+        app.push_kodrik_message(app.language.pick(reason, translated).into());
     }
     Ok(())
 }

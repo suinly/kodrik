@@ -14,6 +14,38 @@ fn snapshot() -> RemoteChatSnapshot {
 }
 
 #[test]
+fn remote_stop_reasons_follow_interface_language() {
+    for (reason, russian) in [
+        ("Stopped by user", "Остановлено пользователем"),
+        (
+            "Stopped by user; queued follow-ups require new input",
+            "Остановлено пользователем; для продолжения очереди отправьте новое сообщение",
+        ),
+        (
+            "Stopped by user; queued follow-ups require new input or continue",
+            "Остановлено пользователем; для продолжения очереди отправьте новое сообщение или используйте /continue",
+        ),
+        ("Unknown failure detail", "Unknown failure detail"),
+    ] {
+        for language in [crate::i18n::Language::En, crate::i18n::Language::Ru] {
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            let mut view = snapshot();
+            view.messages.clear();
+            view.run = Some(json!({"phase":"Cancelled", "blocked_reason":reason}));
+            remote::project(&mut app, &view).unwrap();
+            assert_eq!(
+                app.messages.last().unwrap().content,
+                language.pick(reason, russian)
+            );
+            assert!(matches!(app.status, Status::Stopped));
+        }
+    }
+}
+
+#[test]
 fn remote_context_tokens_follow_server_snapshots() {
     let mut app = App::default();
     let mut view = snapshot();
