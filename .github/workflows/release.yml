@@ -1,4 +1,4 @@
-name: Release macOS
+name: Release
 
 on:
   push:
@@ -12,6 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  windows:
+    uses: ./.github/workflows/windows.yml
   release:
     runs-on: macos-15
     timeout-minutes: 60
@@ -38,7 +40,7 @@ jobs:
           rustup default stable
           npm ci --prefix web
           npm run build --prefix web
-          cargo test --locked
+          cargo test --locked -- --test-threads=2
           sh scripts/test-install-macos.sh
           brew ruby scripts/test-homebrew.rb
           cargo build --release --locked --target aarch64-apple-darwin
@@ -69,9 +71,41 @@ jobs:
           codesign --verify --strict "$(brew --prefix kodrik/local/kodrik)/bin/kodrik"
           brew uninstall kodrik/local/kodrik
           brew untap kodrik/local
+      - name: Upload macOS package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kodrik-macos-arm64
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    needs: [release, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: packages
+          pattern: kodrik-*
+      - name: Verify and collect packages
+        run: |
+          set -eu
+          mkdir dist
+          for package in packages/*; do
+            (cd "$package" && sha256sum --check SHA256SUMS)
+            find "$package" -maxdepth 1 -type f ! -name SHA256SUMS -exec cp {} dist/ \;
+          done
+          test -f "dist/kodrik-${TAG#v}-aarch64-apple-darwin.tar.gz"
+          test -f "dist/kodrik-${TAG#v}-x86_64-pc-windows-msvc.zip"
+          test -f "dist/kodrik-${TAG#v}-aarch64-pc-windows-msvc.zip"
+          test -f dist/kodrik.rb
+          (cd dist && sha256sum -- *.tar.gz *.zip > SHA256SUMS)
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS dist/kodrik.rb \
+          gh release create "$TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS dist/kodrik.rb --repo "$GITHUB_REPOSITORY" \
             --verify-tag --draft --title "Kodrik $TAG" --generate-notes

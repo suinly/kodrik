@@ -1,6 +1,6 @@
 # Native Windows build
 
-Work on native Windows support is developed in `feat/windows-native`.
+Native Windows support includes x64 and ARM64 builds.
 It is a Windows executable, not a WSL wrapper. The initial build target is
 `x86_64-pc-windows-msvc`; Windows service installation is not part of the
 initial port. Both x64 and ARM64 packages are built by GitHub Actions.
@@ -56,6 +56,10 @@ Windows runner, builds the release executable, checks `--version` and `--help`,
 and uploads a ZIP containing `kodrik.exe` and the license plus `SHA256SUMS`.
 This produces a CI artifact, not a published GitHub release. A successful
 cross-check on macOS does not replace a successful native workflow run.
+
+Tagged releases also run this workflow and include both Windows ZIPs alongside
+the macOS archive, with a combined `SHA256SUMS`. All three platform builds must
+succeed before the release draft is created.
 
 Download `kodrik-windows-x86_64` or `kodrik-windows-arm64` from the successful
 run's **Artifacts** section. Each contains a target-specific ZIP and its
