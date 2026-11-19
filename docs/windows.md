@@ -1,9 +1,155 @@
-# Native Windows build
+# Windows installation and source builds
 
 Native Windows support includes x64 and ARM64 builds.
 It is a Windows executable, not a WSL wrapper. The initial build target is
 `x86_64-pc-windows-msvc`; Windows service installation is not part of the
 initial port. Both x64 and ARM64 packages are built by GitHub Actions.
+
+## Install a ready-made Windows ZIP
+
+No Rust, Node.js, Visual Studio or source checkout is required. The executable
+includes the web frontend and built-in skills. Run the following commands in
+PowerShell as your normal user; administrator privileges are not required.
+
+### 1. Choose and download a package
+
+Open **Settings → System → About → System type** in Windows:
+
+- For an Intel or AMD x64 processor, choose `x86_64-pc-windows-msvc`.
+- For an ARM64 processor, choose `aarch64-pc-windows-msvc`.
+
+On the [releases page](https://github.com/suinly/kodrik/releases), choose a
+release whose assets include Windows packages. Download
+`kodrik-<version>-<target>.zip` for your target and the matching `SHA256SUMS`
+from that same release. Do not use GitHub's **Source code** ZIP.
+
+If no published release has the Windows package you need, use
+[Actions → Windows](https://github.com/suinly/kodrik/actions/workflows/windows.yml):
+open a successful run for the branch/commit you intend to use and download
+`kodrik-windows-x86_64` or `kodrik-windows-arm64` under **Artifacts**.
+GitHub requires sign-in to download workflow artifacts. Extract the downloaded
+artifact into a new folder: it contains the actual versioned program ZIP and
+its `SHA256SUMS`. An artifact is a development build, not a published release.
+
+### 2. Verify and extract
+
+In PowerShell, change to the folder containing the **versioned program ZIP**
+and `SHA256SUMS`. Set `$archive` to the actual downloaded filename, for example:
+
+```powershell
+Set-Location "$HOME\Downloads"
+$archive = 'kodrik-<version>-x86_64-pc-windows-msvc.zip'
+Get-FileHash -Algorithm SHA256 -LiteralPath $archive
+Get-Content .\SHA256SUMS
+```
+
+Replace `<version>` (and the target for ARM64) before running the commands.
+Compare the hash with the `SHA256SUMS` entry for that exact filename; letter
+case does not matter. If they differ, stop and download the files again.
+The checksum detects corruption; it is not a code signature.
+
+Extract to a user-writable installation folder, then check that it runs:
+
+```powershell
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\Kodrik'
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Expand-Archive -LiteralPath $archive -DestinationPath $installDir
+& "$installDir\kodrik.exe" --version
+& "$installDir\kodrik.exe" --help
+```
+
+These steps assume a new installation directory. For an existing installation,
+follow **Update** below. The executable is not code-signed, so Windows
+SmartScreen may warn about it. Verify the source and checksum before deciding
+whether to allow it; do not disable Windows security globally. If Windows reports
+a missing Visual C++ runtime DLL, install Microsoft's
+[Visual C++ v14 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+for your architecture and retry.
+
+### 3. Configure the model
+
+You need an API key and a model endpoint supporting the **OpenAI Responses API
+and tool calling**; Chat Completions-only endpoints are insufficient.
+Create the state directory and open the configuration file:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$HOME\.kodrik" | Out-Null
+notepad "$HOME\.kodrik\config.toml"
+```
+
+For a new configuration, paste the following, replace the placeholders and save.
+If the file already exists, edit it instead of replacing your settings.
+Make sure Notepad saves `config.toml`, not `config.toml.txt`.
+
+```toml
+[gateway]
+
+[provider.primary]
+type = "openai"
+model = "your-model"
+api_key = "your-key"
+# For a custom provider, uncomment and change:
+# api_base = "https://your-provider.example/v1"
+```
+
+The empty `[gateway]` table is required even for terminal-only use. Keep this
+file private: it contains your API key. Configuration and saved data live in
+`$HOME\.kodrik`, separately from the installation folder. See
+[Configuration](configuration.md) for more options.
+
+### 4. Start Kodrik
+
+Test a single question, or launch the terminal UI:
+
+```powershell
+& "$installDir\kodrik.exe" ask "Hello!"
+& "$installDir\kodrik.exe"
+```
+
+The agent's file and shell tools work from the current directory, so change to
+your intended working folder first. You do not need to add Kodrik to `PATH`.
+In a new PowerShell window, set `$installDir` again as above or use the full
+path to `kodrik.exe`.
+
+For browser chat, add this to `config.toml`:
+
+```toml
+[web]
+enabled = true
+listen = "127.0.0.1:8080"
+base_url = "http://127.0.0.1:8080/"
+```
+
+Then set the owner password and start the gateway:
+
+```powershell
+& "$installDir\kodrik.exe" web set-password
+& "$installDir\kodrik.exe" gateway
+```
+
+Open <http://127.0.0.1:8080/app/chat> and sign in with that password.
+Keep the terminal open while using the browser; Ctrl+C stops the gateway.
+This binds only to your computer. Do not expose it to the network without
+following the [HTTPS and access configuration](web-pages.md).
+For Telegram, see [Telegram configuration](configuration.md#telegram).
+Installing the ZIP does not install a background Windows service or enable
+automatic startup.
+
+### Update
+
+Stop the gateway with Ctrl+C and close other running Kodrik instances.
+Download the new package for the same architecture and verify its checksum as
+above. Back up `$HOME\.kodrik` before upgrading; it contains private settings
+and saved data. In the folder containing the new program ZIP, set `$archive`
+to its filename and `$installDir` to your existing installation directory, then:
+
+```powershell
+Expand-Archive -LiteralPath $archive -DestinationPath $installDir -Force
+& "$installDir\kodrik.exe" --version
+```
+
+Start Kodrik again using the commands above. Replacing files in the installation
+folder does not replace your separate `$HOME\.kodrik\config.toml`.
 
 ## Build from source
 

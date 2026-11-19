@@ -59,6 +59,14 @@ The executable includes the web frontend and built-in skills. Rust, Node.js and 
 source checkout are not required. Installation does not create your configuration
 or start a background service. Continue with **Configure and run** below.
 
+### Install on Windows (x64 or ARM64)
+
+Download a ready-made Windows ZIP and follow the
+[Windows installation guide](docs/windows.md#install-a-ready-made-windows-zip)
+for checksum verification, extraction, configuration, first launch and updates.
+No Rust or Node.js is needed for the ZIP installation. Windows support is under
+development; see the guide's current limitations.
+
 ### Build from source
 
 Native Windows build instructions and CI artifact details are available in
