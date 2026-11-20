@@ -95,6 +95,8 @@ function Initialize-KodrikConfig {
 
 function Install-KodrikPackage {
     param([string]$Archive, [string]$ExpectedHash, [string]$Version, [string]$Destination)
+    $Archive = [IO.Path]::GetFullPath($Archive)
+    $Destination = [IO.Path]::GetFullPath($Destination)
     if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -ine $ExpectedHash) {
         throw 'SHA256 mismatch; installation has not been changed.'
     }
@@ -125,7 +127,9 @@ function Install-KodrikPackage {
         $target = Join-Path $Destination 'kodrik.exe'
         if (Test-Path -LiteralPath $target) {
             # A running/locked executable causes a safe failure, not process termination.
-            [IO.File]::Replace($candidate, $target, $null)
+            # Windows PowerShell 5.1 marshals $null to an invalid empty string here.
+            $backup = Join-Path $stage 'previous-kodrik.exe'
+            [IO.File]::Replace($candidate, $target, $backup)
         } else {
             [IO.File]::Move($candidate, $target)
         }

@@ -16,6 +16,7 @@ try {
     Set-Content "$destination/config.toml" 'preserve existing settings'
     Install-KodrikPackage $archive $hash $version $destination
     if ((Get-Content "$destination/config.toml") -ne 'preserve existing settings') { throw 'Settings overwritten' }
+    if (@(Get-ChildItem -LiteralPath $destination -Force | Where-Object { $_.Name -like '.install-*' }).Count -ne 0) { throw 'Update backup was not cleaned up' }
     $rejected = $false
     try { Install-KodrikPackage $archive ('0' * 64) $version $destination } catch { $rejected = $true }
     if (!$rejected) { throw 'Invalid checksum accepted' }
