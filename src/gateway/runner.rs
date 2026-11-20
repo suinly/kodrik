@@ -1159,6 +1159,7 @@ impl GatewayRunner {
         let language = interface.language(conversation_id);
         let mut status_id = None;
         let mut preview_id = None;
+        let mut completed_message: Option<crate::agent::AssistantMessage> = None;
         let mut preview = String::new();
         let mut preview_sent = String::new();
         let mut plan = None;
@@ -1187,6 +1188,13 @@ impl GatewayRunner {
                 event = rx.recv() => {
                     match event {
                         Some(AgentEvent::InputConsumed) => {
+                            // Message followed by input is a completed answer, not a tool preamble.
+                            if let Some(message) = completed_message.take() {
+                                let completed_preview = preview_id.take();
+                                if let Err(error) = deliver_reply(interface, conversation_id, completed_preview.as_ref(), &message.content, None).await {
+                                    warn!("Failed to deliver completed answer before new input: {error:#}");
+                                }
+                            }
                             compaction = None;
                             compaction_message = None;
                             compaction_sent = None;
@@ -1259,6 +1267,7 @@ impl GatewayRunner {
                             description = message.content.split_whitespace().collect::<Vec<_>>().join(" ");
                             description = description.trim_end_matches(['.', '…']).trim_end().to_owned();
                             message_since_tool = !description.is_empty();
+                            completed_message = Some(message);
                             if !status_needed {
                                 continue;
                             }
@@ -1266,6 +1275,7 @@ impl GatewayRunner {
                         }
                         Some(AgentEvent::ContextTokens(_)) => continue,
                         Some(AgentEvent::ToolStarted { name, call_id, arguments }) => {
+                            completed_message = None;
                             used_tool = true;
                             if !progress_disabled && let Some(id) = preview_id.take()
                                 && let Err(error) = interface.delete(conversation_id, &id).await
@@ -3758,7 +3768,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn messages_during_generation_steer_before_final_reply() {
+    async fn messages_during_answer_wait_for_completion_before_followup() {
         use crate::agent::{Agent, ContextBuilder, session::JsonSessionStore, tools::ToolRegistry};
         tokio::time::timeout(Duration::from_secs(5), async {
             let release = Arc::new(tokio::sync::Notify::new());
@@ -3808,7 +3818,14 @@ mod tests {
             // Wait until the gateway has received every input, while generation is blocked.
             drop(tx.reserve_many(3).await.unwrap());
             drop(tx);
-            assert_eq!(replies.recv().await.unwrap(), "<deleted>");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), replies.recv())
+                    .await
+                    .is_err(),
+                "new messages must wait for the streaming answer"
+            );
+            release.notify_one();
+            assert_eq!(replies.recv().await.unwrap(), "initial");
             assert_eq!(
                 replies.recv().await.unwrap(),
                 "initial + first correction + second correction"
@@ -3828,6 +3845,8 @@ mod tests {
                 })
                 .collect();
             assert_eq!(inputs, ["initial", "first correction", "second correction"]);
+            assert!(matches!(&session.messages()[1],
+                crate::agent::message::Message::Assistant(answer) if answer.content == "initial"));
             let files: Vec<_> = session
                 .messages()
                 .iter()

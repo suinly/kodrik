@@ -2824,6 +2824,7 @@ test('web chat steers the current answer after a tool with text, files and photo
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'Отправить',exact:true}).click();
     await expect(page.locator('.message').getByText('queued browser text',{exact:true})).toHaveCount(1);
+    await expect(page.locator('.message').getByText('Сообщение будет передано агенту после завершения текущего инструмента или ответа',{exact:true})).toBeVisible();
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toBeVisible();
     await expect(input).toHaveText('');await expect(input).toBeEditable();
     await input.evaluate((el,bytes)=>{const data=new DataTransfer();data.items.add(new File(['queued browser file'],'queued-browser.txt',{type:'text/plain'}));data.items.add(new File([new Uint8Array(bytes)],'queued-photo.png',{type:'image/png'}));el.dispatchEvent(new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true}));},[...photo]);
@@ -2836,7 +2837,7 @@ test('web chat steers the current answer after a tool with text, files and photo
     await page.screenshot({path:'/tmp/kodrik-chat-queue-mobile.png',fullPage:true});
     await expect(page.locator('.message').getByRole('link',{name:'queued-browser.txt',exact:true})).toHaveCount(1);
     await expect(page.locator('.message img')).toHaveJSProperty('naturalWidth',2);
-    await expect(page.locator('.message').getByText('Ожидает передачи агенту',{exact:true})).toHaveCount(0);
+    await expect(page.locator('.message').getByText('Сообщение будет передано агенту после завершения текущего инструмента или ответа',{exact:true})).toHaveCount(0);
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     const snapshot=await(await request(`sessions/${id}/run`)).json();
     assert.deepEqual(snapshot.messages.filter(m=>m.role==='user').map(m=>m.parts.find(p=>p.type==='text')?.text||m.parts.find(p=>p.filename==='queued-browser.txt')?.filename),['slowtool','queued browser text','queued-browser.txt']);
@@ -2845,12 +2846,12 @@ test('web chat steers the current answer after a tool with text, files and photo
 
 test('web chat steers a changed draft after uncertain admission and Stop preserves consumed input',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json(),requestId=crypto.randomUUID();
-  await request('send',{id,request_id:requestId,text:'wait'});
+  await request('send',{id,request_id:requestId,text:'thinking'});
   const browser=await chromium.launch({headless:true});
   try{
     const page=await signedPage(browser);
     await page.addInitScript(({id,requestId})=>{
-      sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:requestId,text:'wait',files:[]}));
+      sessionStorage.setItem(`kodrik.pending.${id}`,JSON.stringify({id:requestId,text:'thinking',files:[]}));
       sessionStorage.setItem(`kodrik.draft.${id}`,JSON.stringify({text:'backoff',files:[]}));
     },{id,requestId});
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
@@ -2859,7 +2860,7 @@ test('web chat steers a changed draft after uncertain admission and Stop preserv
     await input.press('Enter');
     await expect(page.locator('.message').getByText('backoff',{exact:true})).toHaveCount(1);
     await expect(input).toHaveText('');
-    await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).messages.filter(m=>m.role==='user').map(m=>m.parts[0].text)).toEqual(['wait','backoff']);
+    await expect.poll(async()=> (await(await request(`sessions/${id}/run`)).json()).messages.filter(m=>m.role==='user').map(m=>m.parts[0].text)).toEqual(['thinking','backoff']);
     await page.getByRole('button',{name:'Остановить',exact:true}).click();
     await expect(page.locator('.message').getByText('backoff',{exact:true})).toHaveCount(1);
     await expect(page.getByRole('button',{name:'Остановить',exact:true})).toHaveCount(0);
@@ -2868,7 +2869,7 @@ test('web chat steers a changed draft after uncertain admission and Stop preserv
     await input.fill('new message after stop');await input.press('Enter');
     await expect(page.locator('.message').getByText('Привет!',{exact:true})).toHaveCount(1);
     const snapshot=await(await request(`sessions/${id}/run`)).json();
-    assert.deepEqual(snapshot.messages.filter(m=>m.role==='user').map(m=>m.parts[0].text),['wait','backoff','new message after stop']);
+    assert.deepEqual(snapshot.messages.filter(m=>m.role==='user').map(m=>m.parts[0].text),['thinking','backoff','new message after stop']);
   }finally{await browser.close();}
 });
 

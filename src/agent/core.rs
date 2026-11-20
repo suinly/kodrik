@@ -698,52 +698,80 @@ impl Agent {
                     }
                 }
                 requests += 1;
+                // Preserve non-streaming callers; headless steering still needs text events.
+                let stream = progress.is_some() || incoming.is_some();
                 let (tx, rx) = mpsc::channel(100);
                 let model_progress = if checkpoint.is_some() {
                     progress.map(|_| &tx)
                 } else {
                     progress
                 };
+                let (stream_tx, mut stream_rx) = mpsc::channel(100);
+                let mut answer_started = false;
                 // Keep the shared run future small enough for gateway callers' stacks.
                 let generation = Box::pin(async {
-                    tokio::select! {
-                        biased;
-                        _ = async {
-                            if let Some(incoming) = incoming.as_ref() {
-                                loop {
-                                    // Leave input queued so stop/suspend can still save it during cleanup.
-                                    if !incoming.is_empty() {
-                                        return;
-                                    }
-                                    if incoming.is_closed() {
-                                        break;
-                                    }
-                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    let work = async {
+                        if checkpoint.is_some() {
+                            llm.generate_attempt_with_usage(
+                                &context,
+                                &tools,
+                                stream.then_some(&stream_tx),
+                            )
+                            .await
+                        } else {
+                            llm.generate_with_usage(&context, &tools, stream.then_some(&stream_tx))
+                                .await
+                        }
+                    };
+                    tokio::pin!(work);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            Some(event) = stream_rx.recv() => {
+                                if matches!(&event, AgentEvent::TextDelta(text) if !text.is_empty()) {
+                                    answer_started = true;
                                 }
-                            }
-                            std::future::pending::<()>().await
-                        } => Err(GenerationSuperseded.into()),
-                        steering = async {
-                            if let Some(cp) = checkpoint.as_ref() {
-                                loop {
-                                    if !cp.store.steering(&cp.record).await?.is_empty() {
-                                        return Ok::<_, anyhow::Error>(());
+                                if let Some(tx) = model_progress { let _ = tx.send(event).await; }
+                            },
+                            _ = async {
+                                if let Some(incoming) = incoming.as_ref() {
+                                    loop {
+                                        // Leave input queued so stop/suspend can still save it during cleanup.
+                                        if !incoming.is_empty() {
+                                            return;
+                                        }
+                                        if incoming.is_closed() {
+                                            break;
+                                        }
+                                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                                     }
-                                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                 }
-                            }
-                            std::future::pending().await
-                        } => {
-                            steering?;
-                            Err(GenerationSuperseded.into())
-                        },
-                        result = async {
-                            if checkpoint.is_some() {
-                                llm.generate_attempt_with_usage(&context, &tools, model_progress).await
-                            } else {
-                                llm.generate_with_usage(&context, &tools, model_progress).await
-                            }
-                        } => result,
+                                std::future::pending::<()>().await
+                            }, if !answer_started => break Err(GenerationSuperseded.into()),
+                            steering = async {
+                                if let Some(cp) = checkpoint.as_ref() {
+                                    loop {
+                                        if !cp.store.steering(&cp.record).await?.is_empty() {
+                                            return Ok::<_, anyhow::Error>(());
+                                        }
+                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                    }
+                                }
+                                std::future::pending().await
+                            }, if !answer_started => {
+                                steering?;
+                                break Err(GenerationSuperseded.into())
+                            },
+                            result = &mut work => {
+                                while let Ok(event) = stream_rx.try_recv() {
+                                    if matches!(&event, AgentEvent::TextDelta(text) if !text.is_empty()) {
+                                        answer_started = true;
+                                    }
+                                    if let Some(tx) = model_progress { let _ = tx.send(event).await; }
+                                }
+                                break result;
+                            },
+                        }
                     }
                 });
                 let generated = if let Some(cp) = checkpoint.as_ref() {
@@ -767,6 +795,7 @@ impl Agent {
                 }
                 // Input can win the race after the provider finishes, before its output is committed.
                 if generated.is_ok()
+                    && !answer_started
                     && (if let Some(cp) = checkpoint.as_ref() {
                         !cp.store.steering(&cp.record).await?.is_empty()
                     } else {
@@ -1207,6 +1236,21 @@ impl Agent {
 
             if !has_tool_calls {
                 let answer = answer.ok_or_else(|| anyhow::anyhow!("LLM returned no answer"))?;
+                let pending_input = incoming.as_ref().is_some_and(|rx| !rx.is_empty())
+                    || if let Some(cp) = checkpoint.as_ref() {
+                        !cp.store.steering(&cp.record).await?.is_empty()
+                    } else {
+                        false
+                    };
+                if pending_input {
+                    if let Some(tx) = progress {
+                        let _ = tx.send(AgentEvent::Message(answer)).await;
+                    }
+                    if let Some(cp) = checkpoint.as_deref_mut() {
+                        cp.save(session, RunPhase::NeedModel, None).await?;
+                    }
+                    continue;
+                }
                 return Ok(answer);
             }
         }
@@ -1343,10 +1387,110 @@ mod tests {
         }
     }
 
+    struct AnswerSteeringModel {
+        contexts: mpsc::UnboundedSender<Vec<Message>>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for AnswerSteeringModel {
+        async fn generate(
+            &self,
+            context: &LlmContext<'_>,
+            _: &[&dyn Tool],
+            progress: Option<&mpsc::Sender<AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            let first = context.messages.len() == 1;
+            if first {
+                if let Some(progress) = progress {
+                    progress
+                        .send(AgentEvent::TextDelta("answer".into()))
+                        .await
+                        .unwrap();
+                }
+            }
+            self.contexts.send(context.messages.to_vec()).unwrap();
+            if first {
+                self.release.notified().await;
+            }
+            Ok((
+                vec![Message::Assistant(AssistantMessage {
+                    content: if first {
+                        "answer completed"
+                    } else {
+                        "followup completed"
+                    }
+                    .into(),
+                })],
+                Some(7),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn steering_waits_for_answer_before_processing_followup() {
+        use crate::agent::{
+            inbox::{BusyMode, SubmissionRequest},
+            session::SqliteSessionStore,
+        };
+        use crate::gateway::{IncomingMessage, InterfaceId};
+        for durable in [false, true] {
+            for with_progress in [false, true] {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    let dir = tempfile::tempdir().unwrap();
+                    let store = SqliteSessionStore::open_async(dir.path().into()).await.unwrap();
+                    let mut session = Session::new(SessionId::new("test:answer-steer"));
+                    let id = session.id().clone();
+                    let mut checkpoint = durable.then(|| Checkpoint::new(&store, &id, &session));
+                    if let Some(cp) = &mut checkpoint { cp.record.isolated = Some(false); }
+                    let (contexts, mut seen) = mpsc::unbounded_channel();
+                    let release = Arc::new(tokio::sync::Notify::new());
+                    let agent = Agent::new(Arc::new(AnswerSteeringModel {
+                        contexts, release: release.clone(),
+                    }), ToolRegistry::default(), ContextBuilder::new("test"));
+                    let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+                    let (progress, mut events) = mpsc::channel(100);
+                    let task = tokio::spawn(async move {
+                        let result = agent.run_durable(&mut session, UserMessage {
+                            content: "initial".into(), browser_client_id: None, browser_context: None, files: vec![], images: vec![]
+                        }, with_progress.then_some(&progress), Some(&mut input_rx), checkpoint.as_mut()).await;
+                        (result, session)
+                    });
+                    seen.recv().await.unwrap();
+                    if durable {
+                        store.submit(SubmissionRequest::new(&id,
+                            IncomingMessage::new(InterfaceId("test".into()), "chat", "followup"),
+                            BusyMode::Steer)).await.unwrap();
+                    } else {
+                        input_tx.send(UserMessage { content: "followup".into(), browser_client_id: None, browser_context: None, files: vec![], images: vec![] }).unwrap();
+                    }
+                    assert!(tokio::time::timeout(std::time::Duration::from_millis(250), seen.recv()).await.is_err(),
+                        "steering must not cancel an answer already streaming");
+                    release.notify_one();
+                    let context = seen.recv().await.unwrap();
+                    assert_eq!(context.len(), 3);
+                    assert!(matches!(&context[1], Message::Assistant(a) if a.content == "answer completed"));
+                    assert!(matches!(&context[2], Message::User(u) if u.content == "followup"));
+                    let (result, session) = task.await.unwrap();
+                    assert_eq!(result.unwrap().content, "followup completed");
+                    assert_eq!(session.messages().len(), 4);
+                    if with_progress {
+                        let mut delivered = false;
+                        while let Ok(event) = events.try_recv() {
+                            if matches!(event, AgentEvent::Message(a) if a.content == "answer completed") {
+                                delivered = true;
+                            }
+                        }
+                        assert!(delivered, "completed answer must be delivered before the followup");
+                    }
+                }).await.unwrap();
+            }
+        }
+    }
+
     struct SteeringModel {
         contexts: mpsc::UnboundedSender<Vec<Message>>,
         cancelled: mpsc::UnboundedSender<()>,
-        stream: bool,
     }
 
     struct PendingGeneration(mpsc::UnboundedSender<()>);
@@ -1363,19 +1507,12 @@ mod tests {
             &self,
             context: &LlmContext<'_>,
             _: &[&dyn Tool],
-            progress: Option<&mpsc::Sender<AgentEvent>>,
+            _progress: Option<&mpsc::Sender<AgentEvent>>,
         ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
             self.contexts.send(context.messages.to_vec()).unwrap();
             if !matches!(context.messages.last(), Some(Message::User(u)) if u.content == "last correction")
             {
                 let _pending = PendingGeneration(self.cancelled.clone());
-                if self.stream {
-                    progress
-                        .unwrap()
-                        .send(AgentEvent::TextDelta("obsolete draft".into()))
-                        .await
-                        .unwrap();
-                }
                 std::future::pending::<()>().await;
             }
             Ok((
@@ -1387,7 +1524,7 @@ mod tests {
         }
     }
 
-    async fn assert_steering_restarts(durable: bool, stream: bool) {
+    async fn assert_steering_restarts(durable: bool) {
         use crate::agent::{
             inbox::{BusyMode, SubmissionRequest},
             session::SqliteSessionStore,
@@ -1411,7 +1548,6 @@ mod tests {
                 Arc::new(SteeringModel {
                     contexts,
                     cancelled,
-                    stream,
                 }),
                 ToolRegistry::default(),
                 ContextBuilder::new("test"),
@@ -1438,20 +1574,6 @@ mod tests {
                 (result, session, checkpoint)
             });
             seen.recv().await.unwrap();
-            if durable && stream {
-                loop {
-                    let view = store.conversation_view(id.as_str()).await.unwrap();
-                    if view
-                        .run
-                        .as_ref()
-                        .and_then(|v| v.live.current.as_ref())
-                        .is_some_and(|p| p.text == "obsolete draft")
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            }
             let file = crate::agent::FileAttachment::save(
                 &dir.path().join("files"),
                 "note.txt",
@@ -1540,17 +1662,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steering_restarts_in_memory_before_tokens_and_during_stream() {
-        for stream in [false, true] {
-            assert_steering_restarts(false, stream).await;
-        }
+    async fn steering_restarts_in_memory_before_answer() {
+        assert_steering_restarts(false).await;
     }
 
     #[tokio::test]
-    async fn steering_restarts_durable_before_tokens_and_during_stream() {
-        for stream in [false, true] {
-            assert_steering_restarts(true, stream).await;
-        }
+    async fn steering_restarts_durable_before_answer() {
+        assert_steering_restarts(true).await;
     }
 
     #[tokio::test]
@@ -1564,7 +1682,7 @@ mod tests {
             let store = Arc::new(SqliteSessionStore::open_async(directory.path().into()).await.unwrap());
             let (contexts, mut seen) = mpsc::unbounded_channel();
             let (cancelled, mut cancellations) = mpsc::unbounded_channel();
-            let runner = Arc::new(AgentRunner::new(Arc::new(Agent::new(Arc::new(SteeringModel { contexts, cancelled, stream: false }), ToolRegistry::default(), ContextBuilder::new("test"))), store.clone()));
+            let runner = Arc::new(AgentRunner::new(Arc::new(Agent::new(Arc::new(SteeringModel { contexts, cancelled }), ToolRegistry::default(), ContextBuilder::new("test"))), store.clone()));
             let (input_tx, mut input_rx) = mpsc::unbounded_channel();
             let (stop, stopped) = tokio::sync::oneshot::channel();
             let worker = runner.clone();

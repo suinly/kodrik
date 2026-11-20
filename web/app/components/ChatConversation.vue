@@ -672,7 +672,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
             <template #content><ChatMarkdown :text="snapshot.live.interrupted.text" /></template>
           </UCollapsible>
           <ChatItem v-for="message in queuedMessages" :key="message.id" :message="message" :environment="snapshot?.environment"
-            :status="snapshot?.blocked_reason ? t('Передача приостановлена') : t('Ожидает передачи агенту')" />
+            :status="snapshot?.blocked_reason ? t('Передача приостановлена') : t('Сообщение будет передано агенту после завершения текущего инструмента или ответа')" />
           <UChatShimmer v-if="busy && !hint && !stopping && !snapshot?.command_approvals?.length" as="p" :text="t('Кодрик работает…')" role="status" aria-live="polite" class="text-sm" />
         </div>
       </div>

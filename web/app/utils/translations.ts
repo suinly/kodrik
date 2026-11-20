@@ -341,6 +341,7 @@ export const en = {
   'Подтвердить перевыпуск': 'Confirm rotation',
   'Подтвердить удаление': 'Confirm deletion',
   'В очереди': 'Queued',
+  'Сообщение будет передано агенту после завершения текущего инструмента или ответа': 'The message will be passed to the agent after the current tool or response finishes',
   'Завершено': 'Completed',
   'Ошибка обработки': 'Processing failed',
   'Диалог удалён': 'Conversation deleted',

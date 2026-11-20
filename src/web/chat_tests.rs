@@ -697,6 +697,9 @@ impl LlmProvider for FakeLlm {
                 .await?;
             std::future::pending::<()>().await;
         }
+        if text == "thinking" {
+            std::future::pending::<()>().await;
+        }
         if text == "wait" {
             if let Some(progress) = progress {
                 progress
