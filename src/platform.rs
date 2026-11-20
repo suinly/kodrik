@@ -191,7 +191,7 @@ pub(crate) fn set_private(path: impl AsRef<Path>, mode: u32) -> io::Result<()> {
                 format!("Open security handle for {}: {error}", path.display()),
             )
         })?;
-        win::set_private(&file).map_err(|error| {
+        win::set_private_handle(&file).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("Set private ACL for {}: {error}", path.display()),
@@ -338,12 +338,11 @@ mod win {
     }
     pub(super) fn set_private(file: &File) -> io::Result<()> {
         unsafe {
-            let sd = descriptor(file.metadata()?.is_dir())?;
             // tempfile/std handles need not carry WRITE_DAC; reopen the same object,
             // never its pathname, so ACL updates cannot be redirected by a rename.
             let handle = ReOpenFile(
                 file.as_raw_handle(),
-                WRITE_DAC | READ_CONTROL,
+                WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 FILE_FLAG_BACKUP_SEMANTICS,
             );
@@ -351,8 +350,14 @@ mod win {
                 return Err(io::Error::last_os_error());
             }
             let secured = File::from_raw_handle(handle);
+            set_private_handle(&secured)
+        }
+    }
+    pub(super) fn set_private_handle(file: &File) -> io::Result<()> {
+        unsafe {
+            let sd = descriptor(file.metadata()?.is_dir())?;
             let status = SetSecurityInfo(
-                secured.as_raw_handle(),
+                file.as_raw_handle(),
                 SE_FILE_OBJECT,
                 DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
                 null_mut(),
@@ -491,7 +496,7 @@ mod win {
             (&f).seek(SeekFrom::End(0))?;
         }
         if o.private {
-            set_private(&f)?;
+            set_private_handle(&f)?;
         }
         if o.truncate {
             f.set_len(0)?;
@@ -570,14 +575,18 @@ mod windows_tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("existing-store");
         std::fs::create_dir(&path).unwrap();
+        let handle = win::open_security(&path, true).unwrap();
+        assert!(handle.metadata().unwrap().is_dir());
         set_private(&path, 0o700).unwrap();
         assert!(path_is_private(&path).unwrap());
+        assert!(is_private(&handle).unwrap());
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&path)
             .unwrap();
         set_private(&path, 0o700).unwrap();
+        assert!(is_private(&handle).unwrap());
     }
     #[test]
     fn append_handles_flush_and_preserve_existing_records() {
