@@ -28,8 +28,8 @@ function Save-KodrikConfig {
     $text = "[gateway]`n`n[provider.primary]`ntype = `"openai`"`nmodel = $(ConvertTo-TomlString $Model)`napi_key = $(ConvertTo-TomlString $ApiKey)`n"
     if ($ApiBase) { $text += "api_base = $(ConvertTo-TomlString $ApiBase)`n" }
     if ($TelegramToken) {
-        $id = [ulong]0
-        if (![ulong]::TryParse($OwnerId, [ref]$id) -or $id -eq 0) { throw 'Telegram owner ID must be a positive integer.' }
+        $id = [System.UInt64]0
+        if (![System.UInt64]::TryParse($OwnerId, [ref]$id) -or $id -eq 0) { throw 'Telegram owner ID must be a positive integer.' }
         $text += "`n[gateway.telegram]`ntype = `"telegram`"`ntoken = $(ConvertTo-TomlString $TelegramToken)`n`n[owner]`ninterface = `"telegram`"`nuser_id = $id`n"
     }
     $parent = Split-Path -Parent $Path

@@ -39,6 +39,11 @@ try {
     if (!$rejected -or [IO.File]::ReadAllText($config) -ne $text) { throw 'Existing config overwritten' }
     Save-KodrikConfig "$root/telegram.toml" 'test' 'key' '' 'bot-token' '123456789'
     if (![IO.File]::ReadAllText("$root/telegram.toml").Contains('user_id = 123456789')) { throw 'Telegram owner missing' }
+    foreach ($ownerId in @('0', '-1', '18446744073709551616', 'invalid')) {
+        $rejected = $false
+        try { Save-KodrikConfig "$root/invalid-owner.toml" 'test' 'key' '' 'bot-token' $ownerId } catch { $rejected = $true }
+        if (!$rejected -or (Test-Path "$root/invalid-owner.toml")) { throw "Invalid Telegram owner accepted: $ownerId" }
+    }
     Write-Host 'PASS: install, upgrade, paths with spaces, settings preservation, checksum and version rejection'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
