@@ -27,11 +27,20 @@ stable release and verifies its SHA256 before running or installing it into
 the script and hashes are trusted through the GitHub HTTPS source. No Rust,
 Node.js, Visual Studio or administrator privileges are needed.
 
+On first installation, the script asks for a model identifier, a hidden API key
+and an optional API base URL (Enter uses OpenAI). The provider must support the
+Responses API and tool calling. You can also configure Telegram by entering a
+hidden bot token and your positive numeric Telegram user ID. No API test request
+is sent; credentials are saved locally in UTF-8 TOML with a current-user-only
+protected ACL at `$HOME\.kodrik\config.toml`. Existing configs are kept without
+prompts or replacement. Use `-SkipConfigure` for unattended binary-only installs.
+
 Use `-Version 0.5.0` to pin a release, `-InstallDir 'C:\your\folder'` for another
 directory, and omit `-AddToPath` to leave PATH unchanged. Re-run to update;
 stop Kodrik first if its executable is locked. Configuration/data are preserved;
 no service, scheduled task or autostart is installed. Open a new terminal for
-the updated user PATH, then continue with **Configure the model** below.
+the updated user PATH. The manual configuration instructions below are only
+needed if you skipped setup or want to change settings later.
 
 ### Manual installation
 

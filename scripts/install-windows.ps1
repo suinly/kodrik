@@ -3,9 +3,95 @@
 param(
     [string]$Version = 'latest',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Kodrik'),
-    [switch]$AddToPath
+    [switch]$AddToPath,
+    [switch]$SkipConfigure
 )
 $ErrorActionPreference = 'Stop'
+
+function ConvertTo-TomlString {
+    param([string]$Value)
+    # JSON string escapes are valid TOML basic-string escapes for these inputs.
+    if ($Value -match '[\x00-\x1f\x7f]') { throw 'Control characters are not allowed in configuration values.' }
+    return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
+}
+
+function Save-KodrikConfig {
+    param([string]$Path, [string]$Model, [string]$ApiKey, [string]$ApiBase, [string]$TelegramToken, [string]$OwnerId)
+    if ([string]::IsNullOrWhiteSpace($Model) -or [string]::IsNullOrWhiteSpace($ApiKey)) { throw 'Model and API key are required.' }
+    if (Test-Path -LiteralPath $Path) { throw 'Existing config will not be overwritten.' }
+    if ($ApiBase) {
+        $uri = $null
+        if (![Uri]::TryCreate($ApiBase, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -notin @('https', 'http') -or $uri.UserInfo) {
+            throw 'API base must be an HTTP(S) URL without embedded credentials.'
+        }
+    }
+    $text = "[gateway]`n`n[provider.primary]`ntype = `"openai`"`nmodel = $(ConvertTo-TomlString $Model)`napi_key = $(ConvertTo-TomlString $ApiKey)`n"
+    if ($ApiBase) { $text += "api_base = $(ConvertTo-TomlString $ApiBase)`n" }
+    if ($TelegramToken) {
+        $id = [ulong]0
+        if (![ulong]::TryParse($OwnerId, [ref]$id) -or $id -eq 0) { throw 'Telegram owner ID must be a positive integer.' }
+        $text += "`n[gateway.telegram]`ntype = `"telegram`"`ntoken = $(ConvertTo-TomlString $TelegramToken)`n`n[owner]`ninterface = `"telegram`"`nuser_id = $id`n"
+    }
+    $parent = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    $stage = Join-Path $parent ('.configure-' + [guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    try {
+        $acl = New-Object System.Security.AccessControl.DirectorySecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        Set-Acl -LiteralPath $stage -AclObject $acl
+        $file = Join-Path $stage 'config.toml'
+        [IO.File]::WriteAllText($file, $text, (New-Object Text.UTF8Encoding($false)))
+        $fileAcl = New-Object System.Security.AccessControl.FileSecurity
+        $fileAcl.SetAccessRuleProtection($true, $false)
+        $fileAcl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')))
+        Set-Acl -LiteralPath $file -AclObject $fileAcl
+        # Move without overwrite: a concurrently created config must survive.
+        [IO.File]::Move($file, $Path)
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Read-KodrikRequired {
+    param([string]$Prompt, [switch]$Secret)
+    do {
+        if ($Secret) {
+            $secure = Read-Host $Prompt -AsSecureString
+            $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+            try { $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
+            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer); $secure.Dispose() }
+        } else { $value = (Read-Host $Prompt).Trim() }
+        if ([string]::IsNullOrWhiteSpace($value)) { Write-Host 'A value is required.' }
+    } while ([string]::IsNullOrWhiteSpace($value))
+    return $value
+}
+
+function Initialize-KodrikConfig {
+    $path = Join-Path $HOME '.kodrik\config.toml'
+    if (Test-Path -LiteralPath $path) {
+        Write-Host "Keeping existing configuration: $path"
+        return
+    }
+    Write-Host 'Configure a provider supporting OpenAI Responses API and tool calling.'
+    $model = Read-KodrikRequired 'Model identifier'
+    $key = Read-KodrikRequired 'API key (hidden)' -Secret
+    $apiBase = (Read-Host 'API base URL (Enter for OpenAI default)').Trim()
+    if ($apiBase -match '^http://') { Write-Warning 'HTTP sends API credentials without TLS; use only a trusted local endpoint.' }
+    $token = ''; $owner = ''
+    if ((Read-Host 'Configure Telegram? [y/N]') -match '^(y|yes)$') {
+        $token = Read-KodrikRequired 'Telegram bot token (hidden)' -Secret
+        do { $owner = Read-KodrikRequired 'Your numeric Telegram user ID (not username)' }
+        while ($owner -notmatch '^[1-9][0-9]*$')
+    }
+    try { Save-KodrikConfig $path $model $key $apiBase $token $owner }
+    finally { $key = $null; $token = $null }
+    Write-Host "Configuration saved privately: $path"
+    Write-Host 'Credentials were saved locally, not checked against the provider.'
+}
 
 function Install-KodrikPackage {
     param([string]$Archive, [string]$ExpectedHash, [string]$Version, [string]$Destination)
@@ -95,8 +181,10 @@ function Install-Kodrik {
         if (@($env:Path -split ';') -notcontains $InstallDir) { $env:Path += ";$InstallDir" }
     }
     Write-Host "Installed Kodrik $resolvedVersion ($target) in $InstallDir"
-    Write-Host "Run: & '$InstallDir\kodrik.exe' --help"
-    Write-Host 'Configuration and data in $HOME\.kodrik were not changed. No service or autostart was installed.'
+    if (!$SkipConfigure) { Initialize-KodrikConfig }
+    Write-Host "Run terminal UI: & '$InstallDir\kodrik.exe'"
+    Write-Host "Run gateway (Telegram/web): & '$InstallDir\kodrik.exe' gateway"
+    Write-Host 'Existing configuration and data were not overwritten. No service or autostart was installed.'
 }
 
 if ($MyInvocation.InvocationName -ne '.') { Install-Kodrik }

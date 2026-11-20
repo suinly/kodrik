@@ -24,6 +24,20 @@ try {
     try { Install-KodrikPackage $archive $hash '999.0.0' $destination } catch { $rejected = $true }
     if (!$rejected) { throw 'Wrong binary version accepted' }
     if ((Get-FileHash $installed).Hash -ne (Get-FileHash $Binary).Hash) { throw 'Wrong version replaced installation' }
+    $config = "$root/state/config.toml"
+    $secret = 'test"key\with-special-characters'
+    Save-KodrikConfig $config 'test-model' $secret 'https://example.com/v1' '' ''
+    $text = [IO.File]::ReadAllText($config)
+    if (!$text.Contains('api_key = "test\"key\\with-special-characters"')) { throw 'TOML escaping failed' }
+    if (!$text.Contains('[gateway]') -or !$text.Contains('[provider.primary]')) { throw 'Required config tables missing' }
+    $acl = Get-Acl -LiteralPath $config
+    if (!$acl.AreAccessRulesProtected) { throw 'Config inherits public access' }
+    if (@($acl.Access).Count -ne 1 -or $acl.Access[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) { throw 'Config has unexpected trustee' }
+    $rejected = $false
+    try { Save-KodrikConfig $config 'other' 'other' '' '' '' } catch { $rejected = $true }
+    if (!$rejected -or [IO.File]::ReadAllText($config) -ne $text) { throw 'Existing config overwritten' }
+    Save-KodrikConfig "$root/telegram.toml" 'test' 'key' '' 'bot-token' '123456789'
+    if (![IO.File]::ReadAllText("$root/telegram.toml").Contains('user_id = 123456789')) { throw 'Telegram owner missing' }
     Write-Host 'PASS: install, upgrade, paths with spaces, settings preservation, checksum and version rejection'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
