@@ -47,8 +47,22 @@ impl App {
     }
 
     pub fn display_messages(&self) -> Vec<AppMessage> {
+        let end = self
+            .navigation
+            .editing
+            .as_ref()
+            .and_then(|edit| {
+                self.messages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, message)| message.role == super::app::AppMessageRole::User)
+                    .nth(edit.user_turn)
+                    .map(|(index, _)| index)
+            })
+            .unwrap_or(self.messages.len());
         self.messages
             .iter()
+            .take(end)
             .enumerate()
             .map(|(index, message)| {
                 let mut message = message.clone();
@@ -67,6 +81,39 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editing_hides_the_selected_turn_and_suffix_until_cancelled() {
+        for expanded in [false, true] {
+            let mut app = App {
+                tools_expanded: expanded,
+                ..Default::default()
+            };
+            app.push_user_message("first".into());
+            app.push_kodrik_message("first answer".into());
+            app.push_user_message("second".into());
+            app.push_tool_message("later tool".into());
+            app.full_tools.insert(3, "full later tool".into());
+            app.push_kodrik_message("later answer".into());
+            app.input = "draft".into();
+            app.input_cursor = 5;
+            app.select_user_turn(1);
+            assert_eq!(
+                app.display_messages().len(),
+                5,
+                "selection still previews history"
+            );
+            app.update_message_navigation(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert_eq!(app.display_messages().len(), 2);
+            assert_eq!(app.messages.len(), 5, "saved history must stay intact");
+            app.cancel_message_navigation();
+            assert_eq!(app.display_messages().len(), 5);
+            assert_eq!(app.input, "draft");
+            app.select_user_turn(0);
+            app.update_message_navigation(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            assert!(app.display_messages().is_empty());
+        }
+    }
+
     #[test]
     fn inline_toggle_preserves_draft_and_keeps_editing() {
         let mut app = App {

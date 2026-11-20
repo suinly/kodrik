@@ -321,7 +321,9 @@ async fn run_session_inner(
                                 match submit_edit(&mut app, &runner, &session_id, input).await {
                                     Ok(message) => { input_tx.send(message)?; }
                                     Err(error) => {
-                                        app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not edit the message", "Не удалось изменить сообщение")));
+                                        let message = format!("{}: {error:#}", app.language.pick("Could not edit the message", "Не удалось изменить сообщение"));
+                                        app.set_copy_notice(app.language.pick("Could not edit the message", "Не удалось изменить сообщение").into());
+                                        app.push_kodrik_message(message);
                                         app.status = Status::Error;
                                     }
                                 }

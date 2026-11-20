@@ -1176,7 +1176,7 @@ async fn event_loop(
                         }
                     };
                     let Some(operation)=operation else {app.should_quit=true;continue;};
-                    if let Err(error)=operation {app.status=Status::Error;app.push_kodrik_message(app.language.pick(&format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."), &format!("Удалённое действие не подтверждено: {error}. Для неподтверждённого ввода /retry проверяет исходный ID запроса.")).to_owned());}
+                    if let Err(error)=operation {app.status=Status::Error;let message=app.language.pick(&format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."), &format!("Удалённое действие не подтверждено: {error}. Для неподтверждённого ввода /retry проверяет исходный ID запроса.")).to_owned();if app.navigation.editing.is_some() {app.set_copy_notice(app.language.pick("Remote action not confirmed", "Удалённое действие не подтверждено").into());}app.push_kodrik_message(message);}
                 }
                 Event::Paste(text)=>{super::images::paste(app, &text).await;},
                 Event::Mouse(mouse)=>{

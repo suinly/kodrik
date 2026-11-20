@@ -112,6 +112,7 @@ impl App {
     }
 
     pub fn cancel_message_navigation(&mut self) {
+        self.view.clear_selection();
         if let Some((draft, cursor)) = self.navigation.draft.take() {
             self.input = draft;
             self.input_cursor = cursor;
@@ -177,6 +178,9 @@ impl App {
                             .count(),
                     });
                     self.navigation.selected = None;
+                    self.navigation.focus = None;
+                    self.view.clear_selection();
+                    self.scroll = 0;
                 }
                 KeyCode::Esc => self.cancel_message_navigation(),
                 KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),

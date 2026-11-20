@@ -723,6 +723,37 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn editing_immediately_hides_history_and_cancel_restores_it() {
+        let mut app = App::default();
+        app.push_user_message("earlier question".into());
+        app.push_kodrik_message("earlier answer".into());
+        app.push_user_message("edited question".into());
+        app.push_tool_message("hidden tool".into());
+        app.push_kodrik_message("hidden answer".into());
+        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        app.select_user_turn(1);
+        let from = find(&terminal, "hidden answer");
+        select(&mut app, from, (from.0 + 5, from.1));
+        app.scroll = 100;
+        app.update_message_navigation(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert_eq!(app.view.document.blocks.len(), 3);
+        find(&terminal, "earlier answer");
+        find(&terminal, "edited question"); // Only the composer contains it now.
+        assert_eq!(app.messages.len(), 5);
+        let from = find(&terminal, "earlier answer");
+        select(&mut app, from, (from.0 + 5, from.1));
+        app.cancel_message_navigation();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        assert_eq!(app.view.document.blocks.len(), 6);
+        find(&terminal, "hidden answer");
+    }
+
+    #[test]
     fn inline_full_tool_reaches_100k_rows_with_normal_editor_and_copy() {
         let mut app = App {
             input: "draft sentinel".into(),
