@@ -7,6 +7,34 @@ initial port. Both x64 and ARM64 packages are built by GitHub Actions.
 
 ## Install a ready-made Windows ZIP
 
+### PowerShell installer (recommended)
+
+Download the installer, inspect it, then run it as your normal user:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/suinly/kodrik/main/scripts/install-windows.ps1 -OutFile install-windows.ps1
+notepad .\install-windows.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -AddToPath
+```
+
+`ExecutionPolicy Bypass` applies only to that process; it does not change the
+machine policy. Organization policy or Windows security may still block an
+unsigned script; do not disable those protections globally.
+
+The installer selects the OS architecture (x64/ARM64), downloads the latest
+stable release and verifies its SHA256 before running or installing it into
+`%LOCALAPPDATA%\Programs\Kodrik`. SHA256 detects corruption, not publisher identity;
+the script and hashes are trusted through the GitHub HTTPS source. No Rust,
+Node.js, Visual Studio or administrator privileges are needed.
+
+Use `-Version 0.5.0` to pin a release, `-InstallDir 'C:\your\folder'` for another
+directory, and omit `-AddToPath` to leave PATH unchanged. Re-run to update;
+stop Kodrik first if its executable is locked. Configuration/data are preserved;
+no service, scheduled task or autostart is installed. Open a new terminal for
+the updated user PATH, then continue with **Configure the model** below.
+
+### Manual installation
+
 No Rust, Node.js, Visual Studio or source checkout is required. The executable
 includes the web frontend and built-in skills. Run the following commands in
 PowerShell as your normal user; administrator privileges are not required.

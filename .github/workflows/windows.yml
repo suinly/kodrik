@@ -108,6 +108,7 @@ jobs:
       - name: Build native executable
         run: cargo build --release --locked --target $env:TARGET
       - name: Package and smoke test
+        # Installer is tested against the exact executable produced by this job.
         run: |
           $ErrorActionPreference = 'Stop'
           $binary = "target/$env:TARGET/release/kodrik.exe"
@@ -121,6 +122,9 @@ jobs:
           Compress-Archive -Path $binary, LICENSE -DestinationPath $archive
           $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content -Encoding ascii dist/SHA256SUMS
+      - name: Test PowerShell installer
+        shell: powershell
+        run: ./scripts/test-install-windows.ps1 -Binary "target/$env:TARGET/release/kodrik.exe"
       - name: Upload Windows package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
