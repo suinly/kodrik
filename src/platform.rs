@@ -184,8 +184,19 @@ pub(crate) fn set_private(path: impl AsRef<Path>, mode: u32) -> io::Result<()> {
     #[cfg(windows)]
     {
         let _ = mode;
-        let file = win::open_security(path.as_ref(), true)?;
-        win::set_private(&file)
+        let path = path.as_ref();
+        let file = win::open_security(path, true).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Open security handle for {}: {error}", path.display()),
+            )
+        })?;
+        win::set_private(&file).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Set private ACL for {}: {error}", path.display()),
+            )
+        })
     }
 }
 pub(crate) fn set_file_private(file: &File, mode: u32) -> io::Result<()> {
@@ -454,7 +465,7 @@ mod win {
     pub(super) fn open_security(path: &Path, write: bool) -> io::Result<File> {
         handle(
             path,
-            READ_CONTROL | if write { WRITE_DAC } else { 0 },
+            READ_CONTROL | FILE_READ_ATTRIBUTES | if write { WRITE_DAC } else { 0 },
             OPEN_EXISTING,
             false,
             true,
@@ -554,6 +565,20 @@ pub(crate) fn sync_directory(path: impl AsRef<Path>) -> io::Result<()> {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+    #[test]
+    fn existing_directory_security_handle_can_read_metadata_and_restore_acl() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("existing-store");
+        std::fs::create_dir(&path).unwrap();
+        set_private(&path, 0o700).unwrap();
+        assert!(path_is_private(&path).unwrap());
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&path)
+            .unwrap();
+        set_private(&path, 0o700).unwrap();
+    }
     #[test]
     fn append_handles_flush_and_preserve_existing_records() {
         use std::io::Write;
