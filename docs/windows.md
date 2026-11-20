@@ -9,10 +9,20 @@ initial port. Both x64 and ARM64 packages are built by GitHub Actions.
 
 ### PowerShell installer (recommended)
 
-Download the installer, inspect it, then run it as your normal user:
+One-command installation and interactive configuration in Windows PowerShell
+5.1 or later, without administrator privileges:
 
 ```powershell
-Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/suinly/kodrik/main/scripts/install-windows.ps1 -OutFile install-windows.ps1
+& { $f = Join-Path $env:TEMP ("kodrik-install-" + [guid]::NewGuid() + ".ps1"); try { Invoke-WebRequest -UseBasicParsing ("https://raw.githubusercontent.com/suinly/kodrik/main/scripts/install-windows.ps1?fresh=" + [guid]::NewGuid()) -OutFile $f; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $f -AddToPath } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+```
+
+The command downloads the current installer and installs the latest published
+stable GitHub release for your architecture. Re-run the same command to update.
+
+To inspect the installer before execution:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing ("https://raw.githubusercontent.com/suinly/kodrik/main/scripts/install-windows.ps1?fresh=" + [guid]::NewGuid()) -OutFile install-windows.ps1
 notepad .\install-windows.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-windows.ps1 -AddToPath
 ```
@@ -35,7 +45,8 @@ is sent; credentials are saved locally in UTF-8 TOML with a current-user-only
 protected ACL at `$HOME\.kodrik\config.toml`. Existing configs are kept without
 prompts or replacement. Use `-SkipConfigure` for unattended binary-only installs.
 
-Use `-Version 0.5.0` to pin a release, `-InstallDir 'C:\your\folder'` for another
+By default, every run resolves `releases/latest`; no release version is hardcoded.
+Only if you explicitly want a fixed release, pass `-Version <version>`. Use `-InstallDir 'C:\your\folder'` for another
 directory, and omit `-AddToPath` to leave PATH unchanged. Re-run to update;
 stop Kodrik first if its executable is locked. Configuration/data are preserved;
 no service, scheduled task or autostart is installed. Open a new terminal for

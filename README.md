@@ -61,9 +61,11 @@ or start a background service. Continue with **Configure and run** below.
 
 ### Install on Windows (x64 or ARM64)
 
-Download a ready-made Windows ZIP and follow the
+Use the interactive PowerShell installer (installation and provider/optional
+Telegram configuration), or download a ready-made Windows ZIP. Follow the
 [Windows installation guide](docs/windows.md#install-a-ready-made-windows-zip)
-for checksum verification, extraction, configuration, first launch and updates.
+for the one-command installer, checksum verification, first launch and updates.
+The installer automatically selects the latest published stable release for your architecture.
 No Rust or Node.js is needed for the ZIP installation. Windows support is under
 development; see the guide's current limitations.
 
