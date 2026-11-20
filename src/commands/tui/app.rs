@@ -784,6 +784,7 @@ pub struct AppMessage {
 pub enum AppMessageRole {
     Kodrik,
     User,
+    PendingUser,
     Approval,
     Tool(ToolState),
 }

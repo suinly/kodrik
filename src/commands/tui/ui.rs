@@ -64,7 +64,12 @@ pub fn render_logo(buf: &mut Buffer) {
 pub fn message_height(message: &AppMessage, paragraph: &Paragraph<'_>, width: u16) -> u16 {
     paragraph
         .line_count(width.saturating_sub(3).max(1))
-        .saturating_add(1 + usize::from(matches!(message.role, AppMessageRole::User)))
+        .saturating_add(
+            1 + usize::from(matches!(
+                message.role,
+                AppMessageRole::User | AppMessageRole::PendingUser
+            )),
+        )
         .min(u16::MAX as usize) as u16
 }
 
@@ -72,6 +77,7 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
     let area = buf.area;
     let (icon, color, bg) = match message.role {
         AppMessageRole::User => (">", USER_TEXT_COLOR, Color::Rgb(54, 58, 79)),
+        AppMessageRole::PendingUser => ("◷", USER_TEXT_COLOR, Color::Rgb(54, 58, 79)),
         AppMessageRole::Approval => ("!", Color::Yellow, Color::default()),
         AppMessageRole::Kodrik => ("●", Color::White, Color::default()),
         AppMessageRole::Tool(ToolState::Running) => ("○", Color::Yellow, Color::default()),
@@ -86,7 +92,10 @@ pub fn render_message(message: &AppMessage, paragraph: &Paragraph<'_>, buf: &mut
         .style(Style::default().fg(color).bold())
         .render(Rect::new(area.x, area.y + 1, 3, 1), buf);
 
-    let bottom_padding = u16::from(matches!(message.role, AppMessageRole::User));
+    let bottom_padding = u16::from(matches!(
+        message.role,
+        AppMessageRole::User | AppMessageRole::PendingUser
+    ));
     paragraph.render(
         Rect::new(
             area.x + 3,
@@ -230,7 +239,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     // Pending inputs use the same layout as confirmed messages to avoid a jump on acceptance.
     let mut messages = app.display_messages();
     messages.extend(app.waiting_messages.iter().map(|text| AppMessage {
-        role: AppMessageRole::User,
+        role: AppMessageRole::PendingUser,
         content: text.clone(),
     }));
     let history = &messages;
@@ -344,7 +353,9 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             ));
         }
     }
-    working_state.push_str(language.pick(" · Esc to stop", " · Esc для остановки"));
+    if app.scroll == 0 {
+        working_state.push_str(language.pick(" · Esc to stop", " · Esc для остановки"));
+    }
 
     let (animation_frame, state, done_at) = if app.model_picker.is_some() {
         (
@@ -415,10 +426,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Status::Ready => ("○", language.pick("Ready", "Готов"), String::new()),
             Status::Recovering => (
                 FRAMES[app.animation_frame % FRAMES.len()],
-                language.pick(
-                    "Recovering session · Esc to stop",
-                    "Восстанавливаю сеанс · Esc для остановки",
-                ),
+                if app.scroll > 0 {
+                    language.pick("Recovering session", "Восстанавливаю сеанс")
+                } else {
+                    language.pick(
+                        "Recovering session · Esc to stop",
+                        "Восстанавливаю сеанс · Esc для остановки",
+                    )
+                },
                 String::new(),
             ),
             Status::Stopping => (
@@ -458,13 +473,22 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             Span::raw(format!(" {animation_frame} {state}")),
             Span::styled(
                 format!(
-                    "{done_at}{elapsed}{} · {}",
+                    "{done_at}{elapsed}{} · {}{}",
                     if app.input_images.is_empty() {
                         String::new()
                     } else {
                         format!(" · Images: {} · Ctrl+C clear", app.input_images.len())
                     },
-                    language.pick("Ctrl+T tool details", "Ctrl+T детали")
+                    language.pick("Ctrl+T tool details", "Ctrl+T детали"),
+                    if app.scroll > 0
+                        && !has_picker
+                        && app.navigation.selected.is_none()
+                        && app.navigation.editing.is_none()
+                    {
+                        language.pick(" · Esc to latest", " · Esc в конец")
+                    } else {
+                        ""
+                    }
                 ),
                 Style::default().fg(if app.selected_versions().is_some() {
                     Color::Cyan
@@ -1056,7 +1080,13 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
                 .collect::<Vec<_>>(),
         )
     } else {
-        super::markdown::render(&source, matches!(message.role, AppMessageRole::User))
+        super::markdown::render(
+            &source,
+            matches!(
+                message.role,
+                AppMessageRole::User | AppMessageRole::PendingUser
+            ),
+        )
     }
 }
 
@@ -1115,7 +1145,13 @@ mod tests {
             ));
             let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
             terminal.draw(|frame| render(&mut app, frame)).unwrap();
-            let before = terminal.backend().buffer().clone();
+            let mut before = terminal.backend().buffer().clone();
+            let marker = before
+                .content
+                .iter()
+                .position(|cell| cell.symbol() == "◷")
+                .expect("pending message has a waiting icon");
+            before.content[marker].set_symbol(">");
             let cursor = terminal.get_cursor_position().unwrap();
             assert!(app.consume_pending_inputs());
             terminal.draw(|frame| render(&mut app, frame)).unwrap();

@@ -216,7 +216,10 @@ fn message_block(message: &AppMessage, width: u16) -> Block {
     let height = ui::message_height(message, &paragraph, width);
     let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
     ui::render_message(message, &paragraph, &mut buffer);
-    let user = matches!(message.role, AppMessageRole::User);
+    let user = matches!(
+        message.role,
+        AppMessageRole::User | AppMessageRole::PendingUser
+    );
     let mut rows = Vec::new();
     if user {
         rows.push(Row::blank(width, Color::Reset));
@@ -1058,6 +1061,77 @@ mod tests {
         app.view.clear_selection();
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         find(&terminal, "updated reply");
+    }
+
+    #[test]
+    fn latest_hint_is_next_to_tool_details_and_is_not_clickable() {
+        let mut app = App::default();
+        for index in 0..30 {
+            app.push_kodrik_message(format!("row {index}"));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        mouse(&mut app, MouseEventKind::ScrollUp, 10, 10);
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        find(&terminal, "Ctrl+T tool details · Esc to latest");
+        let (x, y) = find(&terminal, "Esc to latest");
+        let scroll = app.scroll;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+        mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+        assert_eq!(app.scroll, scroll);
+        app.update(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            KeyModifiers::NONE,
+        ));
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!text.contains("Esc to latest"));
+    }
+
+    #[test]
+    fn escape_returns_to_latest_without_changing_draft_or_arming_double_escape() {
+        for status in [
+            super::super::app::Status::Ready,
+            super::super::app::Status::Working,
+        ] {
+            let mut app = App::default();
+            app.status = status;
+            for index in 0..30 {
+                app.push_kodrik_message(format!("row {index}"));
+            }
+            app.insert_input("draft");
+            let cursor = app.input_cursor;
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            mouse(&mut app, MouseEventKind::ScrollUp, 10, 10);
+            assert!(app.scroll > 0);
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(!text.contains("Esc to stop"));
+            assert!(text.contains("Esc to latest"));
+            app.update(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                KeyModifiers::NONE,
+            ));
+            assert_eq!(app.scroll, 0);
+            assert_eq!(app.input, "draft");
+            assert_eq!(app.input_cursor, cursor);
+            assert!(app.navigation.escape.is_none());
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            find(&terminal, "row 29");
+        }
     }
 
     #[test]

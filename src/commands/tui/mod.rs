@@ -574,6 +574,25 @@ fn complete_copy(
 }
 
 fn selection_command(app: &mut App, key: KeyEvent) -> Option<SelectionCommand> {
+    if key.code == KeyCode::Esc
+        && key.kind == KeyEventKind::Press
+        && key.modifiers.is_empty()
+        && app.scroll > 0
+        && app.remote_grant.is_none()
+        && app.sessions.is_none()
+        && app.model_picker.is_none()
+        && app.audit_picker.is_none()
+        && app.language_choice.is_none()
+        && app.approval.is_none()
+        && app.navigation.selected.is_none()
+        && app.navigation.editing.is_none()
+        && app.command_suggestion().is_none()
+    {
+        app.view.clear_selection();
+        app.scroll = 0;
+        app.navigation.escape = None;
+        return Some(SelectionCommand::Clear);
+    }
     if key.code == KeyCode::Esc && app.view.clear_selection() {
         return Some(SelectionCommand::Clear);
     }
@@ -1685,6 +1704,27 @@ mod tests {
             );
         }
         app
+    }
+
+    #[test]
+    fn scrolled_escape_is_consumed_before_stop_in_both_event_loops() {
+        for status in [Status::Working, Status::Recovering] {
+            let mut app = App {
+                status,
+                scroll: 10,
+                ..Default::default()
+            };
+            assert_eq!(
+                selection_command(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                Some(SelectionCommand::Clear)
+            );
+            assert_eq!(app.scroll, 0);
+            assert!(matches!(app.status, Status::Working | Status::Recovering));
+            assert_eq!(
+                selection_command(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                None
+            );
+        }
     }
 
     #[test]

@@ -182,7 +182,10 @@ impl App {
                     self.view.clear_selection();
                     self.scroll = 0;
                 }
-                KeyCode::Esc => self.cancel_message_navigation(),
+                KeyCode::Esc => {
+                    self.cancel_message_navigation();
+                    self.scroll = 0;
+                }
                 KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
                 KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
                 _ => {}
@@ -194,6 +197,12 @@ impl App {
         }
         if self.navigation.editing.is_some() {
             self.cancel_message_navigation();
+            return true;
+        }
+        if self.scroll > 0 {
+            self.view.clear_selection();
+            self.scroll = 0;
+            self.navigation.escape = None;
             return true;
         }
         if matches!(
