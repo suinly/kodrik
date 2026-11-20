@@ -380,6 +380,59 @@ impl EnvironmentService {
         Ok(())
     }
 
+    pub(crate) async fn handoff_environment(
+        &self,
+        source: &SessionId,
+    ) -> anyhow::Result<Option<(Uuid, EnvironmentKey, EnvironmentManifest)>> {
+        self.prune().await?;
+        Ok(self.bindings.lock().await.get(source).map(|binding| {
+            (
+                binding.device,
+                binding.key.clone(),
+                binding.manifest.clone(),
+            )
+        }))
+    }
+
+    pub(crate) async fn wait_handoff_environment(
+        &self,
+        target: &SessionId,
+        expected: (Uuid, EnvironmentKey, EnvironmentManifest),
+    ) -> anyhow::Result<()> {
+        let (device, key, manifest) = expected;
+        let mut revisions = self.revisions();
+        let wait = async {
+            loop {
+                self.prune().await?;
+                ensure!(!self.closed.load(Ordering::SeqCst), "Gateway is stopping");
+                {
+                    let bindings = self.bindings.lock().await;
+                    if let Some(binding) = bindings.get(target) {
+                        ensure!(
+                            binding.device == device
+                                && serde_json::to_value(&binding.manifest)?
+                                    == serde_json::to_value(&manifest)?,
+                            "Handoff device or permissions changed"
+                        );
+                        if binding.peer.is_some() {
+                            return Ok(());
+                        }
+                    }
+                }
+                tokio::select! {
+                    result = revisions.changed() => { result?; }
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), wait)
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Timed out waiting for TUI handoff attachment")))
+            .map_err(|error: anyhow::Error| super::tools::EnvironmentUnavailable {
+                key, reason: format!("Handoff attachment failed: {error}; use /attach in the target session and continue explicitly"),
+            }.into())
+    }
+
     pub(crate) async fn step_scope(
         self: &Arc<Self>,
         session: &SessionId,
@@ -429,6 +482,7 @@ impl EnvironmentService {
             "Transport already bound or gateway stopping"
         );
         binding.peer = Some(peer);
+        self.changed();
         Ok(())
     }
 

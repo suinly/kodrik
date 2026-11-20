@@ -173,6 +173,15 @@ automatically attaches the selected conversation without another approval for
 an unchanged grant. The previous conversation loses local access. At most one
 environment can be attached to a session, and one connection serves one session.
 
+Agent-directed session handoffs also carry an already connected environment to
+the target with a fresh binding. The gateway waits up to 30 seconds for the
+same device and unchanged manifest before the next model step. A handoff without
+an existing attachment does not grant local access. If reattachment fails or
+permissions change, the run pauses instead of silently continuing without the
+device; use `/attach` in the target session and explicitly continue. Completed
+tool effects are never replayed by this transfer. Use matching updated TUI and
+gateway versions for this behavior.
+
 The remote footer shows the audit mode, model, project basename and connection
 state, without the session UUID, device label or full project path. `connected`
 means both server chat and this TUI's local binding are connected; `detached`

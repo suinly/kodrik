@@ -447,6 +447,17 @@ impl Agent {
                     .pending_handoff
                     .as_ref()
                     .is_some_and(|request| request.create_new);
+                let environments = crate::remote::tools::CURRENT_ENVIRONMENTS
+                    .try_with(Clone::clone)
+                    .ok()
+                    .flatten();
+                if cp.record.handoff_environment.is_none() {
+                    cp.record.handoff_environment = match &environments {
+                        Some(service) => service.handoff_environment(session.id()).await?,
+                        None => None,
+                    };
+                    cp.save(session, RunPhase::NeedModel, None).await?;
+                }
                 if let Some(target) = cp.apply_handoff(session, &self.context).await? {
                     *session = target;
                     overflow_retry_used = false;
@@ -465,6 +476,22 @@ impl Agent {
                         });
                     }
                 }
+            }
+            if let Some(cp) = checkpoint.as_deref_mut()
+                && let Some(expected) = cp.record.handoff_environment.clone()
+            {
+                let service = crate::remote::tools::CURRENT_ENVIRONMENTS
+                    .try_with(Clone::clone)
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| crate::remote::tools::EnvironmentUnavailable {
+                        key: expected.1.clone(),
+                        reason: "Handoff device service unavailable".into(),
+                    })?;
+                // Also enforced after recovery of a handoff committed before the TUI reattached.
+                service
+                    .wait_handoff_environment(session.id(), expected)
+                    .await?;
             }
             let mut input_consumed = false;
             if let Some(cp) = checkpoint.as_deref_mut()

@@ -460,3 +460,44 @@ async fn retired_environment_statuses_are_bounded_and_scoped_to_their_sessions()
     );
     assert!(service.status(&SessionId::new("unrelated")).await.is_none());
 }
+
+#[tokio::test]
+async fn handoff_rejects_changed_permissions_and_times_out_without_attachment() {
+    let (_dir, service, store, _, device, source) = fixture(true).await;
+    let target = SessionId::new("handoff-target");
+    store.save(&Session::new(target.clone())).await.unwrap();
+    let key = service
+        .attach(device.clone(), source.clone(), manifest())
+        .await
+        .unwrap();
+    let expected = service.handoff_environment(&source).await.unwrap().unwrap();
+    service.revoke(&key, "handoff").await.unwrap();
+    let mut changed = manifest();
+    changed.project_root = "/other-project".into();
+    let fresh = service
+        .attach(device, target.clone(), changed)
+        .await
+        .unwrap();
+    let error = service
+        .wait_handoff_environment(&target, expected.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<super::tools::EnvironmentUnavailable>()
+            .is_some()
+    );
+    assert!(error.to_string().contains("permissions changed"));
+    service.revoke(&fresh, "test").await.unwrap();
+    tokio::time::pause();
+    let error = service
+        .wait_handoff_environment(&target, expected)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<super::tools::EnvironmentUnavailable>()
+            .is_some()
+    );
+    assert!(error.to_string().contains("Timed out"));
+}

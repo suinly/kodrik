@@ -318,3 +318,148 @@ async fn handoff_core_creates_dialogue_and_announces_creation_without_replaying_
     assert!(created);
     assert_eq!(store.list().await.unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn handoff_waits_for_same_device_before_next_model_step() {
+    use crate::agent::{
+        Agent, AssistantMessage, ContextBuilder, LlmContext,
+        llm::LlmProvider,
+        message::Message,
+        run_state::{Checkpoint, RunPhase},
+        tools::{Tool, ToolRegistry, session_switch::HandoffRequest},
+    };
+    struct Model;
+    #[async_trait::async_trait]
+    impl LlmProvider for Model {
+        async fn generate(
+            &self,
+            context: &LlmContext<'_>,
+            tools: &[&dyn Tool],
+            _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
+        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+            assert!(
+                context
+                    .instructions
+                    .contains("Temporary device environment")
+            );
+            assert!(tools.iter().any(|tool| tool.name().starts_with("local__")));
+            Ok((
+                vec![Message::Assistant(AssistantMessage {
+                    content: "done".into(),
+                })],
+                None,
+            ))
+        }
+    }
+    use crate::remote::{protocol::*, service::EnvironmentService};
+    use crate::web::auth::{
+        AuthStore, Identity,
+        devices::{DeviceIdentity, PairingPoll},
+    };
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
+    let source_id = SessionId::new("source");
+    store.save(&Session::new(source_id.clone())).await.unwrap();
+    let auth = AuthStore::new(dir.path());
+    let now = chrono::Utc::now().timestamp();
+    let pair = auth.start_device_pairing("Laptop", now).unwrap();
+    auth.approve_device_pairing(pair.request_id, &pair.code, &Identity::Owner, now)
+        .unwrap();
+    let PairingPoll::Authorized { device_id, .. } = auth
+        .poll_device_pairing(pair.request_id, &pair.polling_secret, now)
+        .unwrap()
+    else {
+        panic!()
+    };
+    let device = DeviceIdentity { device_id };
+    let service = Arc::new(EnvironmentService::new(store.clone(), auth, true));
+    let manifest = || EnvironmentManifest {
+        label: "Laptop".into(),
+        project_root: "/project".into(),
+        tools: vec![ToolDescriptor {
+            id: "exec".into(),
+            kind: ToolKind::Exec,
+            description: "shell".into(),
+            parameters: serde_json::json!({"type":"object"}),
+            deferred: false,
+        }],
+        skills: vec![],
+        project_instructions: None,
+        warnings: vec![],
+    };
+    let target_id = SessionId::new("handoff-target");
+    store.save(&Session::new(target_id.clone())).await.unwrap();
+    let key = service
+        .attach(device.clone(), source_id.clone(), manifest())
+        .await
+        .unwrap();
+    let (peer, _frames) = crate::remote::transport::Peer::new();
+    service.bind_peer(&key, peer).await.unwrap();
+    let old_scope = service.step_scope(&source_id).await.unwrap().unwrap();
+    let mut source = store.load(&source_id).await.unwrap().unwrap();
+    let mut cp = Checkpoint::new(&store, &source_id, &source);
+    cp.record.isolated = Some(false);
+    cp.record.pending_handoff = Some(HandoffRequest {
+        session_id: target_id.as_str().into(),
+        create_new: false,
+        context: "continue".into(),
+    });
+    cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
+    let agent = Agent::new(
+        Arc::new(Model),
+        ToolRegistry::default(),
+        ContextBuilder::new("rules"),
+    );
+    {
+        let work = crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
+            Some(service.clone()),
+            agent.resume_durable(&mut source, &mut cp),
+        );
+        tokio::pin!(work);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut work)
+                .await
+                .is_err(),
+            "agent must wait for the TUI to reattach"
+        );
+    }
+    let run_id = cp.record.id.clone();
+    drop(cp);
+    let (record, saved) = store.load_run(&run_id).await.unwrap().unwrap();
+    assert_eq!(record.session_id, target_id.as_str());
+    assert!(record.pending_handoff.is_none());
+    assert!(record.handoff_environment.is_some());
+    source = saved;
+    let ownership = store
+        .claim_execution(source_id.as_str(), target_id.as_str())
+        .await
+        .unwrap();
+    let mut cp = Checkpoint::resume(&store, record, ownership);
+    let work = crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
+        Some(service.clone()),
+        agent.resume_durable(&mut source, &mut cp),
+    );
+    tokio::pin!(work);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut work)
+            .await
+            .is_err(),
+        "recovery must retain the device requirement"
+    );
+    service.revoke(&key, "handoff").await.unwrap();
+    assert!(old_scope.context_overlay().is_empty());
+    let fresh = service
+        .attach(device, target_id.clone(), manifest())
+        .await
+        .unwrap();
+    let (peer, _frames) = crate::remote::transport::Peer::new();
+    service.bind_peer(&fresh, peer).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), &mut work)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(service.step_scope(&source_id).await.unwrap().is_none());
+    assert!(service.step_scope(&target_id).await.unwrap().is_some());
+    assert_ne!(key, fresh);
+}

@@ -104,6 +104,12 @@ pub(crate) struct RunRecord {
     #[serde(default)]
     pub handoff_hops: u32,
     #[serde(default)]
+    pub handoff_environment: Option<(
+        uuid::Uuid,
+        crate::remote::protocol::EnvironmentKey,
+        crate::remote::protocol::EnvironmentManifest,
+    )>,
+    #[serde(default)]
     pub handoff_sources: Vec<String>,
     #[serde(default)]
     pub handoff_inputs: Vec<super::UserMessage>,
@@ -172,6 +178,7 @@ impl Checkpoint {
                 cancel_requested: false,
                 pending_handoff: None,
                 handoff_hops: 0,
+                handoff_environment: None,
                 handoff_sources: vec![],
                 handoff_inputs: vec![],
             },
