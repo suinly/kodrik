@@ -1,12 +1,15 @@
 use std::{io, panic};
 
+#[cfg(not(windows))]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{
     SynchronizedUpdate,
     cursor::Show,
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        EnableFocusChange, EnableMouseCapture,
     },
     execute,
     style::Print,
@@ -93,15 +96,22 @@ fn enable_input_modes(mut output: impl io::Write) -> io::Result<()> {
         // Select button tracking last; resetting 1003 disables all tracking in Ghostty.
         Print("\x1b[?1002h"),
         EnableFocusChange,
-        EnableBracketedPaste,
+        EnableBracketedPaste
+    )?;
+    // Crossterm's native Windows input backend does not support the Kitty protocol.
+    #[cfg(not(windows))]
+    execute!(
+        output,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-    )
+    )?;
+    Ok(())
 }
 
 fn disable_input_modes(mut output: impl io::Write) -> io::Result<()> {
+    #[cfg(not(windows))]
+    execute!(output, PopKeyboardEnhancementFlags)?;
     execute!(
         output,
-        PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
         DisableMouseCapture,
         DisableFocusChange,
@@ -120,6 +130,43 @@ impl Drop for Tui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_protocol_is_only_enabled_outside_windows() {
+        let mut output = Vec::new();
+        enable_input_modes(&mut output).unwrap();
+        assert_eq!(
+            output.windows(5).any(|bytes| bytes == b"\x1b[>1u"),
+            !cfg!(windows)
+        );
+        output.clear();
+        disable_input_modes(&mut output).unwrap();
+        assert_eq!(
+            output.windows(5).any(|bytes| bytes == b"\x1b[<1u"),
+            !cfg!(windows)
+        );
+    }
+
+    #[test]
+    fn input_modes_preserve_write_errors() {
+        struct BrokenWriter;
+        impl io::Write for BrokenWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        assert_eq!(
+            enable_input_modes(BrokenWriter).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            disable_input_modes(BrokenWriter).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    }
 
     #[test]
     fn ghostty_finishes_in_button_tracking_with_sgr_coordinates() {
