@@ -275,7 +275,10 @@ Use the pencil below a user message to edit its text, then “Сохранить
 attachments are retained. The original message and all subsequent conversation
 remain in the old branch; arrow buttons below the message switch versions.
 You can edit earlier messages and edit an already edited version. Each branch
-accepts follow-ups, and the sidebar remembers the last selected branch. Editing
+accepts follow-ups. Opening a conversation from the sidebar restores the last
+opened branch, shared with the TUI when it uses the same session store. With no
+saved selection, the sidebar opens the newest branch. Direct links and search
+matches still open the specified branch. Editing
 is available when the conversation's branches are idle and their queues empty.
 Editing or deleting history does not undo tool actions or remove published pages.
 Responses stream as they arrive. Chat messages have no avatars. Consecutive tool
@@ -373,7 +376,8 @@ All API paths below are relative to the configured base prefix:
 - `GET /api/chat/sessions` lists the authenticated user’s personal conversations with `id`, generated
   or manual `title`, `root_id`, `title_pending`, `busy` and nullable ISO
   `updated_at` (last user/assistant message time across versions). One row is
-  returned per conversation; `id` identifies its selected branch. Optional `q`
+  returned per conversation; `id` identifies its last selected branch (or the
+  newest branch if no selection is saved). Optional `q`
   searches case-insensitive literal text in titles and user/assistant messages,
   returning `snippet` and `match_message` for content hits. Tool payloads and
   attachment bytes are excluded. `limit` defaults to 30 and accepts 1–100;

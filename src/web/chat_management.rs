@@ -50,6 +50,27 @@ async fn branches(chat: &Chat) -> anyhow::Result<Vec<Branch>> {
     chat.sessions.with_connection(|db| read_branches(db)).await
 }
 impl Chat {
+    pub(super) async fn remember_branch(&self, id: &str) -> Result<(), Response> {
+        // Drafts do not have a saved session yet.
+        let id = id.to_owned();
+        self.sessions
+            .with_connection(move |db| {
+                let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let saved = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
+                    [&id],
+                    |r| r.get::<_, bool>(0),
+                )?;
+                if saved {
+                    select_branch(&tx, &root(&tx, &id)?, &id)?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await
+            .map_err(internal)
+    }
+
     pub(super) async fn root_id(&self, id: &str) -> anyhow::Result<String> {
         let id = id.to_owned();
         self.sessions.with_connection(move |db| root(db, &id)).await
@@ -97,6 +118,59 @@ fn page_size() -> usize {
 #[cfg(test)]
 mod listing_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sidebar_opens_the_branch_last_selected_in_tui() {
+        let dir = tempfile::tempdir().unwrap();
+        let chat = crate::web::chat_tests::chat(dir.path()).await;
+        for id in ["cli:root", "cli:older", "cli:latest"] {
+            let session: Session = serde_json::from_value(json!({
+                "id":id,"messages":[{"User":{"content":id}}]
+            }))
+            .unwrap();
+            chat.sessions.save(&session).await.unwrap();
+        }
+        chat.sessions
+            .with_connection(|db| {
+                db.execute_batch(
+                    "INSERT INTO web_chat_branches VALUES('cli:older','cli:root','cli:root',0),
+                        ('cli:latest','cli:root','cli:older',1);",
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let sample = chat
+            .sessions
+            .chat_sidebar_sample(vec![], None)
+            .await
+            .unwrap();
+        chat.sessions
+            .select_idle_session(&SessionId::new("cli:main"), &SessionId::new("cli:older"))
+            .await
+            .unwrap();
+        let changed = chat
+            .sessions
+            .chat_sidebar_sample(vec![], None)
+            .await
+            .unwrap();
+        for (q, expected) in [("", "cli:older"), ("cli:latest", "cli:latest")] {
+            let rows = list_sessions(
+                &chat,
+                Search {
+                    q: q.into(),
+                    limit: 30,
+                    offset: 0,
+                    webhooks: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(rows[0]["id"], expected);
+            assert_eq!(rows[0]["root_id"], "cli:root");
+        }
+        assert_ne!(sample.revision, changed.revision);
+    }
 
     #[tokio::test]
     async fn sidebar_listing_preserves_branch_title_date_webhook_without_history() {
@@ -351,16 +425,6 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         })
         .await
         .map_err(internal)?;
-    let selection: HashMap<String, String> = chat
-        .sessions
-        .with_connection(|db| {
-            Ok(db
-                .prepare("SELECT root_id,session_id FROM web_chat_selection")?
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-        .await
-        .map_err(internal)?;
     let unread: HashSet<String> = chat
         .sessions
         .with_connection(|db| {
@@ -375,38 +439,52 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         })
         .await
         .map_err(internal)?;
+    let selection: HashMap<String, String> = chat
+        .sessions
+        .with_connection(|db| {
+            Ok(db
+                .prepare("SELECT root_id,session_id FROM web_chat_selection")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .await
+        .map_err(internal)?;
     // shortcut: search scans saved histories, add an index when archive latency warrants it.
     let runs = chat.runs.lock().await;
     let jobs = chat.title_jobs.lock().await;
     let mut seen = HashSet::new();
-    let roots: HashMap<_, _> = branches
+    let branch_order: HashMap<_, _> = branches
         .iter()
-        .map(|b| (b.id.as_str(), b.root.as_str()))
+        .enumerate()
+        .map(|(index, b)| (b.id.as_str(), (b.root.as_str(), index)))
         .collect();
+    let root_of = |id| branch_order.get(id).map_or(id, |&(root, _)| root);
     let mut groups: HashMap<&str, Vec<&Session>> = HashMap::new();
     for session in sessions.iter().filter(|session| {
         super::listed_session(session) && session.webhook_instruction.is_some() == search.webhooks
     }) {
         let id = session.id().as_str();
-        groups
-            .entry(roots.get(id).copied().unwrap_or(id))
-            .or_default()
-            .push(session);
+        groups.entry(root_of(id)).or_default().push(session);
     }
     let mut result = vec![];
     for session in sessions.iter().filter(|session| {
         super::listed_session(session) && session.webhook_instruction.is_some() == search.webhooks
     }) {
         let id = session.id().as_str();
-        let root = roots.get(id).copied().unwrap_or(id);
+        let root = root_of(id);
         if !seen.insert(root) {
             continue;
         }
-        let selected = selection.get(root).map(String::as_str).unwrap_or(root);
         let group = &groups[root];
         let mut shown = group
             .iter()
-            .find(|s| s.id().as_str() == selected)
+            .max_by_key(|s| {
+                let id = s.id().as_str();
+                (
+                    selection.get(root).is_some_and(|selected| selected == id),
+                    branch_order.get(id).map(|&(_, index)| index),
+                )
+            })
             .copied()
             .unwrap_or(session);
         let title = titles
@@ -418,7 +496,7 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         let mut snippet = None;
         let mut match_message = None;
         if !query.is_empty() {
-            // Prefer the selected branch, then search preserved versions too.
+            // Prefer the open branch, then search preserved versions too.
             let hit = std::iter::once(shown)
                 .chain(group.iter().copied().filter(|s| s.id() != shown.id()))
                 .find_map(|s| {
@@ -549,19 +627,7 @@ pub(super) async fn select(
     let chat = state.chat().map_err(IntoResponse::into_response)?;
     let _runs = chat.runs.lock().await;
     chat.session(&id).await?;
-    // A draft has no persisted branch to select yet.
-    if chat.sessions.is_draft(&id).await.map_err(internal)? {
-        return Ok(StatusCode::NO_CONTENT);
-    }
-    chat.sessions
-        .with_connection(move |db| {
-            let tx = db.transaction()?;
-            select_branch(&tx, &root(&tx, &id)?, &id)?;
-            tx.commit()?;
-            Ok(())
-        })
-        .await
-        .map_err(internal)?;
+    chat.remember_branch(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

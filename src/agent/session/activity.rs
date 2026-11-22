@@ -39,6 +39,7 @@ pub(crate) fn init_sidebar_revision(db: &Connection) -> anyhow::Result<()> {
              OLD.read_revision IS NOT NEW.read_revision OR OLD.webhook_event IS NOT NEW.webhook_event OR
              OLD.listing_payload IS NOT NEW.listing_payload)", "OLD.listed=1"),
         ("web_chat_branches", "1", "1", "1"),
+        ("web_chat_selection", "1", "OLD.session_id IS NOT NEW.session_id", "1"),
     ] {
         for (action, condition) in [("INSERT", insert), ("UPDATE", update), ("DELETE", delete)] {
             db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sidebar_{table}_{action}

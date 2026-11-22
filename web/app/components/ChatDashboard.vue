@@ -213,6 +213,7 @@ async function restoreLocation() {
       if(selected.value?.id!==conversation?.id) conversationKey.value++
       selected.value=conversation
       if(conversation?.webhook) {section.value='webhooks';webhookTab.value='events'}
+      if(conversation) rememberBranch(conversation)
     } else if(target.section==='pages') {
       selectedPage.value=null
       if(target.id) {
@@ -321,9 +322,9 @@ async function openWebhookConversation(id:string) {
   } catch(reason) {if(revision===navigationRevision) error.value=messageOf(reason)}
 }
 
-function selectSidebar(conversation:Conversation) {
-  const id=!search.value.trim() && conversation.unread && conversation.unread_session_id || conversation.id
-  select({...conversation,id,root_id:conversation.root_id ?? conversation.id})
+function rememberBranch(conversation:Conversation) {
+  const revision=navigationRevision
+  if(!conversation.subagent) api(`sessions/${encodeURIComponent(conversation.id)}/select`,'POST').catch(reason=>{if(revision===navigationRevision) error.value=messageOf(reason)})
 }
 
 function select(conversation: Conversation, preserveView = false) {
@@ -344,7 +345,7 @@ function select(conversation: Conversation, preserveView = false) {
   conversationSearchOpen.value=!!conversationSearch.value
   menu.value = false
   if(!focusAfterMenu) void nextTick(()=>conversationView.value?.focusInput())
-  if(!conversation.subagent) api(`sessions/${conversation.id}/select`,'POST').catch(reason=>{error.value=messageOf(reason)})
+  rememberBranch(conversation)
 }
 
 function sidebarCloseFocus(event:Event) {
@@ -675,7 +676,7 @@ onMounted(() => {
           :variant="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'soft' : 'ghost'"
           :aria-current="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'page' : undefined"
           :disabled="creating" class="sidebar-item sidebar-item-with-actions"
-          @click="selectSidebar(session)">
+          @click="select(session)">
           <span v-if="session.pinned || !session.busy" class="relative inline-flex shrink-0 text-muted">
             <UIcon :name="session.pinned?'i-lucide-pin':session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" :aria-label="session.pinned?t('Закреплённый диалог'):undefined" class="size-4 shrink-0" />
             <span v-if="session.unread" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-error" />

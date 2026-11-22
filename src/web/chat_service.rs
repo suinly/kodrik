@@ -627,7 +627,7 @@ impl Chat {
                 if session.webhook_instruction.is_some() {
                     return Err(StatusCode::NOT_FOUND.into_response());
                 }
-                // Native selection is local to its TUI, not the browser's branch selector.
+                self.remember_branch(session_id.as_str()).await?;
                 Ok(json!({"id":session_id}))
             }
             ChatCommand::SelectVersion {
@@ -662,6 +662,7 @@ impl Chat {
                 if selected.webhook_instruction.is_some() {
                     return Err(StatusCode::NOT_FOUND.into_response());
                 }
+                self.remember_branch(session_id.as_str()).await?;
                 Ok(json!({"id":session_id}))
             }
             ChatCommand::Edit {

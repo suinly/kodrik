@@ -959,6 +959,22 @@ async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
         .await
         .is_ok()
     );
+    assert_eq!(
+        chat.remote_sessions(30, 0).await.unwrap()[0]["id"],
+        branch.as_str()
+    );
+    chat.remote_command(
+        &branch,
+        ChatCommand::Select {
+            session_id: id.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        chat.remote_sessions(30, 0).await.unwrap()[0]["id"],
+        id.as_str()
+    );
     let unrelated = SessionId::new(uuid::Uuid::new_v4().to_string());
     chat.sessions
         .save(&Session::new(unrelated.clone()))

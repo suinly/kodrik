@@ -267,7 +267,7 @@ test('opening an unread branch without window focus clears its badges only after
     const reads=[];
     const snapshot={type:'snapshot',session_id:branch,run_id:null,revision:1,read_revision:'committed-answer',busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'answer',role:'assistant',parts:[{type:'text',text:'Committed branch reply'}]}]};
     await page.route('**/api/chat/sessions?*',route=>route.fulfill({json:[
-      {id,root_id:id,title:'Unread grouped chat',busy:true,pinned:true,updated_at:null,unread,unread_session_id:unread?branch:null},
+      {id:branch,root_id:id,title:'Unread grouped chat',busy:true,pinned:true,updated_at:null,unread,unread_session_id:unread?branch:null},
       {id:'plain-unread',title:'Plain unread chat',busy:false,updated_at:null,unread:true,unread_session_id:null},
       {id:'read-chat',title:'Read chat',busy:false,updated_at:null,unread:false,unread_session_id:null},
     ]}));
@@ -278,7 +278,7 @@ test('opening an unread branch without window focus clears its badges only after
     await page.route(`**/sessions/${branch}/run`,route=>route.fulfill({json:snapshot}));
     await page.route(`**/sessions/${branch}/read`,route=>{reads.push(route.request().postDataJSON());pendingRead=route});
     await page.goto(new URL('app/chat',base).href);
-    const row=page.locator(`[data-conversation-id="${id}"]`);
+    const row=page.locator(`[data-conversation-id="${branch}"]`);
     const marker=row.getByRole('img',{name:'Непрочитанный ответ',exact:true});
     const favicon=page.locator('link[rel="icon"]');
     await expect(marker).toBeVisible();
@@ -302,20 +302,28 @@ test('opening an unread branch without window focus clears its badges only after
   } finally {await browser.close()}
 });
 
-test('sidebar search matches take precedence over an unread branch',{timeout:60000},async()=>{
+test('sidebar opens the remembered branch, or the matching branch in search, despite unread replies',{timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{viewport:{width:1280,height:900}});
     const match='search-match-branch';
+    const latest='latest-branch';
     const snapshot={type:'snapshot',session_id:match,run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'match-message',role:'assistant',parts:[{type:'text',text:'Needle in matched reply'}]}]};
     await page.route('**/api/chat/sessions?*',route=>{
       const searching=!!new URL(route.request().url()).searchParams.get('q');
-      return route.fulfill({json:[{id:searching?match:'group-root',root_id:'group-root',title:'Searchable chat',busy:false,updated_at:null,unread:true,unread_session_id:'different-unread-branch',snippet:searching?'Needle in matched reply':null,match_message:searching?'match-message':null}]});
+      return route.fulfill({json:[{id:searching?match:latest,root_id:'group-root',title:'Searchable chat',busy:false,updated_at:null,unread:true,unread_session_id:'different-unread-branch',snippet:searching?'Needle in matched reply':null,match_message:searching?'match-message':null}]});
     });
+    await page.route(`**/sessions/${latest}/select`,route=>route.fulfill({status:204}));
+    const latestSnapshot={...snapshot,session_id:latest,messages:[{id:'latest-message',role:'assistant',parts:[{type:'text',text:'Latest branch reply'}]}]};
+    await page.route(`**/sessions/${latest}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(latestSnapshot)}\n\n`}));
+    await page.route(`**/sessions/${latest}/run`,route=>route.fulfill({json:latestSnapshot}));
     await page.route(`**/sessions/${match}/select`,route=>route.fulfill({status:204}));
     await page.route(`**/sessions/${match}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.route(`**/sessions/${match}/run`,route=>route.fulfill({json:snapshot}));
     await page.goto(new URL('app/chat',base).href);
+    await page.locator(`[data-conversation-id="${latest}"]`).click();
+    await expect(page).toHaveURL(new URL(`app/chat/${latest}`,base).href);
+    await expect(page.locator('.message')).toContainText('Latest branch reply');
     await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Needle');
     const row=page.locator(`[data-conversation-id="${match}"]`);
@@ -324,6 +332,10 @@ test('sidebar search matches take precedence over an unread branch',{timeout:600
     await expect(page).toHaveURL(new URL(`app/chat/${match}`,base).href);
     await expect(page.getByRole('textbox',{name:'Поиск в диалоге',exact:true})).toHaveValue('Needle');
     await expect(page.locator('.message.search-match')).toContainText('Needle in matched reply');
+    const saved=page.waitForResponse(response=>response.url().endsWith(`/sessions/${latest}/select`) && response.status()===204);
+    await page.route(`**/sessions/${latest}`,route=>route.fulfill({json:{id:latest,root_id:'group-root',title:'Searchable chat',busy:false,updated_at:null}}));
+    await page.goto(new URL(`app/chat/${latest}`,base).href);
+    await saved;
   } finally {await browser.close()}
 });
 

@@ -3354,7 +3354,7 @@ async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_an
 }
 
 #[tokio::test]
-async fn activity_sidebar_points_to_unread_branch_without_changing_selection() {
+async fn activity_sidebar_reports_unread_for_the_latest_branch() {
     use crate::agent::session::{Session, SessionId};
     let f = Fixture::new().await;
     let id = f.create().await;
@@ -3392,9 +3392,7 @@ async fn activity_sidebar_points_to_unread_branch_without_changing_selection() {
             .unwrap();
         assert_eq!(row["unread"], true);
         assert_eq!(row["unread_session_id"], "unread-branch");
-        if path == "sessions" {
-            assert_eq!(row["id"], id);
-        }
+        assert_eq!(row["id"], "unread-branch");
     }
     let revision = crate::agent::session::activity::read_revision(&branch);
     assert!(
