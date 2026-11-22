@@ -518,16 +518,25 @@ impl LlmProvider for OpenAiLlm {
         #[derive(Deserialize)]
         struct Model {
             id: String,
+            created: Option<u64>,
         }
         #[derive(Deserialize)]
         struct Models {
             data: Vec<Model>,
         }
-        let response: Models = self.client.models().list_byot().await?;
-        let mut ids: Vec<String> = response.data.into_iter().map(|model| model.id).collect();
-        ids.sort();
-        ids.dedup();
-        Ok(ids)
+        let Models { mut data } = self.client.models().list_byot().await?;
+        data.sort_unstable_by(|a, b| {
+            b.created
+                .unwrap_or_default()
+                .cmp(&a.created.unwrap_or_default())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let mut seen = std::collections::HashSet::new();
+        Ok(data
+            .iter()
+            .filter(|model| seen.insert(model.id.as_str()))
+            .map(|model| model.id.clone())
+            .collect())
     }
 
     fn with_model(&self, model: &str) -> anyhow::Result<std::sync::Arc<dyn LlmProvider>> {
@@ -666,10 +675,21 @@ mod tests {
                     break;
                 }
             }
-            let body = r#"{"object":"list","data":[{"id":"z","object":"model","created":0,"owned_by":"test"},{"id":"a","object":"model","created":0,"owned_by":"test"},{"id":"z","object":"model","created":0,"owned_by":"test"}]}"#;
+            let body = json!({"data": [
+                {"id": "z", "created": 100},
+                {"id": "a"},
+                {"id": "y", "created": 200},
+                {"id": "z", "created": 200},
+                {"id": "b", "created": 0},
+                {"id": "c", "created": 150}
+            ]})
+            .to_string();
             reader.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         });
-        assert_eq!(llm.list_models().await.unwrap(), vec!["a", "z"]);
+        assert_eq!(
+            llm.list_models().await.unwrap(),
+            vec!["y", "z", "c", "a", "b"]
+        );
         server.await.unwrap();
         let selected = llm.with_model("chosen").unwrap();
         assert_eq!(selected.identity(), "openai:chosen");
