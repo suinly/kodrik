@@ -102,7 +102,7 @@ not mistaken for an empty, successfully migrated database.
 | `pages/manifests/<slug>.json` | Current release and public/private access mode; not served |
 | `pages/locks/<slug>.lock` | Publication transaction file lock |
 | `web/auth.json`, `web/auth.lock` | Owner password hash, hashed session tokens/invitations/device tokens, device registrations/pairing requests, per-user display names, pending Telegram approvals, discovered public bot names and auth lock; journal mode 0600 |
-| `remote.toml`, `remote/device.json`, `remote/device.grant` | Laptop defaults: provider-free remote configuration, raw device credential (0600) and manifest grant fingerprint; config may override credential path |
+| `remote.toml`, `remote/device.json`, `remote/device.grant-*` | Laptop defaults: provider-free remote configuration, raw device credential (0600) and per-server/project grant fingerprints; config may override credential path |
 | `remote/receipts.sqlite3`, `remote/receipts.sqlite3-wal`, `remote/receipts.sqlite3-shm` | Laptop operation receipts and ACK evidence, separate from server conversation history |
 | `remote/journal-created` | Laptop receipt identity marker and initialization lock; preserve with the receipt database |
 | `companion.json` | Learned lessons, interests and their evidence |
@@ -339,8 +339,8 @@ root: session databases/sidecars, referenced attachment bytes (including legacy
 source directories), `web/auth.json` and the other journals. An online SQLite
 backup captures committed WAL data, not separate attachment/auth files.
 
-On the laptop preserve `remote.toml`, its configured credential and `.grant`
-fingerprint, and `~/.kodrik/remote/` with the receipt database/sidecars and
+On the laptop preserve `remote.toml`, its configured credential, `.grant-*`
+fingerprints (and the legacy `.grant`, if present), and `~/.kodrik/remote/` with the receipt database/sidecars and
 `journal-created` identity marker. Custom config/credential paths may be outside
 `~/.kodrik/`; include them explicitly. The journal is private local execution
 evidence, not a second conversation store. Acknowledged receipts older than

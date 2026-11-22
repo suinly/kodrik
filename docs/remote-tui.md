@@ -164,8 +164,10 @@ The project root is the canonical launch directory. File read, patch and image
 tools are included; shell is included only with `allow_shell = true`. A new
 manifest grant discloses exact tools, selected MCP, skills and project
 instructions inside the full-screen UI, with PageUp/PageDown for long details.
-The saved `.grant` fingerprint beside the credential avoids repeating the
-picker for an unchanged configuration/manifest. Shell remains opt-in.
+The saved `.grant-*` fingerprints beside the credential are separate for each
+server and project root. An unchanged configuration/manifest needs no further
+confirmation. The legacy `.grant` is still recognized where no scoped grant
+exists. Shell remains opt-in.
 
 Selecting a conversation, creating one, editing a message into a new branch or
 switching message versions **detaches the old binding before switching**, then
@@ -341,7 +343,8 @@ not those separate attachment/auth files. Saved references are not a substitute
 for attachment bytes; do not copy just the database or assume attachment paths
 can be moved to a different root without validation.
 
-On the laptop protect `remote.toml`, its credential and `.grant` fingerprint,
+On the laptop protect `remote.toml`, its credential and `.grant-*` fingerprints
+(and the legacy `.grant`, if present),
 plus `~/.kodrik/remote/` receipt state (`receipts.sqlite3`, sidecars and identity
 marker/lock). The receipt journal is not a second conversation store. Losing it
 must not be “fixed” by silently clearing unknown operation evidence. Credential

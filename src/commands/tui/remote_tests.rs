@@ -863,10 +863,21 @@ fn remote_pty_loads_server_history_sends_steers_stops_and_exits_without_provider
 #[test]
 fn first_remote_grant_uses_picker_before_sharing_and_is_cached() {
     let dir = tempfile::tempdir().unwrap();
+    let has_grant = || {
+        std::fs::read_dir(dir.path().join("remote"))
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("device.grant-")
+            })
+    };
     let mut terminal = startup_tests::PrivateTerminal::start_case(dir.path(), "remote-first-grant");
     terminal.wait_for(b"Grant local environment access?", 0);
     assert!(!dir.path().join("last-hello").exists());
-    assert!(!dir.path().join("remote/device.grant").exists());
+    assert!(!has_grant());
     terminal.send(b"\x1b[27u");
     terminal.wait_for(b"Local access declined", 0);
     terminal.send(b"still online\r");
@@ -877,7 +888,7 @@ fn first_remote_grant_uses_picker_before_sharing_and_is_cached() {
     terminal.wait_for(b"Grant local environment access?", since);
     terminal.send(b"\x1b[A\r");
     terminal.wait_for(b"Local environment attached", 0);
-    assert!(dir.path().join("remote/device.grant").exists());
+    assert!(has_grant());
     assert!(dir.path().join("last-hello").exists());
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);

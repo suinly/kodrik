@@ -131,6 +131,21 @@ fn grant_fixture() -> (
 }
 
 #[test]
+fn approving_another_project_does_not_replace_the_first_grant() {
+    let (dir, config, first) = grant_fixture();
+    let mut second = first.clone();
+    second.project_root = "/project/b".into();
+
+    config.authorize_manifest(&first, || Ok(true)).unwrap();
+    assert!(!config.manifest_authorized(&second).unwrap());
+    config.authorize_manifest(&second, || Ok(true)).unwrap();
+
+    let config = RemoteConfig::load(&dir.path().join("remote.toml")).unwrap();
+    assert!(config.manifest_authorized(&first).unwrap());
+    assert!(config.manifest_authorized(&second).unwrap());
+}
+
+#[test]
 fn manifest_authorized_without_grant_is_read_only() {
     let (_dir, config, manifest) = grant_fixture();
     assert!(!config.manifest_authorized(&manifest).unwrap());
@@ -143,7 +158,7 @@ fn manifest_authorized_without_grant_is_read_only() {
 fn manifest_authorized_recognizes_cached_grant_without_writing() {
     let (_dir, config, manifest) = grant_fixture();
     config.authorize_manifest(&manifest, || Ok(true)).unwrap();
-    let path = config.credential_file.with_extension("grant");
+    let path = config.grant_path(&manifest).unwrap();
     let saved = std::fs::read(&path).unwrap();
     assert_eq!(saved.len(), 64);
     assert!(saved.iter().all(u8::is_ascii_hexdigit));
@@ -163,10 +178,28 @@ fn manifest_authorized_recognizes_cached_grant_without_writing() {
 }
 
 #[test]
+fn legacy_grant_is_reused_until_a_new_grant_for_that_project_is_saved() {
+    let (_dir, config, manifest) = grant_fixture();
+    config.authorize_manifest(&manifest, || Ok(true)).unwrap();
+    let scoped = config.grant_path(&manifest).unwrap();
+    let legacy = config.credential_file.with_extension("grant");
+    std::fs::rename(&scoped, &legacy).unwrap();
+
+    assert!(config.manifest_authorized(&manifest).unwrap());
+    assert!(!scoped.exists());
+    let mut changed = config.clone();
+    changed.allow_shell = true;
+    assert!(!changed.manifest_authorized(&manifest).unwrap());
+    changed.authorize_manifest(&manifest, || Ok(true)).unwrap();
+    assert!(!config.manifest_authorized(&manifest).unwrap());
+    assert!(changed.manifest_authorized(&manifest).unwrap());
+}
+
+#[test]
 fn manifest_authorized_requires_exact_manifest_and_config() {
     let (_dir, config, manifest) = grant_fixture();
     config.authorize_manifest(&manifest, || Ok(true)).unwrap();
-    let path = config.credential_file.with_extension("grant");
+    let path = config.grant_path(&manifest).unwrap();
     let saved = std::fs::read(&path).unwrap();
     let mut changed = manifest.clone();
     changed.project_root = "/project/b".into();
@@ -195,7 +228,7 @@ fn manifest_authorized_propagates_unsafe_grant_errors() {
         "dangling",
     ] {
         let (dir, config, manifest) = grant_fixture();
-        let path = config.credential_file.with_extension("grant");
+        let path = config.grant_path(&manifest).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         match case {
             "directory" => std::fs::create_dir(&path).unwrap(),

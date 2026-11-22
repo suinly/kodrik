@@ -10,7 +10,10 @@ impl RemoteConfig {
         &self,
         manifest: &super::protocol::EnvironmentManifest,
     ) -> anyhow::Result<bool> {
-        self.grant_matches(&self.manifest_fingerprint(manifest)?)
+        self.grant_matches(
+            &self.grant_path(manifest)?,
+            &self.manifest_fingerprint(manifest)?,
+        )
     }
 
     pub(crate) fn authorize_manifest(
@@ -20,11 +23,11 @@ impl RemoteConfig {
     ) -> anyhow::Result<()> {
         use std::io::Write;
         let fingerprint = self.manifest_fingerprint(manifest)?;
-        if self.grant_matches(&fingerprint)? {
+        let path = self.grant_path(manifest)?;
+        if self.grant_matches(&path, &fingerprint)? {
             return Ok(());
         }
         ensure!(confirm()?, "Local environment access denied");
-        let path = self.credential_file.with_extension("grant");
         let parent = path.parent().context("Grant directory missing")?;
         super::client::private_directory(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
@@ -34,6 +37,17 @@ impl RemoteConfig {
         file.persist(&path)?;
         crate::platform::sync_directory(parent)?;
         Ok(())
+    }
+
+    pub(super) fn grant_path(
+        &self,
+        manifest: &super::protocol::EnvironmentManifest,
+    ) -> anyhow::Result<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let scope = serde_json::to_vec(&(self.server.as_str(), &manifest.project_root))?;
+        Ok(self
+            .credential_file
+            .with_extension(format!("grant-{:x}", Sha256::digest(scope))))
     }
 
     fn manifest_fingerprint(
@@ -69,16 +83,27 @@ impl RemoteConfig {
         ))
     }
 
-    fn grant_matches(&self, fingerprint: &str) -> anyhow::Result<bool> {
+    fn grant_matches(&self, path: &Path, fingerprint: &str) -> anyhow::Result<bool> {
+        // A scoped decision supersedes the legacy grant for this project.
+        match Self::read_grant(path)? {
+            Some(saved) => Ok(saved == fingerprint),
+            None => Ok(
+                Self::read_grant(&self.credential_file.with_extension("grant"))?.as_deref()
+                    == Some(fingerprint),
+            ),
+        }
+    }
+
+    fn read_grant(path: &Path) -> anyhow::Result<Option<String>> {
         use std::io::Read;
         let file = match crate::platform::OpenOptions::new()
             .read(true)
             .no_follow()
             .nonblock()
-            .open(self.credential_file.with_extension("grant"))
+            .open(path)
         {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let metadata = file.metadata()?;
@@ -88,7 +113,7 @@ impl RemoteConfig {
         );
         let mut saved = String::new();
         file.take(65).read_to_string(&mut saved)?;
-        Ok(saved == fingerprint)
+        Ok(Some(saved))
     }
 
     pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
