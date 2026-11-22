@@ -3,18 +3,58 @@ use crate::agent::message::Message;
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
-// Collect active IDs once, not a history scan for every listed conversation.
-const BUSY_SQL: &str = "SELECT EXISTS(
-    SELECT 1 FROM web_chat_activity WHERE listed=1 AND session_id IN (
-        SELECT value FROM json_each(?1)
-        UNION ALL SELECT session_id FROM runs WHERE terminal=0
-        UNION ALL SELECT coalesce(s.session_id,active.session_id,s.conversation_id)
+// A blocked queued item still marks its row busy, but doesn't keep the activity indicator busy.
+const BUSY_SQL: &str = "WITH busy(id, active) AS (
+        SELECT value,1 FROM json_each(?1)
+        UNION ALL SELECT session_id,1 FROM runs WHERE terminal=0
+        UNION ALL SELECT coalesce(s.session_id,active.session_id,s.conversation_id),
+            NOT EXISTS(SELECT 1 FROM inbox_controls c WHERE c.conversation_id=s.conversation_id)
             FROM submissions s LEFT JOIN active_sessions active ON active.conversation_id=s.conversation_id
             WHERE s.status='Queued'
-            AND NOT EXISTS(SELECT 1 FROM inbox_controls c WHERE c.conversation_id=s.conversation_id)
-        UNION ALL SELECT r.session_id FROM deliveries d JOIN runs r ON r.id=d.run_id
+        UNION ALL SELECT r.session_id,1 FROM deliveries d JOIN runs r ON r.id=d.run_id
             WHERE json_extract(d.payload,'$.status') IN ('Pending','Sending')
-    ))";
+    ) SELECT busy.id,max(busy.active) FROM busy
+      JOIN web_chat_activity a ON a.session_id=busy.id WHERE a.listed=1 GROUP BY busy.id ORDER BY busy.id";
+
+fn busy_rows(db: &Connection, running: Vec<String>) -> anyhow::Result<Vec<(String, bool)>> {
+    Ok(db
+        .prepare_cached(BUSY_SQL)?
+        .query_map([serde_json::to_string(&running)?], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub(crate) fn init_sidebar_revision(db: &Connection) -> anyhow::Result<()> {
+    db.execute_batch(
+        "INSERT OR IGNORE INTO schema_meta VALUES('web_sidebar_revision','0');
+         CREATE INDEX IF NOT EXISTS web_sidebar_queued ON submissions(conversation_id)
+             WHERE status='Queued';
+         CREATE INDEX IF NOT EXISTS web_sidebar_pending_delivery ON deliveries(run_id)
+             WHERE json_extract(payload,'$.status') IN ('Pending','Sending');",
+    )?;
+    for (table, insert, update, delete) in [
+        ("web_chat_activity", "NEW.listed=1", "(OLD.listed=1 OR NEW.listed=1) AND
+            (OLD.listed IS NOT NEW.listed OR OLD.revision IS NOT NEW.revision OR
+             OLD.read_revision IS NOT NEW.read_revision OR OLD.webhook_event IS NOT NEW.webhook_event OR
+             OLD.listing_payload IS NOT NEW.listing_payload)", "OLD.listed=1"),
+        ("web_chat_branches", "1", "1", "1"),
+    ] {
+        for (action, condition) in [("INSERT", insert), ("UPDATE", update), ("DELETE", delete)] {
+            db.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sidebar_{table}_{action}
+                AFTER {action} ON {table} WHEN {condition} BEGIN
+                UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='web_sidebar_revision'; END;"))?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub(crate) struct SidebarSample {
+    pub revision: (i64, i64),
+    pub busy_rows: Vec<(String, bool)>,
+    pub unread: (i64, i64),
+}
 
 // Only committed assistant text changes the read token; user messages and live deltas do not.
 pub(crate) fn read_revision(session: &Session) -> String {
@@ -160,12 +200,10 @@ pub(super) fn migrate(db: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-impl SqliteSessionStore {
-    pub(crate) async fn chat_unread_counts(&self) -> anyhow::Result<(i64, i64)> {
-        self.with_connection(|db| {
-            // Filter the activity index first; only unread sessions need category lookup.
-            Ok(db.query_row(
-                "WITH unread AS MATERIALIZED (
+fn unread_counts(db: &Connection) -> anyhow::Result<(i64, i64)> {
+    // Filter the activity index first; only unread sessions need category lookup.
+    Ok(db.query_row(
+        "WITH unread AS MATERIALIZED (
                     SELECT session_id FROM web_chat_activity
                     WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
                     AND revision!='' AND revision!=read_revision
@@ -177,9 +215,37 @@ impl SqliteSessionStore {
                 )
                 SELECT count(DISTINCT CASE WHEN NOT event THEN root_id END),
                     count(DISTINCT CASE WHEN event THEN root_id END) FROM categorized",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
+impl SqliteSessionStore {
+    pub(crate) async fn chat_sidebar_sample(
+        &self,
+        running: Vec<String>,
+        previous: Option<std::sync::Arc<SidebarSample>>,
+    ) -> anyhow::Result<SidebarSample> {
+        self.with_connection(move |db| {
+            let tx = db.transaction()?;
+            let revision = tx.query_row(
+                "SELECT CAST(sidebar.value AS INTEGER), CAST(titles.value AS INTEGER)
+                 FROM schema_meta sidebar, schema_meta titles
+                 WHERE sidebar.key='web_sidebar_revision' AND titles.key='web_titles_revision'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
+            )?;
+            let unread = match previous {
+                Some(last) if last.revision.0 == revision.0 => last.unread,
+                _ => unread_counts(&tx)?,
+            };
+            let busy_rows = busy_rows(&tx, running)?;
+            tx.commit()?;
+            Ok(SidebarSample {
+                revision,
+                busy_rows,
+                unread,
+            })
         })
         .await
     }
@@ -197,11 +263,10 @@ impl SqliteSessionStore {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn chat_activity(&self, running: Vec<String>) -> anyhow::Result<(bool, bool)> {
         self.with_connection(move |db| {
-            let busy = db.query_row(BUSY_SQL, [serde_json::to_string(&running)?], |row| {
-                row.get(0)
-            })?;
+            let busy = busy_rows(db, running)?.iter().any(|(_, active)| *active);
             let unread = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM web_chat_activity
                 WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'

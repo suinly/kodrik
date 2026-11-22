@@ -3097,6 +3097,112 @@ async fn chat_stop_immediately_after_admission_is_durable() {
 }
 
 #[tokio::test]
+async fn chat_updates_stream_reports_sidebar_changes_and_resyncs_on_connect() {
+    use crate::agent::{
+        run_state::{Checkpoint, RunPhase},
+        session::{Session, SessionId},
+    };
+
+    async fn next(response: &mut reqwest::Response) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut bytes = Vec::new();
+            while !bytes.ends_with(b"\n\n") {
+                bytes.extend_from_slice(&response.chunk().await.unwrap().unwrap());
+            }
+            let event = std::str::from_utf8(&bytes).unwrap();
+            assert!(!event.lines().any(|line| line.starts_with("event:")));
+            serde_json::from_str(event.strip_prefix("data:").unwrap().trim()).unwrap()
+        })
+        .await
+        .expect("expected a chat update")
+    }
+
+    let f = Fixture::new().await;
+    let anonymous = f.client.get(format!("{}api/chat/updates", f.base));
+    assert_eq!(anonymous.send().await.unwrap().status(), 401);
+    let connect = || async {
+        let response = f
+            .request(reqwest::Method::GET, "updates")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        response
+    };
+    let id = f.create().await;
+    let mut stream = connect().await;
+    let idle = json!({"activity":{"busy":false,"unread":false,"unread_chats":0,"unread_events":0},"sessions_changed":true});
+    assert_eq!(next(&mut stream).await, idle);
+
+    for (method, path, body) in [
+        (
+            reqwest::Method::POST,
+            format!("sessions/{id}/pin"),
+            json!({"pinned":true}),
+        ),
+        (
+            reqwest::Method::PATCH,
+            format!("sessions/{id}"),
+            json!({"title":"Renamed"}),
+        ),
+    ] {
+        assert!(
+            f.request(method, &path)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        assert_eq!(next(&mut stream).await, idle);
+    }
+
+    let mut webhook = Session::new(SessionId::new("webhook:updates"));
+    webhook.webhook_instruction = Some("event".into());
+    webhook.push(Message::Assistant(AssistantMessage {
+        content: "Event answer".into(),
+    }));
+    f.sessions.save(&webhook).await.unwrap();
+    assert_eq!(
+        next(&mut stream).await,
+        json!({"activity":{"busy":false,"unread":true,"unread_chats":0,"unread_events":1},"sessions_changed":true})
+    );
+    let revision = crate::agent::session::activity::read_revision(&webhook);
+    assert!(
+        f.sessions
+            .mark_chat_read(webhook.id().as_str(), &revision)
+            .await
+            .unwrap()
+    );
+    assert_eq!(next(&mut stream).await, idle);
+
+    let mut checkpoint = Checkpoint::new(&f.sessions, webhook.id(), &webhook);
+    checkpoint
+        .save(&webhook, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    let busy = json!({"activity":{"busy":true,"unread":false,"unread_chats":0,"unread_events":0},"sessions_changed":true});
+    assert_eq!(next(&mut stream).await, busy);
+    // Live token checkpoints only touch runs; they must not invalidate the sidebar.
+    f.sessions
+        .with_connection(|db| {
+            db.execute("UPDATE runs SET revision=revision+1 WHERE terminal=0", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1500), stream.chunk())
+            .await
+            .is_err()
+    );
+    drop(stream);
+    assert_eq!(next(&mut connect().await).await, busy);
+}
+
+#[tokio::test]
 async fn activity_read_revision_is_persistent_and_stale_reads_cannot_hide_new_answers() {
     use crate::agent::session::SessionId;
     let f = Fixture::new().await;

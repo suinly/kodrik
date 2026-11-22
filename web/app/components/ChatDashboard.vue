@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import {createReusableTemplate, useIntervalFn, useMediaQuery} from '@vueuse/core'
+import {createReusableTemplate, useDocumentVisibility, useIntervalFn, useMediaQuery} from '@vueuse/core'
 import {locale, t} from '../utils/i18n'
-import { api, base, checkedFetch, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
+import { api, base, checkedFetch, endpoint, login, messageOf, type Conversation, type ConversationDraft, type PublishedPage } from '../utils/api'
 import {conversationTitle,shortConversationTitle,conversationRows,conversationPageSize} from '../utils/chat-presentation'
 import {useWebhooks} from '../utils/webhooks'
 import {useWakeups, wakeupStatus} from '../utils/wakeups'
@@ -31,7 +31,7 @@ async function refreshActivity() {
   catch { /* Keep the last known state while offline. */ }
   finally {activityLoading=false}
 }
-useIntervalFn(refreshActivity,5000)
+const updatesOnline=ref(false)
 const error = ref('')
 const menu = ref(false)
 const colorMode=useColorMode()
@@ -61,7 +61,11 @@ const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==
 const showEvents = computed(()=>section.value==='webhooks' && webhookTab.value==='events')
 const viewingConversation = computed(()=>section.value==='chat' || showEvents.value && !!selected.value?.webhook)
 const pushConversation = computed(()=>viewingConversation.value && !restoring.value && !locationError.value ? selected.value?.id ?? null : null)
-const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value); if(!document.hidden) void refreshActivity() }
+const reportPushPresence = () => { refreshPushPermission(); void updatePushPresence(pushConversation.value) }
+const reportWindowPresence = () => {
+  reportPushPresence()
+  if(!updatesOnline.value && !document.hidden) void refreshActivity()
+}
 watch([pushConversation,pushEnabled],reportPushPresence)
 useIntervalFn(reportPushPresence,15000)
 const webhooks = useWebhooks(computed(()=>section.value==='webhooks' && !showEvents.value))
@@ -292,8 +296,21 @@ function refreshSidebar() {
     void webhooks.load()
   }
 }
-useIntervalFn(refreshSidebar,5000)
-watch(menu,open=>{if(open) refreshSidebar()})
+const sessionsDirty=ref(false)
+const dashboardVisible=useDocumentVisibility()
+watchEffect(()=>{
+  if(!sessionsDirty.value || initializing.value || dashboardVisible.value!=='visible' || !desktop.value && !menu.value || restoring.value || listing.value || creating.value || saving.value || section.value!=='chat' && !showEvents.value) return
+  sessionsDirty.value=false
+  void refresh()
+},{flush:'post'})
+useIntervalFn(()=>{
+  if(!updatesOnline.value && !document.hidden) void refreshActivity()
+  if(!updatesOnline.value || section.value==='webhooks' && !showEvents.value) refreshSidebar()
+},5000)
+watch(menu,open=>{if(open && (!updatesOnline.value || section.value==='webhooks' && !showEvents.value)) refreshSidebar()})
+function refreshAfterConversationChange() {
+  if(!updatesOnline.value) {void refresh();void refreshActivity()}
+}
 
 async function openWebhookConversation(id:string) {
   const revision=navigationRevision
@@ -536,27 +553,58 @@ onMounted(() => {
   void checkedFetch(new URL('api/profile',base),{cache:'no-store'}).then(response=>response.json()).then(profile=>{owner.value=profile.owner===true}).catch(()=>{})
   window.addEventListener('popstate',restoreLocation)
   onBeforeUnmount(()=>window.removeEventListener('popstate',restoreLocation))
-  void refreshActivity()
   void initializePush().then(reportPushPresence)
-  document.addEventListener('visibilitychange',reportPushPresence)
-  window.addEventListener('focus',reportPushPresence)
+  document.addEventListener('visibilitychange',reportWindowPresence)
+  window.addEventListener('focus',reportWindowPresence)
   window.addEventListener('blur',reportPushPresence)
   window.addEventListener('storage',reportPushPresence)
   const clearPresence = () => { void updatePushPresence(null) }
   window.addEventListener('pagehide',clearPresence)
   onBeforeUnmount(()=>{
     clearPresence()
-    document.removeEventListener('visibilitychange',reportPushPresence)
-    window.removeEventListener('focus',reportPushPresence)
+    document.removeEventListener('visibilitychange',reportWindowPresence)
+    window.removeEventListener('focus',reportWindowPresence)
     window.removeEventListener('blur',reportPushPresence)
     window.removeEventListener('storage',reportPushPresence)
     window.removeEventListener('pagehide',clearPresence)
   })
   const target=section.value==='chat'?Promise.resolve():restoreLocation()
-  void Promise.all([refresh(),target]).finally(() => {
-    initializing.value = false
-    if(!restoring.value && !locationError.value) notifySidebarLocation(new URL(window.location.href))
-  })
+  let initial=true
+  function initialize() {
+    if(!initial) return
+    initial=false
+    void Promise.all([refresh(),target]).finally(() => {
+      initializing.value = false
+      if(!restoring.value && !locationError.value) notifySidebarLocation(new URL(window.location.href))
+    })
+  }
+  function fallback() {
+    updatesOnline.value=false
+    initialize()
+    void refreshActivity()
+  }
+  let updates:EventSource|undefined
+  let startup:ReturnType<typeof setTimeout>|undefined
+  let reconnect:ReturnType<typeof setTimeout>|undefined
+  function connect() {
+    const stream=updates=new EventSource(endpoint('updates'))
+    startup=setTimeout(fallback,1500)
+    stream.onmessage=event=>{
+      clearTimeout(startup)
+      const update=JSON.parse(event.data) as {activity:ChatActivity;sessions_changed:boolean}
+      updatesOnline.value=true
+      activity.value=update.activity
+      if(update.sessions_changed && !initial) sessionsDirty.value=true
+      initialize()
+    }
+    stream.onerror=()=>{
+      clearTimeout(startup)
+      fallback()
+      if(stream.readyState===EventSource.CLOSED) reconnect=setTimeout(connect,15000)
+    }
+  }
+  connect()
+  onBeforeUnmount(()=>{clearTimeout(startup);clearTimeout(reconnect);updates?.close()})
   const viewport = window.visualViewport
   const updateViewport = () => {
     // Safari's keyboard shrinks the visual viewport, not the layout viewport.
@@ -775,7 +823,7 @@ onMounted(() => {
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
         </div>
-        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :browser-sidebar="browserSidebar" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refresh();refreshActivity()" @saved="refresh();refreshActivity()" @navigate="openVersion" @removed="removed" @new="newDraft" />
+        <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :browser-sidebar="browserSidebar" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refreshAfterConversationChange" @saved="refreshAfterConversationChange" @navigate="openVersion" @removed="removed" @new="newDraft" />
       </template>
     </UDashboardPanel>
   </UDashboardGroup>

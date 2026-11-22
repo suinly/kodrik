@@ -290,36 +290,59 @@ async function refreshModel() {
   receive(await api<Snapshot>(`sessions/${props.conversation.id}/run`))
 }
 
+const streamStartupMs = 1000
 let observation:AbortController|undefined
-async function observe() {
+async function observe(refresh = false) {
   observation?.abort()
   const current=new AbortController()
   observation=current
   const signal=AbortSignal.any([controller.signal,current.signal])
+  const sessionId=props.conversation.id
   let delay = 500
   while (!signal.aborted) {
+    const startup = refresh ? undefined : new AbortController()
+    const streamSignal = startup ? AbortSignal.any([signal,startup.signal]) : signal
+    const timeout = startup && setTimeout(() => startup.abort(), streamStartupMs)
+    let received = false
+    let readingRun = refresh
     try {
-      const response = await checkedFetch(endpoint(`sessions/${props.conversation.id}/run`), { signal })
-      receive(await response.json())
-      await watchSnapshots(props.conversation.id, signal, view => { receive(view); delay = 500 })
+      if (refresh) {
+        const response = await checkedFetch(endpoint(`sessions/${sessionId}/run`), { signal })
+        const view = await response.json()
+        if (signal.aborted) break
+        receive(view)
+        readingRun = false
+      }
+      await watchSnapshots(sessionId, streamSignal, view => {
+        if (streamSignal.aborted || view.type !== 'snapshot' || view.session_id !== sessionId) return
+        clearTimeout(timeout)
+        received = true
+        receive(view)
+        delay = 500
+      })
     } catch (error) {
       if (signal.aborted) break
-      if (error instanceof ConversationNotFoundError) {emit('removed');break}
+      if (readingRun && error instanceof ConversationNotFoundError) {emit('removed');break}
       if (error instanceof AuthenticationError) {
         authExpired.value = true
         problem.value = messageOf(error)
         loading.value = false
         break
       }
+      // No first snapshot: recover immediately from /run, then resume normal reconnects.
+      if (!refresh && !received) {refresh = true;continue}
+      refresh = true
       connection.value = t("Соединение потеряно, работа продолжается")
       await backoff(delay, signal)
       delay = Math.min(delay * 2, 8000)
+    } finally {
+      clearTimeout(timeout)
     }
   }
 }
 // A backgrounded iframe can retain a silent stream; refresh canonical state on return.
 watch([visibility,focused],([visible,focus],[previousVisible,previousFocus])=>{
-  if(props.active && !home.value && visible==='visible' && (previousVisible!=='visible' || focus && !previousFocus)) void observe()
+  if(props.active && !home.value && visible==='visible' && (previousVisible!=='visible' || focus && !previousFocus)) void observe(true)
 })
 onMounted(() => {
   document.addEventListener('keydown', recoverInputFocus, {signal:controller.signal})

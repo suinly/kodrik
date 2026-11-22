@@ -1,5 +1,21 @@
-<script setup lang="ts">
+<script lang="ts">
 import {api,messageOf} from '../utils/api'
+
+type ModelCatalog = {models:string[];default_model:string|null}
+const catalogTtlMs = 5 * 60_000
+let catalog: {data:ModelCatalog;expiresAt:number}|undefined
+let pendingCatalog:Promise<ModelCatalog>|undefined
+
+function loadCatalog() {
+  if (catalog && catalog.expiresAt > Date.now()) return Promise.resolve(catalog.data)
+  return pendingCatalog ??= api<ModelCatalog>('models').then(data=>{
+    catalog={data,expiresAt:Date.now()+catalogTtlMs}
+    return data
+  }).finally(()=>{pendingCatalog=undefined})
+}
+</script>
+
+<script setup lang="ts">
 import {t} from '../utils/i18n'
 
 const props=defineProps<{sessionId?:string|null;model?:string|null;modelOverride?:string|null;disabled:boolean;refresh:()=>Promise<void>}>()
@@ -25,7 +41,7 @@ async function load() {
   if(loading.value) return
   loading.value=true;problem.value=''
   try {
-    const result=await api<{models:string[];default_model:string|null}>('models')
+    const result=await loadCatalog()
     models.value=result.models;defaultModel.value=result.default_model
   } catch(error) {problem.value=messageOf(error)}
   finally {loading.value=false}

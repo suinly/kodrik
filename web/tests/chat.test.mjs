@@ -155,6 +155,7 @@ test('section rail shows unread counts independently of the loaded sidebar and c
   try {
     const page=await signedPage(browser,{viewport:{width:1280,height:900}});
     let counts={busy:false,unread:true,unread_chats:7,unread_events:123};
+    await page.route('**/api/chat/updates',route=>route.abort());
     await page.route('**/api/chat/activity',route=>route.fulfill({json:counts}));
     await page.goto(new URL('app/chat',base).href);
     const rail=page.getByRole('navigation',{name:'Разделы',exact:true}).filter({visible:true});
@@ -202,6 +203,7 @@ test('favicon prioritizes unread over running and respects reduced motion',{time
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser);
+    await page.route('**/api/chat/updates',route=>route.abort());
     await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:true,unread:true}}));
     await page.goto(new URL('app/chat',base).href);
     const favicon=page.locator('link[rel="icon"]');
@@ -230,6 +232,27 @@ test('favicon prioritizes unread over running and respects reduced motion',{time
   } finally {await browser.close()}
 });
 
+test('chat updates refresh the sidebar on external changes without polling while idle',{timeout:30000},async()=>{
+  const browser=await chromium.launch();
+  try {
+    const page=await signedPage(browser);
+    const reads=[];
+    page.on('request',r=>{
+      if(r.method()==='GET' && /\/api\/chat\/(activity|sessions|updates)$/.test(new URL(r.url()).pathname)) reads.push(new URL(r.url()).pathname.split('/').pop());
+    });
+    await page.goto(new URL('app/chat',base).href);
+    await expect.poll(()=>reads.includes('updates')).toBe(true);
+    const {id}=await(await request('sessions',{})).json();
+    await request('send',{id,text:'Conversation from another client'});
+    const row=page.locator(`[data-conversation-id="${id}"]`);
+    await expect(row.getByRole('img',{name:'Непрочитанный ответ',exact:true})).toBeVisible({timeout:4000});
+    await page.waitForTimeout(1200);
+    const before=reads.length;
+    await page.waitForTimeout(5300);
+    assert.deepEqual(reads.slice(before),[]);
+  } finally {await browser.close()}
+});
+
 test('opening an unread branch without window focus clears its badges only after read succeeds',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const branch='unread-branch';
@@ -248,6 +271,7 @@ test('opening an unread branch without window focus clears its badges only after
       {id:'plain-unread',title:'Plain unread chat',busy:false,updated_at:null,unread:true,unread_session_id:null},
       {id:'read-chat',title:'Read chat',busy:false,updated_at:null,unread:false,unread_session_id:null},
     ]}));
+    await page.route('**/api/chat/updates',route=>route.abort());
     await page.route('**/api/chat/activity',route=>route.fulfill({json:{busy:false,unread}}));
     await page.route(`**/sessions/${branch}/select`,route=>route.fulfill({status:204}));
     await page.route(`**/sessions/${branch}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
@@ -5042,11 +5066,12 @@ test('session handoff navigates to the target conversation',{timeout:60000},asyn
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{locale:'en-US'});
-    await page.route(`**/sessions/${source.id}/run`,route=>route.fulfill({json:{
+    const snapshot={
       type:'snapshot',session_id:source.id,handoff_session_id:target.id,run_id:null,revision:1,
       busy:false,cancel_requested:false,phase:null,blocked_reason:null,messages:[],queued:[],
       live:{current:null,interrupted:null},plan:null,subagents:[],command_approvals:[],
-    }}));
+    };
+    await page.route(`**/sessions/${source.id}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.goto(new URL(`app/chat/${source.id}`,base).href);
     await expect(page).toHaveURL(new RegExp(`/app/chat/${target.id}$`));
     await expect(page.getByTestId('chat-composer')).toBeVisible();

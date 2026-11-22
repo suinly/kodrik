@@ -6,6 +6,7 @@ use super::{
 };
 use crate::agent::{
     AgentRunner,
+    session::activity::{SidebarSample, init_sidebar_revision},
     session::{Session, SessionId, SessionStore, SqliteSessionStore},
 };
 use axum::{
@@ -75,6 +76,8 @@ pub(crate) struct Chat {
     title_jobs: Arc<Mutex<HashSet<String>>>,
     capacity: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    update_streams: Arc<Semaphore>,
+    sidebar: Arc<Mutex<Option<(tokio::time::Instant, Arc<SidebarSample>)>>>,
     max_event_streams_per_user: usize,
     attachment_directory: std::path::PathBuf,
     users: Option<Arc<crate::users::UserSpaces>>,
@@ -100,7 +103,11 @@ impl Chat {
             })?);
         titles::init(&sessions).await?;
         management::init(&sessions).await?;
+        sessions
+            .with_connection(|db| init_sidebar_revision(db))
+            .await?;
         super::webhook_store::init(&sessions).await?;
+        let stream_limit = crate::config::WebConfig::default().max_event_streams_per_user;
         let chat = Self {
             runner: Arc::new(owner.for_web(sessions.clone())),
             sessions,
@@ -108,11 +115,10 @@ impl Chat {
             workers_done: Default::default(),
             title_jobs: Default::default(),
             capacity: Arc::new(Semaphore::new(4)),
-            streams: Arc::new(Semaphore::new(
-                crate::config::WebConfig::default().max_event_streams_per_user,
-            )),
-            max_event_streams_per_user: crate::config::WebConfig::default()
-                .max_event_streams_per_user,
+            streams: Arc::new(Semaphore::new(stream_limit)),
+            update_streams: Arc::new(Semaphore::new(stream_limit)),
+            sidebar: Default::default(),
+            max_event_streams_per_user: stream_limit,
             attachment_directory: data.join("web/attachments"),
             users: None,
             user_chats: Default::default(),
@@ -143,6 +149,7 @@ impl Chat {
         );
         self.max_event_streams_per_user = limit;
         self.streams = Arc::new(Semaphore::new(limit));
+        self.update_streams = Arc::new(Semaphore::new(limit));
         Ok(self)
     }
 
@@ -559,6 +566,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         )
         .route("/api/chat/push/presence", post(push::presence))
         .route("/api/chat/activity", get(activity))
+        .route("/api/chat/updates", get(updates))
         .route("/api/chat/models", get(models::list))
         .route("/api/chat/sessions/{id}/model", post(models::set))
         .route("/api/chat/sessions/{id}/read", post(mark_read))
@@ -1214,19 +1222,96 @@ async fn attachment_response(
         .into_response())
 }
 
+const SIDEBAR_INTERVAL: Duration = Duration::from_secs(1);
+
+fn activity_json(sample: &SidebarSample) -> Value {
+    let (unread_chats, unread_events) = sample.unread;
+    json!({"busy":sample.busy_rows.iter().any(|(_, active)| *active),
+        "unread":unread_chats != 0 || unread_events != 0,
+        "unread_chats":unread_chats,"unread_events":unread_events})
+}
+
+impl Chat {
+    async fn sidebar_sample(&self, cached: bool) -> anyhow::Result<Arc<SidebarSample>> {
+        // The lock shares each sample across tabs without an idle background task.
+        let mut sidebar = self.sidebar.lock().await;
+        if let Some((at, sample)) = &*sidebar
+            && cached
+            && at.elapsed() < SIDEBAR_INTERVAL
+        {
+            return Ok(sample.clone());
+        }
+        let running = self.runs.lock().await.iter().cloned().collect();
+        let previous = sidebar.as_ref().map(|(_, sample)| sample.clone());
+        let sample = Arc::new(self.sessions.chat_sidebar_sample(running, previous).await?);
+        *sidebar = Some((tokio::time::Instant::now(), sample.clone()));
+        Ok(sample)
+    }
+}
+
 async fn activity(Extension(state): Extension<WebState>) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    let running = chat.runs.lock().await.iter().cloned().collect();
-    let (busy, unread) = chat
-        .sessions
-        .chat_activity(running)
-        .await
-        .map_err(internal)?;
-    let (unread_chats, unread_events) =
-        chat.sessions.chat_unread_counts().await.map_err(internal)?;
-    Ok(Json(
-        json!({"busy":busy,"unread":unread,"unread_chats":unread_chats,"unread_events":unread_events}),
-    ))
+    let sample = chat.sidebar_sample(false).await.map_err(internal)?;
+    Ok(Json(activity_json(&sample)))
+}
+
+async fn updates(
+    Extension(state): Extension<WebState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
+    // Reserve a separate per-user allowance so a limit of one still permits an open chat.
+    let (user_permit, stream_permit) = event_permits(&state, &chat.update_streams)?;
+    let mut shutdown = chat.runner.shutdown_receiver();
+    let stream = futures::stream::unfold(
+        (None::<Arc<SidebarSample>>, tokio::time::Instant::now()),
+        move |(mut previous, mut auth_check)| {
+            let (state, chat, headers) = (state.clone(), chat.clone(), headers.clone());
+            async move {
+                loop {
+                    if tokio::time::Instant::now() >= auth_check {
+                        if !matches!(state.authenticated(&headers).await, Ok(true)) {
+                            return None;
+                        }
+                        auth_check = tokio::time::Instant::now() + Duration::from_secs(5);
+                    }
+                    let sample = match chat.sidebar_sample(true).await {
+                        Ok(sample) => sample,
+                        Err(error) => {
+                            log::warn!("Chat updates sample failed: {error:#}");
+                            return None;
+                        }
+                    };
+                    let sessions_changed = previous.as_ref().is_none_or(|last| {
+                        last.revision != sample.revision
+                            || !last
+                                .busy_rows
+                                .iter()
+                                .map(|(id, _)| id)
+                                .eq(sample.busy_rows.iter().map(|(id, _)| id))
+                    });
+                    let activity = activity_json(&sample);
+                    let changed = sessions_changed
+                        || previous
+                            .as_ref()
+                            .is_some_and(|last| activity_json(last) != activity);
+                    previous = Some(sample);
+                    if changed {
+                        let event = Event::default().data(
+                            json!({"activity":activity,"sessions_changed":sessions_changed})
+                                .to_string(),
+                        );
+                        return Some((Ok::<_, Infallible>(event), (previous, auth_check)));
+                    }
+                    tokio::time::sleep(SIDEBAR_INTERVAL).await;
+                }
+            }
+        },
+    )
+    .take_until(async move {
+        let _ = shutdown.wait_for(|stopped| *stopped).await;
+    });
+    Ok(event_response(stream, user_permit, stream_permit))
 }
 
 #[derive(Deserialize)]
@@ -1272,17 +1357,7 @@ async fn events(
 ) -> Result<Response, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?.clone();
     chat.readable_session(&id).await?;
-    let user_permit = chat
-        .streams
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "Too many event streams"))?;
-    let stream_permit = state.streams.clone().try_acquire_owned().map_err(|_| {
-        error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Event stream capacity reached",
-        )
-    })?;
+    let (user_permit, stream_permit) = event_permits(&state, &chat.streams)?;
     let mut shutdown = chat.runner.shutdown_receiver();
     // Pull one latest snapshot at a time: a slow browser cannot accumulate a backlog.
     let stream = futures::stream::unfold(
@@ -1335,6 +1410,37 @@ async fn events(
         // Graceful HTTP shutdown must not wait for the browser to disconnect.
         let _ = shutdown.wait_for(|stopped| *stopped).await;
     });
+    Ok(event_response(stream, user_permit, stream_permit))
+}
+
+fn event_permits(
+    state: &WebState,
+    streams: &Arc<Semaphore>,
+) -> Result<
+    (
+        tokio::sync::OwnedSemaphorePermit,
+        tokio::sync::OwnedSemaphorePermit,
+    ),
+    Response,
+> {
+    let user = streams
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "Too many event streams"))?;
+    let gateway = state.streams.clone().try_acquire_owned().map_err(|_| {
+        error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Event stream capacity reached",
+        )
+    })?;
+    Ok((user, gateway))
+}
+
+fn event_response(
+    stream: impl futures::Stream<Item = Result<Event, Infallible>> + Send + 'static,
+    user_permit: tokio::sync::OwnedSemaphorePermit,
+    stream_permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
     let mut response = Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
         .into_response();
@@ -1344,7 +1450,7 @@ async fn events(
     response = super::server::hold_permit(response, user_permit);
     response = super::server::hold_permit(response, stream_permit);
     response.extensions_mut().insert(super::server::EventStream);
-    Ok(response)
+    response
 }
 
 #[cfg(test)]
