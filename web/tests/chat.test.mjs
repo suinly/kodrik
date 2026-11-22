@@ -1023,7 +1023,7 @@ test('section rail switches context menus and main content without losing chat d
     const close=menu.locator('[data-slot="toggle"]');
     const mobileClose=await close.boundingBox();
     assert.ok(Math.abs(mobileLogo.x-mobileHistory.x)<1,'Logo aligns with the sidebar content');
-    assert.ok(mobileSearch.x>=mobileLogo.x+mobileLogo.width && mobileClose.x>=mobileSearch.x+mobileSearch.width,'Search sits between logo and close');
+    assert.ok(mobileClose.x>=mobileLogo.x+mobileLogo.width && mobileSearch.y>=mobileClose.y+mobileClose.height,'Search sits on the second header row');
     assert.ok(Math.abs(mobileClose.x+mobileClose.width-mobileHistory.x-mobileHistory.width)<1,'Close aligns with the right content edge');
     assert.ok(mobileCreate.y>=mobileLogo.y+mobileLogo.height && Math.abs(mobileCreate.x-mobileHistory.x)<1 && Math.abs(mobileCreate.width-mobileHistory.width)<1,'Mobile create fills the content width below the header');
     await page.screenshot({path:'/tmp/kodrik-sidebar-chat-mobile.png',animations:'disabled'});
@@ -1465,7 +1465,7 @@ test('mobile sidebar opens with a left-edge swipe over a dimmed screen', {timeou
       const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
       const search=await dialog.getByRole('button',{name:'Поиск диалогов',exact:true}).boundingBox();
       const close=await dialog.locator('[data-slot="toggle"]').boundingBox();
-      assert.ok(Math.abs(logo.x-history.x)<1 && search.x>=logo.x+logo.width && close.x>=search.x+search.width,`Header controls fit in one row at ${width}px`);
+      assert.ok(Math.abs(logo.x-history.x)<1 && close.x>=logo.x+logo.width && search.y>=close.y+close.height,`Header controls fit in two rows at ${width}px`);
       assert.ok(Math.abs(close.x+close.width-history.x-history.width)<1,`Close stays at the right content edge at ${width}px`);
       await expect(dialog.getByRole('button',{name:'Профиль',exact:true})).toBeVisible();
       const after=await composer.boundingBox();
@@ -4756,7 +4756,7 @@ test('logout revokes an existing watch and 401 stops reconnect', {timeout:30000}
     await second.getByText('Жду остановки',{exact:true}).waitFor();
     let watches=0;page.on('request',r=>{if(r.url().endsWith('/events')||r.url().endsWith('/run'))watches++;});
     await openAccountItem(second,'Выйти');
-    await page.getByText('Сессия истекла. Войдите снова.',{exact:false}).waitFor();
+    await page.getByTestId('chat-composer').getByText('Сессия истекла. Войдите снова.',{exact:true}).waitFor();
     const count=watches;await new Promise(resolve=>setTimeout(resolve,1500));assert.equal(watches,count);
     assert.ok(await page.getByRole('link',{name:'Войти',exact:true}).count());
     const id=decodeURIComponent(new URL(url).pathname.split('/').at(-1));

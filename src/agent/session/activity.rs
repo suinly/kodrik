@@ -365,7 +365,7 @@ mod tests {
                 INSERT INTO submissions(id,conversation_id,request_id,payload_hash,sequence,payload,status)
                     SELECT id,conversation_id,id,'hash',1,zeroblob(65536),'Done' FROM runs;")?;
             let mut query = db.prepare(BUSY_SQL)?;
-            assert!(!query.query_row(["[]"], |row| row.get::<_,bool>(0))?);
+            assert!(query.query(["[]"])?.next()?.is_none());
             let steps = query.get_status(rusqlite::StatementStatus::VmStep);
             assert!(steps < 50_000, "Activity must not repeatedly scan historical runs: {steps} VM steps");
             Ok(())
