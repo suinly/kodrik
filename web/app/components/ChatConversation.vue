@@ -784,7 +784,7 @@ onBeforeUnmount(()=>clearInterval(compactionTimer))
           <UButton type="button" icon="i-lucide-paperclip" color="neutral" variant="ghost" size="md" :aria-label="t('Прикрепить файлы и фото')" :disabled="editorLocked" @click="attachmentsOpen = !attachmentsOpen" />
           <ChatModelPicker :session-id="home ? null : conversation.id" :key="conversation.id"
             :model="snapshot?.model" :model-override="draftState.model ?? snapshot?.model_override" :refresh="refreshModel" class="ml-auto max-w-[65%]"
-            :disabled="(!home && !snapshot) || locked || busy || !!snapshot?.queued.length || !!snapshot?.blocked_reason || !!editingMessage || savingCommandAudit"
+            :disabled="(!home && !snapshot) || locked || !!editingMessage || savingCommandAudit"
             @update:model-override="draftState.model=$event" @saving="savingModel=$event" />
           <UButton v-if="busy && !hasDraft" type="button" icon="i-lucide-square" color="neutral" variant="outline"
             :aria-label="stopping ? t('Останавливаю') : t('Остановить')" size="md" :disabled="submitting || stopping || !!snapshot?.cancel_requested || authExpired" @click="stop" />

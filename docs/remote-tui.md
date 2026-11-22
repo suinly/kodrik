@@ -125,7 +125,7 @@ the first message saves the conversation; attaching alone does not save it.
 | Remote TUI input | Action |
 | --- | --- |
 | `/sessions` | Select a saved server conversation; load 30 at a time without blocking keyboard input |
-| `/models` | Search the server provider's model catalogue; ↑/↓ and Enter select, Esc cancels; the default entry resets the conversation override |
+| `/models` | Search the server provider's model catalogue; ↑/↓ and Enter select, Esc cancels; the default entry resets the override. Changes apply to the next model request, even within an active run |
 | `/new` | Create and select a server conversation |
 | `/attach` | Reconnect the launch project; show the grant picker if approval is needed |
 | `/detach` | Revoke this environment binding and clean up local work; keep server chat available |

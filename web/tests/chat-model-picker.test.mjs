@@ -144,26 +144,38 @@ test('draft model selection stays local, updates the trigger and can reset to de
   } finally {await browser.close()}
 });
 
-test('existing conversation keeps its composer next to the model picker; subagents remain read only',async()=>{
+for (const [state,run,pickerDisabled] of [
+  ['idle',{},false],
+  ['running',{busy:true},false],
+  ['queued',{queued:[{id:'queued-one',text:'Follow-up'}]},false],
+  ['paused queue',{queued:[{id:'queued-one',text:'Follow-up'}],blocked_reason:'Stopped by user'},false],
+  ['cancelling',{busy:true,cancel_requested:true},true],
+]) test(`existing conversation model picker: ${state}`,async()=>{
   const {page,browser,mount}=await componentPage('ChatConversation',{
     conversation:{id:'session-one',busy:false},draftState:{text:'',files:[],missingFiles:[],revision:0},blocked:false,active:false,
   });
   try {
     await page.route('**/api/chat/sessions/session-one/run',r=>r.fulfill({json:{
-      type:'snapshot',session_id:'session-one',revision:1,busy:false,messages:[],queued:[],live:{current:null,interrupted:null},blocked_reason:null,plan:null,
+      type:'snapshot',session_id:'session-one',run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,
+      messages:[],queued:[],live:{current:null,interrupted:null},blocked_reason:null,plan:null,model:'alpha',...run,
     }}));
     await page.route('**/api/chat/sessions/session-one/events',r=>r.fulfill({body:''}));
     await page.addScriptTag({content:`
-      app.component('ChatModelPicker',{render:()=>VueForTests.h('button',{'aria-label':'Conversation model'})});
+      app.component('ChatModelPicker',{props:['disabled','model'],setup:p=>()=>VueForTests.h('button',{'aria-label':'Conversation model',disabled:p.disabled},p.model)});
       app.component('UChatPrompt',{setup:(_,{slots})=>()=>VueForTests.h('div',[slots.header?.(),slots.body?.(),slots.footer?.()])});
       app.component('UEditor',{render:()=>VueForTests.h('div',{role:'textbox','aria-label':'Message',contenteditable:true})});
     `});
     await mount();
-    await expect(page.getByRole('button',{name:'Conversation model',exact:true})).toBeVisible();
+    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
+    await expect(trigger).toHaveText('alpha');
+    if(pickerDisabled) await expect(trigger).toBeDisabled();
+    else await expect(trigger).toBeEnabled();
     await expect(page.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
+    await page.evaluate(()=>{props.blocked=true});
+    await expect(trigger).toBeDisabled();
     await page.evaluate(()=>{props.conversation.subagent=true});
     await expect(page.getByRole('textbox',{name:'Message',exact:true})).toHaveCount(0);
-    await expect(page.getByRole('button',{name:'Conversation model',exact:true})).toHaveCount(0);
+    await expect(trigger).toHaveCount(0);
     await page.evaluate(()=>app.unmount());
   } finally {await browser.close()}
 });

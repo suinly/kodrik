@@ -371,12 +371,10 @@ mod tests {
         let store = SqliteSessionStore::open(source.path().into()).unwrap();
         let conversation = SessionId::new("cli:main");
         let draft = store.prepare_session(&conversation).await.unwrap();
-        assert!(
-            store
-                .set_session_model(draft.id().as_str(), Some("chosen".into()))
-                .await
-                .unwrap()
-        );
+        store
+            .set_session_model(draft.id().as_str(), Some("chosen".into()))
+            .await
+            .unwrap();
         drop(store);
         stage_personal_sessions(&[source.path().into()], destination.path()).unwrap();
         let migrated = SqliteSessionStore::open(destination.path().into()).unwrap();

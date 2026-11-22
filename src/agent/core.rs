@@ -656,12 +656,6 @@ impl Agent {
                     cp.record.model_attempts += 1;
                     cp.save(session, RunPhase::NeedModel, None).await?;
                 }
-                // Only foreground generation uses the override; auxiliary providers stay untouched.
-                let selected_llm = session
-                    .model_override()
-                    .map(|model| self.llm.with_model(model))
-                    .transpose()?;
-                let llm = selected_llm.as_deref().unwrap_or(self.llm.as_ref());
                 let mut context = self.context.build(session);
                 if browser_client_id.is_some() && !self.isolated() {
                     context
@@ -697,6 +691,16 @@ impl Agent {
                         anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
                     }
                 }
+                // A selection takes effect at the next foreground request, not mid-stream.
+                let model = match checkpoint.as_ref() {
+                    Some(cp) => cp.store.session_model(session.id()).await?,
+                    None => session.model_override().map(str::to_owned),
+                };
+                let selected_llm = model
+                    .as_deref()
+                    .map(|m| self.llm.with_model(m))
+                    .transpose()?;
+                let llm = selected_llm.as_deref().unwrap_or(self.llm.as_ref());
                 requests += 1;
                 // Preserve non-streaming callers; headless steering still needs text events.
                 let stream = progress.is_some() || incoming.is_some();
@@ -1876,6 +1880,99 @@ mod tests {
             );
             assert_eq!(session.compaction().is_some(), summarized, "{mode}");
         }
+    }
+
+    #[tokio::test]
+    async fn live_model_selection_applies_to_next_request_in_same_run() {
+        use tokio::sync::Notify;
+
+        struct Model {
+            name: String,
+            started: Arc<Notify>,
+            release: Arc<Notify>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmProvider for Model {
+            fn with_model(&self, model: &str) -> anyhow::Result<Arc<dyn LlmProvider>> {
+                Ok(Arc::new(Self {
+                    name: model.into(),
+                    started: self.started.clone(),
+                    release: self.release.clone(),
+                }))
+            }
+
+            async fn generate(
+                &self,
+                context: &LlmContext<'_>,
+                _: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                if context
+                    .messages
+                    .iter()
+                    .any(|m| matches!(m, Message::ToolResult(_)))
+                {
+                    return Ok((
+                        vec![Message::Assistant(AssistantMessage {
+                            content: self.name.clone(),
+                        })],
+                        None,
+                    ));
+                }
+                assert_eq!(self.name, "original");
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok((
+                    vec![Message::ToolCall(ToolCall {
+                        call_id: "plan-1".into(),
+                        name: "update_plan".into(),
+                        arguments: serde_json::json!({"plan":[{"step":"First step","status":"completed"}]}),
+                    })],
+                    None,
+                ))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = super::super::session::SqliteSessionStore::open(dir.path().into()).unwrap();
+        let id = SessionId::new("model-switch");
+        let mut session = Session::new(id.clone());
+        let mut cp = Checkpoint::new(&store, &id, &session);
+        let model = Arc::new(Model {
+            name: "original".into(),
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        });
+        let agent = Agent::new(
+            model.clone(),
+            ToolRegistry::default().register(Arc::new(super::super::tools::UpdatePlanTool)),
+            ContextBuilder::new("rules"),
+        );
+        let input = UserMessage {
+            browser_client_id: None,
+            browser_context: None,
+            content: "Continue after a tool call".into(),
+            images: vec![],
+            files: vec![],
+        };
+        let (answer, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                agent.run_inner(&mut session, Some(input), None, None, None, Some(&mut cp)),
+                async {
+                    model.started.notified().await;
+                    store
+                        .set_session_model(id.as_str(), Some("new".into()))
+                        .await
+                        .unwrap();
+                    model.release.notify_one();
+                }
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(answer.unwrap().content, "new");
+        assert_eq!(cp.record.model_attempts, 2);
     }
 
     #[tokio::test]

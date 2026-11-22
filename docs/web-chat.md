@@ -22,9 +22,10 @@ handles authentication, persistence, agent execution and SSE subscriptions. No N
 The model picker in a conversation loads model IDs from the primary provider's
 `/models` endpoint. A selection is saved for that conversation (including when
 opened from another client), not in the global provider configuration. Select
-the default option to return to the configured model. Model changes are blocked
-while a run or queued request is active; provider errors leave the selection
-unchanged. Auxiliary models used for auditing and compaction are not changed.
+the default option to return to the configured model. Changes apply to the next
+model request, even within an active run, without interrupting a response or tool
+already in progress. Provider errors leave the selection unchanged. Auxiliary
+models used for auditing and compaction are not changed.
 
 Install Node.js 22.22.3+ (22.x), 24.15+ (24.x), or 26+, and a current stable Rust toolchain, then build from the
 repository root in this order:

@@ -736,25 +736,13 @@ impl Remote {
                 app.view.clear_selection();
             }
             input if input == "/model" || input.starts_with("/model ") => {
-                ensure!(
-                    !matches!(
-                        app.status,
-                        Status::Working | Status::Recovering | Status::Stopping
-                    ) && app.waiting_messages.is_empty()
-                        && self.uncertain.is_none(),
-                    app.language.pick(
-                        "Wait for the current request before changing models",
-                        "Дождитесь завершения текущего запроса перед сменой модели"
-                    )
-                );
                 let model = input.strip_prefix("/model ").map(str::to_owned);
                 self.chat
                     .command(&self.session, ChatCommand::SetModel { model })
                     .await?;
                 let snapshot = self.chat.snapshot(&self.session).await?;
-                if self.projection.accept(app, &snapshot)? {
-                    self.snapshot = snapshot;
-                }
+                self.receive_update(app, self.epoch, Update::Snapshot(snapshot))
+                    .await?;
             }
             "/audit" => {
                 app.audit_picker = Some(approvals::AuditPicker {

@@ -31,7 +31,8 @@ pub(crate) struct SearchSessions {
 }
 
 impl SqliteSessionStore {
-    pub async fn set_session_model(&self, id: &str, model: Option<String>) -> anyhow::Result<bool> {
+    pub async fn set_session_model(&self, id: &str, model: Option<String>) -> anyhow::Result<()> {
+        valid_id(id)?;
         if let Some(model) = &model {
             ensure!(
                 !model.is_empty() && model.len() <= 512 && !model.chars().any(char::is_control),
@@ -41,37 +42,29 @@ impl SqliteSessionStore {
         let id = id.to_owned();
         self.with_connection(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut session = match load(&tx, &id)? {
-                Some(session) => session,
-                None => {
-                    let draft: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM active_sessions WHERE session_id=?1)",
-                        [&id], |r| r.get(0),
-                    )?;
-                    ensure!(draft, "Session not found");
-                    Session::new(SessionId::new(&id))
-                }
-            };
-            if crate::agent::inbox::session_busy_in(&tx, &id)?
-                || crate::agent::inbox::session_busy_in(&tx, &format!("web:{id}"))?
-            {
-                return Ok(false);
-            }
-            let persisted: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", [&id], |r| r.get(0),
+            let updated = tx.execute(
+                "UPDATE sessions SET payload=CAST(CASE WHEN ?2 IS NULL THEN json_remove(CAST(payload AS TEXT),'$.model_override')
+                    ELSE json_set(CAST(payload AS TEXT),'$.model_override',?2) END AS BLOB) WHERE id=?1",
+                params![id, model],
             )?;
-            if persisted {
-                session.set_model_override(model);
-                save(&tx, &session)?;
-            } else if let Some(model) = model {
-                tx.execute("INSERT INTO draft_models(session_id,model) VALUES (?1,?2) ON CONFLICT(session_id) DO UPDATE SET model=excluded.model", params![id, model])?;
-            } else {
-                tx.execute("DELETE FROM draft_models WHERE session_id=?1", [&id])?;
+            if updated == 0 {
+                ensure!(session_model(&tx, &id)?.is_some(), "Session not found");
+                if let Some(model) = model {
+                    tx.execute("INSERT INTO draft_models(session_id,model) VALUES (?1,?2) ON CONFLICT(session_id) DO UPDATE SET model=excluded.model", params![id, model])?;
+                } else {
+                    tx.execute("DELETE FROM draft_models WHERE session_id=?1", [&id])?;
+                }
             }
             tx.execute("UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='run_view_revision'", [])?;
             tx.commit()?;
-            Ok(true)
+            Ok(())
         }).await
+    }
+
+    pub(crate) async fn session_model(&self, id: &SessionId) -> anyhow::Result<Option<String>> {
+        let id = id.clone();
+        self.with_connection(move |db| Ok(session_model(db, id.as_str())?.flatten()))
+            .await
     }
 
     pub(crate) fn load_in_transaction(
@@ -458,14 +451,31 @@ pub(super) fn load(db: &Connection, id: &str) -> anyhow::Result<Option<Session>>
     }))
 }
 
+// Distinguish a stored default from a new session whose initial selection comes from its parent.
+fn session_model(db: &Connection, id: &str) -> anyhow::Result<Option<Option<String>>> {
+    Ok(db.query_row(
+        "SELECT json_extract(CAST(payload AS TEXT),'$.model_override') FROM sessions WHERE id=?1
+         UNION ALL SELECT (SELECT model FROM draft_models WHERE session_id=?1)
+         WHERE EXISTS(SELECT 1 FROM active_sessions WHERE session_id=?1) LIMIT 1",
+        [id], |r| r.get(0),
+    ).optional()?)
+}
+
 pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
     valid_id(session.id().as_str())?;
+    let mut session = std::borrow::Cow::Borrowed(session);
+    // A live run can checkpoint an older in-memory copy after a user changes the selection.
+    if let Some(model) = session_model(db, session.id().as_str())?
+        && model.as_deref() != session.model_override()
+    {
+        session.to_mut().set_model_override(model);
+    }
     db.execute(
         "INSERT INTO sessions(id,payload,updated_at) VALUES (?1,?2,?3)
          ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
         params![
             session.id().as_str(),
-            serde_json::to_vec(session)?,
+            serde_json::to_vec(session.as_ref())?,
             chrono::Utc::now()
                 .timestamp_nanos_opt()
                 .context("Session timestamp overflow")?
@@ -475,8 +485,8 @@ pub(crate) fn save(db: &Connection, session: &Session) -> anyhow::Result<()> {
         "DELETE FROM draft_models WHERE session_id=?1",
         [session.id().as_str()],
     )?;
-    super::activity::capture(db, session)?;
-    crate::agent::command_audit::capture_mode(db, session)
+    super::activity::capture(db, &session)?;
+    crate::agent::command_audit::capture_mode(db, &session)
 }
 
 pub(crate) fn select(db: &Connection, conversation: &str, id: &str) -> anyhow::Result<()> {
@@ -774,7 +784,8 @@ impl SqliteSessionStore {
             if let Some((revision, previous)) = &previous {
                 // Retrying an identical transaction after an unknown commit outcome is harmless.
                 if *revision == run.revision && *previous == payload {
-                    let saved = load(&tx, &run.session_id)?.context("Run session missing")?;
+                    let mut saved = load(&tx, &run.session_id)?.context("Run session missing")?;
+                    saved.set_model_override(session.model_override().map(str::to_owned));
                     ensure!(serde_json::to_vec(&saved)? == serde_json::to_vec(&session)?, "Duplicate checkpoint session conflict");
                     if let Some(tool) = &tool {
                         let saved: Vec<u8> = tx.query_row("SELECT payload FROM tool_executions WHERE run_id=?1 AND call_id=?2", params![run.id,tool.call.call_id], |r|r.get(0))?;

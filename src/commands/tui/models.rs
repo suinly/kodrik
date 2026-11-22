@@ -151,15 +151,6 @@ pub(super) async fn handle_command(
             ));
             return Ok::<_, anyhow::Error>(());
         }
-        anyhow::ensure!(
-            !matches!(
-                app.status,
-                super::app::Status::Working
-                    | super::app::Status::Recovering
-                    | super::app::Status::Stopping
-            ) && app.waiting_messages.is_empty(),
-            "Wait for pending requests before changing the model"
-        );
         let model = input.strip_prefix("/model ").map(str::to_owned);
         if let Some(model) = &model {
             anyhow::ensure!(
@@ -175,12 +166,9 @@ pub(super) async fn handle_command(
         let store = runner
             .sqlite_store()
             .ok_or_else(|| anyhow::anyhow!("Model selection requires durable session storage"))?;
-        anyhow::ensure!(
-            store
-                .set_session_model(session.id().as_str(), model)
-                .await?,
-            "Wait for pending requests before changing the model"
-        );
+        store
+            .set_session_model(session.id().as_str(), model)
+            .await?;
         let session = runner.load_session(conversation.clone()).await?;
         refresh(app, runner, &session)?;
         Ok(())

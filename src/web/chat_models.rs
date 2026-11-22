@@ -55,17 +55,9 @@ impl Chat {
         }
         let _runs = self.runs.lock().await;
         self.session(id).await?;
-        let changed = self
-            .sessions
+        self.sessions
             .set_session_model(id, model)
             .await
-            .map_err(internal)?;
-        if !changed {
-            return Err(error(
-                StatusCode::CONFLICT,
-                "Дождитесь завершения запроса перед сменой модели",
-            ));
-        }
-        Ok(())
+            .map_err(internal)
     }
 }

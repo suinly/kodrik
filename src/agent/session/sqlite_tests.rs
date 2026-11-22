@@ -433,17 +433,15 @@ async fn preparing_session_keeps_history_unchanged_until_first_save() {
 }
 
 #[tokio::test]
-async fn session_model_setter_persists_resets_and_rejects_busy_or_invalid() {
+async fn session_model_setter_persists_validates_and_resets_with_queued_work() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().into()).unwrap();
     store.save(&sample("target")).await.unwrap();
     store.save(&sample("other")).await.unwrap();
-    assert!(
-        store
-            .set_session_model("target", Some("provider/model".into()))
-            .await
-            .unwrap()
-    );
+    store
+        .set_session_model("target", Some("provider/model".into()))
+        .await
+        .unwrap();
     let saved = store
         .load(&SessionId::new("target"))
         .await
@@ -469,41 +467,12 @@ async fn session_model_setter_persists_resets_and_rejects_busy_or_invalid() {
         );
     }
     assert!(store.set_session_model("missing", None).await.is_err());
-    store
-        .with_connection(|db| {
-            db.execute(
-                "INSERT INTO runs VALUES ('model-run','web:target','target',0,0,x'7b7d',NULL)",
-                [],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert!(!store.set_session_model("target", None).await.unwrap());
     store.with_connection(|db| {
-        db.execute("DELETE FROM runs", [])?;
         db.execute("INSERT INTO active_sessions VALUES ('channel','target')", [])?;
         db.execute("INSERT INTO submissions(id,conversation_id,request_id,payload_hash,sequence,payload) VALUES ('queued-model','channel','req','hash',1,x'7b7d')", [])?;
         Ok(())
     }).await.unwrap();
-    assert!(!store.set_session_model("target", None).await.unwrap());
-    assert_eq!(
-        store
-            .load(&SessionId::new("target"))
-            .await
-            .unwrap()
-            .unwrap()
-            .model_override(),
-        Some("provider/model")
-    );
-    store
-        .with_connection(|db| {
-            db.execute("DELETE FROM submissions", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert!(store.set_session_model("target", None).await.unwrap());
+    store.set_session_model("target", None).await.unwrap();
     assert!(
         store
             .load(&SessionId::new("target"))
@@ -523,12 +492,10 @@ async fn local_mapped_draft_model_survives_reopen_reset_and_first_save() {
     let conversation = SessionId::new("cli:main");
     let draft = store.prepare_session(&conversation).await.unwrap();
     let id = draft.id().clone();
-    assert!(
-        store
-            .set_session_model(id.as_str(), Some("chosen".into()))
-            .await
-            .unwrap()
-    );
+    store
+        .set_session_model(id.as_str(), Some("chosen".into()))
+        .await
+        .unwrap();
     assert!(
         store
             .with_connection({
@@ -552,7 +519,7 @@ async fn local_mapped_draft_model_survives_reopen_reset_and_first_save() {
         Some("chosen")
     );
     assert_eq!(store.active_id(&conversation).await.unwrap(), id);
-    assert!(store.set_session_model(id.as_str(), None).await.unwrap());
+    store.set_session_model(id.as_str(), None).await.unwrap();
     assert!(
         store
             .load(&id)
@@ -582,12 +549,10 @@ async fn local_mapped_draft_model_survives_reopen_reset_and_first_save() {
             .await
             .is_err()
     );
-    assert!(
-        store
-            .set_session_model(id.as_str(), Some("chosen".into()))
-            .await
-            .unwrap()
-    );
+    store
+        .set_session_model(id.as_str(), Some("chosen".into()))
+        .await
+        .unwrap();
     let mut session = store.load(&id).await.unwrap().unwrap();
     session.push(crate::agent::message::Message::User(
         crate::agent::UserMessage {
@@ -634,12 +599,10 @@ async fn v16_migration_adds_draft_models_without_changing_saved_sessions() {
     drop(store);
     let store = SqliteSessionStore::open(root.path().into()).unwrap();
     assert_eq!(store.list().await.unwrap().len(), 1);
-    assert!(
-        store
-            .set_session_model(draft.id().as_str(), Some("chosen".into()))
-            .await
-            .unwrap()
-    );
+    store
+        .set_session_model(draft.id().as_str(), Some("chosen".into()))
+        .await
+        .unwrap();
     assert_eq!(
         store
             .load(draft.id())

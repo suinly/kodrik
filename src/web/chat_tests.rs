@@ -179,13 +179,24 @@ async fn chat_form_actions_require_a_successful_declaration_in_the_scoped_sessio
 }
 
 #[tokio::test]
-async fn dialogue_model_selection_cannot_change_an_active_run() {
+async fn dialogue_model_selection_survives_active_run_checkpoints() {
     use crate::agent::{
         run_state::{Checkpoint, RunPhase},
         session::SessionId,
     };
     let f = Fixture::new().await;
     let id = f.create().await;
+    let snapshot = || async {
+        f.request(reqwest::Method::GET, &format!("sessions/{id}/run"))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
     let session = f
         .sessions
         .load(&SessionId::new(&id))
@@ -203,8 +214,25 @@ async fn dialogue_model_selection_cannot_change_an_active_run() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 409);
-    assert!(f.history(&id).await["model_override"].is_null());
+    assert_eq!(response.status(), 204);
+    checkpoint
+        .save(&session, RunPhase::NeedModel, None)
+        .await
+        .unwrap();
+    assert_eq!(snapshot().await["model_override"], "test-alpha");
+    let selected = f.sessions.load(session.id()).await.unwrap().unwrap();
+    let response = f
+        .request(reqwest::Method::POST, &format!("sessions/{id}/model"))
+        .json(&json!({"model":null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    checkpoint
+        .save(&selected, RunPhase::Completed, None)
+        .await
+        .unwrap();
+    assert_eq!(snapshot().await.get("model_override"), Some(&Value::Null));
 }
 
 struct FakeLlm;

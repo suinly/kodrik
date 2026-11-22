@@ -66,7 +66,8 @@ remember about me?”. Use `/sessions` to reopen an earlier terminal conversatio
 Use `/models` to select a model for the current conversation from the provider's
 catalogue. Navigate with ↑/↓, confirm with Enter, or close with Esc. The default
 option restores the configured model; other conversations keep their own choice.
-Model changes require an idle conversation with no queued requests.
+You can switch while the agent is working. The next model request uses the new
+selection without interrupting a response or tool already in progress.
 You can choose a model immediately after opening TUI or using `/new`, before
 sending anything. This keeps the conversation a draft until its first message;
 that first message already uses the selected model.
