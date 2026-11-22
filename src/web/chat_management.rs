@@ -110,6 +110,8 @@ pub(super) struct Search {
     pub(super) offset: usize,
     #[serde(default)]
     pub(super) webhooks: bool,
+    #[serde(default)]
+    pub(super) unread: bool,
 }
 fn page_size() -> usize {
     30
@@ -162,6 +164,7 @@ mod listing_tests {
                     limit: 30,
                     offset: 0,
                     webhooks: false,
+                    unread: false,
                 },
             )
             .await
@@ -206,6 +209,7 @@ mod listing_tests {
             limit: 30,
             offset: 0,
             webhooks: true,
+            unread: false,
         };
         let before = list_sessions(&chat, search()).await.unwrap();
         chat.sessions
@@ -295,15 +299,28 @@ fn session_parents(db: &Connection, webhooks: bool) -> anyhow::Result<HashMap<St
     Ok(parents)
 }
 
+fn unread_sessions(db: &Connection) -> anyhow::Result<HashSet<String>> {
+    Ok(db
+        .prepare(
+            "SELECT session_id FROM web_chat_activity
+            WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
+            AND revision!='' AND revision!=read_revision",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 async fn page_sessions(
     chat: &Chat,
-    limit: usize,
-    offset: usize,
-    webhook_events: bool,
-) -> anyhow::Result<(Vec<Session>, Vec<String>)> {
+    search: &Search,
+) -> anyhow::Result<(Vec<Session>, Vec<String>, HashSet<String>)> {
+    let (limit, offset, webhook_events, unread_only) =
+        (search.limit, search.offset, search.webhooks, search.unread);
     chat.sessions
         .with_connection(move |db| {
             let parents = session_parents(db, webhook_events)?;
+            let unread = unread_sessions(db)?;
+            let mut unread_families = HashSet::new();
             let mut groups: HashMap<String, (bool, i64)> = HashMap::new();
             let mut statement = db.prepare(
                 "SELECT s.id,coalesce(b.root_id,s.id),s.updated_at,
@@ -321,6 +338,9 @@ async fn page_sessions(
                     continue;
                 }
                 let root: String = row.get(1)?;
+                if unread_only && unread.contains(&id) {
+                    unread_families.insert(parents.get(&root).unwrap_or(&root).clone());
+                }
                 let updated: i64 = row.get(2)?;
                 let pinned: bool = row.get(4)?;
                 groups
@@ -344,7 +364,10 @@ async fn page_sessions(
                         *updated,
                     ));
             }
-            let mut groups: Vec<_> = families.into_iter().collect();
+            let mut groups: Vec<_> = families
+                .into_iter()
+                .filter(|(id, _)| !unread_only || unread_families.contains(id))
+                .collect();
             groups.sort_by(|(a, av), (b, bv)| bv.cmp(av).then_with(|| a.cmp(b)));
             let roots: Vec<_> = groups
                 .into_iter()
@@ -379,7 +402,7 @@ async fn page_sessions(
                 );
                 sessions.push(session);
             }
-            Ok((sessions, roots))
+            Ok((sessions, roots, unread))
         })
         .await
 }
@@ -400,13 +423,17 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
         return Err(error(StatusCode::BAD_REQUEST, "Invalid conversation page"));
     }
     let query = search.q.trim().to_lowercase();
-    let (sessions, page_roots) = if query.is_empty() {
-        let (sessions, roots) = page_sessions(chat, search.limit, search.offset, search.webhooks)
+    let (sessions, page_roots, unread) = if query.is_empty() {
+        let (sessions, roots, unread) = page_sessions(chat, &search).await.map_err(internal)?;
+        (sessions, Some(roots), unread)
+    } else {
+        let sessions = chat.sessions.list().await.map_err(internal)?;
+        let unread = chat
+            .sessions
+            .with_connection(|db| unread_sessions(db))
             .await
             .map_err(internal)?;
-        (sessions, Some(roots))
-    } else {
-        (chat.sessions.list().await.map_err(internal)?, None)
+        (sessions, None, unread)
     };
     let parents = chat
         .sessions
@@ -421,20 +448,6 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
             Ok(db
                 .prepare("SELECT root_id FROM web_chat_pins")?
                 .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-        .await
-        .map_err(internal)?;
-    let unread: HashSet<String> = chat
-        .sessions
-        .with_connection(|db| {
-            Ok(db
-                .prepare(
-                    "SELECT session_id FROM web_chat_activity
-            WHERE listed=1 AND session_id NOT GLOB 'companion:subagent:*'
-            AND revision!='' AND revision!=read_revision",
-                )?
-                .query_map([], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?)
         })
         .await
@@ -522,6 +535,13 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
                 continue;
             }
         }
+        let unread_session = std::iter::once(shown)
+            .chain(group.iter().copied())
+            .find(|s| unread.contains(s.id().as_str()))
+            .map(|s| s.id().as_str());
+        if search.unread && unread_session.is_none() {
+            continue;
+        }
         let ids = group
             .iter()
             .map(|s| s.id().as_str().to_owned())
@@ -533,10 +553,6 @@ pub(super) async fn list_sessions(chat: &Chat, search: Search) -> Result<Value, 
                 .await
                 .map_err(internal)?;
         let updated = group.iter().filter_map(|s| s.last_message_at()).max();
-        let unread_session = std::iter::once(shown)
-            .chain(group.iter().copied())
-            .find(|s| unread.contains(s.id().as_str()))
-            .map(|s| s.id().as_str());
         result.push(json!({"id":shown.id().as_str(),"root_id":root,"parent_id":parents.get(root),"title":title,"title_default":title_default,"title_pending":jobs.contains(root),"pinned":pins.contains(root),"busy":busy,"unread":unread_session.is_some(),"unread_session_id":unread_session,"updated_at":updated,"snippet":snippet,"match_message":match_message,"webhook":super::webhook_source(shown),"subagent":id.starts_with(crate::agent::subagents::PREFIX)}));
     }
     if let Some(roots) = page_roots {
@@ -906,6 +922,7 @@ mod shared_store_tests {
                     limit: 30,
                     offset: 0,
                     webhooks: false,
+                    unread: false,
                 }),
             )
             .await

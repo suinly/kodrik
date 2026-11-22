@@ -570,6 +570,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route("/api/chat/models", get(models::list))
         .route("/api/chat/sessions/{id}/model", post(models::set))
         .route("/api/chat/sessions/{id}/read", post(mark_read))
+        .route("/api/chat/sessions/read-all", post(mark_all_read))
         .route("/api/chat/sessions", get(management::list).post(create))
         .route(
             "/api/chat/sessions/{id}",
@@ -1338,6 +1339,24 @@ async fn mark_read(
     {
         return Err(error(StatusCode::CONFLICT, "Snapshot is stale"));
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadAllRequest {
+    webhooks: bool,
+}
+
+async fn mark_all_read(
+    Extension(state): Extension<WebState>,
+    Json(input): Json<ReadAllRequest>,
+) -> Result<StatusCode, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    chat.sessions
+        .mark_all_chat_read(input.webhooks)
+        .await
+        .map_err(internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

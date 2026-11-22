@@ -105,6 +105,9 @@ const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
 const search = ref('')
+const unreadOnly = ref(false)
+const markingRead = ref(false)
+const markReadError = ref('')
 const webhookViews = computed(()=>[
   {label:t('Вебхуки'),icon:'i-lucide-webhook',value:'hooks'},
   {label:t('События'),icon:'i-lucide-history',value:'events'},
@@ -116,6 +119,14 @@ const hasMore = ref(false)
 const searching = computed(()=>listing.value && !!search.value.trim())
 const conversationSearch = ref('')
 const conversationSearchOpen = ref(false)
+async function openConversationSearch(event:KeyboardEvent) {
+  if(event.defaultPrevented || event.isComposing || event.shiftKey || event.altKey || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase()!=='f') return
+  if(!viewingConversation.value || !selected.value || restoring.value || locationError.value || menu.value || management.value) return
+  event.preventDefault()
+  conversationSearchOpen.value=true
+  await nextTick()
+  conversationView.value?.focusSearch()
+}
 const managing = ref<Conversation|null>(null)
 const management = ref<'rename'|'delete'|null>(null)
 const title = ref('')
@@ -131,7 +142,8 @@ let searchTimer:ReturnType<typeof setTimeout>|undefined
 async function loadSessions(reset=false) {
   const query=search.value.trim()
   const webhookEvents=showEvents.value
-  const queryKey=`${webhookEvents}:${query}`
+  const unread=unreadOnly.value
+  const queryKey=`${webhookEvents}:${unread}:${query}`
   if(disposed || !reset && (listing.value || !hasMore.value || listQuery!==queryKey)) return false
   const target=reset && listQuery===queryKey ? Math.max(pageSize,nextOffset) : pageSize
   const revision=++listRevision
@@ -142,7 +154,7 @@ async function loadSessions(reset=false) {
   listError.value=''
   try {
     do {
-      const found=await api<Conversation[]>(`sessions?limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}&webhooks=${webhookEvents}`)
+      const found=await api<Conversation[]>(`sessions?limit=${pageSize}&offset=${offset}&q=${encodeURIComponent(query)}&webhooks=${webhookEvents}&unread=${unread}`)
       if(disposed || revision!==listRevision) return false
       for(const item of found) {
         const index=items.findIndex(existing=>(existing.root_id ?? existing.id)===(item.root_id ?? item.id))
@@ -168,7 +180,7 @@ function scrollSessions(event:Event) {
   const list=event.currentTarget as HTMLElement
   if(list.scrollHeight-list.scrollTop-list.clientHeight<80) void loadSessions()
 }
-watch([search,showEvents],()=>{
+watch([search,showEvents,unreadOnly],()=>{
   clearTimeout(searchTimer);listRevision++;listing.value=false
   sessions.value=[];nextOffset=0;hasMore.value=false
   searchTimer=setTimeout(()=>{void loadSessions(true)},200)
@@ -207,7 +219,7 @@ async function restoreLocation() {
   try {
     if(target.section==='chat') {
       const previous=selected.value?.id
-      if(previous!==target.id) {selected.value=null;conversationKey.value++}
+      if(previous!==target.id) {selected.value=null;conversationKey.value++;conversationSearchOpen.value=false;conversationSearch.value=''}
       const conversation=target.id ? sessions.value.find(item=>item.id===target.id) ?? await api<Conversation>(`sessions/${encodeURIComponent(target.id)}`) : null
       if(revision!==navigationRevision) return
       if(selected.value?.id!==conversation?.id) conversationKey.value++
@@ -311,6 +323,16 @@ useIntervalFn(()=>{
 watch(menu,open=>{if(open && (!updatesOnline.value || section.value==='webhooks' && !showEvents.value)) refreshSidebar()})
 function refreshAfterConversationChange() {
   if(!updatesOnline.value) {void refresh();void refreshActivity()}
+}
+
+async function markAllRead() {
+  if(markingRead.value) return
+  markingRead.value=true;markReadError.value=''
+  try {
+    await api('sessions/read-all','POST',{webhooks:showEvents.value})
+    await Promise.all([refresh(),refreshActivity()])
+  } catch(reason) {markReadError.value=messageOf(reason)}
+  finally {markingRead.value=false}
 }
 
 async function openWebhookConversation(id:string) {
@@ -556,6 +578,7 @@ onMounted(() => {
   onBeforeUnmount(()=>window.removeEventListener('popstate',restoreLocation))
   void initializePush().then(reportPushPresence)
   document.addEventListener('visibilitychange',reportWindowPresence)
+  document.addEventListener('keydown',openConversationSearch)
   window.addEventListener('focus',reportWindowPresence)
   window.addEventListener('blur',reportPushPresence)
   window.addEventListener('storage',reportPushPresence)
@@ -564,6 +587,7 @@ onMounted(() => {
   onBeforeUnmount(()=>{
     clearPresence()
     document.removeEventListener('visibilitychange',reportWindowPresence)
+    document.removeEventListener('keydown',openConversationSearch)
     window.removeEventListener('focus',reportWindowPresence)
     window.removeEventListener('blur',reportPushPresence)
     window.removeEventListener('storage',reportPushPresence)
@@ -654,6 +678,12 @@ onMounted(() => {
         <div class="sidebar-header-actions ml-auto flex shrink-0 items-center gap-1" />
       </template>
       <SidebarSearch v-if="section==='chat' || showEvents" v-model="search" :title="sectionTitle" :label="t(showEvents?'Поиск событий':'Поиск диалогов')" :placeholder="t('Поиск по переписке…')" :loading="searching">
+          <template #actions>
+            <UButton icon="i-lucide-filter" :aria-label="t('Только непрочитанные')" :title="t('Только непрочитанные')" :aria-pressed="unreadOnly" :color="unreadOnly?'primary':'neutral'" :variant="unreadOnly?'soft':'ghost'" size="sm" class="sidebar-action" @click="unreadOnly=!unreadOnly" />
+          </template>
+          <template #section-actions>
+            <UButton icon="i-lucide-check-check" :aria-label="t('Пометить всё прочитанным')" :title="t('Пометить всё прочитанным')" color="neutral" variant="ghost" size="sm" class="sidebar-action shrink-0 max-lg:size-[44px]" :loading="markingRead" :disabled="!(showEvents?activity.unread_events:activity.unread_chats) && !sessions.some(session=>session.unread)" @click="markAllRead" />
+          </template>
           <template v-if="showEvents" #title>
             <UTabs v-model="webhookTab" :items="webhookViews" :content="false" color="neutral" size="sm"
               :ui="{list:'p-0.5',trigger:'h-7 flex-1 px-2 py-0',indicator:'inset-y-0.5'}" class="w-full" />
@@ -669,6 +699,7 @@ onMounted(() => {
           <UButton :label="t('Создать вебхук')" icon="i-lucide-plus" color="neutral" variant="soft" size="lg" block :disabled="webhooks.saving" @click="chooseWebhook()" />
       </SidebarSearch>
       <template v-if="section==='chat' || showEvents">
+      <p v-if="markReadError" role="alert" class="text-sm text-error">{{ markReadError }}</p>
       <nav :aria-label="t(showEvents?'История событий':'История диалогов')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain" @scroll.passive="scrollSessions">
         <div v-for="session in visibleSessions" :key="session.root_id ?? session.id" :class="{'sidebar-child':session.nested}" :data-parent-id="session.parent_id ?? undefined" class="sidebar-row relative flex shrink-0 items-center">
         <UButton
@@ -676,7 +707,7 @@ onMounted(() => {
           :variant="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'soft' : 'ghost'"
           :aria-current="(selected?.root_id ?? selected?.id) === (session.root_id ?? session.id) ? 'page' : undefined"
           :disabled="creating" class="sidebar-item sidebar-item-with-actions"
-          @click="select(session)">
+          @click="select(unreadOnly && !search.trim() && session.unread_session_id ? {...session,id:session.unread_session_id} : session)">
           <span v-if="session.pinned || !session.busy" class="relative inline-flex shrink-0 text-muted">
             <UIcon :name="session.pinned?'i-lucide-pin':session.subagent?'i-lucide-bot':session.webhook?'i-lucide-webhook':'i-lucide-message-square'" :aria-label="session.pinned?t('Закреплённый диалог'):undefined" class="size-4 shrink-0" />
             <span v-if="session.unread" role="img" :aria-label="t('Непрочитанный ответ')" :title="t('Непрочитанный ответ')" class="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-error" />
@@ -702,7 +733,7 @@ onMounted(() => {
         <UButton v-if="listError || hasMore" :label="listError ? t('Повторить загрузку') : t('Показать ещё')" :loading="listing" color="neutral" variant="link" class="shrink-0 justify-center" @click="listError && retryReset ? refresh() : loadSessions()" />
         <p v-else-if="listing" role="status" class="text-sm text-muted"> {{ t("Загружаю диалоги…") }} </p>
       </nav>
-      <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
+      <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ unreadOnly ? t(showEvents?'Нет непрочитанных событий.':'Нет непрочитанных диалогов.') : search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
       <div v-else-if="section==='settings'" class="space-y-2 text-sm">
@@ -785,7 +816,6 @@ onMounted(() => {
               <CommandAuditMenu compact-mobile :mode="conversationView?.commandAuditMode ?? 'review'" :disabled="!conversationView || conversationView.commandAuditDisabled"
                 :loading="conversationView?.savingCommandAudit" @select="mode=>conversationView?.setCommandAudit(mode)" />
               <UButton v-if="browserSidebar" icon="i-lucide-settings" :aria-label="t('Настройки расширения')" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
-              <UButton icon="i-lucide-search" :aria-label="t('Найти в диалоге')" :aria-pressed="conversationSearchOpen" color="neutral" variant="ghost" @click="conversationSearchOpen=!conversationSearchOpen" />
             </template>
             <UButton v-else-if="browserSidebar && viewingConversation" icon="i-lucide-settings" :aria-label="t('Настройки расширения')" color="neutral" variant="ghost" @click="conversationView?.openBrowserSettings()" />
           </template>

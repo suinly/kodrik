@@ -3550,6 +3550,143 @@ async fn activity_includes_unpaginated_webhooks_and_excludes_private_sessions() 
 }
 
 #[tokio::test]
+async fn sessions_filter_unread_conversations_before_pagination() {
+    use crate::agent::session::{Session, SessionId, activity::read_revision};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    for webhooks in [false, true] {
+        let prefix = if webhooks { "event" } else { "chat" };
+        for (name, content, read, updated) in [
+            ("read", "needle read", true, 50),
+            ("nonmatch", "other answer", false, 40),
+            ("root", "needle selected", true, 30),
+            ("branch", "alternate answer", false, 20),
+            ("second", "needle second", false, 10),
+        ] {
+            let id = format!("cli:{prefix}-{name}");
+            let mut session = Session::new(SessionId::new(&id));
+            session.webhook_instruction = webhooks.then(|| "event".into());
+            session.push(Message::Assistant(AssistantMessage {
+                content: content.into(),
+            }));
+            store.save(&session).await.unwrap();
+            if read {
+                assert!(
+                    store
+                        .mark_chat_read(&id, &read_revision(&session))
+                        .await
+                        .unwrap()
+                );
+            }
+            store
+                .with_connection(move |db| {
+                    db.execute(
+                        "UPDATE sessions SET updated_at=?1 WHERE id=?2",
+                        rusqlite::params![updated, id],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        let root = format!("cli:{prefix}-root");
+        let branch = format!("cli:{prefix}-branch");
+        let (root_id, branch_id) = (root.clone(), branch.clone());
+        store
+            .with_connection(move |db| {
+                db.execute(
+                    "INSERT INTO web_chat_branches VALUES(?1,?2,?2,0)",
+                    [&branch_id, &root_id],
+                )?;
+                db.execute("INSERT INTO web_chat_selection VALUES(?1,?1)", [&root_id])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        for (query, shown, group, unread) in [
+            ("", "read", "read", None),
+            ("&unread=false", "read", "read", None),
+            ("&unread=true", "nonmatch", "nonmatch", Some("nonmatch")),
+            ("&unread=true&offset=1", "root", "root", Some("branch")),
+            ("&unread=true&q=needle", "root", "root", Some("branch")),
+            (
+                "&unread=true&q=needle&offset=1",
+                "second",
+                "second",
+                Some("second"),
+            ),
+            ("&unread=true&q=alternate", "branch", "root", Some("branch")),
+        ] {
+            let listed: Value = f
+                .request(
+                    reqwest::Method::GET,
+                    &format!("sessions?limit=1&webhooks={webhooks}{query}"),
+                )
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(listed.as_array().unwrap().len(), 1, "{prefix}{query}");
+            let row = &listed[0];
+            assert_eq!(
+                row["id"],
+                format!("cli:{prefix}-{shown}"),
+                "{prefix}{query}"
+            );
+            assert_eq!(row["root_id"], format!("cli:{prefix}-{group}"));
+            assert_eq!(row["unread"], unread.is_some());
+            assert_eq!(
+                row["unread_session_id"],
+                json!(unread.map(|id| format!("cli:{prefix}-{id}")))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn mark_all_read_is_scoped_to_the_requested_sidebar() {
+    use crate::agent::session::{Session, SessionId};
+    let f = Fixture::new().await;
+    let store = SqliteSessionStore::open(f.data.path().join("owner-sessions")).unwrap();
+    for (id, event) in [
+        ("cli:chat-a", false),
+        ("cli:chat-b", false),
+        ("cli:event", true),
+    ] {
+        let mut session = Session::new(SessionId::new(id));
+        session.webhook_instruction = event.then(|| "event".into());
+        session.push(Message::Assistant(AssistantMessage {
+            content: "answer".into(),
+        }));
+        store.save(&session).await.unwrap();
+    }
+    for (webhooks, events) in [(false, 1), (true, 0)] {
+        let response = f
+            .request(reqwest::Method::POST, "sessions/read-all")
+            .json(&json!({"webhooks":webhooks}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+        let activity: Value = f
+            .request(reqwest::Method::GET, "activity")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(activity["unread_chats"], 0);
+        assert_eq!(activity["unread_events"], events);
+    }
+}
+
+#[tokio::test]
 async fn activity_counts_unread_roots_in_both_categories_beyond_sidebar_pages() {
     use crate::agent::session::{Session, SessionId};
     let f = Fixture::new().await;

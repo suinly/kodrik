@@ -302,6 +302,52 @@ test('opening an unread branch without window focus clears its badges only after
   } finally {await browser.close()}
 });
 
+for (const events of [false,true]) test(`unread filter combines with ${events?'event':'chat'} search`,{timeout:60000},async()=>{
+  const browser=await chromium.launch();
+  try {
+    const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    const rows=[
+      {id:'read',title:'Read Alpha',unread:false},
+      {id:'unread-alpha',title:'Unread Alpha',unread:true},
+      {id:'unread-beta',title:'Unread Beta',unread:true},
+    ].map(row=>({busy:false,updated_at:null,unread_session_id:null,...row}));
+    await page.route('**/api/chat/sessions?*',route=>{
+      const params=new URL(route.request().url()).searchParams;
+      const q=params.get('q')?.toLowerCase() ?? '';
+      return route.fulfill({json:params.get('webhooks')===String(events)?rows.filter(row=>row.title.toLowerCase().includes(q) && (params.get('unread')!=='true' || row.unread)):[]});
+    });
+    await page.route('**/api/chat/sessions/read-all',route=>{
+      if(route.request().method()!=='POST' || route.request().postDataJSON()?.webhooks!==events) return route.fulfill({status:400});
+      for(const row of rows) row.unread=false;
+      return route.fulfill({status:204});
+    });
+    await page.goto(new URL(events?'app/webhooks?view=events':'app/chat',base).href);
+    const list=page.getByRole('navigation',{name:events?'История событий':'История диалогов'});
+    const read=list.getByRole('button',{name:'Read Alpha',exact:true});
+    const alpha=list.getByRole('button',{name:'Unread Alpha',exact:true});
+    const beta=list.getByRole('button',{name:'Unread Beta',exact:true});
+    const filter=page.getByRole('button',{name:'Только непрочитанные',exact:true});
+    const searchLabel=events?'Поиск событий':'Поиск диалогов';
+    await expect(read).toBeVisible();
+    await filter.click({timeout:5000});
+    await expect(filter).toHaveAttribute('aria-pressed','true');
+    await expect(beta).toBeVisible();
+    await expect(read).toHaveCount(0);
+    await page.getByRole('button',{name:searchLabel,exact:true}).click();
+    await page.getByRole('textbox',{name:searchLabel,exact:true}).fill('Alpha');
+    await expect(alpha).toBeVisible();
+    await expect(beta).toHaveCount(0);
+    await expect(read).toHaveCount(0);
+    await filter.click();
+    await expect(read).toBeVisible();
+    await expect(beta).toHaveCount(0);
+    await filter.click();
+    await expect(alpha).toBeVisible();
+    await page.getByRole('button',{name:'Пометить всё прочитанным',exact:true}).click({timeout:5000});
+    await expect(page.getByText(events?'Нет непрочитанных событий.':'Нет непрочитанных диалогов.',{exact:true})).toBeVisible();
+  } finally {await browser.close()}
+});
+
 test('sidebar opens the remembered branch, or the matching branch in search, despite unread replies',{timeout:60000},async()=>{
   const browser=await chromium.launch({headless:true});
   try {
@@ -324,6 +370,17 @@ test('sidebar opens the remembered branch, or the matching branch in search, des
     await page.locator(`[data-conversation-id="${latest}"]`).click();
     await expect(page).toHaveURL(new URL(`app/chat/${latest}`,base).href);
     await expect(page.locator('.message')).toContainText('Latest branch reply');
+    const searchInChat=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
+    await page.keyboard.press('Control+f');
+    await expect(searchInChat).toBeFocused();
+    await searchInChat.fill('Latest');
+    await page.getByRole('button',{name:'Поиск диалогов',exact:true}).focus();
+    await page.keyboard.press('Meta+f');
+    await expect(searchInChat).toBeFocused();
+    await expect(searchInChat).toHaveValue('Latest');
+    await searchInChat.press('Escape');
+    await expect(searchInChat).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'Найти в диалоге',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'Поиск диалогов',exact:true}).click();
     await page.getByRole('textbox',{name:'Поиск диалогов',exact:true}).fill('Needle');
     const row=page.locator(`[data-conversation-id="${match}"]`);
@@ -580,7 +637,7 @@ test('active chat reports presence without a push subscription and clears it on 
   } finally {await browser.close();}
 });
 
-test('visible webhook event reports presence for approval notification routing', {timeout:30000},async()=>{
+test('visible webhook event reports presence for approval notification routing and supports keyboard search', {timeout:30000},async()=>{
   const browser=await chromium.launch({headless:true});
   let hook;
   try {
@@ -593,6 +650,8 @@ test('visible webhook event reports presence for approval notification routing',
     const opened=page.waitForResponse(response=>response.url().endsWith('/api/chat/push/presence') && response.request().postDataJSON()?.session_id===id,{timeout:5000});
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     assert.equal((await opened).status(),204);
+    await page.keyboard.press('Control+f');
+    await expect(page.getByRole('textbox',{name:'Поиск в диалоге',exact:true})).toBeFocused();
   } finally {
     if(hook) await fetch(new URL(`api/webhooks/${hook.id}`,base),{method:'DELETE',headers:{Cookie:cookie,Origin:new URL(base).origin}});
     await browser.close();
@@ -1248,16 +1307,14 @@ test('composer focus recovery respects other fields, shortcuts, overlays and hid
     await expect(input).toHaveText('Черновик');
     await page.evaluate(()=>document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'x',isComposing:true,bubbles:true})));
     await expect(input).not.toBeFocused();
-    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    await page.keyboard.press('Control+f');
     const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
     await expect(search).toBeFocused();
     await page.keyboard.type('query');
     await expect(search).toHaveValue('query');
     await expect(input).toHaveText('Черновик');
     await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
-    const searchButton=page.getByRole('button',{name:'Найти в диалоге',exact:true});
-    await searchButton.focus();
-    await page.keyboard.press('Space');
+    await page.keyboard.press('Control+f');
     await expect(search).toBeVisible();
     await expect(input).toHaveText('Черновик');
     await page.getByRole('button',{name:'Закрыть поиск',exact:true}).click();
@@ -1627,7 +1684,7 @@ test('long messages stay fully visible with search, editing, code and live text'
     await user.getByRole('button',{name:'Редактировать сообщение',exact:true}).click();
     await expect(user.getByRole('textbox',{name:'Редактирование сообщения',exact:true})).toHaveValue(text);
     await user.getByRole('button',{name:'Отмена',exact:true}).click();
-    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    await page.keyboard.press('Control+f');
     await page.getByRole('textbox',{name:'Поиск в диалоге',exact:true}).fill('Конец сообщения');
     await expect(user.getByRole('link',{name:'Конец сообщения',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'Следующее совпадение',exact:true}).click();
@@ -1721,7 +1778,7 @@ test('conversation search scrolls to matches and navigates in both directions', 
     const transcript=page.getByTestId('chat-transcript');
     await expect(page.locator('.message')).toHaveCount(40);
     await expect.poll(()=>transcript.evaluate(el=>el.scrollHeight-el.scrollTop-el.clientHeight)).toBeLessThan(2);
-    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    await page.keyboard.press('Control+f');
     const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
     await search.fill('Поисковый маяк');
     const selected=page.locator('.message.search-match');
@@ -1880,7 +1937,7 @@ test('conversation search highlights literal text in Markdown and clears it when
     await page.goto(new URL(`app/chat/${encodeURIComponent(id)}`,base).href);
     await expect(page.locator('.message strong')).toHaveText('МАЯК');
     await expect(page.locator('.message code')).toHaveText('маяк');
-    await page.getByRole('button',{name:'Найти в диалоге',exact:true}).click();
+    await page.keyboard.press('Control+f');
     const search=page.getByRole('textbox',{name:'Поиск в диалоге',exact:true});
     const highlights=()=>page.evaluate(()=>Array.from(CSS.highlights.get('conversation-search') ?? [],range=>range.toString()));
     await search.fill(' МаЯк ');
@@ -2518,12 +2575,12 @@ test('mobile sidebar profile menu fits narrow screens and enlarged text',{timeou
         await page.setViewportSize({width,height:640});
         await page.evaluate(size=>document.documentElement.style.fontSize=`${size}px`,fontSize);
         const logo=await dialog.getByRole('link',{name:'kodrik',exact:true}).boundingBox();
-        const search=await dialog.locator('.sidebar-header-actions button').boundingBox();
+        const [search,filter]=await Promise.all((await dialog.locator('.sidebar-header-actions button').all()).map(button=>button.boundingBox()));
         const close=await dialog.locator('[data-slot="toggle"]').boundingBox();
         const history=await dialog.getByRole('navigation',{name:locale==='ru-RU'?'История диалогов':'Conversation history',exact:true}).boundingBox();
-        assert.ok(search.x>=logo.x+logo.width && close.x>=search.x+search.width,`Header buttons do not overlap at ${width}px / ${fontSize}px`);
+        assert.ok(close.x>=logo.x+logo.width && search.y>=close.y+close.height && filter.x>=search.x+search.width,`Header buttons do not overlap at ${width}px / ${fontSize}px`);
         assert.ok(Math.abs(close.x+close.width-history.x-history.width)<1,`Close stays inside the content edge at ${width}px / ${fontSize}px: ${JSON.stringify({logo,search,close,history})}`);
-        for(const control of [search,close]) assert.ok(control.width>=44 && control.height>=44,'Header controls retain 44px touch targets');
+        for(const control of [search,filter,close]) assert.ok(control.width>=44 && control.height>=44,'Header controls retain 44px touch targets');
         if(width===320 && fontSize===20) await page.screenshot({path:`/tmp/kodrik-kod-6-${locale}.png`,animations:'disabled'});
         for(const name of [labels.profile]) {
           const geometry=await dialog.getByRole('button',{name,exact:true}).evaluate(el=>{
@@ -2732,10 +2789,8 @@ test('mobile chat fits narrow screens and the visual keyboard viewport without l
       assert.ok(geometry.touchable,`${name}: 44px touch area`);
     };
     for(const name of ['Прикрепить файлы и фото','Отправить']) await checkIcon(name);
-    for(const button of ['Показать диалоги','Найти в диалоге']) {
-      const bounds=await page.getByRole('button',{name:button,exact:true}).boundingBox();
-      assert.ok(bounds.height>=44 && bounds.width>=44,`${button}: touch target`);
-    }
+    const menuBounds=await page.getByRole('button',{name:'Показать диалоги',exact:true}).boundingBox();
+    assert.ok(menuBounds.height>=44 && menuBounds.width>=44,'Sidebar toggle: touch target');
     await expect(page.getByRole('button',{name:'Переименовать диалог',exact:true})).toBeHidden();
     const checkFits=async(height,top=0)=>{
       await expect(async()=>{

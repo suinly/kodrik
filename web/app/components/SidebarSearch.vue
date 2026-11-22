@@ -25,8 +25,10 @@ function close() {
 <template>
   <div ref="header" class="sidebar-section-header">
     <h2 class="min-w-0 flex-1 text-sm font-semibold text-highlighted"><slot name="title">{{ title }}</slot></h2>
+    <slot name="section-actions" />
     <Teleport :to="actions ?? 'body'" :disabled="!actions">
       <UButton ref="button" :aria-label="label" :title="label" :aria-expanded="open" :aria-controls="id" icon="i-lucide-search" color="neutral" :variant="open ? 'soft' : 'ghost'" size="sm" class="sidebar-action" @click="toggle" />
+      <slot name="actions" />
     </Teleport>
   </div>
   <UInput v-show="open" :id="id" ref="input" v-model="query" :aria-label="label" :placeholder="placeholder" :loading="loading" icon="i-lucide-search" size="lg" class="w-full" :ui="{base:'text-base'}" @keydown.esc.stop.prevent="close" />

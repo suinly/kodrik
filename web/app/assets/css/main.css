@@ -141,6 +141,13 @@ body:has(.chat-viewport) {
     pointer-events: none;
   }
   .chat-sidebar > [data-slot='header'] .sidebar-logo { min-width: 44px; }
+  .chat-sidebar > [data-slot='header']:has(.sidebar-header-actions > :nth-child(2)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .chat-sidebar > [data-slot='header']:has(.sidebar-header-actions > :nth-child(2)) .sidebar-header-actions {
+    grid-area: 2 / 1 / 3 / 3;
+  }
   .chat-sidebar > [data-slot='header'] :is(.sidebar-action, [data-slot='toggle']) {
     flex-shrink: 0;
     width: 44px;

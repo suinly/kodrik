@@ -264,6 +264,19 @@ impl SqliteSessionStore {
         .await
     }
 
+    pub(crate) async fn mark_all_chat_read(&self, webhooks: bool) -> anyhow::Result<()> {
+        self.with_connection(move |db| {
+            db.execute(
+                "UPDATE web_chat_activity SET read_revision=revision
+                WHERE webhook_event=?1 AND listed=1 AND session_id NOT GLOB 'companion:subagent:*'
+                AND revision!='' AND revision!=read_revision",
+                [webhooks],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     #[cfg(test)]
     pub(crate) async fn chat_activity(&self, running: Vec<String>) -> anyhow::Result<(bool, bool)> {
         self.with_connection(move |db| {

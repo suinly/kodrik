@@ -182,10 +182,11 @@ async function showMatch(index:number) {
 }
 watch([search,()=>matches.value.join('\n')],()=>showMatch(0))
 watch(()=>props.initialSearch,value=>{search.value=value ?? ''})
-watch(()=>props.searchOpen,async open=>{
+watch(()=>props.searchOpen,open=>{
   if(!open) {search.value='';return}
-  await nextTick();searchInput.value?.inputRef?.focus({preventScroll:true})
+  void nextTick(focusSearch)
 })
+function focusSearch() {searchInput.value?.inputRef?.focus({preventScroll:true})}
 function closeSearch() {search.value='';emit('close-search')}
 
 async function editMessage(message:ChatMessage,text:string) {
@@ -227,7 +228,8 @@ function scrollToLatest() {
 function trackScroll() {
   const view=transcript.value
   if(!view) return
-  if(view.scrollHeight-view.scrollTop-view.clientHeight<100) follow.value=true
+  if(search.value.trim()) follow.value=false
+  else if(view.scrollHeight-view.scrollTop-view.clientHeight<100) follow.value=true
   else if(view.scrollTop<lastScrollTop) follow.value=false
   lastScrollTop=view.scrollTop
 }
@@ -379,7 +381,7 @@ const tokenUsage=computed(()=>snapshot.value?.token_usage)
 const contextTokens=computed(()=>snapshot.value?.context_tokens)
 const contextLimit=computed(()=>snapshot.value?.context_limit)
 const contextCompactionThreshold=computed(()=>snapshot.value?.context_compaction_threshold)
-defineExpose({openBrowserSettings:()=>tabBridge.settings(),focusInput,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment,tokenUsage,contextTokens,contextLimit,contextCompactionThreshold})
+defineExpose({openBrowserSettings:()=>tabBridge.settings(),focusInput,focusSearch,setCommandAudit,commandAuditMode,commandAuditDisabled,savingCommandAudit,environment,tokenUsage,contextTokens,contextLimit,contextCompactionThreshold})
 watch([editorLocked,()=>prompt.value?.editor,()=>t('Сообщение')], async ([locked,editor,label],previous) => {
   if(!editor) return
   // UEditor applies options only at creation; keep its live instance in sync.
