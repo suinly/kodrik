@@ -230,12 +230,16 @@ test('favicon prioritizes unread over running and respects reduced motion',{time
   } finally {await browser.close()}
 });
 
-test('sidebar unread reply opens its branch and clears with favicon only after read succeeds',{timeout:60000},async()=>{
+test('opening an unread branch without window focus clears its badges only after read succeeds',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const branch='unread-branch';
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser,{viewport:{width:1280,height:900}});
+    await page.addInitScript(()=>{
+      Object.defineProperty(document,'hasFocus',{value:()=>false});
+      window.addEventListener('focus',event=>event.stopImmediatePropagation());
+    });
     let unread=true,pendingRead;
     const reads=[];
     const snapshot={type:'snapshot',session_id:branch,run_id:null,revision:1,read_revision:'committed-answer',busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[{id:'answer',role:'assistant',parts:[{type:'text',text:'Committed branch reply'}]}]};

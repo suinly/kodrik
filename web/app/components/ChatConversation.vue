@@ -94,12 +94,18 @@ const visibility=useDocumentVisibility()
 const focused=useWindowFocus()
 let readRevision:string|undefined
 let markingRead=false
+let opening=true
 async function markRead() {
+  if(markingRead || !props.active || visibility.value!=='visible' || !snapshot.value || (!opening && !focused.value)) return
   const revision=snapshot.value?.read_revision
-  if(markingRead || !props.active || visibility.value!=='visible' || !focused.value || !revision || revision===readRevision) return
+  if(!revision || revision===readRevision) {
+    opening=false
+    return
+  }
   markingRead=true
   try {
     await api(`sessions/${props.conversation.id}/read`,'POST',{revision})
+    opening=false
     readRevision=revision
     emit('read')
   } catch { /* Retry on the next snapshot or focus change. */ }
@@ -108,7 +114,10 @@ async function markRead() {
     if(snapshot.value?.read_revision!==revision) void markRead()
   }
 }
-watch([()=>snapshot.value,()=>props.active,visibility,focused],()=>{void markRead()},{flush:'post'})
+watch([()=>snapshot.value,()=>props.active,visibility,focused],()=>{
+  if(!props.active) opening=true
+  else void markRead()
+},{flush:'post'})
 const prompt = useTemplateRef('prompt')
 const editorExtensions = [TableKit, TaskList, TaskItem]
 const transcript = useTemplateRef('transcript')
