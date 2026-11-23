@@ -66,6 +66,15 @@ mod shared_session_tests {
 
     #[tokio::test]
     async fn persisted_stop_waits_for_another_workers_execution_ownership() {
+        control_waits_for_another_workers_execution_ownership("/stop").await;
+    }
+
+    #[tokio::test]
+    async fn persisted_new_waits_for_its_channels_execution_ownership() {
+        control_waits_for_another_workers_execution_ownership("/new").await;
+    }
+
+    async fn control_waits_for_another_workers_execution_ownership(text: &str) {
         use crate::agent::{Agent, ContextBuilder, tools::ToolRegistry};
         use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
@@ -91,7 +100,7 @@ mod shared_session_tests {
             .claim_execution(conversation.as_str(), conversation.as_str())
             .await
             .unwrap();
-        let command = IncomingMessage::new(InterfaceId("web".into()), "42", "/stop");
+        let command = IncomingMessage::new(InterfaceId("web".into()), "42", text);
         let request_id = command.request_id.clone();
         let source = conversation.clone();
         let mut task = tokio::spawn(async move { runner.apply_control(&source, &command).await });
@@ -99,7 +108,7 @@ mod shared_session_tests {
             tokio::time::timeout(std::time::Duration::from_millis(100), &mut task)
                 .await
                 .is_err(),
-            "a persisted Stop must wait for the execution owner"
+            "a persisted control must wait for its channel's execution owner"
         );
         let control = store
             .submission(conversation.as_str(), &request_id)
@@ -138,6 +147,59 @@ mod shared_session_tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn new_leaves_a_busy_webhook_session_without_waiting_for_it() {
+        use crate::agent::{Agent, ContextBuilder, tools::ToolRegistry};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            SqliteSessionStore::open_async(dir.path().into())
+                .await
+                .unwrap(),
+        );
+        let runner = AgentRunner::new(
+            Arc::new(Agent::new(
+                Arc::new(NoGeneration),
+                ToolRegistry::default(),
+                ContextBuilder::new("test"),
+            )),
+            store.clone(),
+        );
+        let webhook = Session::new(SessionId::new(uuid::Uuid::new_v4().to_string()));
+        let chat = SessionId::new("telegram:bot:42");
+        store.save(&webhook).await.unwrap();
+        // Successful webhook notification delivery selects its source in Telegram.
+        store.select(&chat, webhook.id()).await.unwrap();
+        let _webhook_owner = store
+            .claim_execution(webhook.id().as_str(), webhook.id().as_str())
+            .await
+            .unwrap();
+        let mut checkpoint = Checkpoint::new(&store, webhook.id(), &webhook);
+        checkpoint
+            .save(&webhook, RunPhase::NeedModel, None)
+            .await
+            .unwrap();
+
+        let command = IncomingMessage::new(InterfaceId("telegram:bot".into()), "42", "/new");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runner.apply_control(&chat, &command),
+        )
+        .await
+        .expect("/new must not wait for the webhook's session lock")
+        .unwrap();
+
+        assert_ne!(&store.active_id(&chat).await.unwrap(), webhook.id());
+        let (run, _) = store
+            .load_run(&checkpoint.record.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!run.phase.terminal());
+        assert!(!run.cancel_requested);
     }
 
     #[tokio::test]
@@ -856,7 +918,13 @@ impl AgentRunner {
         self.cancel_conversation(conversation).await?;
         let mut shutdown = self.shutdown_receiver();
         let _guard = loop {
-            match self.lock_conversation(conversation).await {
+            // /new changes this channel's selection, not the old session's history.
+            let lock = if message.text.trim() == "/new" {
+                self.lock_conversation_channel(conversation).await
+            } else {
+                self.lock_conversation(conversation).await
+            };
+            match lock {
                 Ok(guard) => break guard,
                 Err(error)
                     if matches!(

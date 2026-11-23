@@ -139,19 +139,13 @@ impl AgentRunner {
         lock.lock_owned().await
     }
 
-    pub(super) async fn lock_conversation(
+    pub(super) async fn lock_conversation_channel(
         &self,
         id: &SessionId,
     ) -> anyhow::Result<ConversationGuard> {
         let local = self.lock_local_conversation(id).await;
         let ownership = if let Some(store) = self.sessions.runtime_store() {
-            let conversation = store.execution_lock("conversation", id.as_str()).await?;
-            let active = store.active_id(id).await?;
-            let session = store.execution_lock("session", active.as_str()).await?;
-            Some(super::session::ExecutionOwnership::join(vec![
-                conversation,
-                session,
-            ]))
+            Some(store.execution_lock("conversation", id.as_str()).await?)
         } else {
             None
         };
@@ -159,6 +153,22 @@ impl AgentRunner {
             _local: local,
             ownership,
         })
+    }
+
+    pub(super) async fn lock_conversation(
+        &self,
+        id: &SessionId,
+    ) -> anyhow::Result<ConversationGuard> {
+        let mut guard = self.lock_conversation_channel(id).await?;
+        if let Some(store) = self.sessions.runtime_store() {
+            let active = store.active_id(id).await?;
+            let session = store.execution_lock("session", active.as_str()).await?;
+            guard.ownership = Some(super::session::ExecutionOwnership::join(vec![
+                guard.ownership.take().unwrap(),
+                session,
+            ]));
+        }
+        Ok(guard)
     }
 
     pub(crate) async fn conversation_busy(&self, id: &SessionId) -> bool {

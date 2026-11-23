@@ -182,6 +182,8 @@ does not override a session selected later by the owner.
 If Telegram is still finishing a turn in its previous session, the new reply
 waits for that turn and remains bound to the webhook session. While the webhook
 run itself is still active, the existing cross-channel session-busy check applies.
+`/new` can leave that session without waiting for or cancelling the webhook run.
+It still waits for cancellation of any active turn in the Telegram chat itself.
 
 The `web` channel is available when the web interface is enabled. Supply an
 existing conversation UUID, or null to create a new conversation. A successful
