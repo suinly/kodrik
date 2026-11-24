@@ -1846,6 +1846,45 @@ mod binding_tests {
     }
 
     #[test]
+    fn projected_user_photos_do_not_duplicate_inline_image_markers() {
+        for language in [Language::En, Language::Ru] {
+            let mut app = App {
+                language,
+                ..Default::default()
+            };
+            let snapshot: RemoteChatSnapshot = serde_json::from_value(serde_json::json!({
+                "session_id":"photos", "revision":1, "environment_revision":0,
+                "messages":[
+                    {"role":"user","parts":[
+                        {"type":"text","text":"Compare [Image 3] and [Image 4]"},
+                        {"type":"file","filename":"report.pdf"},
+                        {"type":"file","filename":"Фото 1","genericLabel":"photo","genericIndex":1},
+                        {"type":"file","filename":"Фото 2","genericLabel":"photo","genericIndex":2}
+                    ]},
+                    {"role":"user","parts":[
+                        {"type":"text","text":""},
+                        {"type":"file","filename":"Фото 1","genericLabel":"photo","genericIndex":1}
+                    ]}
+                ],"previous_cursor":null,"versions":null,"environment":null,"run":null
+            }))
+            .unwrap();
+            project(&mut app, &snapshot).unwrap();
+            assert_eq!(
+                app.messages[0].content,
+                language.pick(
+                    "Compare [Image 3] and [Image 4]\n[Attachment: report.pdf — available in server history]",
+                    "Compare [Image 3] and [Image 4]\n[Вложение: report.pdf — доступно в истории на сервере]",
+                )
+            );
+            assert!(
+                app.messages[1]
+                    .content
+                    .contains(language.pick("Photo 1", "Фото 1"))
+            );
+        }
+    }
+
+    #[test]
     fn projected_generic_attachment_labels_follow_language_and_keep_real_filenames() {
         for language in [Language::En, Language::Ru] {
             for role in ["user", "assistant"] {
@@ -2125,10 +2164,22 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                 );
             }
             user_turn += 1;
-            let content = row["parts"]
-                .as_array()
-                .into_iter()
-                .flatten()
+            let parts = row["parts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let inline_images: usize = parts
+                .iter()
+                .filter(|part| part["type"] == "text")
+                .filter_map(|part| part["text"].as_str())
+                .map(inline_image_count)
+                .sum();
+            let is_photo = |part: &serde_json::Value| {
+                part["type"] == "file"
+                    && part["genericLabel"] == "photo"
+                    && part["genericIndex"].as_u64().is_some_and(|index| index > 0)
+            };
+            let photos_have_markers = inline_images > 0
+                && inline_images >= parts.iter().filter(|part| is_photo(part)).count();
+            let content = parts
+                .iter()
                 .filter_map(|part| match part["type"].as_str() {
                     Some("text") => Some(format!(
                         "{}{}",
@@ -2142,7 +2193,7 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
                             ""
                         }
                     )),
-                    Some("file") => Some(
+                    Some("file") if !(photos_have_markers && is_photo(part)) => Some(
                         app.language
                             .pick(
                                 &format!(

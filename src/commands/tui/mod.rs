@@ -689,16 +689,18 @@ fn reset_session(app: &mut App) {
     };
 }
 
-fn waiting_summary(text: &str, images: usize) -> String {
-    let inline_images = text
-        .split("[Image ")
+fn inline_image_count(text: &str) -> usize {
+    text.split("[Image ")
         .skip(1)
         .filter(|part| {
             part.split_once(']')
                 .is_some_and(|(id, _)| id.parse::<usize>().is_ok_and(|id| id > 0))
         })
-        .count();
-    if inline_images >= images {
+        .count()
+}
+
+fn waiting_summary(text: &str, images: usize) -> String {
+    if inline_image_count(text) >= images {
         text.to_owned()
     } else {
         format!("{text}\n[Images: {images}]")
