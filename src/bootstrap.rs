@@ -503,6 +503,13 @@ mod tests {
             ["fast", "smart", "deep", "vision"]
         );
         assert_eq!(
+            app.agent_runner.model_names(),
+            ["fast", "smart", "deep", "vision"]
+                .into_iter()
+                .map(|role| (role.to_owned(), format!("fixture-{role}")))
+                .collect()
+        );
+        assert_eq!(
             app.agent_runner.run_once("hello").await.unwrap(),
             "fixture-smart:medium"
         );

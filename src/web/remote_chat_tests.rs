@@ -1919,7 +1919,7 @@ async fn remote_model_commands_validate_persist_reset_and_scope() {
     let models: ChatCommand = serde_json::from_value(json!({"kind":"models"})).unwrap();
     assert_eq!(
         chat.remote_command(&id, models).await.unwrap(),
-        json!({"models":["test-alpha","test-beta"],"default_model":"test-provider:server-model"})
+        json!({"models":["test-alpha","test-beta"],"default_model":"test-provider:server-model","model_names":{}})
     );
     let set: ChatCommand =
         serde_json::from_value(json!({"kind":"set_model","model":"test-beta"})).unwrap();

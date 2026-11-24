@@ -82,6 +82,19 @@ impl AgentRunner {
         self.agent.model_roles()
     }
 
+    pub(crate) fn model_names(&self) -> HashMap<String, String> {
+        self.agent
+            .model_roles()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| {
+                let identity = self.agent.provider_for(Some(&role)).ok()?.identity();
+                let name = identity.strip_prefix("openai:").unwrap_or(&identity);
+                Some((role, name.to_owned()))
+            })
+            .collect()
+    }
+
     pub(crate) fn model_identity(&self) -> String {
         self.agent.model_identity()
     }

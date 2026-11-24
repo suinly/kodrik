@@ -1,8 +1,11 @@
 use super::app::App;
+use crate::{agent::tools::model_selection::ModelTier, i18n::Language};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::collections::HashMap;
 
 pub(super) struct ModelPicker {
     pub models: Vec<String>,
+    pub names: HashMap<String, String>,
     pub choice: usize,
     pub query: String,
 }
@@ -14,20 +17,45 @@ impl ModelPicker {
             .map_or(0, |index| index + 1);
         Self {
             models,
+            names: HashMap::new(),
             choice,
             query: String::new(),
         }
     }
 
-    pub fn filtered(&self) -> Vec<Option<&str>> {
+    pub fn filtered(&self, language: Language) -> Vec<Option<&str>> {
+        let query = self.query.to_lowercase();
         std::iter::once(None)
             .chain(
                 self.models
                     .iter()
-                    .filter(|id| id.to_lowercase().contains(&self.query.to_lowercase()))
+                    .filter(|id| {
+                        id.to_lowercase().contains(&query)
+                            || self
+                                .label(Some(id), language)
+                                .to_lowercase()
+                                .contains(&query)
+                    })
                     .map(|id| Some(id.as_str())),
             )
             .collect()
+    }
+
+    pub fn label(&self, id: Option<&str>, language: Language) -> String {
+        let Some(id) = id else {
+            return language.pick("Auto", "Авто").to_owned();
+        };
+        let role = match ModelTier::from_name(id) {
+            Some(ModelTier::Fast) => language.pick("Fast", "Быстрая"),
+            Some(ModelTier::Smart) => language.pick("Smart", "Умная"),
+            Some(ModelTier::Deep) => language.pick("Deep", "Глубокая"),
+            Some(ModelTier::Vision) => language.pick("Vision", "Зрение"),
+            None => id,
+        };
+        match self.names.get(id) {
+            Some(name) => format!("{role} · {name}"),
+            None => role.to_owned(),
+        }
     }
 }
 
@@ -47,7 +75,9 @@ pub(super) fn update_model_picker(app: &mut App, key: KeyEvent) -> Option<String
     let picker = app.model_picker.as_mut()?;
     match key.code {
         KeyCode::Up => picker.choice = picker.choice.saturating_sub(1),
-        KeyCode::Down => picker.choice = (picker.choice + 1).min(picker.filtered().len() - 1),
+        KeyCode::Down => {
+            picker.choice = (picker.choice + 1).min(picker.filtered(app.language).len() - 1);
+        }
         KeyCode::Char(c) => {
             picker.query.push(c);
             picker.choice = 0;
@@ -60,7 +90,7 @@ pub(super) fn update_model_picker(app: &mut App, key: KeyEvent) -> Option<String
         KeyCode::Enter if key.kind == KeyEventKind::Press => {
             let picker = app.model_picker.take()?;
             return picker
-                .filtered()
+                .filtered(app.language)
                 .get(picker.choice)
                 .map(|model| match model {
                     Some(id) => format!("/model {id}"),
@@ -108,7 +138,7 @@ mod tests {
         assert_eq!(app.model_picker.as_ref().unwrap().choice, 1);
         key(&mut app, KeyCode::Char('B'));
         assert_eq!(
-            app.model_picker.as_ref().unwrap().filtered(),
+            app.model_picker.as_ref().unwrap().filtered(app.language),
             vec![None, Some("Beta")]
         );
         assert_eq!(key(&mut app, KeyCode::Enter).as_deref(), Some("/model"));
@@ -116,6 +146,34 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(app.model_picker.is_none());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn picker_searches_configured_names_and_submits_the_role() {
+        let mut picker = ModelPicker::new(vec!["deep".into(), "vision".into()], None);
+        picker.names = HashMap::from([("vision".into(), "vendor/Visual".into())]);
+        let mut app = App {
+            language: Language::Ru,
+            model_picker: Some(picker),
+            ..Default::default()
+        };
+        for ch in "VISUAL".chars() {
+            key(&mut app, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().filtered(app.language),
+            vec![None, Some("vision")]
+        );
+        app.model_picker.as_mut().unwrap().query = "зрен".into();
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().filtered(app.language),
+            vec![None, Some("vision")]
+        );
+        key(&mut app, KeyCode::Down);
+        assert_eq!(
+            key(&mut app, KeyCode::Enter).as_deref(),
+            Some("/model vision")
+        );
     }
 }
 
@@ -145,10 +203,10 @@ pub(super) async fn handle_command(
         if input == "/models" {
             let session = runner.load_session(conversation.clone()).await?;
             refresh(app, runner, &session)?;
-            app.model_picker = Some(ModelPicker::new(
-                runner.available_models().await?,
-                app.model_override.clone(),
-            ));
+            let mut picker =
+                ModelPicker::new(runner.available_models().await?, app.model_override.clone());
+            picker.names = runner.model_names();
+            app.model_picker = Some(picker);
             return Ok::<_, anyhow::Error>(());
         }
         let model = input

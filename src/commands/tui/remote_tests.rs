@@ -613,14 +613,10 @@ async fn terminal_remote_fixture() {
                     + 1;
                 std::fs::write("model-lists", count.to_string()).unwrap();
                 eprintln!("fixture-model-list-{count}");
-                json!({"models":["fixture-chosen-model"],"default_model":"server-test-model"})
+                json!({"models":["smart"],"default_model":"server-test-model","model_names":{"smart":"fixture-chosen-model"}})
             }
             ChatCommand::SetModel { model } => {
-                assert!(
-                    model
-                        .as_deref()
-                        .is_none_or(|id| id == "fixture-chosen-model")
-                );
+                assert!(model.as_deref().is_none_or(|id| id == "smart"));
                 std::fs::write("selected-model", model.as_deref().unwrap_or("default")).unwrap();
                 eprintln!("fixture-model-selected");
                 if model.is_none() {
@@ -1459,14 +1455,16 @@ fn remote_models_picker_selects_and_resets_without_sending_model_input() {
     terminal.wait_for(b"server answer", 0);
     terminal.send(b"\x1b");
     terminal.wait_for(b"Stopped", 0);
+    terminal.send(b"/language ru\r");
+    terminal.wait_for("Язык интерфейса: русский".as_bytes(), 0);
     terminal.send(b"/models\r");
     terminal.wait_for(b"fixture-model-list-1", 0);
-    terminal.wait_for(b"fixture-chosen-model", 0);
+    terminal.wait_for("Умная · fixture-chosen-model".as_bytes(), 0);
     terminal.send(b"\x1b[B\r");
     terminal.wait_for(b"fixture-model-selected", 0);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("selected-model")).unwrap(),
-        "fixture-chosen-model"
+        "smart"
     );
     terminal.send(b"/models\r");
     terminal.wait_for(b"fixture-model-list-2", 0);

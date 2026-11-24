@@ -737,10 +737,12 @@ impl Remote {
                     .command(&self.session, ChatCommand::Models)
                     .await?;
                 let models: Vec<String> = serde_json::from_value(catalogue["models"].clone())?;
-                app.model_picker = Some(super::models::ModelPicker::new(
-                    models,
-                    app.model_override.clone(),
-                ));
+                let mut picker =
+                    super::models::ModelPicker::new(models, app.model_override.clone());
+                if let Some(names) = catalogue.get("model_names") {
+                    picker.names = serde_json::from_value(names.clone())?;
+                }
+                app.model_picker = Some(picker);
                 app.sessions = None;
                 app.view.clear_selection();
             }

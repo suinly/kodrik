@@ -1,7 +1,7 @@
 <script lang="ts">
 import {api,messageOf} from '../utils/api'
 
-type ModelCatalog = {models:string[];default_model:string|null}
+type ModelCatalog = {models:string[];default_model:string|null;model_names?:Record<string,string>}
 const roles = {fast:'Быстрая',smart:'Умная',deep:'Глубокая',vision:'Зрение'} as const
 type ModelRole = keyof typeof roles
 const catalogTtlMs = 5 * 60_000
@@ -24,6 +24,7 @@ const props=defineProps<{sessionId?:string|null;model?:string|null;modelOverride
 const emit=defineEmits<{saving:[value:boolean];'update:modelOverride':[value:string|null]}>()
 const open=ref(false)
 const models=ref<string[]|null>(null)
+const modelNames=ref<ModelCatalog['model_names']>()
 const defaultModel=ref<string|null>(null)
 const loading=ref(false)
 const saving=ref(false)
@@ -45,6 +46,7 @@ async function load() {
   try {
     const result=await loadCatalog()
     models.value=result.models;defaultModel.value=result.default_model
+    modelNames.value=result.model_names
   } catch(error) {problem.value=messageOf(error)}
   finally {loading.value=false}
 }
@@ -83,8 +85,13 @@ async function select(model:ModelRole|null) {
           </div>
           <UButton :label="t('Авто')" color="neutral" variant="ghost" size="sm"
             class="w-full justify-start" :disabled="locked || loading" :aria-pressed="!modelOverride" @click="select(null)" />
-          <UButton v-for="role in availableRoles" :key="role" :label="modelName(role)" color="neutral" variant="ghost" size="sm"
-            class="w-full justify-start" :disabled="locked || loading" :aria-pressed="modelOverride===role" @click="select(role)" />
+          <UButton v-for="role in availableRoles" :key="role" color="neutral" variant="ghost" size="sm"
+            class="w-full justify-start text-left" :disabled="locked || loading" :aria-pressed="modelOverride===role" @click="select(role)">
+            <span class="min-w-0">
+              {{ modelName(role) }}
+              <span v-if="modelNames?.[role]" class="block break-all whitespace-normal text-xs text-muted">{{ modelNames[role] }}</span>
+            </span>
+          </UButton>
         </div>
       </template>
     </UPopover>

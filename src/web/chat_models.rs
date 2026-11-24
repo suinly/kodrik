@@ -30,7 +30,11 @@ impl Chat {
                 "Не удалось загрузить модели провайдера",
             )
         })?;
-        Ok(json!({"models":models,"default_model":self.runner.model_identity()}))
+        Ok(json!({
+            "models": models,
+            "default_model": self.runner.model_identity(),
+            "model_names": self.runner.model_names(),
+        }))
     }
 
     pub(super) async fn set_model(&self, id: &str, model: Option<String>) -> Result<(), Response> {

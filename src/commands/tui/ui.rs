@@ -192,7 +192,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     app.input_width = usize::from(area.width.saturating_sub(3).max(1));
     let (input_rows, (cursor_x, cursor_y)) = app.input_layout(app.input_width);
     let input_lines = if let Some(picker) = &app.model_picker {
-        (picker.filtered().len().min(6) + 2) as u16
+        (picker.filtered(language).len().min(6) + 2) as u16
     } else if app.audit_picker.is_some() {
         5
     } else if app.language_choice.is_some() {
@@ -595,86 +595,79 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             );
         }
         let selection_style = Style::default().fg(Color::Yellow).bold();
-        let (items, selected, highlight_style) =
-            if let Some(picker) = &app.model_picker {
-                (
-                    picker
-                        .filtered()
-                        .into_iter()
-                        .map(|id| {
-                            ListItem::new(id.unwrap_or(
-                                language.pick(
-                                    "Auto (starts on Fast)",
-                                    "Авто (начинает с Fast)",
-                                ),
-                            ))
-                        })
-                        .collect::<Vec<_>>(),
-                    Some(picker.choice),
-                    selection_style,
-                )
-            } else if let Some(picker) = &app.audit_picker {
-                let label_width = super::approvals::AUDIT_MODES
-                    .iter()
-                    .map(|mode| Span::raw(mode.label(language)).width())
-                    .max()
-                    .unwrap_or(0);
-                let items = super::approvals::AUDIT_MODES
-                    .iter()
-                    .enumerate()
-                    .map(|(index, mode)| {
-                        let description = match mode {
-                            CommandAuditMode::Trusted => language.pick(
-                                "Run tool calls without review",
-                                "Выполнять действия без проверок",
-                            ),
-                            CommandAuditMode::Review => language.pick(
-                                "Ask before risky or unclear actions",
-                                "Подтверждать рискованные или неясные действия",
-                            ),
-                            CommandAuditMode::Ask => language
-                                .pick("Approve every tool call", "Подтверждать каждое действие"),
-                        };
-                        ListItem::new(Line::from(vec![
-                            Span::styled(
-                                format!("{:<label_width$}  ", mode.label(language)),
-                                if index == picker.choice {
-                                    selection_style
-                                } else {
-                                    Style::default().fg(Color::White)
-                                },
-                            ),
-                            Span::styled(description, Style::default().fg(Color::Gray).dim()),
-                        ]))
-                    })
-                    .collect::<Vec<_>>();
-                (items, Some(picker.choice), Style::default())
-            } else if let Some(choice) = app.language_choice {
-                (
-                    ["English", "Русский"]
-                        .into_iter()
-                        .map(ListItem::new)
-                        .collect(),
-                    Some(choice),
-                    selection_style,
-                )
-            } else {
-                (
-                    [
-                        language.pick("Allow once", "Разрешить один раз"),
-                        language.pick("Reject", "Отклонить"),
-                        language.pick(
-                            "No checks for this session",
-                            "Без проверок для этого сеанса",
+        let (items, selected, highlight_style) = if let Some(picker) = &app.model_picker {
+            (
+                picker
+                    .filtered(language)
+                    .into_iter()
+                    .map(|id| ListItem::new(literal_text(&picker.label(id, language))))
+                    .collect::<Vec<_>>(),
+                Some(picker.choice),
+                selection_style,
+            )
+        } else if let Some(picker) = &app.audit_picker {
+            let label_width = super::approvals::AUDIT_MODES
+                .iter()
+                .map(|mode| Span::raw(mode.label(language)).width())
+                .max()
+                .unwrap_or(0);
+            let items = super::approvals::AUDIT_MODES
+                .iter()
+                .enumerate()
+                .map(|(index, mode)| {
+                    let description = match mode {
+                        CommandAuditMode::Trusted => language.pick(
+                            "Run tool calls without review",
+                            "Выполнять действия без проверок",
                         ),
-                    ]
+                        CommandAuditMode::Review => language.pick(
+                            "Ask before risky or unclear actions",
+                            "Подтверждать рискованные или неясные действия",
+                        ),
+                        CommandAuditMode::Ask => {
+                            language.pick("Approve every tool call", "Подтверждать каждое действие")
+                        }
+                    };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<label_width$}  ", mode.label(language)),
+                            if index == picker.choice {
+                                selection_style
+                            } else {
+                                Style::default().fg(Color::White)
+                            },
+                        ),
+                        Span::styled(description, Style::default().fg(Color::Gray).dim()),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            (items, Some(picker.choice), Style::default())
+        } else if let Some(choice) = app.language_choice {
+            (
+                ["English", "Русский"]
                     .into_iter()
                     .map(ListItem::new)
                     .collect(),
-                    app.approval_choice,
-                    selection_style,
-                )
-            };
+                Some(choice),
+                selection_style,
+            )
+        } else {
+            (
+                [
+                    language.pick("Allow once", "Разрешить один раз"),
+                    language.pick("Reject", "Отклонить"),
+                    language.pick(
+                        "No checks for this session",
+                        "Без проверок для этого сеанса",
+                    ),
+                ]
+                .into_iter()
+                .map(ListItem::new)
+                .collect(),
+                app.approval_choice,
+                selection_style,
+            )
+        };
         frame.render_stateful_widget(
             List::new(items)
                 .highlight_symbol(Span::styled("> ", selection_style))
