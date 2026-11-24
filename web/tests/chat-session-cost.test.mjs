@@ -19,10 +19,19 @@ test('session cost distinguishes partial totals, very small costs, zero and miss
   ]}});
   await expect(page.getByTestId('token-usage')).toContainText('≥$0.001234');
   await expect(details).toContainText('Incomplete tracking');
-  const calls=details.getByRole('listitem');
+  const calls=details.getByTestId('model-call-group');
   await expect(calls.filter({hasText:'vendor/fast'})).toContainText(/chat.*\$0\.001234/);
   await expect(calls.filter({hasText:'vendor/free'})).toContainText(/title.*\$0\.00/);
   await expect(calls.filter({hasText:'vendor/smart'})).toContainText(/review.*No data/);
+  await page.evaluate(()=>{props.cost={total_usd:0.005,partial:true,calls:[
+    {id:'a',model:'vendor/repeated',kind:'chat',cost_usd:0.001,run_id:'run'},
+    {id:'b',model:'vendor/other',kind:'review',cost_usd:0.004,run_id:'run'},
+    {id:'c',model:'vendor/repeated',kind:'title',cost_usd:null,run_id:'run'},
+  ]}});
+  const groups=details.getByTestId('model-call-group');
+  await expect(groups).toHaveCount(2);
+  await expect(groups.filter({hasText:'vendor/repeated'})).toContainText(/chat.*\$0\.001.*title.*No data/);
+  await expect(groups.filter({hasText:'vendor/repeated'}).locator('p')).toContainText('≥$0.001');
   await page.evaluate(()=>{props.cost={total_usd:0.000000014,partial:false,calls:[]}});
   await expect(page.getByTestId('token-usage')).toContainText('<$0.000001');
   await expect(details).not.toContainText('Incomplete tracking');

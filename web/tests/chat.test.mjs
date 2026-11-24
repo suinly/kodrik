@@ -219,7 +219,7 @@ test('chat shows partial session costs with priced, free and unpriced model call
     await button.focus();
     const cost=page.getByTestId('session-cost');
     await expect(cost).toContainText('Учёт неполный');
-    const calls=cost.getByRole('listitem');
+    const calls=cost.getByTestId('model-call-group');
     await expect(calls).toHaveCount(3);
     await expect(calls.filter({hasText:'vendor/fast'})).toContainText(/chat.*0,001234/);
     await expect(calls.filter({hasText:'vendor/free'})).toContainText(/title.*0,00/);

@@ -12,6 +12,11 @@ const usdFloor=0.000001
 const money=(value:number|null)=>value==null?t('Нет данных'):value>0 && value<usdFloor?`<${usd.value.format(usdFloor)}`:usd.value.format(value)
 const displayTotal=(value:Pick<SessionCost,'total_usd'|'partial'>)=>`${value.partial && (value.total_usd===0 || value.total_usd>=usdFloor)?'≥':''}${money(value.total_usd)}`
 const costTotal=computed(()=>props.cost ? displayTotal(props.cost) : '')
+const callsByModel=computed(()=>{
+  const groups=new Map<string,NonNullable<typeof props.cost>['calls']>()
+  for(const call of props.cost?.calls ?? []) groups.set(call.model,[...(groups.get(call.model) ?? []),call])
+  return [...groups].map(([model,calls])=>({model,calls,total:calls.reduce((sum,call)=>sum+(call.cost_usd ?? 0),0),partial:calls.some(call=>call.cost_usd==null)}))
+})
 </script>
 
 <template>
@@ -35,10 +40,18 @@ const costTotal=computed(()=>props.cost ? displayTotal(props.cost) : '')
           <p v-if="runCost" class="mb-1 flex justify-between gap-2 text-muted tabular-nums"><span>{{ t('Последний ход') }}</span><span>{{ displayTotal(runCost) }}</span></p>
           <p v-if="cost.partial" class="mb-1 text-xs text-muted">{{ t('Учёт неполный: старые вызовы или данные провайдера могут отсутствовать.') }}</p>
           <p v-if="!cost.calls.length" class="text-xs text-muted">{{ t('Нет данных о вызовах.') }}</p>
-          <ul v-else :aria-label="t('Вызовы модели')" class="divide-y divide-default text-xs">
-            <li v-for="call in cost.calls" :key="call.id" class="flex items-start justify-between gap-2 py-1">
-              <span class="min-w-0 [overflow-wrap:anywhere]">{{ call.model }} <span class="text-muted">· {{ call.kind }}</span></span>
-              <span class="shrink-0 tabular-nums">{{ money(call.cost_usd) }}</span>
+          <ul v-else :aria-label="t('Вызовы модели')" class="space-y-2 text-xs">
+            <li v-for="group in callsByModel" :key="group.model" data-testid="model-call-group" class="border-b border-default pb-1">
+              <p class="mb-0.5 flex items-start justify-between gap-2 font-medium">
+                <span class="min-w-0 [overflow-wrap:anywhere]">{{ group.model }}</span>
+                <span class="shrink-0 tabular-nums">{{ displayTotal({total_usd:group.total,partial:group.partial}) }}</span>
+              </p>
+              <ul class="divide-y divide-default">
+                <li v-for="call in group.calls" :key="call.id" class="flex items-start justify-between gap-2 py-1">
+                  <span class="text-muted">{{ call.kind }}</span>
+                  <span class="shrink-0 tabular-nums">{{ money(call.cost_usd) }}</span>
+                </li>
+              </ul>
             </li>
           </ul>
         </section>
