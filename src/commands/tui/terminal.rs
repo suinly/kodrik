@@ -17,7 +17,8 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-use super::{app::App, ui};
+use super::{app::App, directory_prompt::DirectoryPrompt, ui};
+use crate::i18n::Language;
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<io::Stderr>>,
@@ -25,6 +26,14 @@ pub struct Tui {
 
 impl Tui {
     pub fn enter() -> anyhow::Result<Self> {
+        Self::enter_with_keys(false)
+    }
+
+    pub fn enter_remote() -> anyhow::Result<Self> {
+        Self::enter_with_keys(true)
+    }
+
+    fn enter_with_keys(report_key_events: bool) -> anyhow::Result<Self> {
         let previous_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
             let _ = reset();
@@ -33,7 +42,7 @@ impl Tui {
         terminal::enable_raw_mode()?;
         let result = (|| {
             execute!(io::stderr(), EnterAlternateScreen)?;
-            enable_input_modes(io::stderr())?;
+            enable_input_modes(io::stderr(), report_key_events)?;
             let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
             terminal.hide_cursor()?;
             Ok(Self { terminal })
@@ -59,6 +68,21 @@ impl Tui {
                 .map(|_| ())
         })??;
         Ok(())
+    }
+
+    pub fn draw_directory_prompt(
+        &mut self,
+        prompt: &DirectoryPrompt,
+        language: Language,
+    ) -> anyhow::Result<bool> {
+        self.terminal.hide_cursor()?;
+        let mut can_allow = false;
+        io::stderr().sync_update(|_| {
+            self.terminal
+                .draw(|frame| can_allow = prompt.render(frame, language))
+                .map(|_| ())
+        })??;
+        Ok(can_allow)
     }
 
     pub fn clear(&mut self) -> anyhow::Result<()> {
@@ -88,7 +112,9 @@ fn reset() -> io::Result<()> {
     raw_result
 }
 
-fn enable_input_modes(mut output: impl io::Write) -> io::Result<()> {
+fn enable_input_modes(mut output: impl io::Write, report_key_events: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    let _ = report_key_events;
     execute!(
         output,
         Print("\x1b[?1007l"),
@@ -102,7 +128,14 @@ fn enable_input_modes(mut output: impl io::Write) -> io::Result<()> {
     #[cfg(not(windows))]
     execute!(
         output,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | if report_key_events {
+                    KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                } else {
+                    KeyboardEnhancementFlags::empty()
+                }
+        )
     )?;
     Ok(())
 }
@@ -134,7 +167,7 @@ mod tests {
     #[test]
     fn keyboard_protocol_is_only_enabled_outside_windows() {
         let mut output = Vec::new();
-        enable_input_modes(&mut output).unwrap();
+        enable_input_modes(&mut output, false).unwrap();
         assert_eq!(
             output.windows(5).any(|bytes| bytes == b"\x1b[>1u"),
             !cfg!(windows)
@@ -159,7 +192,7 @@ mod tests {
             }
         }
         assert_eq!(
-            enable_input_modes(BrokenWriter).unwrap_err().kind(),
+            enable_input_modes(BrokenWriter, false).unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
         assert_eq!(
@@ -173,7 +206,7 @@ mod tests {
         // Ghostty's stream handler sets tracking to None on ANY mouse-mode reset.
         // See ghostty v1.4.0 src/terminal/stream_terminal.zig, mouse_event_* cases.
         let mut output = Vec::new();
-        enable_input_modes(&mut output).unwrap();
+        enable_input_modes(&mut output, false).unwrap();
         let mut tracking = None;
         let mut sgr = false;
         for sequence in output.split(|byte| *byte == 0x1b) {
@@ -200,7 +233,7 @@ mod tests {
     #[test]
     fn mouse_and_focus_reporting_are_enabled_and_reset_on_exit() {
         let mut output = Vec::new();
-        enable_input_modes(&mut output).unwrap();
+        enable_input_modes(&mut output, false).unwrap();
         let enabled = String::from_utf8(output.clone()).unwrap();
         assert!(enabled.contains("\x1b[?1007l"));
         for mode in [1000, 1002, 1006, 1004] {

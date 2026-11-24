@@ -1,6 +1,7 @@
 mod app;
 mod approvals;
 mod clipboard;
+mod directory_prompt;
 mod herdr;
 mod images;
 mod instance;

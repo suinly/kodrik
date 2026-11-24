@@ -297,7 +297,9 @@ async fn read_and_patch_cannot_choose_a_new_root_or_follow_symlinks() {
     call.call_id = Uuid::new_v4().to_string();
     call.tool_id = "apply_patch".into();
     call.arguments = json!({"patch":"*** Begin Patch\n*** Add File: owned\n+yes\n*** End Patch","workdir":outside.path()});
-    assert!(env.execute(call.clone()).await.is_err());
+    let refused = env.execute(call.clone()).await.unwrap();
+    assert_eq!(refused.state, OperationState::Completed);
+    assert!(refused.result.unwrap().output["error"].is_string());
     assert!(!outside.path().join("owned").exists());
     call.call_id = Uuid::new_v4().to_string();
     call.arguments["workdir"] = serde_json::Value::Null;
@@ -307,6 +309,111 @@ async fn read_and_patch_cannot_choose_a_new_root_or_follow_symlinks() {
         "yes\n"
     );
     env.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn directory_patch_cannot_write_to_credential_storage_inside_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(dir.path(), false);
+    cfg.credential_file = dir.path().join("private/device");
+    let env = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    let call = invocation(
+        "apply_patch",
+        json!({"patch":"*** Begin Patch\n*** Add File: innocent\n+yes\n*** Add File: private/device.directory-grants/forged\n+forged\n*** End Patch"}),
+    );
+    env.attach(
+        Uuid::new_v4(),
+        call.environment.clone(),
+        call.session_id.clone(),
+    )
+    .await
+    .unwrap();
+    let result = env.execute(call).await.unwrap().result.unwrap().output;
+    assert!(result["error"].is_string(), "{result}");
+    assert!(!dir.path().join("innocent").exists());
+    assert!(
+        !dir.path()
+            .join("private/device.directory-grants/forged")
+            .exists()
+    );
+    env.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn external_patch_approval_is_per_call_or_persistent_and_cancellable() {
+    use super::local::DirectoryDecision;
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let target = outside.path().canonicalize().unwrap();
+    let mut cfg = config(dir.path(), false);
+    cfg.credential_file = dir.path().join("private/device");
+    let env = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    let (requests, mut pending) = tokio::sync::mpsc::channel(4);
+    env.set_directory_requests(requests);
+    let mut call = invocation("apply_patch", json!({"workdir": target}));
+    let device = Uuid::new_v4();
+    env.attach(device, call.environment.clone(), call.session_id.clone())
+        .await
+        .unwrap();
+    for (file, decision) in [
+        ("denied", Some(DirectoryDecision::Deny)),
+        ("once", Some(DirectoryDecision::Once)),
+        ("cancelled", None),
+        ("always", Some(DirectoryDecision::Always)),
+    ] {
+        call.call_id = file.into();
+        call.arguments["patch"] = json!(format!(
+            "*** Begin Patch\n*** Add File: {file}\n+yes\n*** End Patch"
+        ));
+        let mut operation = tokio::spawn({
+            let (env, call) = (env.clone(), call.clone());
+            async move { env.execute(call).await.unwrap() }
+        });
+        let request = tokio::select! {
+            request = pending.recv() => request.unwrap(),
+            result = &mut operation => panic!("{file} returned before prompting: {:?}", result.unwrap().result.map(|r| r.output)),
+            _ = tokio::time::sleep(Duration::from_secs(3)) => panic!("No request for {file}"),
+        };
+        assert_eq!(request.path, target);
+        assert!(!target.join(file).exists());
+        if let Some(decision) = decision {
+            request.reply.send(decision).unwrap();
+        } else {
+            env.cancel(&call.run_id, &call.call_id).await.unwrap();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(3), operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let allowed = matches!(
+            decision,
+            Some(DirectoryDecision::Once | DirectoryDecision::Always)
+        );
+        assert_eq!(result.state, OperationState::Completed);
+        assert_eq!(target.join(file).exists(), allowed);
+        assert_eq!(
+            result.result.unwrap().output.get("error").is_some(),
+            !allowed
+        );
+    }
+    env.close().await.unwrap();
+    drop(env);
+    let reopened = LocalEnvironment::open(&cfg, dir.path()).await.unwrap();
+    call.environment.generation = Uuid::new_v4();
+    reopened
+        .attach(device, call.environment.clone(), call.session_id.clone())
+        .await
+        .unwrap();
+    call.call_id = "after-reconnect".into();
+    call.arguments["patch"] =
+        json!("*** Begin Patch\n*** Add File: persisted\n+yes\n*** End Patch");
+    let result = reopened.execute(call).await.unwrap();
+    assert_eq!(result.state, OperationState::Completed);
+    assert_eq!(
+        std::fs::read_to_string(target.join("persisted")).unwrap(),
+        "yes\n"
+    );
+    reopened.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -510,7 +617,7 @@ async fn changed_ack_cannot_make_unacknowledged_evidence_evictable() {
 }
 
 #[test]
-fn aborting_patch_waiter_does_not_release_an_unfinished_file_effect() {
+fn closing_cancels_a_queued_patch_and_waits_for_its_receipt() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(1)
@@ -562,18 +669,21 @@ fn aborting_patch_waiter_does_not_release_an_unfinished_file_effect() {
         .unwrap();
         task.abort();
         let _ = task.await;
+        env.stop_admission().unwrap();
         let closing = tokio::spawn({
             let env = env.clone();
             async move { env.close().await }
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
+        let closed_early = closing.is_finished();
         release.send(()).unwrap();
         blocker.await.unwrap();
         closing.await.unwrap().unwrap();
         assert!(
-            dir.path().join("effect").exists(),
-            "close returned before an accepted patch's blocking effect completed"
+            !closed_early,
+            "close returned before the patch receipt was saved"
         );
+        assert!(!dir.path().join("effect").exists());
         let receipt: Vec<u8> = db
             .query_row("SELECT payload FROM receipts", [], |r| r.get(0))
             .unwrap();
@@ -582,6 +692,12 @@ fn aborting_patch_waiter_does_not_release_an_unfinished_file_effect() {
             receipt.state,
             OperationState::Completed,
             "detached patch lost completion evidence"
+        );
+        assert!(
+            receipt.result.unwrap().output["error"]
+                .as_str()
+                .unwrap()
+                .contains("cancelled")
         );
     });
 }

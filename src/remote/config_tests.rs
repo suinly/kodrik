@@ -272,3 +272,132 @@ fn remote_config_default_label_is_device() {
     std::fs::write(&path, "server = 'https://example.com/'").unwrap();
     assert_eq!(RemoteConfig::load(&path).unwrap().label, "Device");
 }
+
+#[test]
+#[cfg(unix)]
+fn directory_grant_is_exact_and_scoped_to_project_server_and_credential() {
+    let (dir, config, _) = grant_fixture();
+    let base = dir.path().canonicalize().unwrap();
+    let root = base.join("project");
+    let other_root = base.join("other-project");
+    let requested = base.join("external");
+    let child = requested.join("child");
+    for directory in [&root, &other_root, &child] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    assert!(!config.directory_authorized(&root, &requested).unwrap());
+    assert!(!config.credential_file.parent().unwrap().exists());
+    config.authorize_directory(&root, &requested).unwrap();
+
+    let alias = base.join("alias");
+    symlink(&requested, &alias).unwrap();
+    assert!(config.directory_authorized(&root, &alias).is_err());
+    let root_alias = base.join("project-alias");
+    symlink(&root, &root_alias).unwrap();
+    assert!(
+        config
+            .directory_authorized(&root_alias, &requested)
+            .is_err()
+    );
+    for candidate in [&child, &root, &other_root] {
+        assert!(!config.directory_authorized(&root, candidate).unwrap());
+    }
+    assert!(
+        !config
+            .directory_authorized(&other_root, &requested)
+            .unwrap()
+    );
+
+    let mut changed = config.clone();
+    changed.server = "https://example.com/another-prefix/".parse().unwrap();
+    assert!(!changed.directory_authorized(&root, &requested).unwrap());
+    // A different configured credential sharing the same filename stem is isolated too.
+    changed = config.clone();
+    changed.credential_file.set_extension("other");
+    assert!(!changed.directory_authorized(&root, &requested).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
+fn directory_grant_is_not_redirected_if_an_approved_path_becomes_a_symlink() {
+    for replace_root in [false, true] {
+        let (dir, config, _) = grant_fixture();
+        let base = dir.path().canonicalize().unwrap();
+        let root = base.join("project");
+        let requested = base.join("requested");
+        let replacement = base.join("replacement");
+        for path in [&root, &requested, &replacement] {
+            std::fs::create_dir(path).unwrap();
+        }
+        assert!(!config.directory_authorized(&root, &requested).unwrap());
+        let replaced = if replace_root { &root } else { &requested };
+        std::fs::rename(replaced, base.join("moved")).unwrap();
+        symlink(&replacement, replaced).unwrap();
+
+        assert!(config.authorize_directory(&root, &requested).is_err());
+        assert!(config.directory_authorized(&root, &requested).is_err());
+        let (root, requested) = if replace_root {
+            (&replacement, &requested)
+        } else {
+            (&root, &replacement)
+        };
+        assert!(!config.directory_authorized(root, requested).unwrap());
+        assert!(!config.credential_file.parent().unwrap().exists());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn directory_grants_persist_independently_and_can_be_revoked_with_their_markers() {
+    let (dir, config, _) = grant_fixture();
+    let root = &*dir.path().canonicalize().unwrap();
+    let requested = root.join("a");
+    let other = root.join("b");
+    std::fs::create_dir(&requested).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    config.authorize_directory(root, &requested).unwrap();
+    let grants = root.join("remote/device.json.directory-grants");
+    let marker = std::fs::read_dir(&grants).unwrap().next().unwrap().unwrap();
+    assert_eq!(
+        std::fs::metadata(&grants).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        marker.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    config.authorize_directory(root, &other).unwrap();
+    let reloaded = RemoteConfig::load(&root.join("remote.toml")).unwrap();
+    assert!(reloaded.directory_authorized(root, &requested).unwrap());
+    assert!(reloaded.directory_authorized(root, &other).unwrap());
+    std::fs::remove_file(marker.path()).unwrap();
+    assert!(!reloaded.directory_authorized(root, &requested).unwrap());
+    assert!(reloaded.directory_authorized(root, &other).unwrap());
+}
+
+#[test]
+#[cfg(unix)]
+fn directory_grant_rejects_symlinked_marker_and_public_storage() {
+    let (dir, config, _) = grant_fixture();
+    let root = &*dir.path().canonicalize().unwrap();
+    config.authorize_directory(root, root).unwrap();
+    let grants = root.join("remote/device.json.directory-grants");
+    let marker = std::fs::read_dir(&grants)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let moved = root.join("marker");
+    std::fs::rename(&marker, &moved).unwrap();
+    symlink(&moved, &marker).unwrap();
+    assert!(config.directory_authorized(root, root).is_err());
+    assert!(config.authorize_directory(root, root).is_err());
+
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::rename(&moved, &marker).unwrap();
+    std::fs::set_permissions(&grants, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(config.directory_authorized(root, root).is_err());
+    assert!(config.authorize_directory(root, root).is_err());
+}

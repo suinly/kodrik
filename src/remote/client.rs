@@ -713,6 +713,129 @@ mod cancellation_tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn denied_directory_patch_keeps_the_websocket_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = RemoteConfig {
+            server: format!("http://{}/", listener.local_addr().unwrap())
+                .parse()
+                .unwrap(),
+            credential_file: dir.path().join("private/device"),
+            label: "directory fixture".into(),
+            allow_shell: false,
+            skill_roots: vec![],
+            mcp: HashMap::new(),
+            optional_mcp: vec![],
+        };
+        Credential {
+            device_id: uuid::Uuid::new_v4(),
+            token: "fixture".into(),
+        }
+        .save(&config.credential_file)
+        .unwrap();
+        let env = LocalEnvironment::open(&config, dir.path()).await.unwrap();
+        let (requests, mut prompts) = tokio::sync::mpsc::channel(4);
+        env.set_directory_requests(requests);
+        let key = EnvironmentKey {
+            connection_id: uuid::Uuid::new_v4(),
+            generation: uuid::Uuid::new_v4(),
+        };
+        let session = SessionId::new("patch-fixture");
+        let mut call = Invocation {
+            environment: key.clone(),
+            session_id: session.clone(),
+            run_id: "run".into(),
+            call_id: "external".into(),
+            tool_id: "apply_patch".into(),
+            arguments: json!({"workdir":outside.path(), "patch":"*** Begin Patch\n*** Add File: changed\n+yes\n*** End Patch"}),
+            deadline: chrono::Utc::now() + chrono::Duration::seconds(30),
+        };
+        let (finished, finish) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.next().await.unwrap().unwrap();
+            let frame = ServerFrame::Welcome {
+                environment: key.clone(),
+                heartbeat_seconds: 5,
+                lease_seconds: 15,
+            };
+            socket
+                .send(Message::Binary(encode_frame(&frame).unwrap().into()))
+                .await
+                .unwrap();
+            for allowed in [false, true] {
+                let frame = ServerFrame::Invoke {
+                    invocation: call.clone(),
+                };
+                socket
+                    .send(Message::Binary(encode_frame(&frame).unwrap().into()))
+                    .await
+                    .unwrap();
+                loop {
+                    let frame: ClientFrame =
+                        decode_frame(&socket.next().await.unwrap().unwrap().into_data()).unwrap();
+                    if let ClientFrame::Receipt { receipt } = frame {
+                        assert_eq!(receipt.invocation.call_id, call.call_id);
+                        assert_eq!(receipt.state, OperationState::Completed);
+                        assert_eq!(
+                            receipt.result.unwrap().output.get("error").is_none(),
+                            allowed
+                        );
+                        let frame = ServerFrame::ReceiptAck {
+                            environment: key.clone(),
+                            run_id: call.run_id.clone(),
+                            call_id: call.call_id.clone(),
+                            arguments_hash: receipt.arguments_hash,
+                        };
+                        socket
+                            .send(Message::Binary(encode_frame(&frame).unwrap().into()))
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                }
+                call.call_id = "internal".into();
+                call.arguments["workdir"] = serde_json::Value::Null;
+            }
+            finished.send(()).unwrap();
+            assert!(matches!(
+                decode_frame::<ClientFrame>(&socket.next().await.unwrap().unwrap().into_data())
+                    .unwrap(),
+                ClientFrame::Close { .. }
+            ));
+        });
+        let mut client = RemoteClient::connect(&config).await.unwrap();
+        client
+            .attach(session, env.manifest().unwrap())
+            .await
+            .unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let client = tokio::spawn(async move { client.serve_local_until(env, stopped).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            prompts
+                .recv()
+                .await
+                .unwrap()
+                .reply
+                .send(super::super::local::DirectoryDecision::Deny)
+                .unwrap();
+            finish.await.unwrap();
+            stop.send(()).unwrap();
+            client.await.unwrap().unwrap();
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("changed")).unwrap(),
+            "yes\n"
+        );
+        assert!(!outside.path().join("changed").exists());
+    }
+
+    #[tokio::test]
     #[cfg(unix)]
     async fn client_shutdown_preserves_remote_shell_term_grace() {
         for mode in ["detach", "transport", "abort"] {

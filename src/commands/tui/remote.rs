@@ -1,3 +1,4 @@
+use super::directory_prompt::DirectoryPrompts;
 use super::*;
 use crate::remote::protocol::RemoteChatSnapshot;
 use crate::remote::{
@@ -100,6 +101,7 @@ struct Binding {
     stop: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
     environment: Arc<LocalEnvironment>,
+    directory_prompts: Option<DirectoryPrompts>,
 }
 impl Drop for Binding {
     fn drop(&mut self) {
@@ -130,6 +132,8 @@ impl Binding {
             let key = client.attach(session.clone(), manifest).await?;
             let (stop, receiver) = oneshot::channel();
             let (ready, started) = oneshot::channel();
+            let (directory_sender, directory_receiver) = mpsc::channel(4);
+            environment.set_directory_requests(directory_sender);
             let local = environment.clone();
             let task = tokio::spawn(async move {
                 client
@@ -147,6 +151,7 @@ impl Binding {
                 stop: Some(stop),
                 task,
                 environment: environment.clone(),
+                directory_prompts: Some(DirectoryPrompts::new(directory_receiver)),
             };
             tokio::time::timeout(Duration::from_secs(8), started).await??;
             Ok(binding)
@@ -159,6 +164,7 @@ impl Binding {
     }
     async fn close(&mut self) -> anyhow::Result<()> {
         self.environment.stop_admission()?;
+        self.directory_prompts.take();
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
@@ -358,6 +364,9 @@ impl Remote {
             else {
                 break;
             };
+            if let Some(binding) = self.binding.as_mut() {
+                binding.directory_prompts.take();
+            }
             let snapshot = self.chat.snapshot(&id).await?;
             let manifest = self
                 .binding
@@ -1010,7 +1019,7 @@ pub(crate) async fn run_with(
         ..Default::default()
     };
     remote.projection.accept(&mut app, &remote.snapshot)?;
-    let mut tui = Tui::enter()?;
+    let mut tui = Tui::enter_remote()?;
     let mut reporter = herdr::Reporter::start_remote(config_path);
     let result = event_loop(&mut remote, &mut app, &mut tui, &mut rx, &mut reporter).await;
     remote.observer.take();
@@ -1077,7 +1086,37 @@ async fn event_loop(
         }
         remote.connection_status(app);
         reporter.update(app);
-        tui.draw(app)?;
+        if let Some(binding) = remote.binding.as_mut()
+            && binding.session != remote.session
+        {
+            binding.directory_prompts.take();
+        }
+        let prompts = remote
+            .binding
+            .as_mut()
+            .filter(|binding| !binding.task.is_finished())
+            .and_then(|binding| binding.directory_prompts.as_mut());
+        let prompt = if let Some(prompts) = prompts {
+            if prompts.refresh(deferred.is_empty()) {
+                // Do not replay terminal input queued before the permission review was visible.
+                if !drain_before_directory_prompt(app)? {
+                    prompts.active.take();
+                }
+                app.view.clear_selection();
+            }
+            prompts.active.as_ref()
+        } else {
+            None
+        };
+        if app.should_quit {
+            break;
+        }
+        let directory_review = if let Some(prompt) = prompt {
+            Some(tui.draw_directory_prompt(prompt, app.language)?)
+        } else {
+            tui.draw(app)?;
+            None
+        };
         let language = app.language;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
@@ -1117,7 +1156,20 @@ async fn event_loop(
             Some(copy)=copies.join_next(),if !copies.is_empty()=>{
                 if let Ok((id,result))=copy {complete_copy(app,id,result,|sequence|tui.copy_to_terminal(sequence));}
             },
-            event=async {match deferred.pop_front(){Some(event)=>Ok(event),None=>next_terminal_event().await}}=>match event? {
+            event=async {match deferred.pop_front(){Some(event)=>Ok(event),None=>next_terminal_event().await}}=>{
+                let event = event?;
+                if let Some(can_allow) = directory_review {
+                    if is_exit_key(&event) {
+                        app.should_quit = true;
+                    } else if let Some(prompts) = remote.binding.as_mut()
+                        .filter(|binding| !binding.task.is_finished())
+                        .and_then(|binding| binding.directory_prompts.as_mut())
+                    {
+                        prompts.input(&event, can_allow);
+                    }
+                    continue;
+                }
+                match event {
                 Event::Key(key) if matches!(key.kind,KeyEventKind::Press|KeyEventKind::Repeat)=>{
                     if app.tool_details_key(key) { continue; }
                     if super::images::key(key) { super::images::clipboard(app).await; continue; }
@@ -1172,10 +1224,29 @@ async fn event_loop(
                 }
                 Event::Resize(..)|Event::FocusLost=>{app.view.clear_selection();},
                 _=>(),
+                }
             }
         }
     }
     Ok(())
+}
+
+fn is_exit_key(event: &Event) -> bool {
+    matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press && key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c'|'C'|'с'|'С')))
+}
+
+fn drain_before_directory_prompt(app: &mut App) -> anyhow::Result<bool> {
+    for _ in 0..64 {
+        if !event::poll(Duration::ZERO)? {
+            return Ok(true);
+        }
+        if is_exit_key(&event::read()?) {
+            app.should_quit = true;
+            return Ok(false);
+        }
+    }
+    // If the backlog keeps growing, fail closed rather than accept presubmitted keys.
+    Ok(!event::poll(Duration::ZERO)?)
 }
 
 fn report_disconnect(app: &mut App, result: anyhow::Result<()>) {
@@ -1942,6 +2013,7 @@ mod binding_tests {
             stop: Some(stop),
             task,
             environment,
+            directory_prompts: None,
         };
         {
             let close = binding.close();

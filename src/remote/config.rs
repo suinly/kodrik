@@ -2,10 +2,121 @@ use crate::config::McpServerConfig;
 use anyhow::{Context, ensure};
 use std::{
     collections::HashMap,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
 impl RemoteConfig {
+    pub(crate) fn directory_grant_store(&self) -> anyhow::Result<PathBuf> {
+        let credential = std::path::absolute(&self.credential_file)?;
+        let mut name = credential
+            .file_name()
+            .context("Credential filename missing")?
+            .to_os_string();
+        name.push(".directory-grants");
+        Ok(credential.with_file_name(name))
+    }
+
+    /// Checks a grant for the exact canonical paths presented for approval.
+    pub(crate) fn directory_authorized(
+        &self,
+        root: &Path,
+        directory: &Path,
+    ) -> anyhow::Result<bool> {
+        let (store, fingerprint) = self.directory_grant(root, directory)?;
+        for path in [
+            store.parent().context("Grant directory missing")?,
+            store.as_path(),
+        ] {
+            let metadata = match std::fs::symlink_metadata(path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            };
+            ensure!(
+                metadata.is_dir() && crate::platform::path_is_private(path)?,
+                "Grant directory must be private and not a symlink"
+            );
+        }
+        Ok(Self::read_grant(&store.join(&fingerprint))?.as_deref() == Some(&fingerprint))
+    }
+
+    /// Persists a grant for the exact canonical paths presented for approval.
+    pub(crate) fn authorize_directory(&self, root: &Path, directory: &Path) -> anyhow::Result<()> {
+        use std::io::Write;
+        let (store, fingerprint) = self.directory_grant(root, directory)?;
+        let parent = store.parent().context("Grant directory missing")?;
+        // A newly created credential hierarchy also needs its parent entries synced.
+        let mut ancestor = parent.parent();
+        let mut sync_ancestors = Vec::new();
+        while let Some(path) = ancestor {
+            sync_ancestors.push(path);
+            if path.try_exists()? {
+                break;
+            }
+            ancestor = path.parent();
+        }
+        super::client::private_directory(parent)?;
+        super::client::private_directory(&store)?;
+
+        let path = store.join(&fingerprint);
+        if Self::read_grant(&path)?.as_deref() != Some(&fingerprint) {
+            let mut file = tempfile::NamedTempFile::new_in(&store)?;
+            crate::platform::set_file_private(file.as_file(), 0o600)?;
+            file.write_all(fingerprint.as_bytes())?;
+            file.as_file().sync_all()?;
+            // Separate markers avoid lost updates, and concurrent identical approvals are idempotent.
+            if let Err(error) = file.persist_noclobber(&path) {
+                if error.error.kind() != ErrorKind::AlreadyExists {
+                    return Err(error.error.into());
+                }
+                ensure!(
+                    Self::read_grant(&path)?.as_deref() == Some(&fingerprint),
+                    "Directory grant marker does not match"
+                );
+            }
+        }
+        for directory in [store.as_path(), parent].into_iter().chain(sync_ancestors) {
+            crate::platform::sync_directory(directory)?;
+        }
+        Ok(())
+    }
+
+    fn directory_grant(&self, root: &Path, directory: &Path) -> anyhow::Result<(PathBuf, String)> {
+        use sha2::{Digest, Sha256};
+        // Revalidate rather than substitute: a symlink may have changed while approval was pending.
+        ensure!(
+            root.canonicalize()
+                .context("Cannot resolve project root")?
+                .as_os_str()
+                == root.as_os_str(),
+            "Project root is no longer canonical"
+        );
+        ensure!(
+            directory
+                .canonicalize()
+                .context("Cannot resolve requested directory")?
+                .as_os_str()
+                == directory.as_os_str(),
+            "Requested directory is no longer canonical"
+        );
+        ensure!(
+            root.metadata()?.is_dir() && directory.metadata()?.is_dir(),
+            "Directory grants require directories"
+        );
+        let store = self.directory_grant_store()?;
+        let mut hash = Sha256::new();
+        for part in [
+            self.server.as_str().as_bytes(),
+            root.as_os_str().as_encoded_bytes(),
+            directory.as_os_str().as_encoded_bytes(),
+        ] {
+            hash.update((part.len() as u64).to_be_bytes());
+            hash.update(part);
+        }
+        Ok((store, format!("{:x}", hash.finalize())))
+    }
+
     pub(crate) fn manifest_authorized(
         &self,
         manifest: &super::protocol::EnvironmentManifest,

@@ -252,8 +252,20 @@ remain in conversation/checkpoint history. This is not bulk project mirroring,
 but output containing secrets is not automatically redacted. Review what you
 share before granting access.
 
-File/patch/image operations check allowed project/skill roots and reject path
-escapes. These checks do **not** sandbox shell or MCP: shell runs with the local
+File and image reads check the allowed project/skill roots. To use `apply_patch`
+in another directory (for example, a sibling Git worktree), set `workdir` to
+that directory. The local TUI shows its resolved path and asks to allow this
+patch once, always allow that patch workdir, or deny it (the default). A denied,
+cancelled or expired request returns a tool error without disconnecting the
+device. Patch paths still have to stay within the approved workdir. This does
+not grant additional read or image access.
+
+Persistent directory grants are stored locally alongside the device credential
+in `<credential filename>.directory-grants/`, scoped to the server, attached
+project, and exact patch workdir. Remove that directory to revoke all its
+persistent patch-workdir grants.
+
+These checks do **not** sandbox shell or MCP: shell runs with the local
 user's privileges and inherited environment; MCP acts with its service/token
 permissions. Either can affect files, networks and services outside the selected
 project. Choosing a working directory is not an OS security boundary.

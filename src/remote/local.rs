@@ -22,10 +22,24 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 const JOURNAL_BYTES: u64 = 256 * 1024 * 1024;
+const DIRECTORY_PROMPT_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectoryDecision {
+    Once,
+    Always,
+    Deny,
+}
+
+pub(crate) struct DirectoryRequest {
+    pub(crate) path: PathBuf,
+    pub(crate) reply: oneshot::Sender<DirectoryDecision>,
+}
+
 type CallId = (String, String);
 struct Binding {
     device: Uuid,
@@ -51,6 +65,8 @@ impl Drop for ActiveCall<'_> {
 }
 pub(crate) struct LocalEnvironment {
     root: PathBuf,
+    config: RemoteConfig,
+    directory_requests: std::sync::OnceLock<mpsc::Sender<DirectoryRequest>>,
     skill_roots: Vec<PathBuf>,
     server: String,
     manifest: EnvironmentManifest,
@@ -180,6 +196,8 @@ impl LocalEnvironment {
         let db = open_journal(&directory)?;
         Ok(Arc::new(Self {
             root,
+            config: config.clone(),
+            directory_requests: std::sync::OnceLock::new(),
             skill_roots,
             server: config.server.to_string(),
             manifest,
@@ -198,6 +216,10 @@ impl LocalEnvironment {
 
     pub(crate) fn manifest(&self) -> anyhow::Result<EnvironmentManifest> {
         Ok(self.manifest.clone())
+    }
+
+    pub(crate) fn set_directory_requests(&self, sender: mpsc::Sender<DirectoryRequest>) {
+        let _ = self.directory_requests.set(sender);
     }
 
     pub(crate) async fn attach(
@@ -369,7 +391,12 @@ impl LocalEnvironment {
         let timeout = (call.deadline - chrono::Utc::now())
             .to_std()
             .unwrap_or_default();
-        let (result, stopped) = if call.tool_id == "exec_command" {
+        let (result, stopped) = if call.tool_id == "apply_patch" {
+            (
+                self.execute_patch(arguments, &mut cancel, timeout).await,
+                false,
+            )
+        } else if call.tool_id == "exec_command" {
             let mut stopped = false;
             let stop = async {
                 tokio::select! {
@@ -425,15 +452,10 @@ impl LocalEnvironment {
                     }
                 }
             };
-            // File writes must finish before close returns; cancelling a blocking patch would hide effects.
-            if call.tool_id == "apply_patch" {
-                (execution.await, false)
-            } else {
-                tokio::select! {
-                    result = execution => (result,false),
-                    _ = cancel.wait_for(|stop|*stop) => (Ok(json!({"interrupted":true,"effects":"unknown"}).into()),true),
-                    _ = tokio::time::sleep(timeout) => (Ok(json!({"interrupted":true,"reason":"deadline","effects":"unknown"}).into()),true),
-                }
+            tokio::select! {
+                result = execution => (result,false),
+                _ = cancel.wait_for(|stop|*stop) => (Ok(json!({"interrupted":true,"effects":"unknown"}).into()),true),
+                _ = tokio::time::sleep(timeout) => (Ok(json!({"interrupted":true,"reason":"deadline","effects":"unknown"}).into()),true),
             }
         };
         let mut saved = saved;
@@ -465,6 +487,119 @@ impl LocalEnvironment {
         Ok(saved)
     }
 
+    async fn execute_patch(
+        &self,
+        arguments: Value,
+        cancel: &mut watch::Receiver<bool>,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<ToolOutput> {
+        use crate::agent::tools::apply_patch::{ApplyPatchArgs, execute_at_root};
+        let args: ApplyPatchArgs = serde_json::from_value(arguments)?;
+        let workdir = Path::new(args.workdir.as_deref().context("Patch workdir missing")?);
+        let root = workdir
+            .canonicalize()
+            .context("Cannot resolve patch workdir")?;
+        ensure!(root.is_dir(), "Patch workdir must be a directory");
+        let expires = tokio::time::Instant::now() + timeout;
+        let environment = self;
+        let still_active = move |cancel: &watch::Receiver<bool>| {
+            ensure!(
+                !*cancel.borrow()
+                    && !environment.closed.load(Ordering::SeqCst)
+                    && tokio::time::Instant::now() < expires,
+                "Patch cancelled or expired before writing"
+            );
+            Ok::<_, anyhow::Error>(())
+        };
+        if !root.starts_with(&self.root) && !self.config.directory_authorized(&self.root, &root)? {
+            still_active(cancel)?;
+            let (reply, decision) = oneshot::channel();
+            self.directory_requests
+                .get()
+                .context("Patch outside the selected project requires approval in the local TUI")?
+                .try_send(DirectoryRequest {
+                    path: root.clone(),
+                    reply,
+                })
+                .map_err(|_| {
+                    anyhow::anyhow!("Local TUI cannot accept a directory approval request")
+                })?;
+            let wait = DIRECTORY_PROMPT_LIMIT
+                .min(timeout.saturating_sub(std::time::Duration::from_secs(2)));
+            let decision = tokio::select! {
+                biased;
+                _ = cancel.wait_for(|stop| *stop) => anyhow::bail!("Directory approval cancelled"),
+                _ = tokio::time::sleep(wait) => anyhow::bail!("Directory approval expired"),
+                result = decision => result.context("Directory approval dismissed")?,
+            };
+            still_active(cancel)?;
+            match decision {
+                DirectoryDecision::Deny => {
+                    anyhow::bail!("Directory access denied in the local TUI")
+                }
+                DirectoryDecision::Once => {}
+                DirectoryDecision::Always => self.config.authorize_directory(&self.root, &root)?,
+            }
+        }
+        still_active(cancel)?;
+        let protected = [
+            self.config.directory_grant_store()?,
+            std::path::absolute(&self.config.credential_file)?,
+            std::path::absolute(self.config.credential_file.with_extension("grant"))?,
+        ]
+        .map(|path| canonical_existing_prefix(&path));
+        let [store, credential, grant] = protected;
+        let protected = [store?, credential?, grant?];
+        let legacy = &protected[2];
+        let scoped_grant_prefix = format!(
+            "{}-",
+            legacy
+                .file_name()
+                .context("Invalid grant filename")?
+                .to_string_lossy()
+                .to_lowercase()
+        );
+        let grant_parent = legacy
+            .parent()
+            .context("Invalid grant directory")?
+            .to_path_buf();
+        let cancel = cancel.clone();
+        // After writing starts, wait for its result; cancellation cannot undo a patch.
+        execute_at_root(
+            root,
+            args.patch,
+            move |path| {
+                ensure!(
+                    !protected.iter().any(|entry| {
+                        path.components().zip(entry.components()).all(|(a, b)| {
+                            a.as_os_str().to_string_lossy().to_lowercase()
+                                == b.as_os_str().to_string_lossy().to_lowercase()
+                        })
+                    }) && !path.ancestors().any(|entry| {
+                        entry.parent().is_some_and(|parent| {
+                            parent.to_string_lossy().to_lowercase()
+                                == grant_parent.to_string_lossy().to_lowercase()
+                        }) && entry.file_name().is_some_and(|name| {
+                            name.to_string_lossy()
+                                .to_lowercase()
+                                .starts_with(&scoped_grant_prefix)
+                        })
+                    }),
+                    "Cannot patch local credential or permission storage"
+                );
+                Ok(())
+            },
+            move || {
+                ensure!(
+                    !*cancel.borrow() && tokio::time::Instant::now() < expires,
+                    "Patch cancelled or expired before writing"
+                );
+                Ok(())
+            },
+        )
+        .await
+    }
+
     fn validate_arguments(&self, call: &Invocation) -> anyhow::Result<Value> {
         ensure!(
             self.manifest.tools.iter().any(|t| t.id == call.tool_id),
@@ -483,13 +618,7 @@ impl LocalEnvironment {
             } else {
                 self.root.join(path)
             };
-            // Shell already has process-wide access; only file patches are project-scoped.
-            if call.tool_id == "apply_patch" {
-                ensure!(
-                    path.canonicalize()?.starts_with(&self.root),
-                    "workdir must stay within selected project"
-                );
-            }
+            // Shell already has process-wide access. Patch scope is checked after admission.
             args["workdir"] = json!(path);
         } else if matches!(call.tool_id.as_str(), "read_file" | "view_image") {
             ensure!(
@@ -637,6 +766,18 @@ impl LocalEnvironment {
         let supervisor = self.supervisor.clone();
         tokio::task::spawn_blocking(move || supervisor.stop_all()).await??;
         Ok(())
+    }
+}
+
+fn canonical_existing_prefix(path: &Path) -> anyhow::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let parent = path.parent().context("Protected path has no parent")?;
+            Ok(canonical_existing_prefix(parent)?
+                .join(path.file_name().context("Invalid protected path")?))
+        }
+        Err(error) => Err(error.into()),
     }
 }
 

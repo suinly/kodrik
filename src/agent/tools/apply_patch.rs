@@ -47,24 +47,58 @@ impl Tool for ApplyPatchTool {
 
     async fn execute(&self, properties: serde_json::Value) -> anyhow::Result<ToolOutput> {
         let args: ApplyPatchArgs = serde_json::from_value(properties)?;
-        crate::agent::run_state::spawn_owned_blocking(move || {
-            let root = fs::canonicalize(args.workdir.as_deref().unwrap_or("."))
-                .context("Cannot resolve workdir")?;
-            ensure!(root.is_dir(), "workdir must be a directory");
-            let operations = parse_patch(&args.patch)
-                .map_err(|error| anyhow::anyhow!("{error:#}\n{PATCH_FORMAT_HELP}"))?;
-            let changes = prepare(&root, operations)?;
-            commit(&root, changes)
-        })
-        .await?
-        .map(Into::into)
+        let root = fs::canonicalize(args.workdir.as_deref().unwrap_or("."))
+            .context("Cannot resolve workdir")?;
+        execute_at_root(root, args.patch, |_| Ok(()), || Ok(())).await
     }
+}
+
+pub(crate) async fn execute_at_root(
+    root: PathBuf,
+    patch: String,
+    check_path: impl Fn(&Path) -> anyhow::Result<()> + Send + 'static,
+    before_write: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> anyhow::Result<ToolOutput> {
+    crate::agent::run_state::spawn_owned_blocking(move || {
+        ensure!(
+            root.is_dir() && root.canonicalize()? == root,
+            "Patch workdir changed or is not a directory"
+        );
+        let operations = parse_patch(&patch)
+            .map_err(|error| anyhow::anyhow!("{error:#}\n{PATCH_FORMAT_HELP}"))?;
+        let resolve = |path: &str| {
+            let path = resolve_path(&root, path)?;
+            check_path(&path)?;
+            Ok(path)
+        };
+        let changes = prepare(operations, resolve)?;
+        commit(&root, changes, before_write)
+    })
+    .await?
+    .map(Into::into)
 }
 
 pub(crate) enum Operation {
     Add(String, String),
     Delete(String),
     Update(String, Option<String>, Vec<Chunk>),
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn cancelled_pre_write_check_leaves_all_files_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let result = execute_at_root(
+        root.clone(),
+        "*** Begin Patch\n*** Add File: first\n+one\n*** Add File: second\n+two\n*** End Patch"
+            .into(),
+        |_| Ok(()),
+        || anyhow::bail!("cancelled before first write"),
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(fs::read_dir(root).unwrap().count(), 0);
 }
 
 #[derive(Default)]
@@ -347,18 +381,21 @@ fn load(changes: &mut BTreeMap<PathBuf, Change>, path: PathBuf) -> anyhow::Resul
     })
 }
 
-fn prepare(root: &Path, operations: Vec<Operation>) -> anyhow::Result<BTreeMap<PathBuf, Change>> {
+fn prepare(
+    operations: Vec<Operation>,
+    resolve: impl Fn(&str) -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<BTreeMap<PathBuf, Change>> {
     let mut changes = BTreeMap::new();
     for operation in operations {
         match operation {
             Operation::Add(path, content) => {
-                let change = load(&mut changes, resolve_path(root, &path)?)?;
+                let change = load(&mut changes, resolve(&path)?)?;
                 change.after = Some(content.into_bytes());
                 change.added = line_count(change.after.as_deref());
                 change.removed = line_count(change.before.as_deref());
             }
             Operation::Delete(path) => {
-                let change = load(&mut changes, resolve_path(root, &path)?)?;
+                let change = load(&mut changes, resolve(&path)?)?;
                 ensure!(change.after.is_some(), "Cannot delete missing file: {path}");
                 change.after = None;
                 change.added = 0;
@@ -367,7 +404,7 @@ fn prepare(root: &Path, operations: Vec<Operation>) -> anyhow::Result<BTreeMap<P
             Operation::Update(path, move_to, chunks) => {
                 let added: usize = chunks.iter().map(|chunk| chunk.added).sum();
                 let removed: usize = chunks.iter().map(|chunk| chunk.removed).sum();
-                let source = resolve_path(root, &path)?;
+                let source = resolve(&path)?;
                 let change = load(&mut changes, source.clone())?;
                 let content = change
                     .after
@@ -377,7 +414,7 @@ fn prepare(root: &Path, operations: Vec<Operation>) -> anyhow::Result<BTreeMap<P
                     update(content, chunks).with_context(|| format!("Cannot update {path}"))?;
                 let permissions = change.permissions.clone();
                 let destination = match move_to {
-                    Some(path) => resolve_path(root, &path)?,
+                    Some(path) => resolve(&path)?,
                     None => source.clone(),
                 };
                 let moved = destination != source;
@@ -416,7 +453,11 @@ fn prepare(root: &Path, operations: Vec<Operation>) -> anyhow::Result<BTreeMap<P
     Ok(changes)
 }
 
-fn commit(root: &Path, changes: BTreeMap<PathBuf, Change>) -> anyhow::Result<serde_json::Value> {
+fn commit(
+    root: &Path,
+    changes: BTreeMap<PathBuf, Change>,
+    before_write: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<serde_json::Value> {
     for (path, change) in &changes {
         ensure!(
             resolve_path(root, &path.to_string_lossy())? == *path,
@@ -434,6 +475,7 @@ fn commit(root: &Path, changes: BTreeMap<PathBuf, Change>) -> anyhow::Result<ser
     let (writes, deletes): (Vec<_>, Vec<_>) = changes
         .into_iter()
         .partition(|(_, change)| change.after.is_some());
+    let mut before_write = Some(before_write);
     for (path, change) in writes.into_iter().chain(deletes) {
         if change.before == change.after {
             continue;
@@ -447,6 +489,9 @@ fn commit(root: &Path, changes: BTreeMap<PathBuf, Change>) -> anyhow::Result<ser
                 read_file(&path)? == change.before,
                 "File changed before write"
             );
+            if let Some(check) = before_write.take() {
+                check()?;
+            }
             if let Some(content) = &change.after {
                 let parent = path.parent().context("File has no parent directory")?;
                 fs::create_dir_all(parent)?;
