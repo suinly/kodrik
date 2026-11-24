@@ -123,6 +123,7 @@ async fn run_session_inner(
     app.model = model;
     restore_history(&mut app, &session);
     models::refresh(&mut app, &runner, &session)?;
+    refresh_session_cost(&mut app, &runner, &session).await;
     refresh_versions(&mut app, &runner, &session).await?;
     approvals::refresh(&mut app, &runner, &session_id).await?;
     refresh_waiting(&mut app, &runner, &session_id).await;
@@ -206,6 +207,7 @@ async fn run_session_inner(
                 app.streaming_message = None;
                 restore_history(&mut app, &session);
                 models::refresh(&mut app, &runner, &session)?;
+                refresh_session_cost(&mut app, &runner, &session).await;
                 refresh_versions(&mut app, &runner, &session).await?;
                 approvals::refresh(&mut app, &runner, &session_id).await?;
                 app.status = if !report.blocked.is_empty() {
@@ -282,6 +284,7 @@ async fn run_session_inner(
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
                                         models::refresh(&mut app, &runner, &session)?;
+                                        refresh_session_cost(&mut app, &runner, &session).await;
                                         refresh_versions(&mut app, &runner, &session).await?;
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
@@ -369,6 +372,7 @@ async fn run_session_inner(
                                         reset_session(&mut app);
                                         restore_history(&mut app, &session);
                                         models::refresh(&mut app, &runner, &session)?;
+                                        refresh_session_cost(&mut app, &runner, &session).await;
                                         app.push_kodrik_message(app.language.pick("New session created.", "Создан новый сеанс.").into());
                                         approvals::refresh(&mut app, &runner, &session_id).await?;
                                         tui.clear()?;
@@ -424,7 +428,11 @@ async fn run_session_inner(
                 show_progress(&mut app, event);
                 if let Some(id) = switched {
                     match runner.load_session(id).await {
-                        Ok(session) => { refresh_history(&mut app, &session); models::refresh(&mut app, &runner, &session)?; },
+                        Ok(session) => {
+                            refresh_history(&mut app, &session);
+                            models::refresh(&mut app, &runner, &session)?;
+                            refresh_session_cost(&mut app, &runner, &session).await;
+                        },
                         Err(error) => log::warn!("Could not reload switched TUI session: {error:#}"),
                     }
                 }
@@ -450,6 +458,12 @@ async fn run_session_inner(
                 });
                 while let Ok(event) = progress_rx.try_recv() {
                     show_progress(&mut app, event);
+                }
+                if runner.sqlite_store().is_some() {
+                    match runner.load_session(session_id.clone()).await {
+                        Ok(session) => { refresh_session_cost(&mut app, &runner, &session).await; }
+                        Err(error) => log::warn!("Could not reload TUI session cost: {error:#}"),
+                    }
                 }
                 refresh_waiting(&mut app, &runner, &session_id).await;
                 app.task_finished_at = Some(chrono::Utc::now());
@@ -497,6 +511,7 @@ async fn run_session_inner(
                         let session = runner.load_session(session_id.clone()).await?;
                         redraw |= refresh_history(&mut app, &session);
                         redraw |= models::refresh(&mut app, &runner, &session)?;
+                        redraw |= refresh_session_cost(&mut app, &runner, &session).await;
                         redraw |= refresh_versions(&mut app, &runner, &session).await?;
                         redraw |= approvals::refresh(&mut app, &runner, &session_id).await?;
                         history_revision = Some(revision);
@@ -1075,6 +1090,28 @@ fn restore_history(app: &mut App, session: &Session) {
     }
 }
 
+async fn refresh_session_cost(
+    app: &mut App,
+    runner: &crate::agent::AgentRunner,
+    session: &Session,
+) -> bool {
+    let cost = if let Some(store) = runner.sqlite_store() {
+        match crate::billing::tracked_session_cost(&store, session).await {
+            Ok(cost) => Some((cost.total_usd, cost.partial)),
+            Err(error) => {
+                log::warn!("Could not refresh TUI session cost: {error:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let changed = app.session_cost != cost || app.context_tokens != session.input_tokens;
+    app.session_cost = cost;
+    app.context_tokens = session.input_tokens;
+    changed
+}
+
 fn refresh_history(app: &mut App, session: &Session) -> bool {
     let mut saved = App {
         language: app.language,
@@ -1285,6 +1322,7 @@ fn show_progress(app: &mut App, event: AgentEvent) -> bool {
                 .collect();
             app.tools_expanded = false;
             app.context_tokens = None;
+            app.session_cost = None;
             app.streaming_message = None;
             app.pending_tools.clear();
             app.scroll = 0;

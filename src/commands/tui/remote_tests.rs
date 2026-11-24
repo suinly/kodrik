@@ -57,6 +57,34 @@ fn remote_context_tokens_follow_server_snapshots() {
 }
 
 #[test]
+fn remote_footer_shows_session_total_next_to_context_and_clears_it_without_data() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut view = snapshot();
+    let mut app = App::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    let run = view.run.as_mut().unwrap();
+    run["context_tokens"] = json!(12_000);
+    run["session_cost"] = json!({"total_usd":0.023456,"partial":true,"calls":[]});
+    run["run_cost"] = json!({"total_usd":0.01,"partial":false});
+    remote::project(&mut app, &view).unwrap();
+    terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
+    let footer = |terminal: &Terminal<TestBackend>| {
+        (0..100)
+            .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+            .collect::<String>()
+    };
+    let row = footer(&terminal);
+    assert!(row.contains("12K · ≥$0.023456"), "{row}");
+
+    view.run.as_mut().unwrap()["session_cost"] = serde_json::Value::Null;
+    remote::project(&mut app, &view).unwrap();
+    terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
+    let row = footer(&terminal);
+    assert!(row.contains("12K") && !row.contains('$'), "{row}");
+}
+
+#[test]
 fn remote_context_tokens_clear_when_server_value_is_unavailable() {
     for run in [
         Some(json!({"context_tokens": null})),

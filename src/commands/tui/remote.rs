@@ -2303,6 +2303,8 @@ pub(super) fn project(app: &mut App, snapshot: &RemoteChatSnapshot) -> anyhow::R
         .into();
     app.model_override = run["model_override"].as_str().map(str::to_owned);
     app.context_tokens = run["context_tokens"].as_u64();
+    let cost = &run["session_cost"];
+    app.session_cost = cost["total_usd"].as_f64().zip(cost["partial"].as_bool());
     if app.remote_environment.is_none() {
         app.remote_environment = Some(String::new());
         app.remote_connection = Some("detached");

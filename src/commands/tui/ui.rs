@@ -831,6 +831,22 @@ fn render_remote_grant(app: &mut App, frame: &mut Frame) {
     app.view.finish_frame(frame.buffer_mut(), None);
 }
 
+fn format_session_cost((usd, partial): (f64, bool)) -> String {
+    let bound = if partial { "≥" } else { "" };
+    if usd > 0.0 && usd < 0.000001 {
+        return if partial { "≥$0.00" } else { "<$0.000001" }.into();
+    }
+    let value = format!("{usd:.6}");
+    let (whole, fraction) = value.split_once('.').unwrap_or((&value, "00"));
+    let significant = fraction.trim_end_matches('0');
+    let cents = if significant.len() < 2 {
+        &fraction[..2]
+    } else {
+        significant
+    };
+    format!("{bound}${whole}.{cents}")
+}
+
 fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
     let language = app.language;
     let (mode_icon, mode_color) = match app.audit_mode {
@@ -858,6 +874,9 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
         if let Some(tokens) = app.context_tokens {
             parts.push(format!("{}K", tokens / 1000));
         }
+        if let Some(cost) = app.session_cost {
+            parts.push(format_session_cost(cost));
+        }
         let width = usize::from(footer.width);
         let notice_width = app
             .copy_notice
@@ -870,6 +889,9 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
             width
         };
         // Audit and connection take priority over notices; notices take priority over metadata.
+        if Span::raw(parts.join(" · ")).width() > metadata_width && app.session_cost.is_some() {
+            parts.pop();
+        }
         if Span::raw(parts.join(" · ")).width() > metadata_width && app.context_tokens.is_some() {
             parts.pop();
         }
@@ -920,16 +942,22 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
         .width
         .saturating_sub(notice_width)
         .saturating_sub(u16::from(notice_width > 0));
-    let model = match app.context_tokens {
+    let mut model = match app.context_tokens {
         Some(tokens) => format!("{} · {}K", app.model, tokens / 1000),
         None => app.model.clone(),
     };
+    if let Some(cost) = app.session_cost {
+        let cost = format_session_cost(cost);
+        let full = format!(" · {model} · {cost}");
+        if Span::raw(audit.as_str()).width() + Span::raw(full.as_str()).width()
+            <= usize::from(model_width)
+        {
+            model.push_str(&format!(" · {cost}"));
+        }
+    }
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{mode_icon} {}", app.audit_mode.label(language)),
-                Style::default().fg(mode_color),
-            ),
+            Span::styled(audit, Style::default().fg(mode_color)),
             Span::styled(format!(" · {model}"), Style::default().fg(Color::Yellow)),
         ])),
         Rect::new(footer.x, footer.y, model_width, footer.height),
@@ -1300,6 +1328,22 @@ mod tests {
             .collect::<String>();
         assert!(row.contains("gpt-5.4 · kodrik · connected"), "{row}");
         assert!(!row.contains("openai/"), "{row}");
+    }
+
+    #[test]
+    fn local_footer_shows_session_cost_without_rounding_small_charges_to_zero() {
+        let mut app = App {
+            model: "provider/model".into(),
+            context_tokens: Some(12_000),
+            session_cost: Some((0.0000001, false)),
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| render(&mut app, frame)).unwrap();
+        let row = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 23)].symbol())
+            .collect::<String>();
+        assert!(row.contains("12K · <$0.000001"), "{row}");
     }
 
     #[test]

@@ -371,17 +371,7 @@ impl Chat {
     }
 
     async fn session_cost(&self, session: &Session) -> anyhow::Result<crate::billing::SessionCost> {
-        let mut cost = crate::billing::session_cost(
-            &self.sessions,
-            session.id().as_str(),
-            session.generation(),
-        )
-        .await?;
-        let usage = session.token_usage();
-        // The old aggregate cannot be repriced per call.
-        cost.partial |= !session.messages().is_empty()
-            && (session.legacy_cost_gap() || usage.requests > cost.chat_calls);
-        Ok(cost)
+        crate::billing::tracked_session_cost(&self.sessions, session).await
     }
 
     async fn snapshot_view(

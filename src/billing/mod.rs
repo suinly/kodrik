@@ -1,4 +1,7 @@
-use crate::agent::{llm::GenerationUsage, session::SqliteSessionStore};
+use crate::agent::{
+    llm::GenerationUsage,
+    session::{Session, SqliteSessionStore},
+};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -141,6 +144,17 @@ pub(crate) async fn session_cost(
 pub(crate) struct RunCost {
     total_usd: f64,
     partial: bool,
+}
+
+pub(crate) async fn tracked_session_cost(
+    store: &SqliteSessionStore,
+    session: &Session,
+) -> anyhow::Result<SessionCost> {
+    let mut cost = session_cost(store, session.id().as_str(), session.generation()).await?;
+    // The old aggregate cannot be repriced per call.
+    cost.partial |= !session.messages().is_empty()
+        && (session.legacy_cost_gap() || session.token_usage().requests > cost.chat_calls);
+    Ok(cost)
 }
 
 pub(crate) async fn run_cost(

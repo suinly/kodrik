@@ -16,6 +16,7 @@ pub struct App {
     pub remote_grant: Option<RemoteGrant>,
     pub remote_grant_scroll: usize,
     pub context_tokens: Option<u64>,
+    pub session_cost: Option<(f64, bool)>,
     pub compacting: bool,
     pub compaction_progress: Option<crate::agent::CompactionProgress>,
     pub input: String,
