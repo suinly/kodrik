@@ -745,7 +745,10 @@ impl Remote {
                 app.view.clear_selection();
             }
             input if input == "/model" || input.starts_with("/model ") => {
-                let model = input.strip_prefix("/model ").map(str::to_owned);
+                let model = input
+                    .strip_prefix("/model ")
+                    .filter(|model| *model != "auto")
+                    .map(str::to_owned);
                 self.chat
                     .command(&self.session, ChatCommand::SetModel { model })
                     .await?;

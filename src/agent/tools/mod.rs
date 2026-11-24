@@ -10,6 +10,7 @@ pub(crate) mod exec_command;
 pub(crate) mod mcp;
 mod mcp_search;
 mod memory;
+pub(crate) mod model_selection;
 pub(crate) mod messages;
 mod publish_page;
 mod registry;

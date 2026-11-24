@@ -18,7 +18,7 @@ For terminal-only use, the minimum is:
 ```toml
 [gateway]
 
-[provider.primary]
+[provider.fast]
 type = "openai"
 model = "your-model"
 api_key = "your-key"

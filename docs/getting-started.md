@@ -44,7 +44,7 @@ model and API key with values for your provider:
 ```toml
 [gateway]
 
-[provider.primary]
+[provider.fast]
 type = "openai"
 model = "your-model"
 api_key = "your-key"

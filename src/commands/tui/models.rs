@@ -151,7 +151,10 @@ pub(super) async fn handle_command(
             ));
             return Ok::<_, anyhow::Error>(());
         }
-        let model = input.strip_prefix("/model ").map(str::to_owned);
+        let model = input
+            .strip_prefix("/model ")
+            .filter(|model| *model != "auto")
+            .map(str::to_owned);
         if let Some(model) = &model {
             anyhow::ensure!(
                 !model.is_empty() && model.len() <= 512 && !model.chars().any(char::is_control),

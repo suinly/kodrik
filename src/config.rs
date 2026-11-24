@@ -3,6 +3,8 @@ use std::{collections::HashMap, fs, path::PathBuf};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::billing::Rates;
+
 pub(crate) fn data_dir() -> anyhow::Result<PathBuf> {
     Ok(std::env::home_dir()
         .context("Cannot determine the home directory for ~/.kodrik")?
@@ -105,6 +107,17 @@ impl ResearchConfig {
 }
 
 impl Config {
+    pub(crate) fn model_providers(&self) -> anyhow::Result<(&ProviderConfig, Option<&ProviderConfig>)> {
+        let smart = self.provider.get("smart").or_else(|| self.provider.get("primary"));
+        let fast = self
+            .provider
+            .get("fast")
+            .or_else(|| self.provider.get("system_one"))
+            .or(smart)
+            .context("Configure provider.fast or provider.smart (legacy: provider.system_one or provider.primary)")?;
+        Ok((fast, smart))
+    }
+
     pub(crate) fn validate_owner(&self) -> anyhow::Result<()> {
         if let Some(owner) = &self.owner {
             i64::try_from(owner.user_id.get())?;
@@ -352,11 +365,65 @@ pub enum ProviderConfig {
         api_key: String,
         api_base: Option<String>,
         model: String,
+        #[serde(default, deserialize_with = "deserialize_rates")]
+        rates: Option<Rates>,
     },
+}
+
+fn deserialize_rates<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Rates>, D::Error> {
+    let rates = Option::<Rates>::deserialize(deserializer)?;
+    if let Some(rates) = &rates
+        && [
+            rates.input_usd_per_million,
+            rates.cached_input_usd_per_million,
+            rates.output_usd_per_million,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|rate| !rate.is_finite() || rate < 0.0)
+    {
+        return Err(serde::de::Error::custom("Provider rates must be finite and nonnegative"));
+    }
+    Ok(rates)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_routing_resolves_new_and_legacy_provider_keys() {
+        use super::{Config, ProviderConfig};
+
+        for (keys, fast, smart) in [
+            (&["fast", "smart", "system_one", "primary"][..], "fast", Some("smart")),
+            (&["system_one", "primary"][..], "system_one", Some("primary")),
+            (&["system_one", "smart"][..], "system_one", Some("smart")),
+            (&["fast", "primary"][..], "fast", Some("primary")),
+            (&["smart"][..], "smart", Some("smart")),
+            (&["primary"][..], "primary", Some("primary")),
+            (&["fast"][..], "fast", None),
+            (&["system_one"][..], "system_one", None),
+        ] {
+            let mut input = String::from("[gateway]\n");
+            for key in keys {
+                input.push_str(&format!(
+                    "[provider.{key}]\ntype='openai'\nmodel='{key}'\napi_key='{key}-key'\n"
+                ));
+            }
+            let config: Config = toml::from_str(&input).unwrap();
+            let (resolved_fast, resolved_smart) = config.model_providers().unwrap();
+            let ProviderConfig::OpenAi { model, api_key, .. } = resolved_fast;
+            assert_eq!(model, fast, "{keys:?}");
+            assert_eq!(api_key.as_str(), format!("{fast}-key"), "{keys:?}");
+            assert_eq!(
+                resolved_smart.map(|ProviderConfig::OpenAi { model, .. }| model.as_str()),
+                smart,
+                "{keys:?}"
+            );
+        }
+    }
+
     #[test]
     fn web_event_stream_limit_defaults_and_custom_value() {
         let config: super::Config = toml::from_str("[gateway]\n[provider]").unwrap();

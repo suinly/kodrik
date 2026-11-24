@@ -85,6 +85,10 @@ export type TokenUsage = {
   input_tokens:number;output_tokens:number|null;cached_tokens:number|null;
   total_tokens:number|null;requests:number;partial:boolean;
 };
+export type SessionCost = {
+  total_usd:number;partial:boolean;
+  calls:{id:string;model:string;kind:string;cost_usd:number|null;run_id?:string|null}[];
+};
 export type Snapshot = {
   model?: string | null;
   model_override?: string | null;
@@ -92,6 +96,8 @@ export type Snapshot = {
   handoff_session_id?: string | null;
   read_revision?: string | null;
   token_usage?: TokenUsage | null;
+  session_cost?: SessionCost;
+  run_cost?: Pick<SessionCost,'total_usd'|'partial'> | null;
   context_tokens?: number | null;
   context_limit?: number | null;
   context_compaction_threshold?: number | null;

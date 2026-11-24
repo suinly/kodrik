@@ -12,6 +12,10 @@ impl AgentRunner {
         let _guard = self.lock_conversation(id).await?;
         crate::agent::run_state::CURRENT_EXECUTION.scope(_guard.ownership.clone(), async {
         let mut session = self.load_session(id.clone()).await?;
+        if self.group_decider.is_some() && self.sessions.load(session.id()).await?.is_none() {
+            // Persist the generation before charging the first participation decision.
+            self.sessions.save(&session).await?;
+        }
         session.merge_telegram_group(message.telegram_group.as_ref());
         let input = UserMessage { browser_client_id: message.browser_client_id.clone(), browser_context: message.browser_context.clone(),
             content: message.text.clone(),
@@ -37,6 +41,8 @@ impl AgentRunner {
                 }
             }
         };
+        let charge = self.sqlite_store().map(|store| super::super::llm::charge::Charge::new(&store, &session, None, "group_decision"));
+        let decide = super::super::llm::charge::scope(charge, decide);
         let reply = if let Some(cancel) = cancel.as_mut() {
             tokio::select! {
                 biased;

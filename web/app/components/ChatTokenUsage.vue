@@ -1,24 +1,47 @@
 <script setup lang="ts">
 import {locale,t} from '../utils/i18n'
-import type {TokenUsage} from '../utils/api'
+import type {SessionCost,TokenUsage} from '../utils/api'
 import {tokenUsageSummary} from '../utils/token-usage'
 
-const props=defineProps<{usage?:TokenUsage|null;context?:number|null;limit?:number|null;threshold?:number|null}>()
+const props=defineProps<{usage?:TokenUsage|null;cost?:SessionCost;runCost?:Pick<SessionCost,'total_usd'|'partial'>|null;context?:number|null;limit?:number|null;threshold?:number|null}>()
 const summary=computed(()=>tokenUsageSummary(props.usage,props.context,props.limit))
 const compact=(value:number|null|undefined)=>value==null?'—':new Intl.NumberFormat(locale.value,{notation:'compact',maximumFractionDigits:1}).format(value)
 const exact=(value:number|null|undefined)=>value==null?t('Нет данных'):new Intl.NumberFormat(locale.value).format(value)
+const usd=computed(()=>new Intl.NumberFormat(locale.value,{style:'currency',currency:'USD',maximumFractionDigits:6}))
+const usdFloor=0.000001
+const money=(value:number|null)=>value==null?t('Нет данных'):value>0 && value<usdFloor?`<${usd.value.format(usdFloor)}`:usd.value.format(value)
+const displayTotal=(value:Pick<SessionCost,'total_usd'|'partial'>)=>`${value.partial && (value.total_usd===0 || value.total_usd>=usdFloor)?'≥':''}${money(value.total_usd)}`
+const costTotal=computed(()=>props.cost ? displayTotal(props.cost) : '')
 </script>
 
 <template>
   <UPopover mode="hover" enable-touch :content="{align:'end'}">
-    <UButton data-testid="token-usage" color="neutral" variant="ghost" size="sm" :aria-label="t('Статистика токенов')" class="gap-1 tabular-nums whitespace-nowrap">
+    <UButton data-testid="token-usage" color="neutral" variant="ghost" size="sm" :aria-label="t(cost ? 'Токены и стоимость' : 'Статистика токенов')" class="gap-1 tabular-nums whitespace-nowrap">
       <UIcon name="i-lucide-chart-no-axes-column" class="size-4 shrink-0" />
       <span>{{ summary.partial && summary.total!=null?'≥':'' }}{{ compact(summary.total) }}</span>
       <span class="text-dimmed">·</span>
       <span class="text-muted">{{ summary.percent!=null?`${summary.percent}%`:compact(summary.context) }}</span>
+      <template v-if="cost">
+        <span class="text-dimmed">·</span>
+        <span>{{ costTotal }}</span>
+      </template>
     </UButton>
     <template #content>
-      <div class="w-72 max-w-[calc(100vw-1rem)] space-y-3 p-3 text-sm" data-testid="token-usage-details">
+      <div class="max-h-[65dvh] w-72 max-w-[calc(100vw-1rem)] space-y-3 overflow-y-auto p-3 text-sm" data-testid="token-usage-details">
+        <section v-if="cost" data-testid="session-cost" :aria-label="t('Стоимость диалога')">
+          <p class="mb-1 flex justify-between gap-2 font-medium tabular-nums">
+            <span>{{ t('Стоимость диалога') }}</span><span>{{ costTotal }}</span>
+          </p>
+          <p v-if="runCost" class="mb-1 flex justify-between gap-2 text-muted tabular-nums"><span>{{ t('Последний ход') }}</span><span>{{ displayTotal(runCost) }}</span></p>
+          <p v-if="cost.partial" class="mb-1 text-xs text-muted">{{ t('Учёт неполный: старые вызовы или данные провайдера могут отсутствовать.') }}</p>
+          <p v-if="!cost.calls.length" class="text-xs text-muted">{{ t('Нет данных о вызовах.') }}</p>
+          <ul v-else :aria-label="t('Вызовы модели')" class="divide-y divide-default text-xs">
+            <li v-for="call in cost.calls" :key="call.id" class="flex items-start justify-between gap-2 py-1">
+              <span class="min-w-0 [overflow-wrap:anywhere]">{{ call.model }} <span class="text-muted">· {{ call.kind }}</span></span>
+              <span class="shrink-0 tabular-nums">{{ money(call.cost_usd) }}</span>
+            </li>
+          </ul>
+        </section>
         <div>
           <p class="mb-1 font-medium">{{ t('Токены за диалог') }}</p>
           <dl class="grid grid-cols-2 gap-x-3 gap-y-1 tabular-nums">
@@ -37,7 +60,7 @@ const exact=(value:number|null|undefined)=>value==null?t('Нет данных'):
         </div>
         <p class="text-xs text-muted">{{ t('Кэш входит во входящие токены, а не прибавляется к ним.') }}</p>
         <p class="text-xs text-muted">{{ t('Только текущая ветка, без сабагентов, названий и сжатия. Не включает прерванные запросы без usage.') }}</p>
-        <p v-if="summary.partial" class="text-xs text-muted">{{ t('Учёт неполный: старые вызовы или данные провайдера могут отсутствовать.') }}</p>
+        <p v-if="summary.partial && !cost?.partial" class="text-xs text-muted">{{ t('Учёт неполный: старые вызовы или данные провайдера могут отсутствовать.') }}</p>
       </div>
     </template>
   </UPopover>

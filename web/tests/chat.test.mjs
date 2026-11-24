@@ -104,7 +104,7 @@ test('new chat applies the draft model before sending and preserves it across re
   const browser=await chromium.launch({headless:true});
   try {
     const page=await signedPage(browser),actions=[];
-    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['alpha','beta'],default_model:'alpha'}}));
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['fast','smart'],default_model:'vendor/default'}}));
     await page.route('**/api/chat/sessions/*/model',r=>{actions.push(['model',r.request().postDataJSON()]);return r.fulfill({status:204})});
     page.on('request',r=>{
       if(r.method()==='POST' && new URL(r.url()).pathname.endsWith('/api/chat/sessions')) actions.push(['create']);
@@ -113,17 +113,17 @@ test('new chat applies the draft model before sending and preserves it across re
     await page.goto(new URL('app/chat',base).href);
     const composer=page.locator('.chat-prompt');
     await composer.getByRole('button',{name:'Модель диалога',exact:true}).click();
-    await page.getByRole('button',{name:'beta',exact:true}).click();
-    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('beta');
+    await page.getByRole('button',{name:'Умная',exact:true}).click();
+    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('Умная');
     assert.deepEqual(actions,[]);
     await page.reload();
-    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('beta');
+    await expect(composer.getByRole('button',{name:'Модель диалога',exact:true})).toContainText('Умная');
     await page.setViewportSize({width:320,height:720});
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
     await page.screenshot({path:'/tmp/kodrik-model-composer.png',animations:'disabled'});
     const input=page.getByRole('textbox',{name:'Сообщение',exact:true});
     await input.fill('Первое сообщение с выбранной моделью');await input.press('Enter');
-    await expect.poll(()=>actions).toEqual([['create'],['model',{model:'beta'}],['send']]);
+    await expect.poll(()=>actions).toEqual([['create'],['model',{model:'smart'}],['send']]);
     await expect(page.locator('.message').getByText('Первое сообщение с выбранной моделью',{exact:true})).toHaveCount(1);
   } finally {await browser.close()}
 });
@@ -191,10 +191,39 @@ test('token statistics stay compact and show exact details on hover and focus',{
     await expect(details).toContainText('Исходящие');
     await expect(details).toContainText('500');
     await expect(details).toContainText('Кэш входит');
+    await expect(details.getByTestId('session-cost')).toHaveCount(0);
     await page.mouse.move(0,0);
     await page.setViewportSize({width:390,height:844});
     await button.focus();
     await expect(details).toBeVisible();
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  } finally {await browser.close()}
+});
+
+test('chat shows partial session costs with priced, free and unpriced model calls',{timeout:60000},async()=>{
+  const {id}=await(await request('sessions',{})).json();
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser,{viewport:{width:320,height:720}});
+    const snapshot={type:'snapshot',session_id:id,run_id:null,revision:1,busy:false,cancel_requested:false,phase:null,blocked_reason:null,live:{current:null,interrupted:null},plan:null,queued:[],messages:[],
+      session_cost:{total_usd:0.001234,partial:true,calls:[
+        {id:'one',model:'vendor/fast',kind:'chat',cost_usd:0.001234,run_id:'run'},
+        {id:'two',model:'vendor/free',kind:'title',cost_usd:0},
+        {id:'three',model:'vendor/smart',kind:'review',cost_usd:null},
+      ]}};
+    await page.route(`**/sessions/${id}/events`,r=>r.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
+    await page.route(`**/sessions/${id}/run`,r=>r.fulfill({json:snapshot}));
+    await page.goto(new URL(`app/chat/${id}`,base).href);
+    const button=page.getByTestId('token-usage');
+    await expect(button).toContainText(/0,001234/);
+    await button.focus();
+    const cost=page.getByTestId('session-cost');
+    await expect(cost).toContainText('Учёт неполный');
+    const calls=cost.getByRole('listitem');
+    await expect(calls).toHaveCount(3);
+    await expect(calls.filter({hasText:'vendor/fast'})).toContainText(/chat.*0,001234/);
+    await expect(calls.filter({hasText:'vendor/free'})).toContainText(/title.*0,00/);
+    await expect(calls.filter({hasText:'vendor/smart'})).toContainText(/review.*Нет данных/);
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   } finally {await browser.close()}
 });

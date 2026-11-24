@@ -42,14 +42,34 @@ impl AgentRunner {
     }
 
     pub async fn available_models(&self) -> anyhow::Result<Vec<String>> {
-        self.agent.llm().list_models().await
+        match self.agent.model_roles() {
+            Some(roles) => Ok(roles),
+            None => self.agent.llm().list_models().await,
+        }
     }
 
     pub fn effective_model_identity(&self, session: &Session) -> anyhow::Result<String> {
+        Ok(self
+            .agent
+            .provider_for(session.model_override())?
+            .identity())
+    }
+
+    pub(crate) fn displayed_model(&self, session: &Session) -> String {
         match session.model_override() {
-            Some(model) => Ok(self.agent.llm().with_model(model)?.identity()),
-            None => Ok(self.model_identity()),
+            Some(model) if !matches!(model, "fast" | "smart" | "auto") => model.to_owned(),
+            _ => self
+                .effective_model_identity(session)
+                .unwrap_or_else(|_| self.model_identity()),
         }
+    }
+
+    pub(super) fn available_model_roles(&self) -> Option<Vec<String>> {
+        self.agent.model_roles()
+    }
+
+    pub(super) fn has_smart_model(&self) -> bool {
+        self.agent.has_smart()
     }
 
     pub(crate) fn model_identity(&self) -> String {
@@ -567,7 +587,15 @@ impl AgentRunner {
                 if response.is_ok()
                     && let Some(learning) = &self.learning
                 {
-                    learning.schedule(&session, initial_messages);
+                    let charge = self.sqlite_store().map(|store| {
+                        super::llm::charge::Charge::new(
+                            &store,
+                            &session,
+                            checkpoint.as_ref().map(|cp| cp.record.id.as_str()),
+                            "learning",
+                        )
+                    });
+                    learning.schedule(&session, initial_messages, charge);
                 }
 
                 response

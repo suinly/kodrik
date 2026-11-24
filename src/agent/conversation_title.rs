@@ -82,9 +82,15 @@ impl AgentRunner {
             ).into(),
             messages: messages.as_slice().into(),
         };
+        let charge = self
+            .sqlite_store()
+            .map(|store| crate::agent::llm::charge::Charge::new(&store, session, None, "title"));
         let (reply, _) = tokio::time::timeout(
             Duration::from_secs(10),
-            self.agent.llm().generate_attempt(&context, &[], None),
+            crate::agent::llm::charge::scope(
+                charge,
+                self.agent.llm().generate_attempt(&context, &[], None),
+            ),
         )
         .await??;
         let [Message::Assistant(reply)] = reply.as_slice() else {

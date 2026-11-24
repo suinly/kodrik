@@ -123,6 +123,8 @@ pub struct Session {
     pub(crate) input_tokens: Option<u64>,
     #[serde(default)]
     token_usage: Option<TokenUsage>,
+    #[serde(default)]
+    legacy_cost_gap: bool,
 }
 
 impl Session {
@@ -144,6 +146,7 @@ impl Session {
             compaction: None,
             input_tokens: None,
             token_usage: Some(TokenUsage::default()),
+            legacy_cost_gap: false,
             last_message_at: None,
             message_times: Vec::new(),
         }
@@ -168,7 +171,12 @@ impl Session {
         })
     }
 
+    pub(crate) fn legacy_cost_gap(&self) -> bool {
+        self.legacy_cost_gap || self.token_usage.is_none() && !self.messages.is_empty()
+    }
+
     pub(crate) fn record_token_usage(&mut self, usage: crate::agent::llm::GenerationUsage) {
+        self.legacy_cost_gap = self.legacy_cost_gap();
         let mut total = self.token_usage();
         total.input_tokens = total
             .input_tokens
@@ -254,6 +262,7 @@ impl Session {
         }
         branch.input_tokens = None;
         branch.token_usage = Some(TokenUsage::default());
+        branch.legacy_cost_gap = false;
         Ok(branch)
     }
 

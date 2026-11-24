@@ -382,7 +382,13 @@ impl Compactor {
             id: job.id.clone(),
         };
         let compactor = self.clone();
-        tokio::spawn(async move {
+        let charge = crate::agent::llm::charge::Charge::new(
+            &store,
+            &job.snapshot.session,
+            Some(&job.run_id),
+            "compaction",
+        );
+        tokio::spawn(crate::agent::llm::charge::scope(Some(charge), async move {
             let _guard = guard;
             let session = job.snapshot.session.id().as_str();
             let result=async {
@@ -423,7 +429,7 @@ impl Compactor {
                     .insert(job.id.clone(), format!("{error:#}"));
                 log::warn!("Compaction worker failed: {error:#}");
             }
-        });
+        }));
     }
     pub(crate) async fn durable_boundary(
         &self,

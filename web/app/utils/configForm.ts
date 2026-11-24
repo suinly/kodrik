@@ -12,12 +12,14 @@ export type ConfigField = {
   secret?:boolean
   min?:number
   max?:number
+  step?:number|'any'
   fields?:Record<string,ConfigField>
   item?:ConfigField
   initial?:ConfigValue
 }
 const string=(optional=false):ConfigField=>({kind:'string',optional})
 const number=(optional=false,min=0,max=Number.MAX_SAFE_INTEGER):ConfigField=>({kind:'number',optional,min,max})
+const rate:ConfigField={kind:'number',optional:true,min:0,step:'any'}
 const boolean:ConfigField={kind:'boolean'}
 const secret:ConfigField={kind:'string',secret:true}
 const object=(fields:Record<string,ConfigField>,optional=false):ConfigField=>({kind:'object',fields:Object.fromEntries(Object.entries(fields).map(([key,field])=>[key,{...field}])),optional})
@@ -49,13 +51,22 @@ export const configSchema=object({
     searxng_url:string(true),degoog_url:string(true),
     obscura_path:{...string(),advanced:true},
   })},
-  provider:map(object({type:string(),api_key:secret,model:string(),api_base:{...string(true),advanced:true}}),{type:'openai',api_key:'',api_base:null,model:''}),
+  provider:map(object({
+    type:string(),api_key:secret,model:string(),api_base:{...string(true),advanced:true},
+    rates:{...object({input_usd_per_million:rate,cached_input_usd_per_million:rate,output_usd_per_million:rate},true),advanced:true},
+  }),{type:'openai',api_key:'',api_base:null,model:''}),
   gateway:map(object({type:string(),token:secret,stream:boolean}),{type:'telegram',token:'',stream:true}),
   mcp:map(object({type:string(),url:string(),headers:map(secret,'')}),{type:'http',url:'',headers:{}}),
 })
 
 const fieldLabels:Record<string,string> = {"owner": "Владелец", "system_prompt": "Системная инструкция", "web": "Веб-сервер", "trusted_proxies": "Доверенные прокси", "enabled": "Включено", "listen": "Адрес прослушивания", "base_url": "Внешний адрес сервера", "max_event_streams_per_user": "Подключения на пользователя", "companion": "Компаньон", "learning_enabled": "Запоминать выводы из бесед", "proactive_enabled": "Ежедневное исследование интересов", "interface": "Имя Telegram-шлюза", "user_id": "ID пользователя Telegram", "chat_id": "ID личного чата Telegram", "timezone": "Часовой пояс", "proactive_hour": "Не раньше этого часа, 0–23", "quiet_start": "Начало тихих часов, 0–23", "quiet_end": "Конец тихих часов, 0–23", "sessions": "Сессии", "restart_limit": "Порог последовательных сбоев выполнения", "compact_threshold_tokens": "Порог сжатия истории, токены", "compact_background_margin_tokens": "Запас для фонового сжатия, токены", "research": "Поиск и чтение сайтов", "searxng_url": "Адрес SearXNG", "degoog_url": "Адрес DeGoog", "obscura_path": "Путь к Obscura", "provider": "Провайдеры ИИ", "type": "Тип API / транспорта", "api_key": "Ключ API", "api_base": "Базовый адрес API", "model": "Модель", "gateway": "Шлюзы Telegram", "token": "Токен бота", "stream": "Показывать ответ по мере генерации", "mcp": "Серверы MCP", "url": "Адрес сервера", "headers": "HTTP-заголовки"}
 export const configLabel=(key:string)=>t(fieldLabels[key] ?? key)
+
+Object.assign(fieldLabels, {
+  rates:'Цены за токены',input_usd_per_million:'Входные токены, USD за 1 млн',
+  cached_input_usd_per_million:'Кэшированные входные токены, USD за 1 млн',
+  output_usd_per_million:'Выходные токены, USD за 1 млн',
+})
 
 // Help text describes runtime behavior, not literal translations of config keys.
 configSchema.fields!["owner"]!.fields!["interface"]!.description="Имя настроенного шлюза из раздела Telegram, а не имя бота или пользователя."
@@ -80,6 +91,7 @@ configSchema.fields!["sessions"]!.fields!["compact_background_margin_tokens"]!.d
 configSchema.fields!["research"]!.fields!["searxng_url"]!.description="Базовый HTTP(S) URL SearXNG, без /search: этот путь добавляется автоматически. Не задавайте одновременно с DeGoog."
 configSchema.fields!["research"]!.fields!["degoog_url"]!.description="Базовый HTTP(S) URL DeGoog, без /api/search: этот путь добавляется автоматически. Не задавайте одновременно с SearXNG."
 configSchema.fields!["research"]!.fields!["obscura_path"]!.description="Путь к исполняемому файлу Obscura или имя в PATH процесса шлюза. Это не команда с аргументами."
+configSchema.fields!["provider"]!.description="Используйте fast для начальной модели и фоновых задач, smart — для сложных задач в диалоге. Прежние имена system_one и primary по-прежнему работают."
 configSchema.fields!["provider"]!.item!.fields!["type"]!.description="openai — протокол OpenAI Responses API, в том числе совместимый сервер. Тип доступен только для чтения."
 configSchema.fields!["provider"]!.item!.fields!["api_key"]!.description="Ключ доступа к выбранному API. Требуется непустое значение."
 configSchema.fields!["provider"]!.item!.fields!["model"]!.description="Точный идентификатор модели, принимаемый этим API, а не произвольное название подключения."

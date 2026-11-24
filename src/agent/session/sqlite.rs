@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 17;
+pub(super) const VERSION: i64 = 18;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -283,6 +283,9 @@ impl SqliteSessionStore {
         }
         if version < 17 {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS draft_models(session_id TEXT PRIMARY KEY, model TEXT NOT NULL); PRAGMA user_version=17;")?;
+        }
+        if version < 18 {
+            crate::billing::migrate(&tx)?;
         }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;

@@ -21,7 +21,7 @@ use crate::{
         Agent, AgentRunner, ContextBuilder,
         companion::CompanionStore,
         learning::LearningService,
-        llm::OpenAiLlm,
+        llm::{LlmProvider, OpenAiLlm},
         session::SqliteSessionStore,
         system_one::SystemOne,
         tools::{
@@ -186,10 +186,7 @@ pub(crate) async fn build_app_with_access(
         None => None,
     };
     let timezone = config.companion.timezone.parse::<chrono_tz::Tz>()?;
-    let provider = config
-        .provider
-        .get("primary")
-        .ok_or_else(|| anyhow::anyhow!("Primary provider is missing"))?;
+    let (fast_provider, smart_provider) = config.model_providers()?;
 
     let make_llm = |provider: &ProviderConfig| {
         (match provider {
@@ -197,13 +194,21 @@ pub(crate) async fn build_app_with_access(
                 api_key,
                 api_base,
                 model,
-            } => OpenAiLlm::new(api_key, Some(model), api_base.as_deref()),
+                rates,
+            } => OpenAiLlm::new(api_key, Some(model), api_base.as_deref()).with_rates(*rates),
         })
         .with_access(access.clone())
     };
-    let llm = Arc::new(make_llm(provider));
+    let fast_llm = Arc::new(make_llm(fast_provider));
+    let smart_llm = smart_provider.map(|provider| {
+        if std::ptr::eq(provider, fast_provider) {
+            fast_llm.clone() as Arc<dyn LlmProvider>
+        } else {
+            Arc::new(make_llm(provider)) as Arc<dyn LlmProvider>
+        }
+    });
     let background_llm = Arc::new(
-        make_llm(provider)
+        make_llm(fast_provider)
             .with_max_output_tokens(2048)
             .without_retries(),
     );
@@ -350,18 +355,18 @@ pub(crate) async fn build_app_with_access(
             .with_agents(&std::env::current_dir()?.join("AGENTS.md"))
             .with_skills(&data.join("skills"));
     }
-    let decision_provider = config.provider.get("system_one").unwrap_or(provider);
     let tool_auditor = || {
         SystemOne::new(Arc::new(
-            make_llm(decision_provider)
+            make_llm(fast_provider)
                 .with_max_output_tokens(4096)
                 .without_retries(),
         ))
     };
-    let mut agent = Agent::new(llm, tools.with_deferred_builtin_schemas(), context)
+    let mut agent = Agent::new(fast_llm, tools.with_deferred_builtin_schemas(), context)
+        .with_model_routing(smart_llm)
         .with_command_auditor(tool_auditor())
         .with_compaction(
-            Arc::new(make_llm(provider).for_compaction()),
+            Arc::new(make_llm(fast_provider).for_compaction()),
             config.sessions.compact_threshold_tokens,
         )
         .with_background_compaction(config.sessions.compact_background_margin_tokens)
@@ -391,7 +396,7 @@ pub(crate) async fn build_app_with_access(
     ).with_limits(4, 32_000).with_command_auditor(tool_auditor()).with_journal(journal.clone()));
 
     let decision_llm = Arc::new(
-        make_llm(decision_provider)
+        make_llm(fast_provider)
             .with_max_output_tokens(128)
             .without_retries(),
     );

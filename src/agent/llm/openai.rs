@@ -187,6 +187,7 @@ fn retry_after(value: &str) -> Option<std::time::Duration> {
 pub struct OpenAiLlm {
     client: Client<OpenAIConfig>,
     model: String,
+    rates: Option<crate::billing::Rates>,
     max_output_tokens: Option<u32>,
     retries: u32,
     compaction: bool,
@@ -265,6 +266,7 @@ impl OpenAiLlm {
 
         Self {
             client,
+            rates: None,
             max_output_tokens: None,
             retries: 3,
             compaction: false,
@@ -274,6 +276,11 @@ impl OpenAiLlm {
                 None => String::from("gpt-6-sol"),
             },
         }
+    }
+
+    pub(crate) fn with_rates(mut self, rates: Option<crate::billing::Rates>) -> Self {
+        self.rates = rates;
+        self
     }
 
     pub(crate) fn for_compaction(mut self) -> Self {
@@ -435,6 +442,14 @@ impl OpenAiLlm {
             .build()?;
         request.max_output_tokens = self.max_output_tokens;
 
+        // Persist an unknown attempt first: cancellation can occur after the provider accepted it.
+        let charge = super::charge::Charge::current()
+            .map(|charge| (charge, uuid::Uuid::new_v4().to_string(), self.identity()));
+        if let Some((charge, id, model)) = &charge {
+            charge
+                .record(id, model, self.rates, Default::default())
+                .await;
+        }
         let response: ResponseOutput = if let Some(progress) = progress {
             request.stream = Some(true);
             let mut stream = self
@@ -455,6 +470,15 @@ impl OpenAiLlm {
                         break;
                     }
                     StreamEvent::Failed { response } => {
+                        if let Some((charge, id, model)) = &charge
+                            && let Some(usage) = response.get("usage").and_then(|value| {
+                                serde_json::from_value::<ResponseUsage>(value.clone()).ok()
+                            })
+                        {
+                            charge
+                                .record(id, model, self.rates, usage.generation_usage())
+                                .await;
+                        }
                         if is_overflow_code(response["error"]["code"].as_str()) {
                             return Err(super::ContextOverflow.into());
                         }
@@ -490,6 +514,14 @@ impl OpenAiLlm {
         } else {
             self.client.responses().create_byot(&request).await?
         };
+        let usage = response
+            .usage
+            .as_ref()
+            .map(ResponseUsage::generation_usage)
+            .unwrap_or_default();
+        if let Some((charge, id, model)) = &charge {
+            charge.record(id, model, self.rates, usage).await;
+        }
         if is_overflow_code(
             response
                 .error
@@ -502,11 +534,6 @@ impl OpenAiLlm {
         if self.compaction {
             response.validate_compaction()?;
         }
-        let usage = response
-            .usage
-            .as_ref()
-            .map(ResponseUsage::generation_usage)
-            .unwrap_or_default();
         Ok((response.into_messages()?, usage))
     }
 }
@@ -545,6 +572,9 @@ impl LlmProvider for OpenAiLlm {
             "Invalid model ID"
         );
         let mut selected = self.clone();
+        if selected.model != model {
+            selected.rates = None;
+        }
         selected.model = model.into();
         Ok(std::sync::Arc::new(selected))
     }
@@ -1252,6 +1282,51 @@ mod tests {
         assert_eq!(request["input"][2]["call_id"], "image_1");
         assert_eq!(request["input"][3]["content"], "plain text");
         assert_eq!(request["input"][4]["output"], "{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn streaming_attempt_updates_one_persisted_charge() {
+        use crate::agent::session::{Session, SessionId, SqliteSessionStore};
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(directory.path().into()).unwrap();
+        let session = Session::new(SessionId::new("cost"));
+        let (llm, finish, server) = streaming_server(Some(json!({"type":"response.completed",
+            "response":{"output":[],"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}}
+        }))).await;
+        let llm = llm.with_rates(Some(crate::billing::Rates {
+            input_usd_per_million: Some(1.0),
+            cached_input_usd_per_million: Some(0.5),
+            output_usd_per_million: Some(2.0),
+        }));
+        let charge = super::super::charge::Charge::new(&store, &session, Some("run"), "chat");
+        let (tx, mut rx) = mpsc::channel(32);
+        let request = tokio::spawn(super::super::charge::scope(Some(charge), async move {
+            llm.generate(
+                &LlmContext {
+                    instructions: "test".into(),
+                    messages: (&[][..]).into(),
+                },
+                &[],
+                Some(&tx),
+            )
+            .await
+        }));
+        assert!(rx.recv().await.is_some());
+        let cost = crate::billing::session_cost(&store, "cost", session.generation())
+            .await
+            .unwrap();
+        assert_eq!(cost.calls.len(), 1);
+        assert!(cost.partial);
+        assert_eq!(cost.calls[0].cost_usd, None);
+        finish.send(()).unwrap();
+        request.await.unwrap().unwrap();
+        server.await.unwrap();
+        let cost = crate::billing::session_cost(&store, "cost", session.generation())
+            .await
+            .unwrap();
+        assert_eq!(cost.calls.len(), 1);
+        assert!(!cost.partial);
+        assert!((cost.total_usd - 0.00012).abs() < 1e-12);
     }
 
     #[tokio::test]

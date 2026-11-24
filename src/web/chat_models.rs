@@ -35,6 +35,7 @@ impl Chat {
 
     pub(super) async fn set_model(&self, id: &str, model: Option<String>) -> Result<(), Response> {
         self.session(id).await?;
+        let model = model.filter(|model| model != "auto");
         if let Some(model) = &model {
             if model.is_empty() || model.len() > 512 || model.chars().any(char::is_control) {
                 return Err(error(StatusCode::BAD_REQUEST, "Некорректная модель"));

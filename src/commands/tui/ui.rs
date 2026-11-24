@@ -604,8 +604,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
                         .map(|id| {
                             ListItem::new(id.unwrap_or(
                                 language.pick(
-                                    "Default (configured model)",
-                                    "По умолчанию (из настроек)",
+                                    "Auto (starts on Fast)",
+                                    "Авто (начинает с Fast)",
                                 ),
                             ))
                         })

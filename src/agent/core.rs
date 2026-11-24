@@ -1,3 +1,4 @@
+use super::llm::charge::{self, Charge};
 use super::run_state::{Checkpoint, RunPhase, ToolExecution};
 use std::sync::Arc;
 
@@ -8,12 +9,16 @@ use crate::agent::{
     llm::LlmProvider,
     message::{Message, ToolResult},
     session::{Session, SessionId},
-    tools::{TaskPlan, ToolRegistry},
+    tools::{
+        TaskPlan, ToolRegistry,
+        model_selection::{ModelTier, SelectModel, Selection},
+    },
 };
 
 #[derive(Clone)]
 pub struct Agent {
     llm: Arc<dyn LlmProvider>,
+    model_routing: Option<Option<Arc<dyn LlmProvider>>>,
     tools: ToolRegistry,
     context: ContextBuilder,
     limits: Option<(usize, Option<usize>)>,
@@ -128,6 +133,7 @@ impl Agent {
     pub fn new(llm: Arc<dyn LlmProvider>, tools: ToolRegistry, context: ContextBuilder) -> Self {
         Self {
             llm,
+            model_routing: None,
             tools,
             context,
             limits: None,
@@ -137,6 +143,48 @@ impl Agent {
             sandbox: None,
             subagents: None,
             command_auditor: None,
+        }
+    }
+
+    pub(crate) fn with_model_routing(mut self, smart: Option<Arc<dyn LlmProvider>>) -> Self {
+        self.model_routing = Some(smart);
+        if self.has_smart() {
+            self.tools = self.tools.register(Arc::new(SelectModel));
+        }
+        self
+    }
+
+    pub(super) fn has_smart(&self) -> bool {
+        self.model_routing.as_ref().is_some_and(Option::is_some)
+    }
+
+    pub(super) fn model_roles(&self) -> Option<Vec<String>> {
+        self.model_routing.as_ref().map(|smart| {
+            let mut roles = vec!["fast".into()];
+            if smart.is_some() {
+                roles.push("smart".into());
+            }
+            roles
+        })
+    }
+
+    pub(super) fn provider_for(&self, model: Option<&str>) -> anyhow::Result<Arc<dyn LlmProvider>> {
+        match model {
+            None | Some("auto") => Ok(self.llm.clone()),
+            Some("fast") if self.model_routing.is_some() => Ok(self.llm.clone()),
+            Some("smart") if self.model_routing.is_some() => self
+                .model_routing
+                .as_ref()
+                .and_then(Clone::clone)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Smart model is not configured; select Auto or Fast")
+                }),
+            Some(model) => self
+                .model_routing
+                .as_ref()
+                .and_then(Option::as_ref)
+                .unwrap_or(&self.llm)
+                .with_model(model),
         }
     }
 
@@ -425,6 +473,7 @@ impl Agent {
             browser_client_id = input_browser_client;
         }
         let mut requests = 0;
+        let mut turn_model = checkpoint.as_ref().and_then(|cp| cp.record.turn_model);
         let mut overflow_retry_used = checkpoint
             .as_ref()
             .is_some_and(|cp| cp.record.overflow_retry_used);
@@ -460,6 +509,8 @@ impl Agent {
                 }
                 if let Some(target) = cp.apply_handoff(session, &self.context).await? {
                     *session = target;
+                    turn_model = None;
+                    cp.record.turn_model = None;
                     overflow_retry_used = false;
                     overflow_compaction_from = None;
                     audit_context = crate::audit::Context::new(session.id().as_str(), "message")
@@ -527,9 +578,31 @@ impl Agent {
                     input_consumed = true;
                 }
             }
-            if input_consumed && let Some(tx) = progress {
-                let _ = tx.send(AgentEvent::InputConsumed).await;
+            if input_consumed {
+                turn_model = None;
+                if let Some(cp) = checkpoint.as_deref_mut() {
+                    cp.record.turn_model = None;
+                }
+                if let Some(tx) = progress {
+                    let _ = tx.send(AgentEvent::InputConsumed).await;
+                }
             }
+            let fixed_model = session
+                .model_override()
+                .filter(|model| *model != "auto")
+                .map(str::to_owned);
+            let allow_model_selection = call_budget.is_none()
+                && checkpoint
+                    .as_ref()
+                    .is_none_or(|cp| cp.record.model_limit.is_none());
+            let charge_for = |kind| {
+                checkpoint
+                    .as_ref()
+                    .map(|cp| Charge::new(&cp.store, session, Some(&cp.record.id), kind))
+            };
+            let chat_charge = charge_for("chat");
+            let audit_charge = charge_for("tool_audit");
+            let spawn_charge = charge_for("subagent");
             let environment = if self.isolated()
                 || session.id().as_str().starts_with("companion:")
                     && !session.id().as_str().starts_with(super::subagents::PREFIX)
@@ -565,7 +638,14 @@ impl Agent {
             } else {
                 registry.without(super::tools::browser_context::BROWSER_TOOLS)
             };
-            let tools = registry.for_model(session.messages())?;
+            let tools = registry
+                .for_model(session.messages())?
+                .into_iter()
+                .filter(|tool| {
+                    (allow_model_selection && fixed_model.is_none())
+                        || tool.name() != "select_model"
+                })
+                .collect::<Vec<_>>();
             let messages = if let Some(cp) = checkpoint
                 .as_ref()
                 .filter(|cp| !cp.record.pending_calls.is_empty())
@@ -691,16 +771,16 @@ impl Agent {
                         anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
                     }
                 }
-                // A selection takes effect at the next foreground request, not mid-stream.
-                let model = match checkpoint.as_ref() {
+                let selected = match checkpoint.as_ref() {
                     Some(cp) => cp.store.session_model(session.id()).await?,
-                    None => session.model_override().map(str::to_owned),
-                };
-                let selected_llm = model
-                    .as_deref()
-                    .map(|m| self.llm.with_model(m))
-                    .transpose()?;
-                let llm = selected_llm.as_deref().unwrap_or(self.llm.as_ref());
+                    None => fixed_model.clone(),
+                }
+                .filter(|model| model != "auto");
+                let llm = self.provider_for(if allow_model_selection {
+                    selected.as_deref().or(turn_model.map(ModelTier::name))
+                } else {
+                    None
+                })?;
                 requests += 1;
                 // Preserve non-streaming callers; headless steering still needs text events.
                 let stream = progress.is_some() || incoming.is_some();
@@ -714,7 +794,7 @@ impl Agent {
                 let mut answer_started = false;
                 // Keep the shared run future small enough for gateway callers' stacks.
                 let generation = Box::pin(async {
-                    let work = async {
+                    let work = charge::scope(chat_charge, async {
                         if checkpoint.is_some() {
                             llm.generate_attempt_with_usage(
                                 &context,
@@ -726,7 +806,7 @@ impl Agent {
                             llm.generate_with_usage(&context, &tools, stream.then_some(&stream_tx))
                                 .await
                         }
-                    };
+                    });
                     tokio::pin!(work);
                     loop {
                         tokio::select! {
@@ -939,13 +1019,16 @@ impl Agent {
             }
 
             let verdicts = if let Some(auditor) = &self.command_auditor {
-                super::command_audit::prepare(
-                    auditor,
-                    session,
-                    &messages,
-                    checkpoint.as_deref(),
-                    self.isolated(),
-                    &tools,
+                charge::scope(
+                    audit_charge.clone(),
+                    super::command_audit::prepare(
+                        auditor,
+                        session,
+                        &messages,
+                        checkpoint.as_deref(),
+                        self.isolated(),
+                        &tools,
+                    ),
                 )
                 .await?
             } else {
@@ -973,13 +1056,16 @@ impl Agent {
                         let permission = loop {
                             let permission = if let Some(auditor) = &self.command_auditor {
                                 if let Some(cp) = checkpoint.as_deref_mut() {
-                                    super::command_audit::wait_for_decision(
-                                        auditor,
-                                        cp,
-                                        session,
-                                        &call,
-                                        self.isolated(),
-                                        &tools,
+                                    charge::scope(
+                                        audit_charge.clone(),
+                                        super::command_audit::wait_for_decision(
+                                            auditor,
+                                            cp,
+                                            session,
+                                            &call,
+                                            self.isolated(),
+                                            &tools,
+                                        ),
                                     )
                                     .await?
                                 } else {
@@ -1047,6 +1133,15 @@ impl Agent {
                                 cp.record.conversation_id.clone(),
                             )
                         });
+                        let fixed_for_child =
+                            if matches!(call.name.as_str(), "spawn_agent" | "send_message") {
+                                match checkpoint.as_ref() {
+                                    Some(cp) => cp.store.session_model(session.id()).await?,
+                                    None => fixed_model.clone(),
+                                }
+                            } else {
+                                None
+                            };
                         let result = match permission {
                             Permission::Denied => Err(anyhow::anyhow!(
                                 "Tool call was not approved. Do not retry or work around the user's decision using another tool."
@@ -1066,6 +1161,31 @@ impl Agent {
                                     Err(anyhow::anyhow!(
                                         "Tool call requires human confirmation, but this run has no approval controls. Ask the user to continue in a personal Web/Telegram chat or TUI. Do not execute, retry or work around this action."
                                     ))
+                                }
+                            }
+                            Permission::Allowed
+                                if call.name == "select_model"
+                                    && self.has_smart()
+                                    && allow_model_selection =>
+                            {
+                                let current = match checkpoint.as_ref() {
+                                    Some(cp) => cp.store.session_model(session.id()).await?,
+                                    None => session.model_override().map(str::to_owned),
+                                };
+                                if current.as_deref().is_some_and(|model| model != "auto") {
+                                    Err(anyhow::anyhow!(
+                                        "The user has fixed the model for this session"
+                                    ))
+                                } else {
+                                    serde_json::from_value::<Selection>(call.arguments.clone())
+                                        .map(|args| {
+                                            turn_model = Some(args.model);
+                                            if let Some(cp) = checkpoint.as_deref_mut() {
+                                                cp.record.turn_model = turn_model;
+                                            }
+                                            serde_json::json!({"model":args.model.name()}).into()
+                                        })
+                                        .map_err(Into::into)
                                 }
                             }
                             Permission::Allowed
@@ -1095,7 +1215,7 @@ impl Agent {
                                 }
                             }
                             Permission::Allowed => {
-                                super::run_state::CURRENT_EXECUTION
+                                charge::scope(spawn_charge.clone(), super::run_state::CURRENT_EXECUTION
                                     .scope(
                                         checkpoint
                                             .as_ref()
@@ -1115,7 +1235,11 @@ impl Agent {
                                                             | "stop_agent"
                                                     )
                                                     .then(|| super::subagents::ParentContext {
-                                                        session: session.clone(),
+                                                        session: {
+                                                            let mut parent = session.clone();
+                                                            parent.set_model_override(fixed_for_child);
+                                                            parent
+                                                        },
                                                         finished: child_lifetime.clone(),
                                                     }),
                                                     crate::remote::tools::CURRENT_SCOPE.scope(
@@ -1150,7 +1274,7 @@ impl Agent {
                                                 ),
                                             ),
                                         ),
-                                    )
+                                    ))
                                     .await
                             }
                         };
@@ -1879,6 +2003,61 @@ mod tests {
                 "{mode}"
             );
             assert_eq!(session.compaction().is_some(), summarized, "{mode}");
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_escalation_applies_only_in_auto_and_resets_next_turn() {
+        struct Model(&'static str);
+        #[async_trait::async_trait]
+        impl LlmProvider for Model {
+            async fn generate(
+                &self,
+                context: &LlmContext<'_>,
+                _: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                let message = match context.messages.last() {
+                    Some(Message::User(user)) if user.content == "complex" => {
+                        Message::ToolCall(ToolCall {
+                            call_id: format!("escalate-{}", context.messages.len()),
+                            name: "select_model".into(),
+                            arguments: serde_json::json!({"model":"smart"}),
+                        })
+                    }
+                    _ => Message::Assistant(AssistantMessage {
+                        content: self.0.into(),
+                    }),
+                };
+                Ok((vec![message], None))
+            }
+        }
+        let agent = Agent::new(
+            Arc::new(Model("fast")),
+            ToolRegistry::default(),
+            ContextBuilder::new("rules"),
+        )
+        .with_model_routing(Some(Arc::new(Model("smart"))));
+        let mut session = Session::new(SessionId::new("route"));
+        for (mode, text, expected) in [
+            (None, "complex", "smart"),
+            (None, "simple", "fast"),
+            (Some("fast"), "complex", "fast"),
+            (Some("smart"), "simple", "smart"),
+        ] {
+            session.set_model_override(mode.map(str::to_owned));
+            let input = UserMessage {
+                content: text.into(),
+                browser_client_id: None,
+                browser_context: None,
+                files: vec![],
+                images: vec![],
+            };
+            let answer = agent
+                .run_inner(&mut session, Some(input), None, None, None, None)
+                .await
+                .unwrap();
+            assert_eq!(answer.content, expected, "{mode:?}, {text}");
         }
     }
 

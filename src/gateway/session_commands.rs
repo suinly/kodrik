@@ -45,7 +45,7 @@ impl GatewayRunner {
             return Ok(true);
         }
         let mut words = message.text.split_whitespace();
-        let Some(command @ ("/sessions" | "/session" | "/audit")) = words.next() else {
+        let Some(command @ ("/sessions" | "/session" | "/audit" | "/model")) = words.next() else {
             return Ok(false);
         };
         let interface = self
@@ -123,6 +123,56 @@ impl GatewayRunner {
             message.source.interface, message.source.conversation_id
         ));
         let runner = self.runner_for(&conversation)?;
+        if command == "/model" {
+            let mut session = runner.load_session(conversation.clone()).await?;
+            let mode = match args.as_slice() {
+                [] => {
+                    return Ok(format!(
+                        "{}: {}",
+                        language.pick("Session model mode", "Режим модели диалога"),
+                        session.model_override().unwrap_or("auto")
+                    ));
+                }
+                [mode @ ("auto" | "fast" | "smart")] => *mode,
+                _ => return Ok("/model auto | fast | smart".into()),
+            };
+            if mode != "auto"
+                && !runner
+                    .available_models()
+                    .await?
+                    .iter()
+                    .any(|candidate| candidate == mode)
+            {
+                return Ok(language
+                    .pick("This model is not configured", "Эта модель не настроена")
+                    .into());
+            }
+            let store = runner
+                .sqlite_store()
+                .context("Model selection requires durable session storage")?;
+            use crate::agent::session::SessionStore;
+            if store.load(session.id()).await?.is_none()
+                && !store.is_draft(session.id().as_str()).await?
+            {
+                if mode == "auto" {
+                    return Ok(format!(
+                        "{}: {mode}",
+                        language.pick("Session model mode", "Режим модели диалога")
+                    ));
+                }
+                session = runner.prepare_session(&conversation).await?;
+            }
+            store
+                .set_session_model(
+                    session.id().as_str(),
+                    (mode != "auto").then(|| mode.to_owned()),
+                )
+                .await?;
+            return Ok(format!(
+                "{}: {mode}",
+                language.pick("Session model mode", "Режим модели диалога")
+            ));
+        }
         let sessions: Vec<_> = runner
             .list_sessions()
             .await?

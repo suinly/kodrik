@@ -267,10 +267,20 @@ impl Subagents {
         }).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn spawn(
         self: &Arc<Self>,
         parent: &ParentContext,
         task: String,
+    ) -> anyhow::Result<Child> {
+        self.spawn_with_model(parent, task, None).await
+    }
+
+    pub(crate) async fn spawn_with_model(
+        self: &Arc<Self>,
+        parent: &ParentContext,
+        task: String,
+        model: Option<super::tools::model_selection::ModelTier>,
     ) -> anyhow::Result<Child> {
         parent.active()?;
         validate_message(&task)?;
@@ -281,7 +291,21 @@ impl Subagents {
         );
         let id = format!("{PREFIX}{}", uuid::Uuid::new_v4());
         let ownership = self.store.execution_lock("subagent", &id).await?;
-        let session = parent.session.child(SessionId::new(&id));
+        let mut session = parent.session.child(SessionId::new(&id));
+        let fixed = parent.session.model_override().filter(|m| *m != "auto");
+        let proposed = model.map(|m| m.name());
+        ensure!(
+            fixed != Some("fast") || proposed != Some("smart"),
+            "Parent session is fixed to Fast"
+        );
+        let chosen = fixed
+            .or(proposed)
+            .or_else(|| self.runner.available_model_roles().map(|_| "fast"));
+        ensure!(
+            chosen != Some("smart") || self.runner.has_smart_model(),
+            "Smart model is not configured"
+        );
+        session.set_model_override(chosen.map(str::to_owned));
         let child = Child {
             id,
             parent: parent.session.id().as_str().into(),
@@ -313,11 +337,15 @@ impl Subagents {
             .ok()
             .flatten()
             .filter(|scope| scope.belongs_to(parent.session.id()));
-        tokio::spawn(super::run_state::CURRENT_EXECUTION.scope(
-            Some(ownership),
-            crate::remote::tools::CURRENT_SCOPE.scope(scope, async move {
-                manager.drive(child, finished, receiver).await;
-            }),
+        let charge = super::llm::charge::Charge::current().map(|charge| charge.as_child());
+        tokio::spawn(super::llm::charge::child_scope(
+            charge,
+            super::run_state::CURRENT_EXECUTION.scope(
+                Some(ownership),
+                crate::remote::tools::CURRENT_SCOPE.scope(scope, async move {
+                    manager.drive(child, finished, receiver).await;
+                }),
+            ),
         ));
     }
 
@@ -350,6 +378,18 @@ impl Subagents {
             self.reconcile_owned(&mut child).await?;
             Some(ownership)
         };
+        if let Some(fixed) = parent.session.model_override().filter(|m| *m != "auto") {
+            let id = SessionId::new(id);
+            if self.store.session_model(&id).await?.as_deref() != Some(fixed) {
+                ensure!(
+                    ownership.is_some(),
+                    "Child is still running on a different model; wait or stop it before sending more input"
+                );
+                self.store
+                    .set_session_model(id.as_str(), Some(fixed.to_owned()))
+                    .await?;
+            }
+        }
         let (child, duplicate) = self.admit(child, None, message).await?;
         if !duplicate && let Some(ownership) = ownership {
             self.start(&mut active, parent, child.clone(), ownership);

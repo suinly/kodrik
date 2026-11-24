@@ -173,7 +173,7 @@ Stopping work saves queued group messages silently; `/new` saves them in the
 previous session before switching. Private chats and `/chatid` retain their
 existing behavior.
 
-Group decisions use `provider.system_one` when configured, otherwise `primary`,
+Group decisions use the `fast` model,
 and incur model usage even when Kodrik stays silent. They are independent of
 agent-directed personal-session handoffs. To let the bot see ordinary group
 messages, disable its Privacy Mode in BotFather or make it an administrator;

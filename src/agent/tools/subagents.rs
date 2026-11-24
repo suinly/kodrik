@@ -11,6 +11,7 @@ use crate::agent::subagents::{CURRENT_PARENT, Subagents};
 #[serde(deny_unknown_fields)]
 struct SpawnArgs {
     task: String,
+    model: Option<super::model_selection::ModelTier>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -82,7 +83,7 @@ impl Tool for SubagentTool {
 
     fn description(&self) -> String {
         match self.action {
-            Action::Spawn => "Start a child agent asynchronously with a self-contained task (1–16384 bytes, include needed context). Returns agent id immediately. The child inherits your instructions, context snapshots, tools and sandbox, with its own history; your conversation history is not copied. It can edit shared files, so assign independent work. No nested delegation, direct messaging to users, wakeups or webhook management. At most 3 active children per application worker and 16 child sessions per parent session; five minutes per turn, with no model-call cap. Wait for results before finishing: active children stop when your run ends. After an uncertain/interrupted spawn, inspect list_agents before creating a replacement.",
+            Action::Spawn => "Start a child agent asynchronously with a self-contained task (1–16384 bytes, include needed context). Returns agent id immediately. Pass model as null for the default, or choose fast or smart; a fixed user selection takes precedence. The child inherits your instructions, context snapshots, tools and sandbox, with its own history; your conversation history is not copied. It can edit shared files, so assign independent work. No nested delegation, direct messaging to users, wakeups or webhook management. At most 3 active children per application worker and 16 child sessions per parent session; five minutes per turn, with no model-call cap. Wait for results before finishing: active children stop when your run ends. After an uncertain/interrupted spawn, inspect list_agents before creating a replacement.",
             Action::Send => "Send a task or correction (1–16384 bytes) to a child of THIS session. Input is durably queued and consumed at a safe turn boundary. A completed/stopped child starts a new turn with its existing history. Inspect external state before repeating any interrupted action. An uncertain send must not be blindly repeated.",
             Action::List => "List THIS session's child agents, status and bounded results/errors. Other sessions' children are inaccessible. Interrupted children are not automatically replayed after a process restart; inspect their results and external state before sending a follow-up.",
             Action::Wait => "Wait for one of THIS session's child agents to finish and return its status/result. timeout_ms defaults to 10000; allowed range 1–60000. On timeout returns running; you can continue your own work or wait again. Waiting does not stop the child.",
@@ -92,7 +93,11 @@ impl Tool for SubagentTool {
 
     fn parameters(&self) -> Value {
         match self.action {
-            Action::Spawn => schemars::schema_for!(SpawnArgs).to_value(),
+            Action::Spawn => {
+                let mut schema = schemars::schema_for!(SpawnArgs);
+                schema.insert("required".into(), json!(["task", "model"]));
+                schema.to_value()
+            }
             Action::Send => schemars::schema_for!(SendArgs).to_value(),
             Action::List => {
                 json!({"type":"object","properties":{},"required":[],"additionalProperties":false})
@@ -122,7 +127,10 @@ impl Tool for SubagentTool {
         let output = match self.action {
             Action::Spawn => {
                 let args: SpawnArgs = serde_json::from_value(arguments)?;
-                self.manager.spawn(&parent, args.task).await?.view()
+                self.manager
+                    .spawn_with_model(&parent, args.task, args.model)
+                    .await?
+                    .view()
             }
             Action::Send => {
                 let args: SendArgs = serde_json::from_value(arguments)?;

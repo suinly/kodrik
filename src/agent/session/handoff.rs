@@ -126,6 +126,7 @@ impl SqliteSessionStore {
             run.session_id = request.session_id;
             run.revision += 1;
             run.handoff_hops += 1;
+            run.turn_model = None;
             run.history_len = Some(target.messages().len());
             run.overflow_retry_used = false;
             run.overflow_compaction_from = None;

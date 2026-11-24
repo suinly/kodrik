@@ -370,6 +370,20 @@ impl Chat {
         Ok(None)
     }
 
+    async fn session_cost(&self, session: &Session) -> anyhow::Result<crate::billing::SessionCost> {
+        let mut cost = crate::billing::session_cost(
+            &self.sessions,
+            session.id().as_str(),
+            session.generation(),
+        )
+        .await?;
+        let usage = session.token_usage();
+        // The old aggregate cannot be repriced per call.
+        cost.partial |= !session.messages().is_empty()
+            && (session.legacy_cost_gap() || usage.requests > cost.chat_calls);
+        Ok(cost)
+    }
+
     async fn snapshot_view(
         &self,
         id: &str,
@@ -396,11 +410,19 @@ impl Chat {
             &view.session
         ));
         snapshot["token_usage"] = json!(view.session.token_usage());
-        snapshot["model"] = json!(
-            view.session
-                .model_override()
-                .unwrap_or(&self.runner.model_identity())
-        );
+        if let Some(run) = &view.run {
+            snapshot["run_cost"] = json!(
+                crate::billing::run_cost(
+                    &self.sessions,
+                    view.session.id().as_str(),
+                    view.session.generation(),
+                    &run.run.id
+                )
+                .await?
+            );
+        }
+        snapshot["session_cost"] = json!(self.session_cost(&view.session).await?);
+        snapshot["model"] = json!(self.runner.displayed_model(&view.session));
         snapshot["model_override"] = json!(view.session.model_override());
         snapshot["context_tokens"] = json!(view.session.input_tokens);
         snapshot["context_limit"] = Value::Null;
@@ -1565,6 +1587,24 @@ mod tests {
             .await
             .unwrap();
         assert!(chat.snapshot("companion:private").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn snapshots_expose_session_cost() {
+        let data = tempfile::tempdir().unwrap();
+        let chat = super::super::chat_tests::chat(data.path()).await;
+        let id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        chat.sessions.save(&Session::new(id.clone())).await.unwrap();
+
+        let expected = json!({"total_usd":0.0,"partial":false,"calls":[]});
+        assert_eq!(
+            chat.snapshot(id.as_str()).await.unwrap()["session_cost"],
+            expected
+        );
+        assert_eq!(
+            chat.remote_snapshot(&id).await.unwrap().run.unwrap()["session_cost"],
+            expected
+        );
     }
 
     #[tokio::test]

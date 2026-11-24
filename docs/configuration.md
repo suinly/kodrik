@@ -10,14 +10,14 @@ implemented. Keep API keys and bot tokens out of the repository.
 ```toml
 [gateway]
 
-[provider.primary]
+[provider.fast]
 type = "openai"
 model = "your-model"
 api_key = "your-key"
 ```
 
-`provider.primary` and the `gateway` table are required. An empty gateway table
-allows terminal use without Telegram.
+At least one model provider and the `gateway` table are required. An empty
+gateway table allows terminal use without Telegram.
 
 ## Remote client configuration
 
@@ -32,8 +32,8 @@ for the complete example, defaults, owner pairing/revocation and HTTPS rules.
 
 ## Providers
 
-Both providers use the OpenAI Responses API adapter. A compatible endpoint must
-support Responses, not only Chat Completions.
+Both model roles use the OpenAI Responses API adapter. A compatible endpoint
+must support Responses, not only Chat Completions.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -42,22 +42,33 @@ support Responses, not only Chat Completions.
 | `api_key` | Yes | API credential |
 | `api_base` | No | Custom API base URL; omitted uses the adapter's OpenAI default |
 
-`primary` handles conversations, automatic learning and proactive research.
-An optional `system_one` uses a separate, preferably fast model for decisions:
+Conversations start on `fast`. Set `smart` to make a second model available for
+foreground work. Background work—including group reply decisions, learning,
+proactive research, wakeups, tool review, and context compaction—uses `fast`.
+When only `fast` is configured, it handles everything.
 
 ```toml
-[provider.system_one]
+[provider.fast]
 type = "openai"
 model = "your-fast-model"
+api_key = "your-key"
+
+[provider.smart]
+type = "openai"
+model = "your-smart-model"
 api_key = "your-key"
 # api_base = "https://your-provider.example/v1"
 ```
 
-Without `system_one`, decisions use `primary` with separate limits. There is no
-automatic model substitution after a provider error. See [System One](sessions.md).
+Existing configurations don't need to rename their tables. `fast` takes
+precedence over `system_one` and `smart` takes precedence over `primary`. If
+neither `fast` nor `system_one` is set, the selected `smart` (or legacy
+`primary`) provider also fills the `fast` role. This fallback is resolved at
+startup; it is not an automatic retry on a different model after a provider
+error. See [System One](sessions.md).
 
-The **AI review** tool mode uses `system_one` (or `primary` when absent). Configure
-a fast model here to reduce the delay before tool execution. All tool
+The **AI review** tool mode uses `fast`. Configure a fast model to reduce the
+delay before tool execution. All tool
 calls from one model response share one review request, with a separate decision
 for each call. Reviews have a 15-second timeout, no retries and a bounded output;
 failure requires user confirmation. See [command approvals](usage.md#command-approvals).
@@ -65,6 +76,22 @@ The default mode is **AI review**. In **Profile → Tool audit in new conversati
 **No checks**, **AI review**, or **Always ask** for new sessions. Existing sessions
 keep their mode, which can be changed in the chat header. These persistent settings
 are stored per user, separately from TOML.
+
+### Optional token prices
+
+Set rates under any provider table that you use, including legacy providers.
+Values are finite, nonnegative USD amounts per million tokens:
+
+```toml
+[provider.fast.rates]
+input_usd_per_million = 0.25
+cached_input_usd_per_million = 0.025
+output_usd_per_million = 1.25
+```
+
+The table and individual prices are optional. Leave a price unset if you don't
+know it; totals can be partial when applicable rates are missing. Set a rate
+to `0` only when that token category is free.
 
 ## Telegram
 
@@ -363,8 +390,9 @@ return 500. Errors never include source excerpts or submitted secrets; parser
 errors may include a line number.
 
 Saving validates the typed configuration and existing sessions, owner, web,
-research and companion rules, requires a primary provider and nonempty provider
-names/models/API keys, and checks provider/MCP URL and MCP header syntax locally.
+research and companion rules, requires a provider eligible for the `fast` role
+and nonempty provider names/models/API keys, and checks provider/MCP URL and MCP
+header syntax locally.
 It does not contact providers, Telegram, search services or MCP servers, and it
 cannot verify credentials or reachability.
 

@@ -63,6 +63,8 @@ pub(crate) struct RunRecord {
     pub phase: RunPhase,
     pub model_attempts: u64,
     #[serde(default)]
+    pub turn_model: Option<super::tools::model_selection::ModelTier>,
+    #[serde(default)]
     pub history_len: Option<usize>,
     #[serde(default)]
     pub recovery_attempts: u32,
@@ -157,6 +159,7 @@ impl Checkpoint {
                 revision: 0,
                 phase: RunPhase::NeedModel,
                 model_attempts: 0,
+                turn_model: None,
                 history_len: None,
                 recovery_attempts: 0,
                 attempt_active: false,

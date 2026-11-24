@@ -98,7 +98,7 @@ Configure the recipient, schedule and enable/disable switches in the
 [companion configuration](configuration.md#companion). Defaults work without a
 new section when the recipient is unambiguous. Disabling automatic learning or
 initiative leaves foreground tools available. Learning and research use the
-`primary` provider, independently of `system_one`. Without active interests, no
+`fast` provider. Without active interests, no
 proactive research runs.
 
 ## Agent wakeups

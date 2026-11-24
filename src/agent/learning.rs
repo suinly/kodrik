@@ -24,7 +24,12 @@ impl LearningService {
         self
     }
 
-    pub(crate) fn schedule(&self, session: &Session, from: usize) {
+    pub(crate) fn schedule(
+        &self,
+        session: &Session,
+        from: usize,
+        charge: Option<super::llm::charge::Charge>,
+    ) {
         if !worth_reviewing(&session.messages()[from..]) {
             return;
         }
@@ -50,7 +55,8 @@ impl LearningService {
                     serde_json::json!({}),
                 )
                 .await?;
-                let result = store.review_prepared(llm, input).await;
+                let result =
+                    super::llm::charge::scope(charge, store.review_prepared(llm, input)).await;
                 span.finish(
                     if result.is_ok() { "ok" } else { "failed" },
                     serde_json::json!({

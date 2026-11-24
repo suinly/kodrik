@@ -18,29 +18,28 @@ async function picker(props={}) {
   return fixture;
 }
 
-test('model picker loads lazily, searches, preserves unavailable current model and only saves explicit choices',async()=>{
+test('model picker loads roles lazily, preserves a legacy override and only saves explicit choices',async()=>{
   const {page,browser,mount}=await picker();
   try {
     let lists=0;const saves=[];
-    await page.route('**/api/chat/models',r=>{lists++;return r.fulfill({json:{models:['alpha','beta'],default_model:'alpha'}})});
+    await page.route('**/api/chat/models',r=>{lists++;return r.fulfill({json:{models:['fast','smart','vendor/advertised'],default_model:'vendor/default'}})});
     await page.route('**/api/chat/sessions/session-one/model',r=>{saves.push(r.request().postDataJSON());return r.fulfill({status:204})});
     await mount();
     const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
     await expect(trigger).toContainText('retired-model');
     assert.equal(lists,0);assert.deepEqual(saves,[]);
     await trigger.click();
-    await expect(page.getByRole('button',{name:'alpha',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Fast',exact:true})).toBeVisible();
     await expect(trigger).toContainText('retired-model');
     assert.equal(lists,1);assert.deepEqual(saves,[]);
-    await page.getByRole('textbox',{name:'Search models',exact:true}).fill('BETA');
-    await expect(page.getByRole('button',{name:'alpha',exact:true})).toHaveCount(0);
-    await page.getByRole('button',{name:'beta',exact:true}).click();
-    await expect.poll(()=>saves).toEqual([{model:'beta'}]);
+    await expect(page.getByRole('button',{name:'vendor/advertised',exact:true})).toHaveCount(0);
+    await page.getByRole('button',{name:'Smart',exact:true}).click();
+    await expect.poll(()=>saves).toEqual([{model:'smart'}]);
     await expect.poll(()=>page.evaluate(()=>window.refreshes)).toBe(1);
-    await page.evaluate(()=>{props.model='beta';props.modelOverride='beta'});
+    await page.evaluate(()=>{props.model='vendor/resolved';props.modelOverride='smart'});
     await trigger.click();
-    await page.getByRole('button',{name:'Use default · alpha',exact:true}).click();
-    await expect.poll(()=>saves).toEqual([{model:'beta'},{model:null}]);
+    await page.getByRole('button',{name:'Auto',exact:true}).click();
+    await expect.poll(()=>saves).toEqual([{model:'smart'},{model:null}]);
     await expect.poll(()=>page.evaluate(()=>window.refreshes)).toBe(2);
   } finally {await browser.close()}
 });
@@ -50,7 +49,7 @@ test('model picker retries failed lists and keeps selection on failed save; savi
   let release;
   try {
     let failList=true;const saves=[];
-    await page.route('**/api/chat/models',r=>r.fulfill(failList?{status:503}:{json:{models:['alpha'],default_model:null}}));
+    await page.route('**/api/chat/models',r=>r.fulfill(failList?{status:503}:{json:{models:['fast'],default_model:null}}));
     await page.route('**/api/chat/sessions/session-one/model',async r=>{
       saves.push(r.request().postDataJSON());
       await new Promise(resolve=>{release=resolve});
@@ -62,10 +61,11 @@ test('model picker retries failed lists and keeps selection on failed save; savi
     await expect(page.getByRole('alert')).toBeVisible();
     failList=false;
     await page.getByRole('button',{name:'Retry',exact:true}).click();
-    const alpha=page.getByRole('button',{name:'alpha',exact:true});
-    await alpha.click();
+    const fast=page.getByRole('button',{name:'Fast',exact:true});
+    await expect(page.getByRole('button',{name:'Smart',exact:true})).toHaveCount(0);
+    await fast.click();
     await expect(trigger).toBeDisabled();
-    await expect(alpha).toBeDisabled();
+    await expect(fast).toBeDisabled();
     assert.equal(await page.evaluate(()=>window.saving),true);
     release();release=undefined;
     await expect(page.getByRole('alert')).toContainText('Model unavailable');
@@ -74,8 +74,8 @@ test('model picker retries failed lists and keeps selection on failed save; savi
     assert.equal(await page.evaluate(()=>window.refreshes||0),0);
     await page.evaluate(()=>{props.disabled=true});
     await expect(trigger).toBeDisabled();
-    await expect(alpha).toBeDisabled();
-    assert.deepEqual(saves,[{model:'alpha'}]);
+    await expect(fast).toBeDisabled();
+    assert.deepEqual(saves,[{model:'fast'}]);
   } finally {release?.();await browser.close()}
 });
 
@@ -88,39 +88,24 @@ test('reset to default remains available when the model list fails',async()=>{
     await mount();
     await page.getByRole('button',{name:'Conversation model',exact:true}).click();
     await expect(page.getByRole('alert')).toBeVisible();
-    await page.getByRole('button',{name:'Use default',exact:true}).click();
+    await page.getByRole('button',{name:'Auto',exact:true}).click();
     await expect.poll(()=>saves).toEqual([{model:null}]);
     await expect.poll(()=>page.evaluate(()=>window.refreshes)).toBe(1);
   } finally {await browser.close()}
 });
 
-test('new chat shows its default model before opening the picker without provider prefixes',async()=>{
+test('auto shows the actual default identity without offering it as an override',async()=>{
   const {page,browser,mount}=await picker({sessionId:null,model:null,modelOverride:null});
   try {
-    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['anthropic/claude-sonnet:free'],default_model:'openai:anthropic/claude-sonnet:free'}}));
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['fast'],default_model:'openai:vendor/default'}}));
     await mount();
     const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
-    await expect(trigger).toHaveText('anthropic/claude-sonnet:free');
-    await expect(trigger).toHaveAttribute('title','Default · anthropic/claude-sonnet:free');
+    await expect(trigger).toHaveText('Auto');
+    await expect(trigger).toHaveAttribute('title','Auto · vendor/default');
     await trigger.click();
-    await expect(page.getByRole('button',{name:'Use default · anthropic/claude-sonnet:free',exact:true})).toBeVisible();
-    await expect(page.getByRole('button',{name:'anthropic/claude-sonnet:free',exact:true})).toBeVisible();
-  } finally {await browser.close()}
-});
-
-test('model labels hide the provider but save the full model ID',async()=>{
-  const {page,browser,mount}=await picker({model:'openai:vendor/old',modelOverride:null});
-  try {
-    const saves=[];
-    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['vendor/new'],default_model:'openai:vendor/old'}}));
-    await page.route('**/api/chat/sessions/session-one/model',r=>{saves.push(r.request().postDataJSON());return r.fulfill({status:204})});
-    await mount();
-    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
-    await expect(trigger).toHaveText('vendor/old');
-    await trigger.click();
-    await page.getByRole('textbox',{name:'Search models',exact:true}).fill('vendor/');
-    await page.getByRole('button',{name:'vendor/new',exact:true}).click();
-    await expect.poll(()=>saves).toEqual([{model:'vendor/new'}]);
+    await expect(page.getByRole('button',{name:'Auto',exact:true})).toHaveAttribute('aria-pressed','true');
+    await expect(page.getByRole('button',{name:'Fast',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Smart',exact:true})).toHaveCount(0);
   } finally {await browser.close()}
 });
 
@@ -128,17 +113,17 @@ test('draft model selection stays local, updates the trigger and can reset to de
   const {page,browser,mount}=await picker({sessionId:null,model:null,modelOverride:null});
   try {
     const saves=[];
-    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['alpha','beta'],default_model:'alpha'}}));
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['fast','smart','vendor/advertised'],default_model:'vendor/default'}}));
     await page.route('**/api/chat/sessions/**',r=>{saves.push(r.request().url());return r.fulfill({status:500})});
     await page.addScriptTag({content:`props['onUpdate:modelOverride']=value=>{props.modelOverride=value}`});
     await mount();
     const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
     await trigger.click();
-    await page.getByRole('button',{name:'beta',exact:true}).click();
-    await expect(trigger).toContainText('beta');
+    await page.getByRole('button',{name:'Smart',exact:true}).click();
+    await expect(trigger).toContainText('Smart');
     await trigger.click();
-    await page.getByRole('button',{name:'Use default · alpha',exact:true}).click();
-    await expect(trigger).not.toContainText('beta');
+    await page.getByRole('button',{name:'Auto',exact:true}).click();
+    await expect(trigger).toHaveText('Auto');
     assert.deepEqual(saves,[]);
     assert.equal(await page.evaluate(()=>window.refreshes||0),0);
   } finally {await browser.close()}

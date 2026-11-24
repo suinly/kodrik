@@ -1,5 +1,6 @@
 mod agent;
 mod audit;
+mod billing;
 mod bootstrap;
 pub mod commands;
 pub mod config;

@@ -118,7 +118,7 @@ test('model pickers share pending and recent catalogs across remounts, without c
   await page.route('**/api/chat/models',async route=>{
     calls++;
     if(calls===1) {await wait;return route.fulfill({status:503})}
-    return route.fulfill({json:{models:['alpha'],default_model:calls===2?'alpha':'beta'}});
+    return route.fulfill({json:{models:['fast'],default_model:calls===2?'alpha':'beta'}});
   });
   await page.evaluate(()=>{
     const {h}=VueForTests;
@@ -134,15 +134,15 @@ test('model pickers share pending and recent catalogs across remounts, without c
   const triggers=page.getByRole('button',{name:'Conversation model',exact:true});
   await expect(triggers).toHaveCount(2);
   await expect.poll(()=>calls).toBe(1);
-  assert.deepEqual(await triggers.allTextContents(),['Default','Default']);
+  assert.deepEqual(await triggers.allTextContents(),['Auto','Auto']);
   release();
   await expect(page.getByRole('alert')).toHaveCount(2);
   await page.evaluate(()=>{props.instances=[3]});
-  await expect(triggers).toHaveText('alpha');
+  await expect(triggers).toHaveAttribute('title','Auto · alpha');
   await page.evaluate(()=>{props.instances=[4]});
-  await expect(triggers).toHaveText('alpha');
+  await expect(triggers).toHaveAttribute('title','Auto · alpha');
   assert.equal(calls,2);
   await page.evaluate(()=>{const now=Date.now();Date.now=()=>now+10*60_000;props.instances=[5]});
-  await expect(triggers).toHaveText('beta');
+  await expect(triggers).toHaveAttribute('title','Auto · beta');
   assert.equal(calls,3);
 });

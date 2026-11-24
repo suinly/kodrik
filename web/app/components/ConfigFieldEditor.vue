@@ -78,6 +78,6 @@ function scalar(value:string|number) {
   <UFormField v-else :label="fieldLabel" :description="description">
     <span v-if="showKeys" class="block text-xs text-muted font-mono">{{ path }}</span>
     <UTextarea v-if="path==='system_prompt'" :model-value="modelValue==null?'':String(modelValue)" :aria-label="path" :disabled="disabled" :rows="5" autocomplete="off" class="w-full" @update:model-value="scalar" />
-    <UInput v-else :model-value="modelValue==null?'':String(modelValue)" :aria-label="path" :type="schema.secret?'password':schema.kind==='number'?'number':'text'" :min="schema.min" :max="schema.max" :step="schema.kind==='number'?1:undefined" :disabled="disabled" :required="!schema.optional" :readonly="path.endsWith('.type')" :autocomplete="schema.secret?'new-password':'off'" :spellcheck="false" class="w-full" @update:model-value="scalar" />
+    <UInput v-else :model-value="modelValue==null?'':String(modelValue)" :aria-label="path" :type="schema.secret?'password':schema.kind==='number'?'number':'text'" :min="schema.min" :max="schema.max" :step="schema.kind==='number'?(schema.step??1):undefined" :disabled="disabled" :required="!schema.optional" :readonly="path.endsWith('.type')" :autocomplete="schema.secret?'new-password':'off'" :spellcheck="false" class="w-full" @update:model-value="scalar" />
   </UFormField>
 </template>
