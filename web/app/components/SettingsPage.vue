@@ -14,7 +14,7 @@ const error=ref(''),gatewayError=ref(''),notice=ref(''),restartNotice=ref('')
 const dirty=computed(()=>document.value!==null && JSON.stringify(values.value)!==JSON.stringify(document.value.values))
 const selected=ref('provider'),showKeys=ref(false)
 const sections=[
-  {id:'provider',label:'Модели',description:'Модели и ключи доступа к провайдерам ИИ.',fields:['provider']},
+  {id:'provider',label:'Модели',description:'Профили моделей и подключения к провайдерам ИИ.',fields:['provider','model']},
   {id:'gateway',label:'Telegram',description:'Боты Telegram и владелец шлюза.',fields:['gateway','owner']},
   {id:'behavior',label:'Поведение',description:'Общение, инициативные сообщения и работа с контекстом.',fields:['companion','sessions','system_prompt']},
   {id:'research',label:'Поиск',description:'Поисковый сервис и чтение веб-страниц.',fields:['research']},

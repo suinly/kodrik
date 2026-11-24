@@ -44,6 +44,29 @@ test('model picker loads roles lazily, preserves a legacy override and only save
   } finally {await browser.close()}
 });
 
+test('deep and vision are localized when advertised and save the raw role',async()=>{
+  const {page,browser,mount}=await picker({modelOverride:'deep'});
+  try {
+    const saves=[];
+    await page.route('**/api/chat/models',r=>r.fulfill({json:{models:['deep','vision','vendor/advertised'],default_model:null}}));
+    await page.route('**/api/chat/sessions/session-one/model',r=>{saves.push(r.request().postDataJSON());return r.fulfill({status:204})});
+    await mount();
+    const trigger=page.getByRole('button',{name:'Conversation model',exact:true});
+    await expect(trigger).toHaveText('Deep');
+    await trigger.click();
+    await expect(page.getByRole('button',{name:'Vision',exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Fast',exact:true})).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'vendor/advertised',exact:true})).toHaveCount(0);
+    await page.evaluate(()=>{
+      Object.defineProperty(navigator,'language',{configurable:true,value:'ru-RU'});
+      window.dispatchEvent(new Event('languagechange'));
+    });
+    await expect(page.getByRole('button',{name:'Глубокая',exact:true})).toHaveAttribute('aria-pressed','true');
+    await page.getByRole('button',{name:'Зрение',exact:true}).click();
+    await expect.poll(()=>saves).toEqual([{model:'vision'}]);
+  } finally {await browser.close()}
+});
+
 test('model picker retries failed lists and keeps selection on failed save; saving and external locks block choices',async()=>{
   const {page,browser,mount}=await picker();
   let release;

@@ -12,10 +12,13 @@ const features = [
 ]
 const config = `[gateway]
 
-[provider.primary]
+[provider.openai]
 type = "openai"
-model = "your-model"
-api_key = "your-key"`
+api_key = "your-key"
+
+[model.smart]
+provider = "openai"
+model = "your-model"`
 
 function scrollToSection(id: string) {
   // Native hash navigation makes the lightweight Nuxt router repeat the URL prefix.

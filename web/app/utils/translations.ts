@@ -61,6 +61,8 @@ export const en = {
   'Авто': 'Auto',
   'Быстрая': 'Fast',
   'Умная': 'Smart',
+  'Глубокая': 'Deep',
+  'Зрение': 'Vision',
   'Авто · {0}': 'Auto · {0}',
   'Загружаю модели…': 'Loading models…',
   'Настройки': 'Settings',

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fs, path::PathBuf};
 
 use anyhow::Context;
+use async_openai::types::responses::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 
 use crate::billing::Rates;
@@ -27,6 +28,8 @@ pub struct Config {
     pub mcp: HashMap<String, McpServerConfig>,
     pub gateway: HashMap<String, GatewayConfig>,
     pub provider: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub model: HashMap<String, ModelConfig>,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -107,15 +110,56 @@ impl ResearchConfig {
 }
 
 impl Config {
-    pub(crate) fn model_providers(&self) -> anyhow::Result<(&ProviderConfig, Option<&ProviderConfig>)> {
-        let smart = self.provider.get("smart").or_else(|| self.provider.get("primary"));
-        let fast = self
-            .provider
-            .get("fast")
-            .or_else(|| self.provider.get("system_one"))
+    pub(crate) fn model_profiles(&self) -> anyhow::Result<ModelProfiles<'_>> {
+        let mut profiles = HashMap::new();
+        for (role, model) in &self.model {
+            anyhow::ensure!(
+                matches!(role.as_str(), "fast" | "smart" | "deep" | "vision"),
+                "Model role must be fast, smart, deep, or vision"
+            );
+            anyhow::ensure!(!model.model.trim().is_empty(), "Model ID must not be empty");
+            let provider = self
+                .provider
+                .get(&model.provider)
+                .with_context(|| format!("model.{role} must reference a configured provider"))?;
+            profiles.insert(
+                role.as_str(),
+                ResolvedModel {
+                    provider,
+                    model: &model.model,
+                    reasoning_effort: model.reasoning_effort.as_ref(),
+                    rates: model.rates,
+                },
+            );
+        }
+        let legacy = |name| {
+            let provider = self.provider.get(name)?;
+            let ProviderConfig::OpenAi {
+                model,
+                reasoning_effort,
+                rates,
+                ..
+            } = provider;
+            Some(ResolvedModel {
+                provider,
+                model: model.as_deref()?,
+                reasoning_effort: reasoning_effort.as_ref(),
+                rates: *rates,
+            })
+        };
+        let smart = profiles
+            .remove("smart")
+            .or_else(|| legacy("smart").or_else(|| legacy("primary")));
+        let fast = profiles.remove("fast")
+            .or_else(|| legacy("fast").or_else(|| legacy("system_one")))
             .or(smart)
-            .context("Configure provider.fast or provider.smart (legacy: provider.system_one or provider.primary)")?;
-        Ok((fast, smart))
+            .context("Configure model.fast or model.smart (legacy: provider.fast, provider.smart, provider.system_one or provider.primary)")?;
+        Ok(ModelProfiles {
+            fast,
+            smart,
+            deep: profiles.remove("deep"),
+            vision: profiles.remove("vision"),
+        })
     }
 
     pub(crate) fn validate_owner(&self) -> anyhow::Result<()> {
@@ -364,10 +408,37 @@ pub enum ProviderConfig {
     OpenAi {
         api_key: String,
         api_base: Option<String>,
-        model: String,
+        // Legacy combined connection and model settings.
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffort>,
         #[serde(default, deserialize_with = "deserialize_rates")]
         rates: Option<Rates>,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ModelConfig {
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, deserialize_with = "deserialize_rates")]
+    pub rates: Option<Rates>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResolvedModel<'a> {
+    pub provider: &'a ProviderConfig,
+    pub model: &'a str,
+    pub reasoning_effort: Option<&'a ReasoningEffort>,
+    pub rates: Option<Rates>,
+}
+
+pub(crate) struct ModelProfiles<'a> {
+    pub fast: ResolvedModel<'a>,
+    pub smart: Option<ResolvedModel<'a>>,
+    pub deep: Option<ResolvedModel<'a>>,
+    pub vision: Option<ResolvedModel<'a>>,
 }
 
 fn deserialize_rates<'de, D: serde::Deserializer<'de>>(
@@ -384,7 +455,9 @@ fn deserialize_rates<'de, D: serde::Deserializer<'de>>(
         .flatten()
         .any(|rate| !rate.is_finite() || rate < 0.0)
     {
-        return Err(serde::de::Error::custom("Provider rates must be finite and nonnegative"));
+        return Err(serde::de::Error::custom(
+            "Token rates must be finite and nonnegative",
+        ));
     }
     Ok(rates)
 }
@@ -396,8 +469,16 @@ mod tests {
         use super::{Config, ProviderConfig};
 
         for (keys, fast, smart) in [
-            (&["fast", "smart", "system_one", "primary"][..], "fast", Some("smart")),
-            (&["system_one", "primary"][..], "system_one", Some("primary")),
+            (
+                &["fast", "smart", "system_one", "primary"][..],
+                "fast",
+                Some("smart"),
+            ),
+            (
+                &["system_one", "primary"][..],
+                "system_one",
+                Some("primary"),
+            ),
             (&["system_one", "smart"][..], "system_one", Some("smart")),
             (&["fast", "primary"][..], "fast", Some("primary")),
             (&["smart"][..], "smart", Some("smart")),
@@ -412,16 +493,41 @@ mod tests {
                 ));
             }
             let config: Config = toml::from_str(&input).unwrap();
-            let (resolved_fast, resolved_smart) = config.model_providers().unwrap();
-            let ProviderConfig::OpenAi { model, api_key, .. } = resolved_fast;
-            assert_eq!(model, fast, "{keys:?}");
+            let profiles = config.model_profiles().unwrap();
+            let ProviderConfig::OpenAi { api_key, .. } = profiles.fast.provider;
+            assert_eq!(profiles.fast.model, fast, "{keys:?}");
             assert_eq!(api_key.as_str(), format!("{fast}-key"), "{keys:?}");
             assert_eq!(
-                resolved_smart.map(|ProviderConfig::OpenAi { model, .. }| model.as_str()),
+                profiles.smart.map(|profile| profile.model),
                 smart,
                 "{keys:?}"
             );
         }
+    }
+
+    #[test]
+    fn model_profiles_override_legacy_and_smart_fills_missing_fast() {
+        let source = "[gateway]\n[provider.shared]\ntype='openai'\napi_key='fixture'\n\
+                      [provider.primary]\ntype='openai'\napi_key='legacy'\nmodel='legacy-smart'\n\
+                      [model.smart]\nprovider='shared'\nmodel='new-smart'\nreasoning_effort='medium'\n";
+        let config: super::Config = toml::from_str(source).unwrap();
+        let profiles = config.model_profiles().unwrap();
+        assert_eq!(profiles.fast.model, "new-smart");
+        assert_eq!(profiles.smart.unwrap().model, "new-smart");
+        assert!(std::ptr::eq(
+            profiles.fast.provider,
+            &config.provider["shared"]
+        ));
+        assert_eq!(
+            profiles.fast.reasoning_effort,
+            Some(&super::ReasoningEffort::Medium)
+        );
+
+        let config: super::Config = toml::from_str(&format!(
+            "{source}\n[provider.fast]\ntype='openai'\napi_key='legacy'\nmodel='legacy-fast'\n"
+        ))
+        .unwrap();
+        assert_eq!(config.model_profiles().unwrap().fast.model, "legacy-fast");
     }
 
     #[test]

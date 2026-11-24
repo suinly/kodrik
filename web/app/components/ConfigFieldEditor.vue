@@ -5,7 +5,7 @@ const props=defineProps<{schema:ConfigField;modelValue:ConfigValue|undefined;pat
 const emit=defineEmits<{'update:modelValue':[value:ConfigValue]}>()
 const name=ref('')
 const openEntries=ref<Record<string,boolean>>({})
-const fieldLabel=computed(()=>props.label ?? configLabel(props.path.split('.').at(-1) ?? ''))
+const fieldLabel=computed(()=>props.label ?? (props.schema.label ? t(props.schema.label) : configLabel(props.path.split('.').at(-1) ?? '')))
 const entries=computed(()=>props.modelValue && typeof props.modelValue==='object' && !Array.isArray(props.modelValue)?props.modelValue as ConfigValues:{})
 const items=computed(()=>Array.isArray(props.modelValue)?props.modelValue:[])
 const commonFields=computed(()=>Object.entries(props.schema.fields??{}).filter(([,field])=>!field.advanced))
@@ -17,7 +17,10 @@ function remove(key:string) {
   const copy={...entries.value};delete copy[key];emit('update:modelValue',copy)
   delete openEntries.value[key]
 }
-const validName=computed(()=>name.value.trim().length>0 && !Object.hasOwn(entries.value,name.value.trim()) && !['__proto__','prototype','constructor'].includes(name.value.trim()))
+const validName=computed(()=>{
+  const key=name.value.trim()
+  return key.length>0 && !Object.hasOwn(entries.value,key) && !['__proto__','prototype','constructor'].includes(key) && (props.schema.allowedKeys?.includes(key)??true)
+})
 function add() {
   if(!validName.value) return
   const key=name.value.trim()

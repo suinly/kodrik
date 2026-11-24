@@ -53,24 +53,43 @@ async fn setup() -> (
     mpsc::UnboundedReceiver<(String, Vec<String>)>,
     Arc<Semaphore>,
 ) {
+    setup_with_routing(false).await
+}
+
+async fn setup_with_routing(
+    routed: bool,
+) -> (
+    tempfile::TempDir,
+    Arc<Subagents>,
+    ParentContext,
+    watch::Sender<bool>,
+    mpsc::UnboundedReceiver<(String, Vec<String>)>,
+    Arc<Semaphore>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open_async(dir.path().join("sessions"))
         .await
         .unwrap();
     let (seen, observed) = mpsc::unbounded_channel();
     let gates = Arc::new(Semaphore::new(0));
-    let agent = Arc::new(
-        Agent::new(
-            Arc::new(GatedModel {
-                seen,
-                gates: gates.clone(),
-            }),
-            ToolRegistry::default(),
-            ContextBuilder::new("worker"),
-        )
-        .child_agent(),
+    let model = Arc::new(GatedModel {
+        seen,
+        gates: gates.clone(),
+    });
+    let mut agent = Agent::new(
+        model.clone(),
+        ToolRegistry::default(),
+        ContextBuilder::new("worker"),
     );
-    let manager = Subagents::new(agent, store).await.unwrap();
+    if routed {
+        agent = agent
+            .with_model_routing(Some(model.clone()))
+            .with_additional_model_roles(Some(model), None)
+            .with_smart_default(true);
+    }
+    let manager = Subagents::new(Arc::new(agent.child_agent()), store)
+        .await
+        .unwrap();
     let mut session = Session::new(SessionId::new("parent"));
     ContextBuilder::new("PARENT RULES")
         .initialize_session(&mut session)
@@ -97,6 +116,65 @@ async fn observed(
         .await
         .unwrap()
         .unwrap()
+}
+
+#[tokio::test]
+async fn child_model_selection_uses_configured_roles_and_honors_a_fixed_parent() {
+    use crate::agent::tools::model_selection::ModelTier;
+
+    let (_dir, manager, mut parent, _finished, _seen, gates) = setup_with_routing(true).await;
+    let tools = crate::agent::tools::subagents::register(ToolRegistry::default(), manager.clone());
+    let tool = tools
+        .list()
+        .into_iter()
+        .find(|tool| tool.name() == "spawn_agent")
+        .unwrap();
+    assert_eq!(
+        tool.parameters()["properties"]["model"]["anyOf"][0]["enum"],
+        serde_json::json!(["fast", "smart", "deep"])
+    );
+    assert!(
+        manager
+            .spawn_with_model(&parent, "inspect".into(), Some(ModelTier::Vision))
+            .await
+            .is_err()
+    );
+    for (fixed, proposed, expected) in [
+        (None, None, "smart"),
+        (None, Some(ModelTier::Deep), "deep"),
+        (Some("deep"), Some(ModelTier::Smart), "deep"),
+    ] {
+        parent.session.set_model_override(fixed.map(str::to_owned));
+        gates.add_permits(1);
+        let child = manager
+            .spawn_with_model(&parent, "inspect".into(), proposed)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .store
+                .session_model(&SessionId::new(&child.id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            manager
+                .wait(&parent.session, &child.id, 3000)
+                .await
+                .unwrap()
+                .status,
+            Status::Completed
+        );
+    }
+    parent.session.set_model_override(Some("fast".into()));
+    assert!(
+        manager
+            .spawn_with_model(&parent, "inspect".into(), Some(ModelTier::Deep))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

@@ -44,10 +44,13 @@ model and API key with values for your provider:
 ```toml
 [gateway]
 
-[provider.fast]
+[provider.openai]
 type = "openai"
-model = "your-model"
 api_key = "your-key"
+
+[model.smart]
+provider = "openai"
+model = "your-model"
 ```
 
 The empty `[gateway]` table is required even for terminal-only use. The file is

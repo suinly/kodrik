@@ -8,6 +8,7 @@ export type ConfigField = {
   kind:'string'|'number'|'boolean'|'object'|'map'|'array'
   optional?:boolean
   advanced?:boolean
+  label?:string
   description?:string
   secret?:boolean
   min?:number
@@ -15,15 +16,18 @@ export type ConfigField = {
   step?:number|'any'
   fields?:Record<string,ConfigField>
   item?:ConfigField
+  allowedKeys?:readonly string[]
   initial?:ConfigValue
 }
 const string=(optional=false):ConfigField=>({kind:'string',optional})
 const number=(optional=false,min=0,max=Number.MAX_SAFE_INTEGER):ConfigField=>({kind:'number',optional,min,max})
-const rate:ConfigField={kind:'number',optional:true,min:0,step:'any'}
+const rate:ConfigField={kind:'number',optional:true,min:0,step:'any',description:'Необязательная цена в долларах США за миллион токенов для оценки стоимости.'}
 const boolean:ConfigField={kind:'boolean'}
 const secret:ConfigField={kind:'string',secret:true}
 const object=(fields:Record<string,ConfigField>,optional=false):ConfigField=>({kind:'object',fields:Object.fromEntries(Object.entries(fields).map(([key,field])=>[key,{...field}])),optional})
 const map=(item:ConfigField,initial:ConfigValue):ConfigField=>({kind:'map',item:{...item},initial})
+const rates:ConfigField={...object({input_usd_per_million:rate,cached_input_usd_per_million:rate,output_usd_per_million:rate},true),advanced:true}
+const reasoningEffort:ConfigField={...string(true),description:'Необязательный уровень рассуждений: none, minimal, low, medium, high, xhigh или max. Поддержка зависит от модели; пустое поле не отправляет параметр.'}
 export const configSchema=object({
   owner:object({interface:string(),user_id:number(false,1)},true),
   system_prompt:string(true),
@@ -52,9 +56,15 @@ export const configSchema=object({
     obscura_path:{...string(),advanced:true},
   })},
   provider:map(object({
-    type:string(),api_key:secret,model:string(),api_base:{...string(true),advanced:true},
-    rates:{...object({input_usd_per_million:rate,cached_input_usd_per_million:rate,output_usd_per_million:rate},true),advanced:true},
-  }),{type:'openai',api_key:'',api_base:null,model:''}),
+    type:string(),api_key:secret,api_base:{...string(true),advanced:true},
+    model:{...string(true),description:'Точный идентификатор модели для прежней конфигурации. Для нового подключения задайте его в профиле модели.'},
+    reasoning_effort:reasoningEffort,rates,
+  }),{type:'openai',api_key:'',api_base:null}),
+  model:{...map(object({
+    provider:{...string(),label:'Провайдер',description:'Имя существующего подключения из [provider], например openai для [provider.openai].'},
+    model:{...string(),label:'Идентификатор модели в API',description:'Точный идентификатор модели, принимаемый этим API, а не произвольное название подключения.'},
+    reasoning_effort:reasoningEffort,rates,
+  }),{provider:'',model:''}),allowedKeys:['fast','smart','deep','vision'],label:'Профиль модели',description:'Роли профилей: fast — быстрые и фоновые задачи, smart — обычные диалоги, deep — сложные задачи, vision — изображения. Если задан [model.smart], «Авто» начинает со smart; в прежней конфигурации «Авто» начинает с fast.'},
   gateway:map(object({type:string(),token:secret,stream:boolean}),{type:'telegram',token:'',stream:true}),
   mcp:map(object({type:string(),url:string(),headers:map(secret,'')}),{type:'http',url:'',headers:{}}),
 })
@@ -63,6 +73,7 @@ const fieldLabels:Record<string,string> = {"owner": "Владелец", "system_
 export const configLabel=(key:string)=>t(fieldLabels[key] ?? key)
 
 Object.assign(fieldLabels, {
+  reasoning_effort:'Уровень рассуждений',
   rates:'Цены за токены',input_usd_per_million:'Входные токены, USD за 1 млн',
   cached_input_usd_per_million:'Кэшированные входные токены, USD за 1 млн',
   output_usd_per_million:'Выходные токены, USD за 1 млн',
@@ -91,10 +102,9 @@ configSchema.fields!["sessions"]!.fields!["compact_background_margin_tokens"]!.d
 configSchema.fields!["research"]!.fields!["searxng_url"]!.description="Базовый HTTP(S) URL SearXNG, без /search: этот путь добавляется автоматически. Не задавайте одновременно с DeGoog."
 configSchema.fields!["research"]!.fields!["degoog_url"]!.description="Базовый HTTP(S) URL DeGoog, без /api/search: этот путь добавляется автоматически. Не задавайте одновременно с SearXNG."
 configSchema.fields!["research"]!.fields!["obscura_path"]!.description="Путь к исполняемому файлу Obscura или имя в PATH процесса шлюза. Это не команда с аргументами."
-configSchema.fields!["provider"]!.description="Используйте fast для начальной модели и фоновых задач, smart — для сложных задач в диалоге. Прежние имена system_one и primary по-прежнему работают."
+configSchema.fields!["provider"]!.description="Именованные подключения к API. Один провайдер может использоваться в нескольких профилях. Прежние настройки с моделями в [provider], включая system_one и primary, по-прежнему работают."
 configSchema.fields!["provider"]!.item!.fields!["type"]!.description="openai — протокол OpenAI Responses API, в том числе совместимый сервер. Тип доступен только для чтения."
 configSchema.fields!["provider"]!.item!.fields!["api_key"]!.description="Ключ доступа к выбранному API. Требуется непустое значение."
-configSchema.fields!["provider"]!.item!.fields!["model"]!.description="Точный идентификатор модели, принимаемый этим API, а не произвольное название подключения."
 configSchema.fields!["provider"]!.item!.fields!["api_base"]!.description="Базовый URL OpenAI-совместимого Responses API. Пустое значение использует стандартный адрес клиента OpenAI."
 configSchema.fields!["gateway"]!.item!.fields!["type"]!.description="telegram — подключение бота через Telegram Bot API. Тип доступен только для чтения."
 configSchema.fields!["gateway"]!.item!.fields!["token"]!.description="Токен Telegram-бота, выданный BotFather. Не пароль аккаунта Telegram."

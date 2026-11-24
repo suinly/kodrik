@@ -104,16 +104,19 @@ Create `~/.kodrik/config.toml`:
 ```toml
 [gateway]
 
-[provider.primary]
+[provider.openai]
 type = "openai"
-model = "your-model"
 api_key = "your-key"
+
+[model.smart]
+provider = "openai"
+model = "your-model"
 ```
 
 Replace the model and API key placeholders and run
 `chmod 600 ~/.kodrik/config.toml`. The empty `[gateway]` table is
 required even for terminal-only use. For a custom endpoint, set `api_base` under
-`[provider.primary]`; see [Configuration](docs/configuration.md).
+`[provider.openai]`; see [Configuration](docs/configuration.md).
 
 Launch the terminal UI or ask a single question:
 

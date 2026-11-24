@@ -4,7 +4,9 @@
 
 For standalone/gateway mode, check `~/.kodrik/config.toml`, even if you started
 Kodrik from a different directory. The file needs `[gateway]` (which may be
-empty) and `[provider.fast]`. TOML strings containing `${VARIABLE}` are not expanded.
+empty), a named `[provider.<name>]` and a `[model.fast]` or `[model.smart]`
+profile that references it. Legacy combined tables still work. TOML strings
+containing `${VARIABLE}` are not expanded.
 Validate companion timezone, hour values and paired recipient fields against
 the [configuration reference](configuration.md).
 

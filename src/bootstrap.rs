@@ -31,7 +31,7 @@ use crate::{
             WebReadTool, WebSearchTool,
         },
     },
-    config::{Config, ProviderConfig, data_dir},
+    config::{Config, ProviderConfig, ResolvedModel, data_dir},
 };
 
 #[derive(Clone)]
@@ -186,27 +186,22 @@ pub(crate) async fn build_app_with_access(
         None => None,
     };
     let timezone = config.companion.timezone.parse::<chrono_tz::Tz>()?;
-    let (fast_provider, smart_provider) = config.model_providers()?;
-
-    let make_llm = |provider: &ProviderConfig| {
-        (match provider {
-            ProviderConfig::OpenAi {
-                api_key,
-                api_base,
-                model,
-                rates,
-            } => OpenAiLlm::new(api_key, Some(model), api_base.as_deref()).with_rates(*rates),
-        })
-        .with_access(access.clone())
+    let profiles = config.model_profiles()?;
+    let make_llm = |profile: ResolvedModel<'_>| {
+        let ProviderConfig::OpenAi {
+            api_key, api_base, ..
+        } = profile.provider;
+        OpenAiLlm::new(api_key, Some(profile.model), api_base.as_deref())
+            .with_reasoning_effort(profile.reasoning_effort.cloned())
+            .with_rates(profile.rates)
+            .with_access(access.clone())
     };
+    let fast_provider = profiles.fast;
     let fast_llm = Arc::new(make_llm(fast_provider));
-    let smart_llm = smart_provider.map(|provider| {
-        if std::ptr::eq(provider, fast_provider) {
-            fast_llm.clone() as Arc<dyn LlmProvider>
-        } else {
-            Arc::new(make_llm(provider)) as Arc<dyn LlmProvider>
-        }
-    });
+    let role_llm = |role| Arc::new(make_llm(role)) as Arc<dyn LlmProvider>;
+    let smart_llm = profiles.smart.map(role_llm);
+    let deep_llm = profiles.deep.map(role_llm);
+    let vision_llm = profiles.vision.map(role_llm);
     let background_llm = Arc::new(
         make_llm(fast_provider)
             .with_max_output_tokens(2048)
@@ -364,6 +359,8 @@ pub(crate) async fn build_app_with_access(
     };
     let mut agent = Agent::new(fast_llm, tools.with_deferred_builtin_schemas(), context)
         .with_model_routing(smart_llm)
+        .with_additional_model_roles(deep_llm, vision_llm)
+        .with_smart_default(config.model.contains_key("smart"))
         .with_command_auditor(tool_auditor())
         .with_compaction(
             Arc::new(make_llm(fast_provider).for_compaction()),
@@ -395,9 +392,24 @@ pub(crate) async fn build_app_with_access(
             .with_companion(data)
     ).with_limits(4, 32_000).with_command_auditor(tool_auditor()).with_journal(journal.clone()));
 
+    use async_openai::types::responses::ReasoningEffort;
+    let decision_effort = fast_provider.reasoning_effort.map(|effort| match effort {
+        ReasoningEffort::None | ReasoningEffort::Minimal => effort.clone(),
+        _ => ReasoningEffort::Low,
+    });
+    // The participation verdict is short, but reasoning tokens count against the same cap.
+    let decision_tokens = if matches!(
+        decision_effort,
+        Some(ReasoningEffort::Minimal | ReasoningEffort::Low)
+    ) {
+        2048
+    } else {
+        128
+    };
     let decision_llm = Arc::new(
         make_llm(fast_provider)
-            .with_max_output_tokens(128)
+            .with_reasoning_effort(decision_effort)
+            .with_max_output_tokens(decision_tokens)
             .without_retries(),
     );
     let mut agent_runner = AgentRunner::new(Arc::new(agent), Arc::new(sessions))
@@ -453,6 +465,68 @@ mod tests {
     };
     use crate::gateway::{IncomingMessage, InterfaceId};
     use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn shared_provider_profiles_send_the_selected_model_and_effort() {
+        let router = axum::Router::new().route(
+            "/responses",
+            axum::routing::post(|headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| async move {
+                use axum::response::IntoResponse;
+                assert_eq!(headers["authorization"], "Bearer fixture-key");
+                let model = body["model"].as_str().unwrap();
+                let effort = body["reasoning"]["effort"].as_str().unwrap();
+                let reply = json!({"output":[{"type":"message","content":[{"type":"output_text","text":format!("{model}:{effort}")}]}]});
+                if body["stream"] == true {
+                    ([("content-type", "text/event-stream")], format!("data: {}\n\ndata: [DONE]\n\n", json!({"type":"response.completed", "response":reply}))).into_response()
+                } else { axum::Json(reply).into_response() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut source = format!(
+            "[gateway]\n[companion]\nlearning_enabled=false\n[provider.shared]\ntype='openai'\napi_key='fixture-key'\napi_base='{endpoint}'\n"
+        );
+        for (role, effort) in [
+            ("fast", "low"),
+            ("smart", "medium"),
+            ("deep", "max"),
+            ("vision", "none"),
+        ] {
+            source.push_str(&format!("[model.{role}]\nprovider='shared'\nmodel='fixture-{role}'\nreasoning_effort='{effort}'\n"));
+        }
+        let config: Config = toml::from_str(&source).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let app = build_app_at(&config, root.path(), false).await.unwrap();
+        assert_eq!(
+            app.agent_runner.available_models().await.unwrap(),
+            ["fast", "smart", "deep", "vision"]
+        );
+        assert_eq!(
+            app.agent_runner.run_once("hello").await.unwrap(),
+            "fixture-smart:medium"
+        );
+        let store = SqliteSessionStore::open(root.path().join("sessions")).unwrap();
+        for (role, effort) in [("fast", "low"), ("deep", "max"), ("vision", "none")] {
+            let id = SessionId::new(format!("cli:{role}"));
+            store.save(&Session::new(id.clone())).await.unwrap();
+            store
+                .set_session_model(id.as_str(), Some(role.into()))
+                .await
+                .unwrap();
+            let answer = app
+                .agent_runner
+                .run(
+                    id,
+                    IncomingMessage::new(InterfaceId("cli".into()), role, "hello"),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(answer.content, format!("fixture-{role}:{effort}"));
+        }
+        server.abort();
+    }
 
     #[tokio::test]
     async fn compact_rejects_incomplete_or_refused_provider_output_without_advancing_state() {

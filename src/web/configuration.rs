@@ -55,7 +55,7 @@ pub(crate) fn validate_source(source: &str) -> anyhow::Result<Config> {
                 .map(|_| ())
         })
         .map_err(|_| anyhow::anyhow!("Invalid companion configuration"))?;
-    config.model_providers()?;
+    config.model_profiles()?;
     for (name, provider) in &config.provider {
         let ProviderConfig::OpenAi {
             api_key,
@@ -64,8 +64,10 @@ pub(crate) fn validate_source(source: &str) -> anyhow::Result<Config> {
             ..
         } = provider;
         anyhow::ensure!(
-            !name.trim().is_empty() && !api_key.trim().is_empty() && !model.trim().is_empty(),
-            "Provider name, model and API key must not be empty"
+            !name.trim().is_empty()
+                && !api_key.trim().is_empty()
+                && model.as_ref().is_none_or(|model| !model.trim().is_empty()),
+            "Provider name, API key and any legacy model ID must not be empty"
         );
         if let Some(raw) = api_base {
             anyhow::ensure!(
@@ -697,15 +699,50 @@ mod tests {
         }
     }
     #[test]
+    fn named_models_share_a_provider_and_validate_references() {
+        let source = "[gateway]\n[provider.shared]\ntype='openai'\napi_key='PRIVATE_KEY'\n\
+                      [model.fast]\nprovider='shared'\nmodel='cheap'\nreasoning_effort='low'\n\
+                      [model.deep]\nprovider='shared'\nmodel='strong'\nreasoning_effort='max'\n\
+                      [model.deep.rates]\noutput_usd_per_million=40\n";
+        let form = super::form_document(source).unwrap();
+        assert_eq!(form.values["model"]["deep"]["provider"], json!("shared"));
+        assert_eq!(
+            form.values["model"]["deep"]["reasoning_effort"],
+            json!("max")
+        );
+        assert_eq!(
+            form.values["model"]["deep"]["rates"]["output_usd_per_million"],
+            json!(40)
+        );
+        for invalid in [
+            source.replace("provider='shared'", "provider='missing'"),
+            source.replace("[model.deep]", "[model.unknown]"),
+            source.replace("reasoning_effort='max'", "reasoning_effort='extra'"),
+            source.replace("model='strong'", "model=''"),
+        ] {
+            let error = super::validate_source(&invalid).unwrap_err().to_string();
+            assert!(!error.contains("PRIVATE_KEY"));
+        }
+    }
+
+    #[test]
     fn configuration_accepts_new_provider_roles_without_legacy_primary() {
         for role in ["fast", "smart", "system_one"] {
-            assert!(super::validate_source(&SOURCE.replace("provider.primary", &format!("provider.{role}"))).is_ok(), "{role}");
+            assert!(
+                super::validate_source(
+                    &SOURCE.replace("provider.primary", &format!("provider.{role}"))
+                )
+                .is_ok(),
+                "{role}"
+            );
         }
     }
 
     #[test]
     fn configuration_form_roundtrips_fractional_rates_and_rejects_invalid_rates() {
-        let source = format!("{SOURCE}[provider.primary.rates]\ninput_usd_per_million=0.25\noutput_usd_per_million=0\n");
+        let source = format!(
+            "{SOURCE}[provider.primary.rates]\ninput_usd_per_million=0.25\noutput_usd_per_million=0\n"
+        );
         let form = super::form_document(&source).unwrap();
         let values = &form.values["provider"]["primary"]["rates"];
         assert_eq!(values["input_usd_per_million"], json!(0.25));
@@ -713,7 +750,9 @@ mod tests {
         assert!(values["cached_input_usd_per_million"].is_null());
         for invalid in ["-0.01", "inf", "nan"] {
             let invalid_source = source.replace("0.25", invalid);
-            let error = super::validate_source(&invalid_source).unwrap_err().to_string();
+            let error = super::validate_source(&invalid_source)
+                .unwrap_err()
+                .to_string();
             assert!(!error.contains("PRIVATE_KEY"));
         }
     }

@@ -22,18 +22,20 @@ command/tool audit, not topic or session selection. Its reusable
 returning one validated choice. It does not use tools or take actions; each
 consumer owns its validation and fallback policy.
 
-These decisions use [`provider.fast`](configuration.md#providers) with separate decision limits. Group participation decisions have a
-15-second provider deadline; a timeout logs `System One decision timed out after
-15s`. These decision limits do not govern the main agent's session choice.
+These decisions use the [`fast` role](configuration.md#providers-and-models) with separate decision limits. Group participation decisions have a
+15-second provider deadline and cap an explicitly configured reasoning effort at
+`low`; a timeout logs `System One decision timed out after 15s`. These decision
+limits do not govern the main agent's session choice.
 
 ## Model routing and cost
 
-Choose **Auto**, **Fast**, or **Smart** in the web chat header, with `/models`
-in the TUI, or with `/model auto`, `/model fast`, or `/model smart` in private
-Telegram and the TUI. The choice is saved per session. In Auto, each user turn
-starts on Fast and `select_model` can switch subsequent steps in that turn to
-Smart or back to Fast. A fixed user choice takes precedence. In Auto, the parent
-can choose a model for a child at spawn; the default child model is Fast. Service
+Choose **Auto** or a configured role (**Fast**, **Smart**, **Deep**, **Vision**)
+in the web chat header, with `/models` in the TUI, or with `/model <role>` in
+private Telegram and the TUI. The choice is saved per session. In Auto, each
+user turn starts on Smart if `[model.smart]` is configured; legacy configurations
+start on Fast. `select_model` can switch subsequent steps of that turn to another
+configured role. A fixed user choice takes precedence, including for child
+agents. In Auto, the parent can choose a role for a child at spawn. Service
 calls such as audit, summaries, and titles use Fast independently.
 
 The web chat shows estimated known USD totals for the session and its latest run,
@@ -42,7 +44,7 @@ The total includes older calls recorded for that session as well as its child an
 service calls. Missing prices or usage are reported as incomplete, including
 requests interrupted without usage. Old aggregate token counts cannot be used to
 reconstruct costs. Configure [token prices](configuration.md#optional-token-prices)
-for each provider. These are estimates, not provider invoices.
+for each model. These are estimates, not provider invoices.
 
 ## Switching and cancellation
 

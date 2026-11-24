@@ -1,5 +1,6 @@
 use super::*;
 use crate::agent::session::Session;
+use crate::agent::tools::model_selection::ModelTier;
 
 impl GatewayRunner {
     pub(super) async fn handle_session_command(
@@ -133,8 +134,17 @@ impl GatewayRunner {
                         session.model_override().unwrap_or("auto")
                     ));
                 }
-                [mode @ ("auto" | "fast" | "smart")] => *mode,
-                _ => return Ok("/model auto | fast | smart".into()),
+                [mode] if *mode == "auto" || ModelTier::from_name(mode).is_some() => *mode,
+                _ => {
+                    let roles = runner.available_model_roles().unwrap_or_default();
+                    return Ok(format!(
+                        "/model {}",
+                        std::iter::once("auto")
+                            .chain(roles.iter().map(String::as_str))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    ));
+                }
             };
             if mode != "auto"
                 && !runner

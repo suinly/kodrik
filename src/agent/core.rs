@@ -18,7 +18,8 @@ use crate::agent::{
 #[derive(Clone)]
 pub struct Agent {
     llm: Arc<dyn LlmProvider>,
-    model_routing: Option<Option<Arc<dyn LlmProvider>>>,
+    model_routing: Option<ModelRouting>,
+    smart_default: bool,
     tools: ToolRegistry,
     context: ContextBuilder,
     limits: Option<(usize, Option<usize>)>,
@@ -28,6 +29,13 @@ pub struct Agent {
     sandbox: Option<Arc<super::sandbox::Sandbox>>,
     subagents: Option<Arc<super::subagents::Subagents>>,
     command_auditor: Option<Arc<super::system_one::SystemOne>>,
+}
+
+#[derive(Clone, Default)]
+struct ModelRouting {
+    smart: Option<Arc<dyn LlmProvider>>,
+    deep: Option<Arc<dyn LlmProvider>>,
+    vision: Option<Arc<dyn LlmProvider>>,
 }
 
 #[derive(Debug)]
@@ -86,7 +94,7 @@ impl std::error::Error for GenerationSuperseded {}
 
 impl Agent {
     pub(crate) fn model_identity(&self) -> String {
-        self.llm.identity()
+        self.default_provider().identity()
     }
 
     pub(crate) fn child_agent(&self) -> Self {
@@ -134,6 +142,7 @@ impl Agent {
         Self {
             llm,
             model_routing: None,
+            smart_default: false,
             tools,
             context,
             limits: None,
@@ -147,44 +156,86 @@ impl Agent {
     }
 
     pub(crate) fn with_model_routing(mut self, smart: Option<Arc<dyn LlmProvider>>) -> Self {
-        self.model_routing = Some(smart);
-        if self.has_smart() {
-            self.tools = self.tools.register(Arc::new(SelectModel));
+        self.model_routing
+            .get_or_insert_with(Default::default)
+            .smart = smart;
+        self.with_model_selection_tool()
+    }
+
+    pub(crate) fn with_additional_model_roles(
+        mut self,
+        deep: Option<Arc<dyn LlmProvider>>,
+        vision: Option<Arc<dyn LlmProvider>>,
+    ) -> Self {
+        let routing = self.model_routing.get_or_insert_with(Default::default);
+        routing.deep = deep;
+        routing.vision = vision;
+        self.with_model_selection_tool()
+    }
+
+    pub(crate) fn with_smart_default(mut self, smart_default: bool) -> Self {
+        self.smart_default = smart_default;
+        self.with_model_selection_tool()
+    }
+
+    fn with_model_selection_tool(mut self) -> Self {
+        if let Some(roles) = self.model_roles().filter(|roles| roles.len() > 1) {
+            let default = self.default_tier().name();
+            self.tools = self
+                .tools
+                .register(Arc::new(SelectModel { roles, default }));
+        } else if self.tools.contains("select_model") {
+            self.tools = self.tools.without(&["select_model"]);
         }
         self
     }
 
-    pub(super) fn has_smart(&self) -> bool {
-        self.model_routing.as_ref().is_some_and(Option::is_some)
+    pub(super) fn model_roles(&self) -> Option<Vec<String>> {
+        self.model_routing.as_ref().map(|_| {
+            ModelTier::ALL
+                .into_iter()
+                .filter(|tier| self.provider_for_tier(*tier).is_some())
+                .map(|tier| tier.name().to_owned())
+                .collect()
+        })
     }
 
-    pub(super) fn model_roles(&self) -> Option<Vec<String>> {
-        self.model_routing.as_ref().map(|smart| {
-            let mut roles = vec!["fast".into()];
-            if smart.is_some() {
-                roles.push("smart".into());
-            }
-            roles
-        })
+    pub(super) fn default_tier(&self) -> ModelTier {
+        if self.smart_default && self.provider_for_tier(ModelTier::Smart).is_some() {
+            ModelTier::Smart
+        } else {
+            ModelTier::Fast
+        }
+    }
+
+    fn default_provider(&self) -> &Arc<dyn LlmProvider> {
+        self.provider_for_tier(self.default_tier())
+            .unwrap_or(&self.llm)
+    }
+
+    fn provider_for_tier(&self, tier: ModelTier) -> Option<&Arc<dyn LlmProvider>> {
+        let routing = self.model_routing.as_ref()?;
+        match tier {
+            ModelTier::Fast => Some(&self.llm),
+            ModelTier::Smart => routing.smart.as_ref(),
+            ModelTier::Deep => routing.deep.as_ref(),
+            ModelTier::Vision => routing.vision.as_ref(),
+        }
     }
 
     pub(super) fn provider_for(&self, model: Option<&str>) -> anyhow::Result<Arc<dyn LlmProvider>> {
         match model {
-            None | Some("auto") => Ok(self.llm.clone()),
-            Some("fast") if self.model_routing.is_some() => Ok(self.llm.clone()),
-            Some("smart") if self.model_routing.is_some() => self
-                .model_routing
-                .as_ref()
-                .and_then(Clone::clone)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Smart model is not configured; select Auto or Fast")
-                }),
-            Some(model) => self
-                .model_routing
-                .as_ref()
-                .and_then(Option::as_ref)
-                .unwrap_or(&self.llm)
-                .with_model(model),
+            None | Some("auto") => Ok(self.default_provider().clone()),
+            Some(model) => match ModelTier::from_name(model) {
+                Some(tier) => self
+                    .provider_for_tier(tier)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Model role {model} is not configured")),
+                None => self
+                    .provider_for_tier(ModelTier::Smart)
+                    .unwrap_or(&self.llm)
+                    .with_model(model),
+            },
         }
     }
 
@@ -776,11 +827,11 @@ impl Agent {
                     None => fixed_model.clone(),
                 }
                 .filter(|model| model != "auto");
-                let llm = self.provider_for(if allow_model_selection {
-                    selected.as_deref().or(turn_model.map(ModelTier::name))
+                let llm = if allow_model_selection {
+                    self.provider_for(selected.as_deref().or(turn_model.map(ModelTier::name)))?
                 } else {
-                    None
-                })?;
+                    self.llm.clone()
+                };
                 requests += 1;
                 // Preserve non-streaming callers; headless steering still needs text events.
                 let stream = progress.is_some() || incoming.is_some();
@@ -1135,9 +1186,13 @@ impl Agent {
                         });
                         let fixed_for_child =
                             if matches!(call.name.as_str(), "spawn_agent" | "send_message") {
-                                match checkpoint.as_ref() {
-                                    Some(cp) => cp.store.session_model(session.id()).await?,
-                                    None => fixed_model.clone(),
+                                if !allow_model_selection && self.model_routing.is_some() {
+                                    Some(ModelTier::Fast.name().to_owned())
+                                } else {
+                                    match checkpoint.as_ref() {
+                                        Some(cp) => cp.store.session_model(session.id()).await?,
+                                        None => fixed_model.clone(),
+                                    }
                                 }
                             } else {
                                 None
@@ -1165,7 +1220,7 @@ impl Agent {
                             }
                             Permission::Allowed
                                 if call.name == "select_model"
-                                    && self.has_smart()
+                                    && registry.contains("select_model")
                                     && allow_model_selection =>
                             {
                                 let current = match checkpoint.as_ref() {
@@ -1178,14 +1233,16 @@ impl Agent {
                                     ))
                                 } else {
                                     serde_json::from_value::<Selection>(call.arguments.clone())
-                                        .map(|args| {
+                                        .map_err(anyhow::Error::from)
+                                        .and_then(|args| {
+                                            self.provider_for(Some(args.model.name()))?;
                                             turn_model = Some(args.model);
                                             if let Some(cp) = checkpoint.as_deref_mut() {
                                                 cp.record.turn_model = turn_model;
                                             }
-                                            serde_json::json!({"model":args.model.name()}).into()
+                                            Ok(serde_json::json!({"model":args.model.name()})
+                                                .into())
                                         })
-                                        .map_err(Into::into)
                                 }
                             }
                             Permission::Allowed
@@ -2007,6 +2064,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_routing_does_not_treat_unconfigured_roles_as_provider_ids() {
+        struct Model;
+        #[async_trait::async_trait]
+        impl LlmProvider for Model {
+            fn with_model(&self, _: &str) -> anyhow::Result<Arc<dyn LlmProvider>> {
+                Ok(Arc::new(Self))
+            }
+
+            async fn generate(
+                &self,
+                _: &LlmContext<'_>,
+                _: &[&dyn Tool],
+                _: Option<&mpsc::Sender<AgentEvent>>,
+            ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+                unreachable!()
+            }
+        }
+        let agent = Agent::new(
+            Arc::new(Model),
+            ToolRegistry::default(),
+            ContextBuilder::new("rules"),
+        );
+        for agent in [agent.clone(), agent.with_model_routing(None)] {
+            assert!(!agent.tools.contains("select_model"));
+            for role in ["smart", "deep", "vision"] {
+                assert!(agent.provider_for(Some(role)).is_err(), "{role}");
+            }
+            assert!(agent.provider_for(Some("provider/custom")).is_ok());
+        }
+    }
+
+    #[tokio::test]
     async fn agent_escalation_applies_only_in_auto_and_resets_next_turn() {
         struct Model(&'static str);
         #[async_trait::async_trait]
@@ -2018,11 +2107,11 @@ mod tests {
                 _: Option<&mpsc::Sender<AgentEvent>>,
             ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
                 let message = match context.messages.last() {
-                    Some(Message::User(user)) if user.content == "complex" => {
+                    Some(Message::User(user)) if user.content.starts_with("switch:") => {
                         Message::ToolCall(ToolCall {
                             call_id: format!("escalate-{}", context.messages.len()),
                             name: "select_model".into(),
-                            arguments: serde_json::json!({"model":"smart"}),
+                            arguments: serde_json::json!({"model":&user.content[7..]}),
                         })
                     }
                     _ => Message::Assistant(AssistantMessage {
@@ -2037,14 +2126,26 @@ mod tests {
             ToolRegistry::default(),
             ContextBuilder::new("rules"),
         )
-        .with_model_routing(Some(Arc::new(Model("smart"))));
+        .with_model_routing(Some(Arc::new(Model("smart"))))
+        .with_additional_model_roles(
+            Some(Arc::new(Model("deep"))),
+            Some(Arc::new(Model("vision"))),
+        );
         let mut session = Session::new(SessionId::new("route"));
-        for (mode, text, expected) in [
-            (None, "complex", "smart"),
-            (None, "simple", "fast"),
-            (Some("fast"), "complex", "fast"),
-            (Some("smart"), "simple", "smart"),
+        for (smart_default, mode, text, expected) in [
+            (false, None, "switch:smart", "smart"),
+            (false, None, "simple", "fast"),
+            (true, None, "simple", "smart"),
+            (true, None, "switch:deep", "deep"),
+            (true, None, "switch:vision", "vision"),
+            (true, None, "switch:fast", "fast"),
+            (true, None, "simple", "smart"),
+            (true, Some("fast"), "switch:deep", "fast"),
+            (true, Some("smart"), "simple", "smart"),
+            (true, Some("deep"), "switch:vision", "deep"),
+            (true, Some("vision"), "switch:deep", "vision"),
         ] {
+            let agent = agent.clone().with_smart_default(smart_default);
             session.set_model_override(mode.map(str::to_owned));
             let input = UserMessage {
                 content: text.into(),
@@ -2059,6 +2160,43 @@ mod tests {
                 .unwrap();
             assert_eq!(answer.content, expected, "{mode:?}, {text}");
         }
+
+        let agent = agent
+            .with_smart_default(true)
+            .with_model_routing(None)
+            .with_additional_model_roles(None, Some(Arc::new(Model("vision"))));
+        let tools = agent.tools.for_model(&[]).unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == "select_model")
+            .unwrap();
+        assert_eq!(
+            tool.parameters()["properties"]["model"]["enum"],
+            serde_json::json!(["fast", "vision"])
+        );
+        session.set_model_override(None);
+        let answer = agent
+            .run_inner(
+                &mut session,
+                Some(UserMessage {
+                    content: "switch:deep".into(),
+                    browser_client_id: None,
+                    browser_context: None,
+                    files: vec![],
+                    images: vec![],
+                }),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer.content, "fast");
+        assert!(session.messages().iter().any(|message| {
+            matches!(message, Message::ToolResult(result)
+                if result.content.output["error"] == "Model role deep is not configured")
+        }));
     }
 
     #[tokio::test]

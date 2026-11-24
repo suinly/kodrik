@@ -284,6 +284,17 @@ impl Subagents {
     ) -> anyhow::Result<Child> {
         parent.active()?;
         validate_message(&task)?;
+        let fixed = parent.session.model_override().filter(|m| *m != "auto");
+        let proposed = model.map(|m| m.name());
+        ensure!(
+            fixed != Some("fast") || proposed.is_none_or(|model| model == "fast"),
+            "Parent session is fixed to Fast"
+        );
+        let chosen = fixed.or(proposed).or_else(|| {
+            self.available_model_roles()
+                .map(|_| self.runner.agent.default_tier().name())
+        });
+        self.runner.agent.provider_for(chosen)?;
         let mut active = self.active.lock().await;
         ensure!(
             active.len() < MAX_ACTIVE,
@@ -292,19 +303,6 @@ impl Subagents {
         let id = format!("{PREFIX}{}", uuid::Uuid::new_v4());
         let ownership = self.store.execution_lock("subagent", &id).await?;
         let mut session = parent.session.child(SessionId::new(&id));
-        let fixed = parent.session.model_override().filter(|m| *m != "auto");
-        let proposed = model.map(|m| m.name());
-        ensure!(
-            fixed != Some("fast") || proposed != Some("smart"),
-            "Parent session is fixed to Fast"
-        );
-        let chosen = fixed
-            .or(proposed)
-            .or_else(|| self.runner.available_model_roles().map(|_| "fast"));
-        ensure!(
-            chosen != Some("smart") || self.runner.has_smart_model(),
-            "Smart model is not configured"
-        );
         session.set_model_override(chosen.map(str::to_owned));
         let child = Child {
             id,
@@ -319,6 +317,10 @@ impl Subagents {
         let (child, _) = self.admit(child, Some(session), task).await?;
         self.start(&mut active, parent, child.clone(), ownership);
         Ok(child)
+    }
+
+    pub(crate) fn available_model_roles(&self) -> Option<Vec<String>> {
+        self.runner.available_model_roles()
     }
 
     fn start(

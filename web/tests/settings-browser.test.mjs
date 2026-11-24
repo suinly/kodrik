@@ -5,6 +5,36 @@ import {componentPage} from './devices.test.mjs'
 
 const values={web:{enabled:true,listen:'0.0.0.0:8080',trusted_proxies:[],base_url:null,max_event_streams_per_user:4},companion:{learning_enabled:true,proactive_enabled:true,interface:null,chat_id:null,timezone:'Europe/Moscow',proactive_hour:12,quiet_start:22,quiet_end:9},sessions:{restart_limit:5,compact_threshold_tokens:250000,compact_background_margin_tokens:50000},research:{searxng_url:null,degoog_url:null,obscura_path:'obscura'},provider:{main:{type:'openai',api_key:'secret-key',model:'test',api_base:null,future:'keep'}},gateway:{main:{type:'telegram',token:'secret-token',stream:true}},mcp:{},future:{keep:true}}
 
+test('settings saves a model profile separately from legacy provider settings',async()=>{
+ const {page,browser,mount}=await componentPage('SettingsPage',{owner:true})
+ try {
+  let saved
+  const original={...values,model:{}}
+  await page.route('**/api/gateway',r=>r.fulfill({json:{instance_id:'old',pid:1,restart_available:true}}))
+  await page.route('**/api/config/form',r=>{
+   if(r.request().method()==='PUT') {saved=r.request().postDataJSON();return r.fulfill({json:{values:saved.values,revision:'r2'}})}
+   return r.fulfill({json:{values:original,revision:'r1'}})
+  })
+  await mount();await page.getByRole('button',{name:'Reveal full configuration'}).click()
+  const role=page.getByLabel('model name',{exact:true})
+  const add=page.getByRole('button',{name:'Add Model profile',exact:true})
+  await role.fill('not-a-role')
+  await expect(add).toBeDisabled()
+  await role.fill('deep')
+  await add.click()
+  await page.getByLabel('model.deep.provider',{exact:true}).fill('main')
+  await page.getByLabel('model.deep.model',{exact:true}).fill('vendor/model-v2')
+  await page.getByLabel('model.deep.reasoning_effort',{exact:true}).fill('minimal')
+  const profile=page.getByRole('group',{name:'deep',exact:true})
+  await profile.getByText('Advanced settings',{exact:true}).click()
+  await profile.getByRole('checkbox',{name:'Enable Token prices',exact:true}).check()
+  await page.getByLabel('model.deep.rates.input_usd_per_million',{exact:true}).fill('0.125')
+  await page.getByRole('button',{name:'Save configuration',exact:true}).click()
+  await expect.poll(()=>saved?.values.model).toEqual({deep:{provider:'main',model:'vendor/model-v2',reasoning_effort:'minimal',rates:{input_usd_per_million:0.125}}})
+  assert.deepEqual(saved.values.provider,original.provider)
+ } finally {await browser.close()}
+})
+
 test('sections keep edits and unknown values, keys are optional, and saving includes hidden sections',async()=>{
  const {page,browser,mount}=await componentPage('SettingsPage',{owner:true})
  try {

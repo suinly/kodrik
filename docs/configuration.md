@@ -10,10 +10,13 @@ implemented. Keep API keys and bot tokens out of the repository.
 ```toml
 [gateway]
 
-[provider.fast]
+[provider.openai]
 type = "openai"
-model = "your-model"
 api_key = "your-key"
+
+[model.smart]
+provider = "openai"
+model = "your-model"
 ```
 
 At least one model provider and the `gateway` table are required. An empty
@@ -25,47 +28,93 @@ gateway table allows terminal use without Telegram.
 `--remote-config /path/to/remote.toml`), without loading a local provider or
 gateway. Its top-level fields are `server`, `credential_file`, `label`,
 `allow_shell`, `skill_roots` and `optional_mcp`, plus selected `[mcp.<name>]`
-HTTP providers. Unknown fields are rejected; do not copy `[provider]` or
+HTTP providers. Unknown fields are rejected; do not copy `[provider]`, `[model]` or
 `[gateway]` into it. Paths are literal, and relative credential/skill paths
 resolve from that file's directory. See [Remote TUI](remote-tui.md#configure-and-pair)
 for the complete example, defaults, owner pairing/revocation and HTTPS rules.
 
-## Providers
+## Providers and models
 
-Both model roles use the OpenAI Responses API adapter. A compatible endpoint
-must support Responses, not only Chat Completions.
+Each `[provider.<name>]` defines a named connection. Kodrik uses the OpenAI
+Responses API adapter; a compatible endpoint must support Responses, not only
+Chat Completions. Multiple models can reference the same connection.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `type` | Yes | `"openai"`, the supported adapter |
-| `model` | Yes | Model identifier accepted by the endpoint |
 | `api_key` | Yes | API credential |
 | `api_base` | No | Custom API base URL; omitted uses the adapter's OpenAI default |
 
-Conversations start on `fast`. Set `smart` to make a second model available for
-foreground work. Background work—including group reply decisions, learning,
-proactive research, wakeups, tool review, and context compaction—uses `fast`.
-When only `fast` is configured, it handles everything.
+Each `[model.<role>]` sets `provider` (the connection name), `model` (the API
+model ID) and optionally `reasoning_effort` and [token prices](#optional-token-prices).
+Supported effort values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+and `max`; choose a value accepted by the selected model and endpoint. If omitted,
+Kodrik leaves `reasoning.effort` unset and the endpoint uses its default.
+
+Use `smart` for regular conversations, `fast` for routine work and background
+calls, `deep` for complex reasoning, and `vision` for work that depends on images
+or screen contents. Only configured roles appear in the model picker. Configure
+at least `fast` or `smart`. If only `smart` is configured, it also fills `fast`.
+
+The example uses [OpenAI Standard rates](https://developers.openai.com/api/docs/pricing)
+as checked on November 24, 2026, for requests with up to 272,000 input tokens.
+These rates are for estimates, not invoices: Kodrik does not apply long-context
+or service-tier adjustments, cache write charges, or tool fees.
 
 ```toml
-[provider.fast]
+[provider.openai]
 type = "openai"
-model = "your-fast-model"
-api_key = "your-key"
-
-[provider.smart]
-type = "openai"
-model = "your-smart-model"
 api_key = "your-key"
 # api_base = "https://your-provider.example/v1"
+
+[model.fast]
+provider = "openai"
+model = "gpt-6-luna"
+reasoning_effort = "low"
+
+[model.fast.rates]
+input_usd_per_million = 0.10
+cached_input_usd_per_million = 0.01
+output_usd_per_million = 0.50
+
+[model.smart]
+provider = "openai"
+model = "gpt-6.2-sol"
+reasoning_effort = "medium"
+
+[model.smart.rates]
+input_usd_per_million = 2.00
+cached_input_usd_per_million = 0.10
+output_usd_per_million = 10.00
+
+[model.deep]
+provider = "openai"
+model = "gpt-6.2-astra"
+reasoning_effort = "medium"
+
+[model.deep.rates]
+input_usd_per_million = 8.00
+cached_input_usd_per_million = 0.40
+output_usd_per_million = 40.00
+
+[model.vision]
+provider = "openai"
+model = "gpt-6.1-terra"
+reasoning_effort = "medium"
+
+[model.vision.rates]
+input_usd_per_million = 1.00
+cached_input_usd_per_million = 0.05
+output_usd_per_million = 5.00
 ```
 
-Existing configurations don't need to rename their tables. `fast` takes
-precedence over `system_one` and `smart` takes precedence over `primary`. If
-neither `fast` nor `system_one` is set, the selected `smart` (or legacy
-`primary`) provider also fills the `fast` role. This fallback is resolved at
-startup; it is not an automatic retry on a different model after a provider
-error. See [System One](sessions.md).
+Existing configurations still work. New `[model.fast]` and `[model.smart]`
+override the matching legacy role. Among legacy tables, `[provider.fast]`
+takes precedence over `[provider.system_one]` and `[provider.smart]` takes
+precedence over `[provider.primary]`. Auto starts on `smart` with `[model.smart]`;
+otherwise it keeps the original `fast` default. The `fast` fallback to `smart`
+is resolved at startup, not as a retry after a provider error. See
+[model routing](sessions.md#model-routing-and-cost).
 
 The **AI review** tool mode uses `fast`. Configure a fast model to reduce the
 delay before tool execution. All tool
@@ -79,15 +128,9 @@ are stored per user, separately from TOML.
 
 ### Optional token prices
 
-Set rates under any provider table that you use, including legacy providers.
-Values are finite, nonnegative USD amounts per million tokens:
-
-```toml
-[provider.fast.rates]
-input_usd_per_million = 0.25
-cached_input_usd_per_million = 0.025
-output_usd_per_million = 1.25
-```
+Set rates under the model profile (or under the provider table in legacy configurations).
+Values are finite, nonnegative USD amounts per million tokens. See `[model.fast.rates]`
+and the other profiles in the example above.
 
 The table and individual prices are optional. Leave a price unset if you don't
 know it; totals can be partial when applicable rates are missing. Set a rate
@@ -390,8 +433,8 @@ return 500. Errors never include source excerpts or submitted secrets; parser
 errors may include a line number.
 
 Saving validates the typed configuration and existing sessions, owner, web,
-research and companion rules, requires a provider eligible for the `fast` role
-and nonempty provider names/models/API keys, and checks provider/MCP URL and MCP
+research and companion rules, requires a resolvable `fast` role, valid model
+references, and nonempty provider names, model IDs and API keys, and checks provider/MCP URL and MCP
 header syntax locally.
 It does not contact providers, Telegram, search services or MCP servers, and it
 cannot verify credentials or reachability.

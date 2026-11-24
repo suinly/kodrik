@@ -44,7 +44,16 @@ impl AgentRunner {
     pub async fn available_models(&self) -> anyhow::Result<Vec<String>> {
         match self.agent.model_roles() {
             Some(roles) => Ok(roles),
-            None => self.agent.llm().list_models().await,
+            None => Ok(self
+                .agent
+                .llm()
+                .list_models()
+                .await?
+                .into_iter()
+                .filter(|model| {
+                    super::tools::model_selection::ModelTier::from_name(model).is_none()
+                })
+                .collect()),
         }
     }
 
@@ -57,19 +66,20 @@ impl AgentRunner {
 
     pub(crate) fn displayed_model(&self, session: &Session) -> String {
         match session.model_override() {
-            Some(model) if !matches!(model, "fast" | "smart" | "auto") => model.to_owned(),
+            Some(model)
+                if model != "auto"
+                    && super::tools::model_selection::ModelTier::from_name(model).is_none() =>
+            {
+                model.to_owned()
+            }
             _ => self
                 .effective_model_identity(session)
                 .unwrap_or_else(|_| self.model_identity()),
         }
     }
 
-    pub(super) fn available_model_roles(&self) -> Option<Vec<String>> {
+    pub(crate) fn available_model_roles(&self) -> Option<Vec<String>> {
         self.agent.model_roles()
-    }
-
-    pub(super) fn has_smart_model(&self) -> bool {
-        self.agent.has_smart()
     }
 
     pub(crate) fn model_identity(&self) -> String {

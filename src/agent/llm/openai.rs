@@ -11,8 +11,8 @@ use async_openai::{
     types::responses::{
         CreateResponseArgs, EasyInputContent, EasyInputMessage, FunctionCallOutput,
         FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, ImageDetail, InputContent,
-        InputFileContent, InputImageContent, InputItem, InputTextContent, Item, Role,
-        Tool as OpenAiTool,
+        InputFileContent, InputImageContent, InputItem, InputTextContent, Item, Reasoning,
+        ReasoningEffort, Role, Tool as OpenAiTool,
     },
 };
 use futures::StreamExt;
@@ -189,6 +189,7 @@ pub struct OpenAiLlm {
     model: String,
     rates: Option<crate::billing::Rates>,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     retries: u32,
     compaction: bool,
     access: Option<(crate::web::auth::AuthStore, u64)>,
@@ -268,6 +269,7 @@ impl OpenAiLlm {
             client,
             rates: None,
             max_output_tokens: None,
+            reasoning_effort: None,
             retries: 3,
             compaction: false,
             access: None,
@@ -306,6 +308,11 @@ impl OpenAiLlm {
 
     pub(crate) fn with_max_output_tokens(mut self, tokens: u32) -> Self {
         self.max_output_tokens = Some(tokens);
+        self
+    }
+
+    pub fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 
@@ -441,6 +448,10 @@ impl OpenAiLlm {
             .tools(api_tools)
             .build()?;
         request.max_output_tokens = self.max_output_tokens;
+        request.reasoning = self.reasoning_effort.clone().map(|effort| Reasoning {
+            effort: Some(effort),
+            ..Default::default()
+        });
 
         // Persist an unknown attempt first: cancellation can occur after the provider accepted it.
         let charge = super::charge::Charge::current()
@@ -574,6 +585,7 @@ impl LlmProvider for OpenAiLlm {
         let mut selected = self.clone();
         if selected.model != model {
             selected.rates = None;
+            selected.reasoning_effort = None;
         }
         selected.model = model.into();
         Ok(std::sync::Arc::new(selected))
@@ -683,6 +695,91 @@ mod tests {
         io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
         sync::oneshot,
     };
+
+    #[tokio::test]
+    async fn reasoning_effort_is_serialized_only_when_configured() {
+        use axum::{Router, http::header, routing::post};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let llm = OpenAiLlm::new(
+            "test",
+            Some("test"),
+            Some(format!("http://{}", listener.local_addr().unwrap())),
+        )
+        .without_retries();
+        let (capture, mut requests) = mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/responses",
+            post(move |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                let stream = body["stream"] == true;
+                capture.send(body).unwrap();
+                if stream {
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+                    )
+                } else {
+                    ([(header::CONTENT_TYPE, "application/json")], "{\"output\":[]}")
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let context = LlmContext {
+            instructions: "test".into(),
+            messages: (&[][..]).into(),
+        };
+        let (tx, _rx) = mpsc::channel(8);
+
+        // The default client must work for backends without reasoning support.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            llm.generate(&context, &[], None),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(requests.try_recv().unwrap().get("reasoning").is_none());
+
+        for (effort, expected) in [
+            (None, None),
+            (Some(ReasoningEffort::None), Some("none")),
+            (Some(ReasoningEffort::Minimal), Some("minimal")),
+            (Some(ReasoningEffort::Low), Some("low")),
+            (Some(ReasoningEffort::Medium), Some("medium")),
+            (Some(ReasoningEffort::High), Some("high")),
+            (Some(ReasoningEffort::Xhigh), Some("xhigh")),
+            (Some(ReasoningEffort::Max), Some("max")),
+        ] {
+            let configured = llm.clone().with_reasoning_effort(effort);
+            let expected = expected.map(|effort| json!({"effort": effort}));
+            for stream in [false, true] {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    configured.generate(&context, &[], stream.then_some(&tx)),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let body = requests.try_recv().unwrap();
+                assert_eq!(body["stream"] == true, stream);
+                assert_eq!(body.get("reasoning"), expected.as_ref(), "stream={stream}");
+            }
+        }
+        let configured = llm.with_reasoning_effort(Some(ReasoningEffort::High));
+        for (model, expected) in [("test", Some(json!({"effort":"high"}))), ("other", None)] {
+            configured
+                .with_model(model)
+                .unwrap()
+                .generate(&context, &[], None)
+                .await
+                .unwrap();
+            assert_eq!(
+                requests.try_recv().unwrap().get("reasoning"),
+                expected.as_ref()
+            );
+        }
+        server.abort();
+    }
 
     #[tokio::test]
     async fn model_selection_lists_primary_models_and_isolates_override() {

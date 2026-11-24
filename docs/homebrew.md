@@ -18,10 +18,13 @@ For terminal-only use, the minimum is:
 ```toml
 [gateway]
 
-[provider.fast]
+[provider.openai]
 type = "openai"
-model = "your-model"
 api_key = "your-key"
+
+[model.smart]
+provider = "openai"
+model = "your-model"
 ```
 
 Replace the model and key, then run `chmod 600 ~/.kodrik/config.toml`.

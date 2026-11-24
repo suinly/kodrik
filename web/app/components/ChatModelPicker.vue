@@ -2,7 +2,7 @@
 import {api,messageOf} from '../utils/api'
 
 type ModelCatalog = {models:string[];default_model:string|null}
-const roles = {fast:'Быстрая',smart:'Умная'} as const
+const roles = {fast:'Быстрая',smart:'Умная',deep:'Глубокая',vision:'Зрение'} as const
 type ModelRole = keyof typeof roles
 const catalogTtlMs = 5 * 60_000
 let catalog: {data:ModelCatalog;expiresAt:number}|undefined
@@ -35,7 +35,7 @@ const label=computed(()=>props.modelOverride ? modelName(props.modelOverride) : 
 const title=computed(()=>!props.modelOverride && currentModel.value ? t('Авто · {0}', modelName(currentModel.value)) : label.value)
 
 function modelName(model:string) {
-  return model==='fast' || model==='smart' ? t(roles[model]) : model.replace(/^openai:/,'')
+  return Object.hasOwn(roles,model) ? t(roles[model as ModelRole]) : model.replace(/^openai:/,'')
 }
 onMounted(()=>{if(!props.modelOverride && !currentModel.value) void load()})
 

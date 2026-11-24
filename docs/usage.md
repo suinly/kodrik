@@ -332,7 +332,7 @@ tool calls requiring confirmation return an explicit blocked tool result. The sa
 applies to children of noninteractive one-shot runs. Continue that work in a
 personal interactive session to review and approve a new invocation.
 
-The review model is configured under [providers](configuration.md#providers).
+The review model is configured under [providers and models](configuration.md#providers-and-models).
 Review is a risk assessment, not an OS sandbox: it can misclassify tool calls, and
 approval does not freeze filesystem contents or remote state.
 

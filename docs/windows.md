@@ -132,12 +132,15 @@ Make sure Notepad saves `config.toml`, not `config.toml.txt`.
 ```toml
 [gateway]
 
-[provider.fast]
+[provider.openai]
 type = "openai"
-model = "your-model"
 api_key = "your-key"
 # For a custom provider, uncomment and change:
 # api_base = "https://your-provider.example/v1"
+
+[model.smart]
+provider = "openai"
+model = "your-model"
 ```
 
 The empty `[gateway]` table is required even for terminal-only use. Keep this

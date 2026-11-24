@@ -43,7 +43,7 @@ use crate::{
         session::{Session, SessionId, SessionStore},
     },
     bootstrap::build_app,
-    config::{Config, ProviderConfig},
+    config::Config,
     gateway::IncomingMessage,
     i18n::Language,
 };
@@ -62,12 +62,12 @@ pub async fn run(config: &Config, slot: Option<NonZeroU64>) -> anyhow::Result<()
     );
     let context = build_app(config).await?;
     let instance = instance::Instance::claim(&context.agent_runner, slot).await?;
-    let ProviderConfig::OpenAi { model, .. } = &config.provider["primary"];
+    let model = context.agent_runner.model_identity();
     run_session(
         context.agent_runner,
         instance.conversation.clone(),
         instance.slot,
-        model.clone(),
+        model,
         language,
         &language_path,
     )
