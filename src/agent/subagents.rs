@@ -476,6 +476,16 @@ impl Subagents {
         Ok(children)
     }
 
+    pub(crate) async fn model_identity(&self, child: &Child) -> anyhow::Result<Option<String>> {
+        let model = self.store.session_model(&SessionId::new(&child.id)).await?;
+        Ok(self
+            .runner
+            .agent
+            .provider_for(model.as_deref())
+            .ok()
+            .map(|provider| provider.identity()))
+    }
+
     pub(crate) async fn cancellation_requested(&self, id: &str) -> anyhow::Result<bool> {
         if let Some(cancel) = self.active.lock().await.get(id) {
             return Ok(*cancel.borrow());

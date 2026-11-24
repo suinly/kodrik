@@ -35,10 +35,13 @@ const status=(agent:Subagent)=>t(stopping(agent) && agent.status==='running' ? '
       <ul class="divide-y divide-default">
         <li v-for="agent in agents" :key="agent.id" :data-testid="`subagent-${agent.id}`" class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 py-1">
           <UCollapsible class="min-w-0">
-            <UButton :aria-label="t('Подробности задачи «{0}»',title(agent))" :aria-describedby="`status-${agent.id}`"
+            <UButton :aria-label="t('Подробности задачи «{0}»',title(agent))" :aria-describedby="agent.model ? `status-${agent.id} model-${agent.id}` : `status-${agent.id}`"
               :icon="state(agent).icon" color="neutral" variant="ghost" class="w-full justify-start px-0 text-left"
               :ui="{label:'min-w-0 flex-1',leadingIcon:agent.status==='running' ? 'motion-safe:animate-spin text-primary' : state(agent).color}">
-              <span class="min-w-0 flex-1 truncate text-sm text-highlighted">{{ title(agent) }}</span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-sm text-highlighted">{{ title(agent) }}</span>
+                <span v-if="agent.model" :id="`model-${agent.id}`" class="block text-xs text-muted [overflow-wrap:anywhere]">{{ t('Модель: {0}',agent.model) }}</span>
+              </span>
               <span :id="`status-${agent.id}`" class="shrink-0 whitespace-nowrap text-xs" :class="state(agent).color">{{ status(agent) }}</span>
             </UButton>
             <template #content>

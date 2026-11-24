@@ -274,6 +274,7 @@ export const en = {
   'Здесь появятся события вебхуков.': 'Webhook events will appear here.',
   'Вебхук: {0}': 'Webhook: {0}',
   'Дочерние задачи': 'Child tasks',
+  'Модель: {0}': 'Model: {0}',
   'Дочерняя задача': 'Child task',
   'Дочерние задачи · в работе: {0}': 'Child tasks · running: {0}',
   'Дочерние задачи · требуют внимания: {0}': 'Child tasks · need attention: {0}',

@@ -3570,8 +3570,8 @@ test('child task panel shows live outcomes and handles cancellation without losi
   try {
     const page=await signedPage(browser),errors=[];page.on('pageerror',error=>errors.push(error.message));
     const agents=[
-      {id:'companion:subagent:active',task:'Проверить авторизацию',status:'running',result:null,error:null},
-      {id:'companion:subagent:done',task:'Проверить тесты\nСверить граничные случаи',status:'completed',result:'Найдены две проверки',error:null},
+      {id:'companion:subagent:active',task:'Проверить авторизацию',status:'running',model:'openai:gpt-test-fast',result:null,error:null},
+      {id:'companion:subagent:done',task:'Проверить тесты\nСверить граничные случаи',status:'completed',model:'openai:gpt-test-deep',result:'Найдены две проверки',error:null},
       {id:'companion:subagent:failed',task:'Проверить провайдера',status:'failed',result:null,error:'Provider rejected the request'},
       {id:'companion:subagent:interrupted',task:'Проверить миграцию',status:'interrupted',result:null,error:'Execution outcome unknown'},
     ];
@@ -3594,6 +3594,9 @@ test('child task panel shows live outcomes and handles cancellation without losi
     await expect(panel).toBeVisible();
     const active=panel.getByTestId('subagent-companion:subagent:active');
     await expect(active.getByText('В работе',{exact:true})).toBeVisible();
+    await expect(active.getByText('Модель: openai:gpt-test-fast',{exact:true})).toBeVisible();
+    await expect(panel.getByTestId('subagent-companion:subagent:done').getByText('Модель: openai:gpt-test-deep',{exact:true})).toBeVisible();
+    await expect(panel.getByTestId('subagent-companion:subagent:failed').getByText(/^Модель:/)).toHaveCount(0);
     await expect(panel.getByText('Готово',{exact:true})).toBeVisible();
     await expect(panel.getByText('Ошибка',{exact:true})).toBeVisible();
     await expect(panel.getByText('Прервано',{exact:true})).toBeVisible();

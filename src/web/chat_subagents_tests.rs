@@ -294,6 +294,8 @@ async fn child_tasks_stream_live_status_and_stop_only_within_their_parent() {
         .unwrap();
     assert_eq!(running["task"], "Проверить авторизацию");
     assert_eq!(done["task"], "Проверить тесты");
+    assert_eq!(running["model"], std::any::type_name::<FakeLlm>());
+    assert_eq!(done["model"], std::any::type_name::<FakeLlm>());
     assert_eq!(done["result"], "Проверка тестов завершена");
     let tools: Vec<_> = snapshot["messages"]
         .as_array()

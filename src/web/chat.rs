@@ -441,6 +441,7 @@ impl Chat {
             for child in manager.list(&view.session).await? {
                 let mut value = child.view();
                 value["task"] = json!(child.task);
+                value["model"] = json!(manager.model_identity(&child).await?);
                 value["cancel_requested"] = json!(manager.cancellation_requested(&child.id).await?);
                 children.push(value);
             }

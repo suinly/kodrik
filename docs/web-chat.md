@@ -27,6 +27,9 @@ model request, even within an active run, without interrupting a response or too
 already in progress. Provider errors leave the selection unchanged. Auxiliary
 models used for auditing and compaction are not changed.
 
+The **Child tasks** panel shows the model selected for each subagent, including
+completed tasks, without opening the child conversation.
+
 Install Node.js 22.22.3+ (22.x), 24.15+ (24.x), or 26+, and a current stable Rust toolchain, then build from the
 repository root in this order:
 
