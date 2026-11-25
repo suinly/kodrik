@@ -49,8 +49,9 @@ On the laptop, run:
 kodrik connect https://kodrik.example.com/
 ```
 
-In an interactive terminal on macOS or Linux, Kodrik tries to open the browser.
-You can also follow the printed link. Sign in to the account you want to use,
+Kodrik prints the link and code first. In an interactive terminal on macOS or
+Linux, copy the code, then press Enter to open the browser. You can also
+follow the printed link manually. Sign in to the account you want to use,
 enter the eight-character code shown in the terminal, and select **Approve
 connection**. Approve only requests you started yourself. The link contains a
 request ID, not the code or a credential. It expires after five minutes.
@@ -84,7 +85,7 @@ the remote configuration's directory, not the project directory.
 | Setting | Default / meaning |
 | --- | --- |
 | `server` | Required HTTP(S) base URL, with a trailing `/` |
-| `label` | `"Laptop"`; display label, not an identity or permission |
+| `label` | System hostname (falls back to `"Device"`); display label, not an identity or permission |
 | `credential_file` | `"remote/device.json"`, relative to the config file |
 | `allow_shell` | `false`; enable local shell explicitly |
 | `skill_roots` | `[]`; directories containing selected `<name>/SKILL.md` folders |

@@ -54,6 +54,12 @@ fn pairing_for_locale(locale: &str, quick: bool) {
     };
     let path = config_dir.join("remote.toml");
     let pending_path = path.clone();
+    #[cfg(unix)]
+    let hostname = {
+        let output = Command::new("hostname").output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
     let fixture = std::thread::spawn(move || {
         for (path, body) in [
             (
@@ -90,6 +96,11 @@ fn pairing_for_locale(locale: &str, quick: bool) {
             if path.ends_with("poll") {
                 assert_eq!(input["polling_secret"], "private-poll-secret");
                 assert_eq!(input["request_id"], request.to_string());
+            } else if !quick {
+                assert_eq!(input["label"], "Test laptop");
+            } else {
+                #[cfg(unix)]
+                assert_eq!(input["label"], hostname);
             }
             if quick {
                 assert!(

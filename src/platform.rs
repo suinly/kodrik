@@ -1,5 +1,30 @@
-//! Handle-based filesystem protections shared by Unix and native Windows.
+//! Native platform helpers shared by Unix and Windows.
 use std::{fs::File, io, path::Path};
+
+#[cfg(unix)]
+pub(crate) fn hostname() -> Option<String> {
+    let mut name = [0u8; 256];
+    // The buffer is writable for the full length passed to gethostname.
+    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
+        return None;
+    }
+    let end = name.iter().position(|&byte| byte == 0)?;
+    String::from_utf8(name[..end].to_vec()).ok()
+}
+
+#[cfg(windows)]
+pub(crate) fn hostname() -> Option<String> {
+    use windows_sys::Win32::System::SystemInformation::{
+        ComputerNameDnsHostname, GetComputerNameExW,
+    };
+    let mut name = [0u16; 256];
+    let mut len = name.len() as u32;
+    // The buffer is writable for the number of UTF-16 units reported in len.
+    if unsafe { GetComputerNameExW(ComputerNameDnsHostname, name.as_mut_ptr(), &mut len) } == 0 {
+        return None;
+    }
+    String::from_utf16(&name[..len as usize]).ok()
+}
 
 pub(crate) struct OpenOptions {
     inner: std::fs::OpenOptions,

@@ -7,6 +7,13 @@ use std::{
 };
 
 impl RemoteConfig {
+    fn valid_label(label: &str) -> bool {
+        !label.trim().is_empty()
+            && label.trim() == label
+            && label.chars().count() <= 128
+            && !label.chars().any(char::is_control)
+    }
+
     pub(crate) fn pin_credential(&self) -> anyhow::Result<Self> {
         let mut config = self.clone();
         config.credential = Some(self.load_credential()?);
@@ -307,14 +314,12 @@ impl RemoteConfig {
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid server URL"))?;
         super::client::endpoint(&server)?;
-        let label = settings.label.unwrap_or_else(|| "Device".into());
-        ensure!(
-            !label.trim().is_empty()
-                && label.trim() == label
-                && label.chars().count() <= 128
-                && !label.chars().any(char::is_control),
-            "Invalid device label"
-        );
+        let label = settings.label.unwrap_or_else(|| {
+            crate::platform::hostname()
+                .filter(|label| Self::valid_label(label))
+                .unwrap_or_else(|| "Device".into())
+        });
+        ensure!(Self::valid_label(&label), "Invalid device label");
         ensure!(
             settings.mcp.len() <= 64 && settings.skill_roots.len() <= 64,
             "Too many local providers"

@@ -3,7 +3,7 @@ use crate::i18n::Language;
 use crate::remote::{client::Credential, config::RemoteConfig};
 use anyhow::{Context, ensure};
 use std::{
-    io::{IsTerminal, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -193,10 +193,20 @@ async fn pair(config: &RemoteConfig, open_link: bool) -> anyhow::Result<Credenti
             )
         }
     );
-    std::io::stderr().flush()?;
-    if open_link && std::io::stderr().is_terminal() {
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
+    io::stderr().flush()?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if open_link && setup::interactive() {
+        eprint!(
+            "{}",
+            language.pick(
+                "Copy the code, then press Enter to open the browser: ",
+                "Скопируйте код, затем нажмите Enter, чтобы открыть браузер: ",
+            )
+        );
+        io::stderr().flush()?;
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        if line.ends_with('\n') && chrono::Utc::now().timestamp() < expires {
             #[cfg(target_os = "macos")]
             let opener = "open";
             #[cfg(target_os = "linux")]

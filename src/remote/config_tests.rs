@@ -266,14 +266,6 @@ fn manifest_authorized_propagates_unsafe_grant_errors() {
 }
 
 #[test]
-fn remote_config_default_label_is_device() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("remote.toml");
-    std::fs::write(&path, "server = 'https://example.com/'").unwrap();
-    assert_eq!(RemoteConfig::load(&path).unwrap().label, "Device");
-}
-
-#[test]
 #[cfg(unix)]
 fn directory_grant_is_exact_and_scoped_to_project_server_and_credential() {
     let (dir, config, _) = grant_fixture();
