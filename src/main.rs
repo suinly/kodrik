@@ -1,13 +1,16 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use kodrik::{commands, config::Config};
 
 #[derive(Parser)]
-#[command(version, about = "Launch Kodrik TUI by default", long_about = None, args_conflicts_with_subcommands = true)]
+#[command(version, about = "Launch Kodrik TUI by default", long_about = None)]
 struct Cli {
+    /// Kodrik configuration and state directory (default ~/.kodrik)
+    #[arg(long, global = true, value_name = "PATH")]
+    data_dir: Option<std::path::PathBuf>,
     /// Connect to the server agent instead of starting a local agent
     #[arg(long, conflicts_with = "tui_slot")]
     remote: bool,
-    /// Remote client configuration (default ~/.kodrik/remote.toml)
+    /// Remote client configuration (default remote.toml in the data directory)
     #[arg(long, requires = "remote")]
     remote_config: Option<std::path::PathBuf>,
     /// Resume a server conversation in remote TUI
@@ -20,11 +23,23 @@ struct Cli {
     command: Option<Commands>,
 }
 
+impl Cli {
+    fn validate(self) -> Result<Self, clap::Error> {
+        if self.command.is_some() && (self.remote || self.tui_slot.is_some()) {
+            return Err(Self::command().error(
+                ErrorKind::ArgumentConflict,
+                "--remote and --tui-slot are only supported without a subcommand",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Pair this device with the server through your web profile
     Connect {
-        /// Server base URL for first-time setup (saves ~/.kodrik/remote.toml)
+        /// Server base URL for first-time setup (saves remote.toml in the data directory)
         #[arg(value_name = "SERVER_URL")]
         server: Option<String>,
         #[arg(long, conflicts_with = "server")]
@@ -61,8 +76,12 @@ enum WebCommands {
 }
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse().validate().unwrap_or_else(|error| error.exit());
+    if let Some(path) = &cli.data_dir {
+        kodrik::config::set_data_dir(path)?;
+    }
     let runtime = tokio::runtime::Runtime::new()?;
-    let restart = runtime.block_on(run());
+    let restart = runtime.block_on(run(cli));
     // Drop all async tasks and their sockets before replacing the process image.
     drop(runtime);
     if restart? {
@@ -84,8 +103,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run() -> anyhow::Result<bool> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> anyhow::Result<bool> {
     if let Some(Commands::RemoteSupervisorWorker) = &cli.command {
         return commands::remote_supervisor_worker().map(|_| false);
     }
@@ -170,7 +188,7 @@ mod tests {
                 "client.toml",
             ],
         ] {
-            assert!(Cli::try_parse_from(args).is_err());
+            assert!(Cli::try_parse_from(args).and_then(Cli::validate).is_err());
         }
     }
 
@@ -199,7 +217,34 @@ mod tests {
         for slot in ["0", "-1", "not-a-slot"] {
             assert!(Cli::try_parse_from(["kodrik", "--tui-slot", slot]).is_err());
         }
-        assert!(Cli::try_parse_from(["kodrik", "--tui-slot", "2", "gateway"]).is_err());
+        assert!(
+            Cli::try_parse_from(["kodrik", "--tui-slot", "2", "gateway"])
+                .and_then(Cli::validate)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn data_dir_is_global_for_all_public_commands() {
+        for command in [
+            &[][..],
+            &["--remote"],
+            &["ask", "hello"],
+            &["gateway"],
+            &["connect"],
+            &["request-restart", "42"],
+            &["invites", "list"],
+            &["runs", "--store", "local", "list"],
+            &["web", "set-password"],
+        ] {
+            let flag = ["--data-dir", "custom data"];
+            for args in [flag.iter().chain(command), command.iter().chain(&flag)] {
+                let cli = Cli::try_parse_from(std::iter::once(&"kodrik").chain(args))
+                    .and_then(Cli::validate)
+                    .unwrap();
+                assert_eq!(cli.data_dir.unwrap(), std::path::Path::new("custom data"));
+            }
+        }
     }
 
     #[test]

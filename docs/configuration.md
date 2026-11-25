@@ -1,7 +1,21 @@
 # Configuration reference
 
-Standalone Kodrik and the gateway read `~/.kodrik/config.toml`. Restart the
-process after changing it.
+Standalone Kodrik and the gateway read `config.toml` from the data directory,
+which defaults to `~/.kodrik`. Pass `--data-dir /path/to/kodrik` to use another
+directory for configuration and state. Restart the process after changing the
+configuration. The flag does not move existing files.
+
+`--data-dir` is global and can go before or after a command, including nested
+commands. Use the same directory for the gateway and its administrative
+commands, for example:
+
+```sh
+kodrik --data-dir /path/to/kodrik gateway
+kodrik web set-password --data-dir /path/to/kodrik
+kodrik invites list --data-dir /path/to/kodrik
+kodrik runs --store web list --data-dir /path/to/kodrik
+kodrik request-restart 12345 --data-dir /path/to/kodrik
+```
 Settings are literal TOML values; environment-variable interpolation is not
 implemented. Keep API keys and bot tokens out of the repository.
 
@@ -24,9 +38,10 @@ gateway table allows terminal use without Telegram.
 
 ## Remote client configuration
 
-`kodrik connect` and `kodrik --remote` instead read `~/.kodrik/remote.toml` (or
-`--remote-config /path/to/remote.toml`), without loading a local provider or
-gateway. Its top-level fields are `server`, `credential_file`, `label`,
+`kodrik connect` and `kodrik --remote` instead read `remote.toml` from the data
+directory (or the file given by `--remote-config /path/to/remote.toml`), without
+loading a local provider or gateway. Its top-level fields are `server`,
+`credential_file`, `label`,
 `allow_shell`, `skill_roots` and `optional_mcp`, plus selected `[mcp.<name>]`
 HTTP providers. Unknown fields are rejected; do not copy `[provider]`, `[model]` or
 `[gateway]` into it. Paths are literal, and relative credential/skill paths

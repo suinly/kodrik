@@ -17,7 +17,7 @@ impl Drop for Gateway {
 #[tokio::test]
 async fn web_only_gateway_exec_restarts_with_same_pid_new_instance_and_drained_response() {
     let home = tempfile::tempdir().unwrap();
-    let data = home.path().join(".kodrik");
+    let data = home.path().join("custom data");
     std::fs::create_dir_all(data.join("web")).unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = port.local_addr().unwrap();
@@ -61,7 +61,9 @@ base_url = "{base}"
     drop(port);
     let mut gateway = Gateway(
         Command::new(env!("CARGO_BIN_EXE_kodrik"))
+            .args(["--data-dir", "custom data"])
             .arg("gateway")
+            .current_dir(home.path())
             .env("HOME", home.path())
             .env("RUST_LOG", "info")
             .stdin(Stdio::null())
@@ -137,6 +139,7 @@ base_url = "{base}"
                     if current["instance_id"] != initial["instance_id"] {
                         assert_eq!(current["pid"], pid);
                         assert_eq!(current["restart_available"], true);
+                        assert!(!home.path().join(".kodrik").exists());
                         break;
                     }
                 }

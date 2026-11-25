@@ -163,6 +163,9 @@ impl Environment {
                 command.args(["--agent-session-id", session.as_str()]);
             }
             command.args(["--", "kodrik"]);
+            if let Some(path) = crate::config::data_dir_override() {
+                command.arg("--data-dir").arg(path);
+            }
             match resume {
                 Resume::Local(slot) => {
                     command.arg("--tui-slot").arg(slot.to_string());

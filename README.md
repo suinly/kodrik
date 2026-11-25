@@ -126,6 +126,11 @@ kodrik
 kodrik ask "What should we explore today?"
 ```
 
+To use a different directory for configuration and state, put `config.toml`
+there and run `kodrik --data-dir /path/to/kodrik` (or
+`kodrik --data-dir /path/to/kodrik gateway` for the gateway). Without the flag,
+Kodrik still uses `~/.kodrik`.
+
 Use `/new` for a fresh conversation and `/sessions` to reopen a saved one.
 Multiple terminal UI instances keep independent session selections.
 Launch from the directory where you want shell and file tools to work.

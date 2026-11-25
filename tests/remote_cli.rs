@@ -16,6 +16,31 @@ fn pairing_cli_accepts_server_url_and_saves_default_configuration() {
     pairing_for_locale("en_US.UTF-8", true);
 }
 
+#[test]
+fn custom_data_dir_supplies_the_default_remote_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("custom data");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(
+        path.join("remote.toml"),
+        "server = 'https://example.com/'\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kodrik"))
+        .args(["--remote", "--data-dir"])
+        .arg(&path)
+        .env("HOME", dir.path())
+        .env("LC_ALL", "en_US.UTF-8")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("interactive terminal"),
+        "{output:?}"
+    );
+}
+
 fn pairing_for_locale(locale: &str, quick: bool) {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

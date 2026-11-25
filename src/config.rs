@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use anyhow::Context;
 use async_openai::types::responses::ReasoningEffort;
@@ -6,7 +11,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::billing::Rates;
 
+static DATA_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the process-wide data directory at CLI startup.
+pub fn set_data_dir(path: &Path) -> anyhow::Result<()> {
+    let path = std::path::absolute(path).context("Cannot resolve --data-dir")?;
+    DATA_DIR_OVERRIDE
+        .set(path)
+        .map_err(|_| anyhow::anyhow!("Kodrik data directory already set"))
+}
+
+pub(crate) fn data_dir_override() -> Option<&'static Path> {
+    DATA_DIR_OVERRIDE.get().map(PathBuf::as_path)
+}
+
 pub(crate) fn data_dir() -> anyhow::Result<PathBuf> {
+    if let Some(path) = data_dir_override() {
+        return Ok(path.to_path_buf());
+    }
     Ok(std::env::home_dir()
         .context("Cannot determine the home directory for ~/.kodrik")?
         .join(".kodrik"))
