@@ -401,3 +401,35 @@ fn directory_grant_rejects_symlinked_marker_and_public_storage() {
     assert!(config.directory_authorized(root, root).is_err());
     assert!(config.authorize_directory(root, root).is_err());
 }
+
+#[test]
+fn replacing_credential_requires_fresh_manifest_and_directory_consent() {
+    use super::client::Credential;
+    let (dir, config, manifest) = grant_fixture();
+    let root = dir.path().canonicalize().unwrap();
+    let requested = root.join("another-project");
+    std::fs::create_dir(&requested).unwrap();
+    let pair = || {
+        Credential {
+            device_id: uuid::Uuid::new_v4(),
+            token: "fixture-token".into(),
+        }
+        .save(&config.credential_file)
+        .unwrap()
+    };
+    pair();
+    config.authorize_manifest(&manifest, || Ok(true)).unwrap();
+    config.authorize_directory(&root, &requested).unwrap();
+    assert!(config.manifest_authorized(&manifest).unwrap());
+    assert!(config.directory_authorized(&root, &requested).unwrap());
+    let running = config.pin_credential().unwrap();
+    let old = running.load_credential().unwrap().device_id;
+    std::fs::remove_file(&config.credential_file).unwrap();
+    pair();
+    assert_ne!(config.load_credential().unwrap().device_id, old);
+    assert_eq!(running.load_credential().unwrap().device_id, old);
+    assert!(running.manifest_authorized(&manifest).unwrap());
+    assert!(running.directory_authorized(&root, &requested).unwrap());
+    assert!(!config.manifest_authorized(&manifest).unwrap());
+    assert!(!config.directory_authorized(&root, &requested).unwrap());
+}

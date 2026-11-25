@@ -76,16 +76,18 @@ test('owner explicitly compares request UUID and code, then approves and revokes
   } finally {await browser.close()}
 });
 
-test('invited profile never mounts device controls or requests owner device APIs',async()=>{
+test('invited profile shows device controls without owner password controls',async()=>{
   const {page,browser,mount}=await componentPage('ProfilePage');
   try {
     const calls=[];
     await page.route('**/api/profile',r=>r.fulfill({json:{name:'Guest',owner:false,telegram_id:1,password_set:false}}));
-    await page.route('**/api/devices**',r=>{calls.push(r.request().url());return r.fulfill({status:403})});
+    await page.route('**/api/devices**',r=>{calls.push(r.request().url());return r.fulfill({json:[]})});
     await mount();
     await expect(page.getByRole('textbox',{name:'Name',exact:true})).toHaveValue('Guest');
-    assert.equal(await page.getByRole('region',{name:'Device connections',exact:true}).count(),0);
-    assert.deepEqual(calls,[]);
+    await expect(page.getByRole('region',{name:'Device connections',exact:true})).toBeVisible();
+    await expect(page.getByText('No registered devices.',{exact:true})).toBeVisible();
+    assert.deepEqual(calls,['https://kodrik.test/nested/api/devices']);
+    assert.equal(await page.locator('input[name="new_password"]').count(),0);
   } finally {await browser.close()}
 });
 

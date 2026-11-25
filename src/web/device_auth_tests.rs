@@ -3,7 +3,7 @@ use super::*;
 const NOW: i64 = 1_800_000_000;
 
 #[test]
-fn only_owner_can_approve_and_tokens_are_scoped_revocable_and_hashed() {
+fn only_admitted_accounts_can_approve_and_tokens_are_scoped_revocable_and_hashed() {
     let dir = tempfile::tempdir().unwrap();
     let auth = AuthStore::new(dir.path());
     auth.configure_owner(Some(42)).unwrap();
@@ -15,7 +15,7 @@ fn only_owner_can_approve_and_tokens_are_scoped_revocable_and_hashed() {
         auth.approve_device_pairing(
             request.request_id,
             &request.code,
-            &Identity::Telegram(7),
+            &Identity::Telegram(8),
             NOW
         )
         .is_err()
@@ -43,7 +43,10 @@ fn only_owner_can_approve_and_tokens_are_scoped_revocable_and_hashed() {
     };
     assert_eq!(
         auth.device_identity(&token, NOW).unwrap(),
-        Some(DeviceIdentity { device_id })
+        Some(DeviceIdentity {
+            device_id,
+            account: None
+        })
     );
     assert!(
         auth.identity(&token, NOW).unwrap().is_none(),
@@ -63,7 +66,7 @@ fn only_owner_can_approve_and_tokens_are_scoped_revocable_and_hashed() {
             .unwrap(),
         PairingPoll::Expired
     ));
-    auth.revoke_device(device_id).unwrap();
+    auth.revoke_device(device_id, &Identity::Owner).unwrap();
     assert!(
         AuthStore::new(dir.path())
             .device_identity(&token, NOW + 1)
@@ -180,4 +183,38 @@ fn device_limit_and_owner_rotation_revoke_old_authority() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn revoking_invitation_removes_devices_and_approved_pairings_before_reinvite() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = AuthStore::new(dir.path());
+    let user = Identity::Telegram(7);
+    auth.grant_test_user(7).unwrap();
+    let pair = || {
+        let request = auth.start_device_pairing("Laptop", NOW).unwrap();
+        auth.approve_device_pairing(request.request_id, &request.code, &user, NOW)
+            .unwrap();
+        request
+    };
+    let first = pair();
+    let PairingPoll::Authorized { token, .. } = auth
+        .poll_device_pairing(first.request_id, &first.polling_secret, NOW)
+        .unwrap()
+    else {
+        panic!("not authorized")
+    };
+    let pending = pair();
+    let invitations = auth.list_invites().unwrap();
+    let invite = invitations["users"][0]["invite_id"].as_str().unwrap();
+    assert!(auth.revoke_invite(invite).unwrap());
+    assert!(auth.list_devices(&user, NOW).is_err());
+    auth.grant_test_user(7).unwrap();
+    assert!(auth.device_identity(&token, NOW).unwrap().is_none());
+    assert!(matches!(
+        auth.poll_device_pairing(pending.request_id, &pending.polling_secret, NOW)
+            .unwrap(),
+        PairingPoll::Expired
+    ));
+    assert!(auth.list_devices(&user, NOW).unwrap().is_empty());
 }

@@ -22,29 +22,33 @@ use futures::{SinkExt, StreamExt};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 #[derive(Clone)]
-struct RemoteState {
+struct RemoteState<R> {
     settings: Settings,
     auth: AuthStore,
-    service: Option<Arc<EnvironmentService>>,
+    resolve: R,
 }
-pub(super) fn routes(
-    settings: Settings,
-    auth: AuthStore,
-    service: Option<Arc<EnvironmentService>>,
-) -> Router {
+pub(super) fn routes<R, F>(settings: Settings, auth: AuthStore, resolve: R) -> Router
+where
+    R: Fn(Option<u64>) -> F + Send + Sync + Clone + 'static,
+    F: Future<Output = Option<Arc<EnvironmentService>>> + Send + 'static,
+{
     Router::new()
-        .route("/api/remote/environment", get(upgrade))
+        .route("/api/remote/environment", get(upgrade::<R, F>))
         .with_state(RemoteState {
             settings,
             auth,
-            service,
+            resolve,
         })
 }
-async fn upgrade(
-    State(state): State<RemoteState>,
+async fn upgrade<R, F>(
+    State(state): State<RemoteState<R>>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
-) -> Response {
+) -> Response
+where
+    R: Fn(Option<u64>) -> F + Send + Sync + Clone + 'static,
+    F: Future<Output = Option<Arc<EnvironmentService>>> + Send + 'static,
+{
     if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -69,7 +73,7 @@ async fn upgrade(
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(service) = state.service else {
+    let Some(service) = (state.resolve)(device.account).await else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     upgrade
@@ -156,6 +160,7 @@ async fn serve(
                         ClientFrame::Close{environment}=>{ensure!(environment==key,"Stale close");break;},
                         ClientFrame::Hello{..}=>anyhow::bail!("Duplicate hello"),
                         ClientFrame::ResultChunk{ref run_id,ref call_id,..}=>{
+                            service.authorize_receipt(device.device_id, &session_id, &key).await?;
                             let id=(run_id.clone(),call_id.clone());
                             ensure!(!assembled.contains_key(&id),"Chunks already completed");
                             if !assemblies.contains_key(&id) {
@@ -169,6 +174,7 @@ async fn serve(
                             }
                         },
                         ClientFrame::Receipt{mut receipt}=>{
+                            service.authorize_receipt(device.device_id, &session_id, &key).await?;
                             let id=(receipt.invocation.run_id.clone(),receipt.invocation.call_id.clone());
                             ensure!(!assemblies.contains_key(&id),"Incomplete result chunks");
                             if let Some(output)=assembled.remove(&id) {ensure!(receipt.result.is_none() && receipt.state==OperationState::Completed,"Conflicting chunked result");receipt.result=Some(output);}

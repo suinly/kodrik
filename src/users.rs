@@ -217,6 +217,15 @@ impl UserSpaces {
             Some((crate::web::auth::AuthStore::new(&self.root), user_id)),
         )
         .await?;
+        if self.config.web.enabled {
+            app.agent_runner
+                .sqlite_store()
+                .ok_or_else(|| anyhow::anyhow!("Environments require durable personal storage"))?
+                .remote_recover()
+                .await?;
+            app.agent_runner
+                .enable_environments(crate::web::auth::AuthStore::new(&self.root), Some(user_id))?;
+        }
         let mut shutdown = self.owner_app.agent_runner.shutdown_receiver();
         let runner = app.agent_runner.clone();
         tokio::spawn(async move {

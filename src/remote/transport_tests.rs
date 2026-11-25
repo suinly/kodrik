@@ -148,6 +148,7 @@ async fn client_runs_local_effect_once_and_closes_environment_when_socket_drops(
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
             .unwrap(),
@@ -297,6 +298,7 @@ async fn aborted_client_future_closes_environment_while_caller_retains_it() {
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
             .unwrap(),
@@ -372,6 +374,7 @@ async fn client_missing_heartbeat_ack_revokes_local_environment_after_fifteen_se
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
             .unwrap(),
@@ -465,6 +468,7 @@ async fn client_rejects_untrusted_tls_certificate_without_plaintext_fallback() {
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("https://{}/", listener.local_addr().unwrap())
             .parse()
             .unwrap(),
@@ -517,6 +521,7 @@ async fn slow_reader_exhausts_bounded_writer_and_closes_local_authority() {
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("http://{}/", listener.local_addr().unwrap())
             .parse()
             .unwrap(),

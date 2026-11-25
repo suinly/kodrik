@@ -197,7 +197,7 @@ impl Chat {
         Ok(())
     }
 
-    async fn for_user(&self, id: u64) -> anyhow::Result<Chat> {
+    pub(super) async fn for_user(&self, id: u64) -> anyhow::Result<Chat> {
         let users = self
             .users
             .as_ref()
@@ -543,6 +543,19 @@ struct WebState {
 }
 
 impl WebState {
+    async fn scope_account(&mut self, account: Option<u64>) -> Result<(), Response> {
+        if let Some(user) = account {
+            self.chat = Some(
+                self.chat()
+                    .map_err(IntoResponse::into_response)?
+                    .for_user(user)
+                    .await
+                    .map_err(internal)?,
+            );
+        }
+        Ok(())
+    }
+
     fn chat(&self) -> Result<&Chat, StatusCode> {
         self.chat.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)
     }
@@ -723,14 +736,10 @@ async fn authorize(
     {
         return error(StatusCode::FORBIDDEN, "Invalid request origin");
     }
-    if let Identity::Telegram(user) = identity {
-        let Some(chat) = state.chat.as_ref() else {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        };
-        state.chat = match chat.for_user(user).await {
-            Ok(chat) => Some(chat),
-            Err(error) => return internal(error),
-        };
+    if let Identity::Telegram(user) = identity
+        && let Err(response) = state.scope_account(Some(user)).await
+    {
+        return response;
     }
     request.extensions_mut().insert(state);
     next.run(request).await

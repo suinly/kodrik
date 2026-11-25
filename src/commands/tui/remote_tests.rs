@@ -814,6 +814,7 @@ async fn terminal_remote_fixture() {
     });
     std::env::set_current_dir(&dir).unwrap();
     let config = RemoteConfig {
+        credential: None,
         server: format!("http://{address}/").parse().unwrap(),
         credential_file: dir.join("remote/device.json"),
         label: "fixture".into(),

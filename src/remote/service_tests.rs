@@ -27,9 +27,7 @@ fn manifest() -> EnvironmentManifest {
     }
 }
 
-async fn fixture(
-    owner: bool,
-) -> (
+async fn fixture() -> (
     tempfile::TempDir,
     Arc<EnvironmentService>,
     SqliteSessionStore,
@@ -52,8 +50,18 @@ async fn fixture(
     else {
         panic!()
     };
-    let service = Arc::new(EnvironmentService::new(store.clone(), auth.clone(), owner));
-    (dir, service, store, auth, DeviceIdentity { device_id }, id)
+    let service = Arc::new(EnvironmentService::new(store.clone(), auth.clone(), None));
+    (
+        dir,
+        service,
+        store,
+        auth,
+        DeviceIdentity {
+            device_id,
+            account: None,
+        },
+        id,
+    )
 }
 
 fn invocation(key: EnvironmentKey, id: SessionId) -> Invocation {
@@ -70,7 +78,7 @@ fn invocation(key: EnvironmentKey, id: SessionId) -> Invocation {
 
 #[tokio::test]
 async fn registered_draft_connects_without_saving_history_or_allowing_invocations() {
-    let (_dir, service, store, auth, device, _) = fixture(true).await;
+    let (_dir, service, store, auth, device, _) = fixture().await;
     let draft = SessionId::new(Uuid::new_v4().to_string());
     let selected = draft.as_str().to_owned();
     store
@@ -98,7 +106,7 @@ async fn registered_draft_connects_without_saving_history_or_allowing_invocation
             .is_err()
     );
     assert!(
-        EnvironmentService::new(store.clone(), auth, true)
+        EnvironmentService::new(store.clone(), auth, None)
             .status(&draft)
             .await
             .is_none()
@@ -128,7 +136,7 @@ async fn registered_draft_connects_without_saving_history_or_allowing_invocation
 
 #[tokio::test]
 async fn draft_binding_rejects_unknown_nonpersonal_and_indirect_selections() {
-    let (_dir, service, store, _, device, _) = fixture(true).await;
+    let (_dir, service, store, _, device, _) = fixture().await;
     for id in [
         Uuid::new_v4().to_string(),
         "companion:wakeup".into(),
@@ -181,7 +189,7 @@ async fn draft_binding_rejects_unknown_nonpersonal_and_indirect_selections() {
 
 #[tokio::test(start_paused = true)]
 async fn lease_expires_at_fifteen_seconds_and_heartbeat_renews_only_live_generation() {
-    let (_dir, service, _store, _auth, device, id) = fixture(true).await;
+    let (_dir, service, _store, _auth, device, id) = fixture().await;
     let mut revisions = service.revisions();
     let key = service
         .attach(device.clone(), id.clone(), manifest())
@@ -221,7 +229,7 @@ async fn lease_expires_at_fifteen_seconds_and_heartbeat_renews_only_live_generat
 
 #[tokio::test]
 async fn bindings_are_exact_personal_owner_sessions_and_not_recreated_on_restart() {
-    let (_dir, service, store, auth, device, id) = fixture(true).await;
+    let (_dir, service, store, auth, device, id) = fixture().await;
     let key = service
         .attach(device.clone(), id.clone(), manifest())
         .await
@@ -258,14 +266,14 @@ async fn bindings_are_exact_personal_owner_sessions_and_not_recreated_on_restart
                 .is_err()
         );
     }
-    let ownerless = EnvironmentService::new(store.clone(), auth.clone(), false);
+    let ownerless = EnvironmentService::new(store.clone(), auth.clone(), Some(7));
     assert!(
         ownerless
             .attach(device.clone(), other.clone(), manifest())
             .await
             .is_err()
     );
-    let restart = EnvironmentService::new(store, auth, true);
+    let restart = EnvironmentService::new(store, auth, None);
     assert!(restart.status(&id).await.is_none());
     let mut stale = key.clone();
     stale.generation = Uuid::new_v4();
@@ -281,7 +289,7 @@ async fn bindings_are_exact_personal_owner_sessions_and_not_recreated_on_restart
 
 #[tokio::test]
 async fn credential_revocation_between_approval_and_dispatch_fails_closed_for_all_bindings() {
-    let (_dir, service, store, auth, device, id) = fixture(true).await;
+    let (_dir, service, store, auth, device, id) = fixture().await;
     let key = service
         .attach(device.clone(), id.clone(), manifest())
         .await
@@ -294,7 +302,8 @@ async fn credential_revocation_between_approval_and_dispatch_fails_closed_for_al
         .attach(device.clone(), other.clone(), manifest())
         .await
         .unwrap();
-    auth.revoke_device(device.device_id).unwrap();
+    auth.revoke_device(device.device_id, &Identity::Owner)
+        .unwrap();
     assert!(service.authorize(&call).await.is_err());
     assert_eq!(service.status(&other).await.unwrap().state, "disconnected");
     assert!(service.attach(device, id, manifest()).await.is_err());
@@ -302,7 +311,7 @@ async fn credential_revocation_between_approval_and_dispatch_fails_closed_for_al
 
 #[tokio::test]
 async fn registry_capacity_is_bounded_and_device_revoke_releases_slots() {
-    let (_dir, service, store, _auth, device, id) = fixture(true).await;
+    let (_dir, service, store, _auth, device, id) = fixture().await;
     service
         .attach(device.clone(), id, manifest())
         .await
@@ -342,14 +351,14 @@ async fn owner_web_runner_shares_service_while_another_user_runner_has_no_author
             panic!("no model calls expected")
         }
     }
-    let (_dir, _service, store, auth, device, id) = fixture(true).await;
+    let (_dir, _service, store, auth, device, id) = fixture().await;
     let agent = Arc::new(Agent::new(
         Arc::new(NoModel),
         ToolRegistry::default(),
         ContextBuilder::new("test"),
     ));
     let owner = AgentRunner::new(agent.clone(), Arc::new(store.clone()));
-    owner.enable_environments(auth).unwrap();
+    owner.enable_environments(auth, None).unwrap();
     let web = owner.for_web(Arc::new(store.clone()));
     assert!(
         owner.environments().is_some(),
@@ -402,7 +411,7 @@ async fn owner_web_runner_shares_service_while_another_user_runner_has_no_author
 
 #[tokio::test]
 async fn disconnected_status_preserves_origin_reason_but_never_execution_authority() {
-    let (_dir, service, _store, _auth, device, id) = fixture(true).await;
+    let (_dir, service, _store, _auth, device, id) = fixture().await;
     let key = service
         .attach(device.clone(), id.clone(), manifest())
         .await
@@ -438,7 +447,7 @@ async fn disconnected_status_preserves_origin_reason_but_never_execution_authori
 
 #[tokio::test]
 async fn retired_environment_statuses_are_bounded_and_scoped_to_their_sessions() {
-    let (_dir, service, store, _auth, device, first) = fixture(true).await;
+    let (_dir, service, store, _auth, device, first) = fixture().await;
     for index in 0..65 {
         let id = if index == 0 {
             first.clone()
@@ -463,7 +472,7 @@ async fn retired_environment_statuses_are_bounded_and_scoped_to_their_sessions()
 
 #[tokio::test]
 async fn handoff_rejects_changed_permissions_and_times_out_without_attachment() {
-    let (_dir, service, store, _, device, source) = fixture(true).await;
+    let (_dir, service, store, _, device, source) = fixture().await;
     let target = SessionId::new("handoff-target");
     store.save(&Session::new(target.clone())).await.unwrap();
     let key = service

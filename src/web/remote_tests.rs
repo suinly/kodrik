@@ -14,6 +14,12 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+fn owner_service(
+    service: Arc<EnvironmentService>,
+) -> impl Fn(Option<u64>) -> std::future::Ready<Option<Arc<EnvironmentService>>> + Clone {
+    move |account| std::future::ready(account.is_none().then(|| service.clone()))
+}
+
 #[tokio::test]
 async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -33,7 +39,7 @@ async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
     else {
         panic!()
     };
-    let service = Arc::new(EnvironmentService::new(store, auth.clone(), true));
+    let service = Arc::new(EnvironmentService::new(store, auth.clone(), None));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let settings = Settings {
@@ -43,7 +49,7 @@ async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
     };
     let app = axum::Router::new().nest(
         "/kodrik",
-        super::remote::routes(settings, auth.clone(), Some(service.clone())),
+        super::remote::routes(settings, auth.clone(), owner_service(service.clone())),
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let url = format!("ws://{address}/kodrik/api/remote/environment");
@@ -192,7 +198,7 @@ async fn authenticated_prefixed_socket_binds_and_revocation_closes_it() {
         service.invoke(invocation).await.unwrap().state,
         OperationState::Completed
     );
-    auth.revoke_device(device_id).unwrap();
+    auth.revoke_device(device_id, &Identity::Owner).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Some(Ok(message)) = socket.next().await {
             if message.is_close() {
@@ -227,22 +233,34 @@ impl Drop for Fixture {
     }
 }
 async fn fixture() -> Fixture {
+    fixture_for(None).await
+}
+
+async fn fixture_for(account: Option<u64>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
     let session = SessionId::new(Uuid::new_v4().to_string());
     store.save(&Session::new(session.clone())).await.unwrap();
     let auth = AuthStore::new(dir.path());
+    if let Some(user) = account {
+        auth.grant_test_user(user).unwrap();
+    }
     let now = chrono::Utc::now().timestamp();
     let pair = auth.start_device_pairing("fixture", now).unwrap();
-    auth.approve_device_pairing(pair.request_id, &pair.code, &Identity::Owner, now)
-        .unwrap();
+    auth.approve_device_pairing(
+        pair.request_id,
+        &pair.code,
+        &account.map_or(Identity::Owner, Identity::Telegram),
+        now,
+    )
+    .unwrap();
     let PairingPoll::Authorized { token, device_id } = auth
         .poll_device_pairing(pair.request_id, &pair.polling_secret, now)
         .unwrap()
     else {
         panic!()
     };
-    let service = Arc::new(EnvironmentService::new(store, auth.clone(), true));
+    let service = Arc::new(EnvironmentService::new(store, auth.clone(), account));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let credential = dir.path().join("device");
@@ -253,6 +271,7 @@ async fn fixture() -> Fixture {
     .unwrap();
     crate::platform::set_private(&credential, 0o600).unwrap();
     let config = crate::remote::config::RemoteConfig {
+        credential: None,
         server: format!("http://{address}/").parse().unwrap(),
         credential_file: credential,
         label: "fixture".into(),
@@ -266,7 +285,10 @@ async fn fixture() -> Fixture {
         listen: address,
         base_url: format!("http://{address}/").parse().unwrap(),
     };
-    let app = super::remote::routes(settings, auth, Some(service.clone()));
+    let app = super::remote::routes(settings, auth, {
+        let service = service.clone();
+        move |requested| std::future::ready((account == requested).then(|| service.clone()))
+    });
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let mut request = format!("ws://{address}/api/remote/environment")
         .into_client_request()
@@ -690,6 +712,15 @@ impl crate::agent::llm::LlmProvider for ProxyModel {
 
 #[tokio::test]
 async fn durable_agent_proxy_executes_on_laptop_and_preserves_normalized_provenance() {
+    assert_durable_proxy(None).await;
+}
+
+#[tokio::test]
+async fn invited_sandbox_agent_executes_only_leased_device_proxy() {
+    assert_durable_proxy(Some(7)).await;
+}
+
+async fn assert_durable_proxy(account: Option<u64>) {
     use crate::{
         agent::{
             Agent, ContextBuilder,
@@ -699,7 +730,7 @@ async fn durable_agent_proxy_executes_on_laptop_and_preserves_normalized_provena
         },
         remote::{client::RemoteClient, local::LocalEnvironment, tools::CURRENT_ENVIRONMENTS},
     };
-    let fixture = fixture().await;
+    let fixture = fixture_for(account).await;
     fixture.service.disconnect(&fixture.key).await.unwrap();
     let env = LocalEnvironment::open(&fixture.config, fixture._dir.path())
         .await
@@ -714,11 +745,17 @@ async fn durable_agent_proxy_executes_on_laptop_and_preserves_normalized_provena
     let mut session = store.load(&fixture.session).await.unwrap().unwrap();
     let mut cp = Checkpoint::new(&store, &fixture.session, &session);
     cp.save(&session, RunPhase::NeedModel, None).await.unwrap();
-    let agent = Agent::new(
+    let mut agent = Agent::new(
         Arc::new(ProxyModel),
         ToolRegistry::default(),
         ContextBuilder::new("fixture"),
     );
+    if account.is_some() {
+        let sandbox = Arc::new(crate::agent::sandbox::Sandbox::new(
+            fixture._dir.path().join("sandbox"),
+        ));
+        agent = agent.with_sandbox(sandbox);
+    }
     let result = CURRENT_ENVIRONMENTS
         .scope(
             Some(fixture.service.clone()),

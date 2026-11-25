@@ -682,15 +682,15 @@ impl Agent {
             let chat_charge = charge_for("chat");
             let audit_charge = charge_for("tool_audit");
             let spawn_charge = charge_for("subagent");
-            let environment = if self.isolated()
-                || session.id().as_str().starts_with("companion:")
-                    && !session.id().as_str().starts_with(super::subagents::PREFIX)
+            let environment = if session.id().as_str().starts_with("companion:")
+                && !session.id().as_str().starts_with(super::subagents::PREFIX)
             {
                 None
-            } else if let Some(scope) = crate::remote::tools::CURRENT_SCOPE
-                .try_with(Clone::clone)
-                .ok()
-                .flatten()
+            } else if !self.isolated()
+                && let Some(scope) = crate::remote::tools::CURRENT_SCOPE
+                    .try_with(Clone::clone)
+                    .ok()
+                    .flatten()
             {
                 Some(scope)
             } else if let Some(service) = crate::remote::tools::CURRENT_ENVIRONMENTS

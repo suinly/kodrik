@@ -21,7 +21,7 @@ pub async fn run(config: &Config) -> anyhow::Result<bool> {
             .remote_recover()
             .await?;
         app.agent_runner
-            .enable_environments(crate::web::auth::AuthStore::new(&data))?;
+            .enable_environments(crate::web::auth::AuthStore::new(&data), None)?;
     }
     let control = crate::web::gateway_control::GatewayControl::new();
     let users = std::sync::Arc::new(crate::users::UserSpaces::new(config, &data, app.clone()));

@@ -104,7 +104,7 @@ async fn in_flight_disconnect_yields_ownership_and_requires_new_explicit_input()
         )),
         Arc::new(store.clone()),
     ));
-    runner.enable_environments(auth).unwrap();
+    runner.enable_environments(auth, None).unwrap();
     let service = runner.environments().unwrap().clone();
     let manifest = EnvironmentManifest {
         label: "fixture".into(),
@@ -121,7 +121,14 @@ async fn in_flight_disconnect_yields_ownership_and_requires_new_explicit_input()
         warnings: vec![],
     };
     let key = service
-        .attach(DeviceIdentity { device_id }, id.clone(), manifest.clone())
+        .attach(
+            DeviceIdentity {
+                device_id,
+                account: None,
+            },
+            id.clone(),
+            manifest.clone(),
+        )
         .await
         .unwrap();
     let (peer, mut outgoing) = super::transport::Peer::new();
@@ -218,7 +225,14 @@ async fn in_flight_disconnect_yields_ownership_and_requires_new_explicit_input()
         );
     }
     let fresh = service
-        .attach(DeviceIdentity { device_id }, id.clone(), manifest)
+        .attach(
+            DeviceIdentity {
+                device_id,
+                account: None,
+            },
+            id.clone(),
+            manifest,
+        )
         .await
         .unwrap();
     assert_ne!(fresh.generation, key.generation);
@@ -388,6 +402,7 @@ async fn remote_crash_worker() {
 
 fn crash_config(dir: &std::path::Path) -> super::config::RemoteConfig {
     super::config::RemoteConfig {
+        credential: None,
         server: "https://example.invalid/".parse().unwrap(),
         credential_file: dir.join("device"),
         label: "fixture".into(),

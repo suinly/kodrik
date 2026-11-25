@@ -173,6 +173,7 @@ impl AuthStore {
             if journal.members.get(&user).is_some_and(|grant| grant == id) {
                 journal.members.remove(&user);
                 journal.revoke_user_sessions(user);
+                journal.revoke_user_devices(user);
             }
         }
         self.save(&journal)?;
@@ -193,6 +194,7 @@ impl AuthStore {
         }
         let removed = grant.is_some();
         journal.revoke_user_sessions(user);
+        journal.revoke_user_devices(user);
         journal.profiles.remove(&format!("telegram:{user}"));
         self.save(&journal)?;
         Ok(removed)

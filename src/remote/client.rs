@@ -14,7 +14,7 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig},
 };
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Credential {
     pub device_id: uuid::Uuid,
@@ -87,8 +87,8 @@ pub(crate) struct RemoteClient {
 impl RemoteClient {
     pub(crate) async fn connect(config: &RemoteConfig) -> anyhow::Result<Self> {
         let url = endpoint(&config.server)?;
-        let credential = Credential::load(&config.credential_file)?;
-        let chat = ChatClient::new(config)?;
+        let credential = config.load_credential()?;
+        let chat = ChatClient::with_credential(config, &credential)?;
         let mut request = url.as_str().into_client_request()?;
         request.headers_mut().insert(
             "Authorization",
@@ -412,8 +412,12 @@ const MAX_COMMAND_BYTES: usize = 64 * 1024;
 
 impl ChatClient {
     pub(crate) fn new(config: &RemoteConfig) -> anyhow::Result<Self> {
+        let credential = config.load_credential()?;
+        Self::with_credential(config, &credential)
+    }
+
+    fn with_credential(config: &RemoteConfig, credential: &Credential) -> anyhow::Result<Self> {
         endpoint(&config.server)?;
-        let credential = Credential::load(&config.credential_file)?;
         let mut authorization: reqwest::header::HeaderValue =
             format!("Bearer {}", credential.token)
                 .parse()
@@ -718,6 +722,7 @@ mod cancellation_tests {
         let outside = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: format!("http://{}/", listener.local_addr().unwrap())
                 .parse()
                 .unwrap(),
@@ -843,6 +848,7 @@ mod cancellation_tests {
                 let dir = tempfile::tempdir().unwrap();
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let config = RemoteConfig {
+                    credential: None,
                     server: format!("http://{}/", listener.local_addr().unwrap())
                         .parse()
                         .unwrap(),

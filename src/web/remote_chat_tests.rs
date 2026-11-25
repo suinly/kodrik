@@ -1702,7 +1702,9 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
     let (dir, chat, state, id) = fixture().await;
-    chat.runner.enable_environments(state.auth.clone()).unwrap();
+    chat.runner
+        .enable_environments(state.auth.clone(), None)
+        .unwrap();
     let environments = chat.runner.environments().unwrap().clone();
     let now = chrono::Utc::now().timestamp();
     let pairing = state.auth.start_device_pairing("Laptop", now).unwrap();
@@ -1743,7 +1745,10 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
     assert!(initial.contains("revision"));
     let key = environments
         .attach(
-            crate::web::auth::devices::DeviceIdentity { device_id },
+            crate::web::auth::devices::DeviceIdentity {
+                device_id,
+                account: None,
+            },
             id.clone(),
             crate::remote::protocol::EnvironmentManifest {
                 label: "Connected laptop".into(),
@@ -1777,7 +1782,10 @@ async fn native_events_send_initial_snapshot_and_close_after_revoke() {
             .unwrap()
             .contains("\"state\":\"disconnected\"")
     );
-    state.auth.revoke_device(device_id).unwrap();
+    state
+        .auth
+        .revoke_device(device_id, &Identity::Owner)
+        .unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(2), stream.next())
             .await
@@ -1832,7 +1840,10 @@ async fn native_http_requires_bearer_rechecks_revocation_and_keeps_prefix() {
         .await
         .unwrap();
     assert_eq!(response.status(), 401);
-    state.auth.revoke_device(device_id).unwrap();
+    state
+        .auth
+        .revoke_device(device_id, &Identity::Owner)
+        .unwrap();
     let response = app
         .oneshot(
             Request::builder()

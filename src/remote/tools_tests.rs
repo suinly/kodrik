@@ -250,10 +250,13 @@ async fn fixture() -> (
     else {
         panic!()
     };
-    let service = Arc::new(EnvironmentService::new(store, auth, true));
+    let service = Arc::new(EnvironmentService::new(store, auth, None));
     let key = service
         .attach(
-            DeviceIdentity { device_id },
+            DeviceIdentity {
+                device_id,
+                account: None,
+            },
             session.clone(),
             EnvironmentManifest {
                 label: "Laptop".into(),
@@ -648,7 +651,14 @@ async fn local_approval_shows_structured_target_and_binds_generation() {
         .unwrap();
     manifest.skills[0].description = "Refreshed laptop skill".into();
     let fresh = service
-        .attach(DeviceIdentity { device_id: device }, id.clone(), manifest)
+        .attach(
+            DeviceIdentity {
+                device_id: device,
+                account: None,
+            },
+            id.clone(),
+            manifest,
+        )
         .await
         .unwrap();
     assert_ne!(fresh.generation, key.generation);

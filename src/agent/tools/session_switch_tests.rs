@@ -372,8 +372,11 @@ async fn handoff_waits_for_same_device_before_next_model_step() {
     else {
         panic!()
     };
-    let device = DeviceIdentity { device_id };
-    let service = Arc::new(EnvironmentService::new(store.clone(), auth, true));
+    let device = DeviceIdentity {
+        device_id,
+        account: None,
+    };
+    let service = Arc::new(EnvironmentService::new(store.clone(), auth, None));
     let manifest = || EnvironmentManifest {
         label: "Laptop".into(),
         project_root: "/project".into(),

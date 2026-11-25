@@ -7,6 +7,32 @@ use std::{
 };
 
 impl RemoteConfig {
+    pub(crate) fn pin_credential(&self) -> anyhow::Result<Self> {
+        let mut config = self.clone();
+        config.credential = Some(self.load_credential()?);
+        Ok(config)
+    }
+
+    pub(crate) fn load_credential(&self) -> anyhow::Result<super::client::Credential> {
+        self.credential.clone().map_or_else(
+            || super::client::Credential::load(&self.credential_file),
+            Ok,
+        )
+    }
+
+    fn grant_device(&self) -> anyhow::Result<Option<uuid::Uuid>> {
+        if let Some(credential) = &self.credential {
+            return Ok(Some(credential.device_id));
+        }
+        match std::fs::symlink_metadata(&self.credential_file) {
+            Ok(_) => Ok(Some(
+                super::client::Credential::load(&self.credential_file)?.device_id,
+            )),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(crate) fn directory_grant_store(&self) -> anyhow::Result<PathBuf> {
         let credential = std::path::absolute(&self.credential_file)?;
         let mut name = credential
@@ -106,6 +132,11 @@ impl RemoteConfig {
         );
         let store = self.directory_grant_store()?;
         let mut hash = Sha256::new();
+        // Directory consent must not survive re-pairing this path to a different account.
+        if let Some(device) = self.grant_device()? {
+            hash.update(b"device\0");
+            hash.update(device.as_bytes());
+        }
         for part in [
             self.server.as_str().as_bytes(),
             root.as_os_str().as_encoded_bytes(),
@@ -155,7 +186,11 @@ impl RemoteConfig {
         manifest: &super::protocol::EnvironmentManifest,
     ) -> anyhow::Result<PathBuf> {
         use sha2::{Digest, Sha256};
-        let scope = serde_json::to_vec(&(self.server.as_str(), &manifest.project_root))?;
+        let scope = serde_json::to_vec(&(
+            self.server.as_str(),
+            &manifest.project_root,
+            self.grant_device()?,
+        ))?;
         Ok(self
             .credential_file
             .with_extension(format!("grant-{:x}", Sha256::digest(scope))))
@@ -198,6 +233,7 @@ impl RemoteConfig {
         // A scoped decision supersedes the legacy grant for this project.
         match Self::read_grant(path)? {
             Some(saved) => Ok(saved == fingerprint),
+            None if self.grant_device()?.is_some() => Ok(false),
             None => Ok(
                 Self::read_grant(&self.credential_file.with_extension("grant"))?.as_deref()
                     == Some(fingerprint),
@@ -296,6 +332,7 @@ impl RemoteConfig {
         };
         Ok(Self {
             server,
+            credential: None,
             credential_file: resolve(
                 settings
                     .credential_file
@@ -314,6 +351,7 @@ impl RemoteConfig {
 pub(crate) struct RemoteConfig {
     pub server: reqwest::Url,
     pub credential_file: PathBuf,
+    pub(crate) credential: Option<super::client::Credential>,
     pub label: String,
     pub allow_shell: bool,
     pub skill_roots: Vec<PathBuf>,

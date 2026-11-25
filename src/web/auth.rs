@@ -104,6 +104,8 @@ struct Journal {
     device_pairings: BTreeMap<Uuid, devices::StoredPairing>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     device_approval_attempts: VecDeque<i64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    guest_device_approval_attempts: BTreeMap<u64, VecDeque<i64>>,
 }
 
 impl Journal {

@@ -35,16 +35,20 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-async fn device_valid(auth: AuthStore, token: String) -> bool {
+async fn device_identity(
+    auth: AuthStore,
+    token: String,
+) -> Option<super::super::auth::devices::DeviceIdentity> {
     tokio::task::spawn_blocking(move || {
         auth.device_identity(&token, chrono::Utc::now().timestamp())
     })
     .await
-    .is_ok_and(|result| result.is_ok_and(|identity| identity.is_some()))
+    .ok()?
+    .ok()?
 }
 
 async fn authorize(
-    State(state): State<WebState>,
+    State(mut state): State<WebState>,
     headers: HeaderMap,
     mut request: Request,
     next: Next,
@@ -52,11 +56,14 @@ async fn authorize(
     let Some(token) = bearer(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if !device_valid(state.auth.clone(), token.clone()).await {
+    let Some(device) = device_identity(state.auth.clone(), token).await else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if headers.contains_key(header::ORIGIN) && !valid_origin(&state.settings, &headers) {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Err(response) = state.scope_account(device.account).await {
+        return response;
     }
     request.extensions_mut().insert(state);
     next.run(request).await
@@ -190,7 +197,7 @@ async fn events(
         (chat, state.auth, token, id, None, String::new()),
         move |(chat, auth, token, id, mut revision, mut previous)| async move {
             loop {
-                if !device_valid(auth.clone(), token.clone()).await {
+                if device_identity(auth.clone(), token.clone()).await.is_none() {
                     return None;
                 }
                 let current = chat.sessions.view_revision().await.ok()?;

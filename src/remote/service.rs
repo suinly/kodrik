@@ -1,7 +1,7 @@
 use super::protocol::*;
 use crate::{
     agent::session::{SessionId, SessionStore, SqliteSessionStore},
-    web::auth::{AuthStore, Identity, devices::DeviceIdentity},
+    web::auth::{AuthStore, devices::DeviceIdentity},
 };
 use anyhow::ensure;
 use std::{
@@ -39,7 +39,7 @@ impl Drop for Binding {
 pub(crate) struct EnvironmentService {
     store: SqliteSessionStore,
     auth: AuthStore,
-    owner: bool,
+    account: Option<u64>,
     bindings: Mutex<HashMap<SessionId, Binding>>,
     // Display evidence only: retired keys never enter authorize/invoke/heartbeat.
     retired: Mutex<VecDeque<EnvironmentStatus>>,
@@ -48,11 +48,11 @@ pub(crate) struct EnvironmentService {
 }
 
 impl EnvironmentService {
-    pub(crate) fn new(store: SqliteSessionStore, auth: AuthStore, owner: bool) -> Self {
+    pub(crate) fn new(store: SqliteSessionStore, auth: AuthStore, account: Option<u64>) -> Self {
         Self {
             store,
             auth,
-            owner,
+            account,
             bindings: Mutex::new(HashMap::new()),
             retired: Mutex::new(VecDeque::new()),
             revision: watch::channel(0).0,
@@ -97,7 +97,9 @@ impl EnvironmentService {
                     }
                     _ = tokio::time::sleep(Duration::from_millis(250)) => {
                         let Some(service) = service.upgrade() else { break; };
-                        let _ = service.prune().await;
+                        if !service.bindings.lock().await.is_empty() {
+                            let _ = service.prune().await;
+                        }
                     }
                 }
             }
@@ -112,14 +114,15 @@ impl EnvironmentService {
     async fn clear(&self) {
         let mut bindings = self.bindings.lock().await;
         if !bindings.is_empty() {
-            for (session, binding) in bindings.iter() {
+            for binding in bindings.values() {
                 binding.scope_lease.revoke();
-                self.remember(session, binding, "Gateway authority closed")
-                    .await;
                 if let Some(peer) = &binding.peer {
                     peer.close();
                 }
-                binding.scope_lease.revoke();
+            }
+            for (session, binding) in bindings.iter() {
+                self.remember(session, binding, "Gateway authority closed")
+                    .await;
                 if let Err(error) = self
                     .store
                     .revoke_remote_approvals(binding.key.clone())
@@ -135,12 +138,13 @@ impl EnvironmentService {
 
     async fn prune(&self) -> anyhow::Result<HashSet<Uuid>> {
         let auth = self.auth.clone();
+        let account = self.account;
         let devices = tokio::task::spawn_blocking(move || {
-            auth.list_devices(&Identity::Owner, chrono::Utc::now().timestamp())
+            auth.active_device_ids(account, chrono::Utc::now().timestamp())
         })
         .await;
-        let allowed: HashSet<_> = match devices {
-            Ok(Ok(devices)) => devices.into_iter().map(|device| device.id).collect(),
+        let allowed = match devices {
+            Ok(Ok(devices)) => devices,
             _ => {
                 self.clear().await;
                 anyhow::bail!("Device authority unavailable");
@@ -159,18 +163,21 @@ impl EnvironmentService {
             })
             .map(|(session, _)| session.clone())
             .collect();
+        for session in &expired {
+            let binding = &bindings[session];
+            binding.scope_lease.revoke();
+            if let Some(peer) = &binding.peer {
+                peer.close();
+            }
+        }
         for session in expired {
             let binding = bindings.remove(&session).expect("locked binding");
-            binding.scope_lease.revoke();
             let reason = if !allowed.contains(&binding.device) {
                 "Device revoked or expired"
             } else {
                 "TUI lease expired or local clock suspended"
             };
             self.remember(&session, &binding, reason).await;
-            if let Some(peer) = &binding.peer {
-                peer.close();
-            }
             revoked.push(binding.key.clone());
         }
         for key in revoked {
@@ -195,7 +202,7 @@ impl EnvironmentService {
                     .id()
                     .as_str()
                     .starts_with(crate::agent::subagents::PREFIX),
-            "Personal owner conversation required"
+            "Personal conversation required"
         );
         Ok(())
     }
@@ -206,7 +213,7 @@ impl EnvironmentService {
         session: SessionId,
         manifest: EnvironmentManifest,
     ) -> anyhow::Result<EnvironmentKey> {
-        ensure!(self.owner, "Owner environment service required");
+        ensure!(device.account == self.account, "Device account mismatch");
         validate_manifest(&manifest)?;
         let draft = Uuid::parse_str(session.as_str())
             .is_ok_and(|id| id.to_string() == session.as_str())
@@ -347,7 +354,6 @@ impl EnvironmentService {
     }
 
     pub(crate) async fn authorize(&self, invocation: &Invocation) -> anyhow::Result<()> {
-        ensure!(self.owner, "Owner environment service required");
         self.personal(&invocation.session_id).await?;
         self.prune().await?;
         ensure!(
@@ -437,6 +443,9 @@ impl EnvironmentService {
         self: &Arc<Self>,
         session: &SessionId,
     ) -> anyhow::Result<Option<super::tools::EnvironmentScope>> {
+        if !self.bindings.lock().await.contains_key(session) {
+            return Ok(None);
+        }
         self.prune().await?;
         let bindings = self.bindings.lock().await;
         if let Some(binding) = bindings.get(session)
@@ -560,6 +569,26 @@ impl EnvironmentService {
     ) -> anyhow::Result<Option<OperationReceipt>> {
         self.store.remote_operation(run, call).await
     }
+    // Check the receiving socket, not the historical generation on a reconciled receipt.
+    pub(crate) async fn authorize_receipt(
+        &self,
+        device: Uuid,
+        session: &SessionId,
+        key: &EnvironmentKey,
+    ) -> anyhow::Result<()> {
+        let allowed = self.prune().await?;
+        ensure!(allowed.contains(&device), "Device authority revoked");
+        let bindings = self.bindings.lock().await;
+        ensure!(
+            !self.closed.load(Ordering::SeqCst)
+                && bindings.get(session).is_some_and(|binding| {
+                    binding.device == device && &binding.key == key && binding.scope_lease.live()
+                }),
+            "Receipt connection unavailable"
+        );
+        Ok(())
+    }
+
     pub(crate) async fn receipt(
         &self,
         device: Uuid,

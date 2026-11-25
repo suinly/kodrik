@@ -46,7 +46,7 @@ async fn request(
 }
 
 #[tokio::test]
-async fn device_routes_require_owner_cookie_origin_and_never_grant_browser_scope() {
+async fn device_routes_require_account_cookie_origin_and_never_grant_browser_scope() {
     let dir = tempfile::tempdir().unwrap();
     let auth = AuthStore::new(dir.path());
     auth.configure_owner(Some(42)).unwrap();
@@ -74,7 +74,6 @@ async fn device_routes_require_owner_cookie_origin_and_never_grant_browser_scope
     let approve = json!({"request_id":start["request_id"],"code":start["code"]});
     for (cookie, origin, expected) in [
         (None, Some("http://127.0.0.1"), 401),
-        (Some(user.as_str()), Some("http://127.0.0.1"), 403),
         (Some(owner.as_str()), None, 403),
         (Some(owner.as_str()), Some("https://evil.example"), 403),
     ] {
@@ -97,7 +96,7 @@ async fn device_routes_require_owner_cookie_origin_and_never_grant_browser_scope
             &app,
             "POST",
             "api/devices/pair/approve",
-            Some(&owner),
+            Some(&user),
             Some("http://127.0.0.1"),
             approve
         )
@@ -129,14 +128,12 @@ async fn device_routes_require_owner_cookie_origin_and_never_grant_browser_scope
             .0,
         401
     );
-    assert_eq!(
-        request(&app, "GET", "api/devices", Some(&user), None, Value::Null)
-            .await
-            .0,
-        403
-    );
-    let (status, devices) =
+    let (status, owner_devices) =
         request(&app, "GET", "api/devices", Some(&owner), None, Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(owner_devices, json!([]));
+    let (status, devices) =
+        request(&app, "GET", "api/devices", Some(&user), None, Value::Null).await;
     assert_eq!(status, 200);
     assert_eq!(devices.as_array().unwrap().len(), 1);
     assert!(!devices.to_string().contains(token));
@@ -147,6 +144,19 @@ async fn device_routes_require_owner_cookie_origin_and_never_grant_browser_scope
             "DELETE",
             &path,
             Some(&owner),
+            Some("http://127.0.0.1"),
+            Value::Null
+        )
+        .await
+        .0,
+        403,
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            Some(&user),
             Some("http://127.0.0.1"),
             Value::Null
         )

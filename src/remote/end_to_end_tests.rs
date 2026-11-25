@@ -439,7 +439,7 @@ async fn close_tui_revokes_but_keeps_server_alive() {
         )),
         store.clone(),
     );
-    runner.enable_environments(auth).unwrap();
+    runner.enable_environments(auth, None).unwrap();
     let service = runner.environments().unwrap().clone();
     let chat = Chat::new(&runner, server_dir.path()).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 fn config(dir: &std::path::Path, shell: bool) -> RemoteConfig {
     RemoteConfig {
+        credential: None,
         server: reqwest::Url::parse("https://example.invalid/kodrik/").unwrap(),
         credential_file: dir.join("device"),
         label: "Test laptop".into(),

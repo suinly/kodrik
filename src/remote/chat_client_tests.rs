@@ -75,6 +75,7 @@ async fn fixture(replies: Vec<Response>) -> Fixture {
     .save(&credential_file)
     .unwrap();
     let config = RemoteConfig {
+        credential: None,
         server,
         credential_file,
         label: "test".into(),

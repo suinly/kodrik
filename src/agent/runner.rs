@@ -106,14 +106,15 @@ impl AgentRunner {
     pub(crate) fn enable_environments(
         &self,
         auth: crate::web::auth::AuthStore,
+        account: Option<u64>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!*self.shutdown.borrow(), "Gateway is stopping");
         let store = self
             .sqlite_store()
-            .ok_or_else(|| anyhow::anyhow!("Environments require durable owner storage"))?;
+            .ok_or_else(|| anyhow::anyhow!("Environments require durable personal storage"))?;
         self.environments.get_or_init(|| {
             let service = Arc::new(crate::remote::service::EnvironmentService::new(
-                store, auth, true,
+                store, auth, account,
             ));
             service.monitor(self.shutdown_receiver());
             service

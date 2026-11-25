@@ -163,7 +163,19 @@ pub(crate) fn router_with_resources(
         .merge(super::remote::routes(
             settings.clone(),
             state.auth.clone(),
-            chat.as_ref().and_then(super::chat::Chat::environments),
+            {
+                let chat = chat.clone();
+                move |account| {
+                    let chat = chat.clone();
+                    async move {
+                        let chat = chat?;
+                        match account {
+                            Some(user) => chat.for_user(user).await.ok()?.environments(),
+                            None => chat.environments(),
+                        }
+                    }
+                }
+            },
         ))
         .merge(super::chat::routes(settings.clone(), data, chat));
     let app = if settings.prefix() == "/" {

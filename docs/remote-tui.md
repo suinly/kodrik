@@ -1,6 +1,6 @@
 # Remote TUI and temporary laptop access
 
-Remote TUI connects to the owner's running gateway. The agent, model credentials,
+Remote TUI connects to a running gateway. The agent, model credentials,
 memory, conversations and background tasks stay on the server. The laptop runs
 the terminal client and a temporary local executor, not a second agent. There is
 no independent local conversation store or automatic project upload.
@@ -14,10 +14,13 @@ message history. After a connection loss, displayed history remains visible
 while the new stream initializes a fresh complete history. Assembly is bounded
 to 64 MiB. The legacy paginated snapshot API remains available to older clients.
 
-This mode is owner-only and currently Unix-only. Invited users, guest spaces and
-groups do not receive the laptop environment. The same owner conversation can
-be opened in Web Chat or the owner's personal Telegram chat. Selecting another
-conversation in one interface does not move the environment to it.
+This mode is currently Unix-only. The owner and invited accounts can each pair
+their own devices and access only their own personal conversations. Guest spaces
+and groups cannot attach devices. An attached personal conversation can also be
+used from Web Chat or the account's private Telegram chat. Invited accounts keep
+their existing server-side sandbox; device access adds only the tools approved
+on that device. Selecting another conversation in one interface does not move
+the environment to it.
 
 The footer shows the server-reported context token count when available. It is
 cleared when switching to a session without a context estimate.
@@ -37,7 +40,7 @@ does not bypass the existing local-environment consent checks.
 ## Configure and pair
 
 On the server, configure the model and enabled web server as usual and keep
-`kodrik gateway` running. Owner sign-in is needed for pairing; see
+`kodrik gateway` running. Pair using the account that will use the device; see
 [Configuration](configuration.md) and [Web chat](web-chat.md).
 
 On the laptop, create a separate `~/.kodrik/remote.toml`:
@@ -83,8 +86,7 @@ kodrik connect --remote-config /absolute/path/to/remote.toml
 ```
 
 The terminal prints the server profile URL (`/app/profile` beneath the base URL),
-a request UUID and an eight-character comparison code. Sign in there as the
-owner, open **Device connections**, enter the UUID and code from this terminal,
+a request UUID and an eight-character comparison code. Sign in there to the desired account, open **Device connections**, enter the UUID and code from this terminal,
 compare them, check the comparison confirmation and approve. Approve only a
 request you initiated. Pairing expires after five minutes; the one-use token is
 saved to `credential_file` with mode `0600` in a private directory. Device
@@ -165,9 +167,12 @@ tools are included; shell is included only with `allow_shell = true`. A new
 manifest grant discloses exact tools, selected MCP, skills and project
 instructions inside the full-screen UI, with PageUp/PageDown for long details.
 The saved `.grant-*` fingerprints beside the credential are separate for each
-server and project root. An unchanged configuration/manifest needs no further
-confirmation. The legacy `.grant` is still recognized where no scoped grant
-exists. Shell remains opt-in.
+server, device registration and project root. An unchanged configuration/manifest
+needs no further confirmation. Re-pairing, or upgrading from grants stored
+before device scoping was introduced, requires fresh local confirmation. A
+running TUI keeps its original account; restart it after replacing credentials.
+To use multiple accounts on one laptop, use separate remote config and
+credential files. Shell remains opt-in.
 
 Selecting a conversation, creating one, editing a message into a new branch or
 switching message versions **detaches the old binding before switching**, then
@@ -193,11 +198,11 @@ Use `/attach` to recover a failed local binding. On narrow terminals connection
 state takes priority over model/project details. Standalone TUI has no remote
 connection label.
 
-While attached, new explicit owner messages in that same server conversation
+While attached, new explicit account messages in that same server conversation
 can use the environment from TUI, Web Chat or personal Telegram, subject to the
 same permissions and command audit. Tool/approval details identify the device,
 project and connection generation. An old approval does not authorize a new
-generation. After detaching or closing TUI, the owner can continue the
+generation. After detaching or closing TUI, the account holder can continue the
 conversation in web/Telegram, **without access to the laptop**. Server tasks
 remain on the server; local operations never silently fall back to server shell.
 

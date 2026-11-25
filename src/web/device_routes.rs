@@ -15,6 +15,7 @@ pub(super) fn routes() -> Router<ServerState> {
 
 fn failure(error: anyhow::Error) -> Response {
     let status = match error.downcast_ref::<DeviceError>() {
+        Some(DeviceError::Unauthorized) => StatusCode::UNAUTHORIZED,
         Some(DeviceError::Invalid) => StatusCode::BAD_REQUEST,
         Some(DeviceError::Forbidden) => StatusCode::FORBIDDEN,
         Some(DeviceError::RateLimited | DeviceError::Capacity) => StatusCode::TOO_MANY_REQUESTS,
@@ -32,7 +33,7 @@ fn native_origin(state: &ServerState, headers: &HeaderMap) -> bool {
     !headers.contains_key(header::ORIGIN) || valid_origin(&state.settings, headers)
 }
 
-fn browser_owner(state: &ServerState, headers: &HeaderMap) -> Result<Identity, Response> {
+fn browser_account(state: &ServerState, headers: &HeaderMap) -> Result<Identity, Response> {
     let token = request_token(headers).ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
     let now = chrono::Utc::now().timestamp();
     let identity = state
@@ -40,7 +41,6 @@ fn browser_owner(state: &ServerState, headers: &HeaderMap) -> Result<Identity, R
         .identity(&token, now)
         .map_err(failure)?
         .ok_or_else(|| StatusCode::UNAUTHORIZED.into_response())?;
-    state.auth.list_devices(&identity, now).map_err(failure)?;
     Ok(identity)
 }
 
@@ -133,16 +133,15 @@ pub(super) async fn approve(
     if !valid_origin(&state.settings, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let Some(token) = request_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     blocking(move || {
-        let identity = match browser_owner(&state, &headers) {
-            Ok(i) => i,
-            Err(response) => return Ok(response),
-        };
         Ok(
-            match state.auth.approve_device_pairing(
+            match state.auth.approve_device_pairing_from_session(
                 input.request_id,
                 &input.code,
-                &identity,
+                &token,
                 chrono::Utc::now().timestamp(),
             ) {
                 Ok(()) => StatusCode::OK.into_response(),
@@ -155,7 +154,7 @@ pub(super) async fn approve(
 
 pub(super) async fn list(State(state): State<ServerState>, headers: HeaderMap) -> Response {
     blocking(move || {
-        let identity = match browser_owner(&state, &headers) {
+        let identity = match browser_account(&state, &headers) {
             Ok(i) => i,
             Err(response) => return Ok(response),
         };
@@ -180,14 +179,19 @@ pub(super) async fn revoke(
     if !valid_origin(&state.settings, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let Some(token) = request_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     blocking(move || {
-        if let Err(response) = browser_owner(&state, &headers) {
-            return Ok(response);
-        }
-        Ok(match state.auth.revoke_device(id) {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(error) => failure(error),
-        })
+        Ok(
+            match state
+                .auth
+                .revoke_device_from_session(id, &token, chrono::Utc::now().timestamp())
+            {
+                Ok(()) => StatusCode::NO_CONTENT.into_response(),
+                Err(error) => failure(error),
+            },
+        )
     })
     .await
 }

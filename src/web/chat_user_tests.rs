@@ -819,3 +819,250 @@ async fn owner_wakeups_use_personal_storage_not_web_root() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].text, "Owner wakeup");
 }
+
+#[tokio::test]
+async fn remote_invited_accounts_are_isolated_across_chat_and_device_transport() {
+    use crate::remote::protocol::{
+        ClientFrame, EnvironmentManifest, ServerFrame, decode_frame, encode_frame,
+    };
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{Message as Frame, client::IntoClientRequest},
+    };
+
+    let data = tempfile::tempdir().unwrap();
+    let auth = AuthStore::new(data.path());
+    auth.configure_owner(Some(42)).unwrap();
+    for user in [7, 8] {
+        auth.grant_test_user(user).unwrap();
+    }
+    let mut config = user_config();
+    config.web.enabled = true;
+    config.web.base_url = Some("http://127.0.0.1:8080/".into());
+    let owner = crate::bootstrap::build_app_at(&config, &data.path().join("users/42"), false)
+        .await
+        .unwrap();
+    owner
+        .agent_runner
+        .enable_environments(auth.clone(), None)
+        .unwrap();
+    let users = Arc::new(crate::users::UserSpaces::new(
+        &config,
+        data.path(),
+        owner.clone(),
+    ));
+    let chat = Chat::new(&owner.agent_runner, data.path())
+        .await
+        .unwrap()
+        .with_users(users.clone());
+    let shared_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+    let owner_only = SessionId::new(uuid::Uuid::new_v4().to_string());
+    owner
+        .agent_runner
+        .sqlite_store()
+        .unwrap()
+        .save(&Session::new(owner_only.clone()))
+        .await
+        .unwrap();
+    let mut ids = vec![];
+    let mut tokens = vec![];
+    for user in [7, 8, 42] {
+        let app = users.app(user).await.unwrap();
+        let store = app.agent_runner.sqlite_store().unwrap();
+        let id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        store.save(&Session::new(id.clone())).await.unwrap();
+        ids.push(id);
+        let mut same = Session::new(shared_id.clone());
+        same.push(Message::User(UserMessage {
+            browser_client_id: None,
+            browser_context: None,
+            content: format!("private account {user}"),
+            images: vec![],
+            files: vec![],
+        }));
+        store.save(&same).await.unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let pair = auth.start_device_pairing("test laptop", now).unwrap();
+        auth.approve_device_pairing(pair.request_id, &pair.code, &Identity::Telegram(user), now)
+            .unwrap();
+        let crate::web::auth::devices::PairingPoll::Authorized { token, .. } = auth
+            .poll_device_pairing(pair.request_id, &pair.polling_secret, now)
+            .unwrap()
+        else {
+            panic!("pairing failed")
+        };
+        tokens.push(token);
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}/");
+    let settings = Settings {
+        trusted_proxies: vec![],
+        listen: addr,
+        base_url: base.parse().unwrap(),
+    };
+    let router =
+        crate::web::server::router_with_resources(settings, data.path(), Some(chat.clone()), None);
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let http = reqwest::Client::new();
+    let sessions = format!("{base}api/remote/chat/sessions");
+    for (index, user) in [7, 8, 42].into_iter().enumerate() {
+        let token = &tokens[index];
+        let list: Value = http
+            .get(&sessions)
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            list.as_array().unwrap().len(),
+            if user == 42 { 3 } else { 2 }
+        );
+        assert!(
+            list.as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["id"] == ids[index].as_str())
+        );
+        let snapshot = http
+            .get(format!("{sessions}/{}", shared_id.as_str()))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(snapshot.contains(&format!("private account {user}")));
+        for other in [7, 8, 42].into_iter().filter(|other| *other != user) {
+            assert!(!snapshot.contains(&format!("private account {other}")));
+        }
+        let foreign = format!("{sessions}/{}", ids[(index + 1) % 3].as_str());
+        for suffix in ["", "/history/0", "/events", "/attachments/0/file/0"] {
+            assert_eq!(
+                http.get(format!("{foreign}{suffix}"))
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                404
+            );
+        }
+        assert_eq!(
+            http.post(format!("{foreign}/commands"))
+                .bearer_auth(token)
+                .json(&json!({"kind":"stop"}))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    let socket_for = |index: usize| {
+        let mut request = format!("ws://{addr}/api/remote/environment")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {}", tokens[index]).parse().unwrap(),
+        );
+        request
+    };
+    let hello = |session_id| {
+        Frame::Binary(
+            encode_frame(&ClientFrame::Hello {
+                session_id,
+                manifest: EnvironmentManifest {
+                    label: "test laptop".into(),
+                    project_root: "/fixture".into(),
+                    tools: vec![],
+                    skills: vec![],
+                    project_instructions: None,
+                    warnings: vec![],
+                },
+            })
+            .unwrap()
+            .into(),
+        )
+    };
+    let (mut denied, _) = connect_async(socket_for(0)).await.unwrap();
+    denied.send(hello(owner_only)).await.unwrap();
+    assert!(matches!(
+        decode_frame::<ServerFrame>(&denied.next().await.unwrap().unwrap().into_data()).unwrap(),
+        ServerFrame::Error { .. }
+    ));
+    let (mut socket, _) = connect_async(socket_for(0)).await.unwrap();
+    socket.send(hello(shared_id.clone())).await.unwrap();
+    assert!(matches!(
+        decode_frame::<ServerFrame>(&socket.next().await.unwrap().unwrap().into_data()).unwrap(),
+        ServerFrame::Welcome { .. }
+    ));
+    let runtime = users.app(7).await.unwrap();
+    assert!(
+        runtime
+            .agent_runner
+            .environments()
+            .unwrap()
+            .step_scope(&shared_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        owner
+            .agent_runner
+            .environments()
+            .unwrap()
+            .status(&shared_id)
+            .await
+            .is_none()
+    );
+    assert!(
+        users
+            .app(8)
+            .await
+            .unwrap()
+            .agent_runner
+            .environments()
+            .unwrap()
+            .status(&shared_id)
+            .await
+            .is_none()
+    );
+    auth.revoke_user(7).unwrap();
+    assert_eq!(
+        http.get(&sessions)
+            .bearer_auth(&tokens[0])
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let closing = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .expect("revoked socket stayed open");
+    assert!(!matches!(closing, Some(Ok(Frame::Binary(_)))));
+    assert!(
+        runtime
+            .agent_runner
+            .environments()
+            .unwrap()
+            .step_scope(&shared_id)
+            .await
+            .unwrap_or(None)
+            .is_none()
+    );
+    owner.agent_runner.suspend();
+    server.abort();
+}

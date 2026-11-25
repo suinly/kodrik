@@ -2,6 +2,8 @@ use super::*;
 
 const PAIR_SECONDS: i64 = 300;
 const DEVICE_SECONDS: i64 = 30 * 86400;
+const DEVICES_PER_ACCOUNT: usize = 16;
+const MAX_GUEST_DEVICES: usize = 256;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -9,6 +11,9 @@ pub(super) struct StoredDevice {
     label: String,
     token_hash: String,
     expires_at: i64,
+    // Old journal entries belong to the gateway owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -19,12 +24,15 @@ pub(super) struct StoredPairing {
     polling_hash: String,
     expires_at: i64,
     approved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<u64>,
     last_poll: Option<i64>,
 }
 
 #[derive(Debug)]
 pub(crate) enum DeviceError {
     Invalid,
+    Unauthorized,
     Forbidden,
     RateLimited,
     Capacity,
@@ -53,33 +61,62 @@ fn valid_label(label: &str) -> bool {
 
 impl Journal {
     pub(super) fn valid_devices(&self) -> bool {
-        self.devices.len() <= 16
+        self.devices.len() <= DEVICES_PER_ACCOUNT + MAX_GUEST_DEVICES
             && self.device_pairings.len() <= 32
             && self.device_approval_attempts.len() <= 5
+            && self.guest_device_approval_attempts.len() <= self.members.len()
+            && self
+                .guest_device_approval_attempts
+                .iter()
+                .all(|(&user, attempts)| self.members.contains_key(&user) && attempts.len() <= 5)
             && self.devices.values().all(|device| {
                 valid_label(&device.label)
                     && valid_token(&device.token_hash)
                     && device.expires_at > 0
+                    && self.device_account_active(device.account)
             })
             && self.device_pairings.values().all(|request| {
                 valid_label(&request.label)
                     && valid_token(&request.code_hash)
                     && valid_token(&request.polling_hash)
                     && request.expires_at > 0
+                    && self.device_account_active(request.account)
+                    && (request.approved || request.account.is_none())
             })
     }
 
-    fn device_owner(&self, identity: &Identity) -> bool {
+    fn device_browser_identity(&self, token: &str, now: i64) -> anyhow::Result<Identity> {
+        ensure!(valid_token(token), DeviceError::Unauthorized);
+        self.identity(token, now)
+            .ok_or_else(|| DeviceError::Unauthorized.into())
+    }
+
+    fn device_account(&self, identity: &Identity) -> anyhow::Result<Option<u64>> {
         match identity {
-            Identity::Owner => true,
-            Identity::Telegram(id) => self.owner_id == Some(*id),
+            Identity::Owner => Ok(None),
+            Identity::Telegram(id) if self.owner_id == Some(*id) => Ok(None),
+            Identity::Telegram(id) if self.members.contains_key(id) => Ok(Some(*id)),
+            _ => Err(DeviceError::Forbidden.into()),
         }
+    }
+
+    fn device_account_active(&self, account: Option<u64>) -> bool {
+        account.is_none_or(|id| self.owner_id != Some(id) && self.members.contains_key(&id))
+    }
+
+    pub(super) fn revoke_user_devices(&mut self, user: u64) {
+        self.devices
+            .retain(|_, device| device.account != Some(user));
+        self.device_pairings
+            .retain(|_, request| request.account != Some(user));
+        self.guest_device_approval_attempts.remove(&user);
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct DeviceIdentity {
     pub device_id: Uuid,
+    pub account: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -132,6 +169,7 @@ impl AuthStore {
                 polling_hash: token_hash(&polling_secret),
                 expires_at,
                 approved: false,
+                account: None,
                 last_poll: None,
             },
         );
@@ -143,6 +181,7 @@ impl AuthStore {
             expires_at,
         })
     }
+    #[cfg(test)]
     pub(crate) fn approve_device_pairing(
         &self,
         id: Uuid,
@@ -150,18 +189,42 @@ impl AuthStore {
         identity: &Identity,
         now: i64,
     ) -> anyhow::Result<()> {
+        self.approve_device_pairing_as(id, code, now, |_| Ok(identity.clone()))
+    }
+
+    pub(crate) fn approve_device_pairing_from_session(
+        &self,
+        id: Uuid,
+        code: &str,
+        token: &str,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        self.approve_device_pairing_as(id, code, now, |journal| {
+            journal.device_browser_identity(token, now)
+        })
+    }
+
+    fn approve_device_pairing_as(
+        &self,
+        id: Uuid,
+        code: &str,
+        now: i64,
+        identity: impl FnOnce(&Journal) -> anyhow::Result<Identity>,
+    ) -> anyhow::Result<()> {
         let _lock = self.lock()?;
         let mut journal = self.read()?;
-        ensure!(journal.device_owner(identity), DeviceError::Forbidden);
-        journal
-            .device_approval_attempts
-            .retain(|at| now.saturating_sub(*at) < 60);
-        ensure!(
-            journal.device_approval_attempts.len() < 5,
-            DeviceError::RateLimited
-        );
-        journal.device_approval_attempts.push_back(now);
-        // Failed guesses consume the owner's budget too.
+        let account = journal.device_account(&identity(&journal)?)?;
+        let attempts = match account {
+            None => &mut journal.device_approval_attempts,
+            Some(user) => journal
+                .guest_device_approval_attempts
+                .entry(user)
+                .or_default(),
+        };
+        attempts.retain(|at| now.saturating_sub(*at) < 60);
+        ensure!(attempts.len() < 5, DeviceError::RateLimited);
+        attempts.push_back(now);
+        // Failed guesses also consume the authenticated account's budget.
         self.save(&journal)?;
         let request = journal
             .device_pairings
@@ -174,6 +237,7 @@ impl AuthStore {
                 && request.code_hash == token_hash(code),
             DeviceError::Invalid
         );
+        request.account = account;
         request.approved = true;
         self.save(&journal)
     }
@@ -210,8 +274,24 @@ impl AuthStore {
             return Ok(PairingPoll::Pending);
         }
         let label = request.label.clone();
+        let account = request.account;
         journal.devices.retain(|_, device| device.expires_at > now);
-        ensure!(journal.devices.len() < 16, DeviceError::Capacity);
+        ensure!(
+            journal
+                .devices
+                .values()
+                .filter(|device| device.account == account)
+                .count()
+                < DEVICES_PER_ACCOUNT
+                && (account.is_none()
+                    || journal
+                        .devices
+                        .values()
+                        .filter(|device| device.account.is_some())
+                        .count()
+                        < MAX_GUEST_DEVICES),
+            DeviceError::Capacity
+        );
         let expires_at = now
             .checked_add(DEVICE_SECONDS)
             .ok_or(DeviceError::Invalid)?;
@@ -223,6 +303,7 @@ impl AuthStore {
                 label,
                 token_hash: token_hash(&token),
                 expires_at,
+                account,
             },
         );
         journal.device_pairings.remove(&id);
@@ -243,11 +324,40 @@ impl AuthStore {
             .devices
             .iter()
             .find(|(_, device)| device.token_hash == hash && device.expires_at > now)
-            .map(|(id, _)| DeviceIdentity { device_id: *id }))
+            .map(|(id, device)| DeviceIdentity {
+                device_id: *id,
+                account: device.account,
+            }))
     }
-    pub(crate) fn revoke_device(&self, id: Uuid) -> anyhow::Result<()> {
+    #[cfg(test)]
+    pub(crate) fn revoke_device(&self, id: Uuid, identity: &Identity) -> anyhow::Result<()> {
+        self.revoke_device_as(id, |_| Ok(identity.clone()))
+    }
+
+    pub(crate) fn revoke_device_from_session(
+        &self,
+        id: Uuid,
+        token: &str,
+        now: i64,
+    ) -> anyhow::Result<()> {
+        self.revoke_device_as(id, |journal| journal.device_browser_identity(token, now))
+    }
+
+    fn revoke_device_as(
+        &self,
+        id: Uuid,
+        identity: impl FnOnce(&Journal) -> anyhow::Result<Identity>,
+    ) -> anyhow::Result<()> {
         let _lock = self.lock()?;
         let mut journal = self.read()?;
+        let account = journal.device_account(&identity(&journal)?)?;
+        ensure!(
+            journal
+                .devices
+                .get(&id)
+                .is_none_or(|device| device.account == account),
+            DeviceError::Forbidden
+        );
         journal.devices.remove(&id);
         self.save(&journal)
     }
@@ -257,17 +367,39 @@ impl AuthStore {
         now: i64,
     ) -> anyhow::Result<Vec<DeviceView>> {
         let journal = self.read()?;
-        ensure!(journal.device_owner(identity), DeviceError::Forbidden);
+        let account = journal.device_account(identity)?;
+        Ok(Self::device_views(&journal, account, now))
+    }
+
+    pub(crate) fn active_device_ids(
+        &self,
+        account: Option<u64>,
+        now: i64,
+    ) -> anyhow::Result<std::collections::HashSet<Uuid>> {
+        let journal = self.read()?;
+        ensure!(
+            journal.device_account_active(account),
+            DeviceError::Forbidden
+        );
         Ok(journal
             .devices
             .iter()
-            .filter(|(_, d)| d.expires_at > now)
+            .filter(|(_, device)| device.account == account && device.expires_at > now)
+            .map(|(id, _)| *id)
+            .collect())
+    }
+
+    fn device_views(journal: &Journal, account: Option<u64>, now: i64) -> Vec<DeviceView> {
+        journal
+            .devices
+            .iter()
+            .filter(|(_, d)| d.expires_at > now && d.account == account)
             .map(|(id, d)| DeviceView {
                 id: *id,
                 label: d.label.clone(),
                 expires_at: d.expires_at,
             })
-            .collect())
+            .collect()
     }
 }
 

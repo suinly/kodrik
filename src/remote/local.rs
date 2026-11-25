@@ -926,6 +926,7 @@ mod tests {
         for full in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let cfg = RemoteConfig {
+                credential: None,
                 server: reqwest::Url::parse("https://example.invalid/").unwrap(),
                 credential_file: dir.path().join("device"),
                 label: "fixture".into(),
@@ -1007,6 +1008,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let dir = tempfile::tempdir().unwrap();
         let mut cfg = RemoteConfig {
+            credential: None,
             server: reqwest::Url::parse("https://example.invalid/").unwrap(),
             credential_file: dir.path().join("device"),
             label: "fixture".into(),

@@ -984,6 +984,7 @@ pub(crate) async fn run_with(
         &crate::config::data_dir()?.join("tui-language"),
         Language::from_environment(),
     )?;
+    let config = &config.pin_credential()?;
     let chat = ChatClient::new(config)?;
     let session = if let Some(id) = resume {
         SessionId::new(id)
@@ -1280,6 +1281,7 @@ mod binding_tests {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: format!("http://{}/", listener.local_addr().unwrap())
                 .parse()
                 .unwrap(),
@@ -1385,6 +1387,7 @@ mod binding_tests {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: format!("http://{}/", listener.local_addr().unwrap())
                 .parse()
                 .unwrap(),
@@ -1554,6 +1557,7 @@ mod binding_tests {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: format!("http://{}/", listener.local_addr().unwrap())
                 .parse()
                 .unwrap(),
@@ -1639,6 +1643,7 @@ mod binding_tests {
     async fn reconnect_rejects_catalog_changes_without_granting_access() {
         let directory = tempfile::tempdir().unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: "http://localhost/".parse().unwrap(),
             credential_file: directory.path().join("remote/device.json"),
             label: "test".into(),
@@ -1674,6 +1679,7 @@ mod binding_tests {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("AGENTS.md"), "project policy").unwrap();
             let config = RemoteConfig {
+                credential: None,
                 server: "http://localhost/".parse().unwrap(),
                 credential_file: directory.path().join("private/device"),
                 label: "test".into(),
@@ -2031,6 +2037,7 @@ mod binding_tests {
     async fn cancelled_close_keeps_cleanup_task_joinable() {
         let directory = tempfile::tempdir().unwrap();
         let config = RemoteConfig {
+            credential: None,
             server: "http://localhost/".parse().unwrap(),
             credential_file: directory.path().join("remote/device.json"),
             label: "test".into(),

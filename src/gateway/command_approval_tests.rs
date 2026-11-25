@@ -76,7 +76,7 @@ async fn telegram_environment_fixture() -> (
         .await
         .unwrap();
     let auth = AuthStore::new(dir.path());
-    app.agent_runner.enable_environments(auth.clone()).unwrap();
+    app.agent_runner.enable_environments(auth.clone(), None).unwrap();
     let gateway = gateway
         .with_telegram_spaces(&config, dir.path(), app)
         .await
@@ -104,7 +104,7 @@ async fn telegram_environment_fixture() -> (
         gateway,
         store,
         sent,
-        crate::web::auth::devices::DeviceIdentity { device_id },
+        crate::web::auth::devices::DeviceIdentity { device_id, account: None },
         session.id().clone(),
     )
 }
