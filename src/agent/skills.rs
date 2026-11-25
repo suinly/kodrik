@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, io::ErrorKind, path::Path};
+use std::{borrow::Cow, collections::BTreeMap, fs, io::ErrorKind, path::Path};
 
 use anyhow::Context;
 use yaml_rust::YamlLoader;
@@ -13,6 +13,34 @@ pub(super) fn is_builtin_name(name: &str) -> bool {
 
 pub(super) fn load_catalog(root: &Path) -> anyhow::Result<String> {
     render_catalog(catalog(root)?, &root.canonicalize()?)
+}
+
+pub(super) fn route_review(catalog: &str) -> Cow<'_, str> {
+    fn review_row(line: &str) -> bool {
+        line.starts_with("- ponytail-review (.system/ponytail-review/SKILL.md): ")
+            || line.starts_with("- ponytail-audit (.system/ponytail-audit/SKILL.md): ")
+    }
+
+    if !catalog.lines().any(review_row) {
+        return Cow::Borrowed(catalog);
+    }
+    // Project the existing snapshot without changing saved metadata or profile choices.
+    let mut routed = String::with_capacity(catalog.len());
+    for line in catalog.split_inclusive('\n') {
+        if review_row(line)
+            && let Some((reference, _)) = line.rsplit_once("): \"")
+        {
+            routed.push_str(reference);
+            routed.push(')');
+            if line.ends_with('\n') {
+                routed.push('\n');
+            }
+        } else {
+            routed.push_str(line);
+        }
+    }
+    routed.push_str("\nFor the bundled review workflows above, prefer spawn_agent with builtin-reviewer on substantial work. Pass scope and accessible evidence; review inline if needed. Use matching custom skills as usual.");
+    Cow::Owned(routed)
 }
 
 pub(super) fn catalog(root: &Path) -> anyhow::Result<BTreeMap<String, serde_json::Value>> {

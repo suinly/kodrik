@@ -155,6 +155,7 @@ impl Agent {
     pub(crate) fn with_subagents(mut self, manager: Arc<super::subagents::Subagents>) -> Self {
         self.tools = super::tools::subagents::register(self.tools, manager.clone());
         self.subagents = Some(manager);
+        self.context = self.context.with_review_routing();
         self
     }
 

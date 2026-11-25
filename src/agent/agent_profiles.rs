@@ -123,8 +123,8 @@ fn bundled(catalog: &ProfileCatalog) -> impl Iterator<Item = AgentProfile> + '_ 
     [
         (
             "builtin-reviewer", "Reviewer",
-            "Review the supplied work for correctness, regressions, safety, and missing tests. Report prioritized findings with evidence and locations. Do not change files or execute commands.",
-            &["web_read", "web_search", "read_file", "file_read", "view_image"][..],
+            "Review the supplied work for correctness, regressions, safety, and missing tests. Use shell commands to inspect the repository and run focused checks when appropriate. Do not edit source or configuration, commit, deploy, or run destructive commands. Report prioritized findings with evidence and locations, and which checks actually ran.",
+            &["exec_command", "web_read", "web_search", "read_file", "file_read", "view_image"][..],
             &["ponytail-review", "ponytail-audit"][..],
         ),
         (
@@ -465,12 +465,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open(dir.path().join("owner")).unwrap();
         let mut catalog = catalog();
-        catalog
-            .tools
-            .extend(["device_exec".into(), "device_read".into()]);
+        catalog.tools.extend([
+            "device_exec".into(),
+            "device_read".into(),
+            "apply_patch".into(),
+            "device_patch".into(),
+        ]);
         catalog.device_tools = vec![
             ("device_exec".into(), "exec_command".into()),
             ("device_read".into(), "read_file".into()),
+            ("device_patch".into(), "apply_patch".into()),
             ("unavailable_device_read".into(), "read_file".into()),
         ];
         assert!(
@@ -482,11 +486,20 @@ mod tests {
         let (profiles, _) = store.list_agent_profiles(&catalog).await.unwrap();
         assert_eq!(profiles.len(), 3);
         for (id, tools) in [
-            ("builtin-reviewer", vec!["device_read", "web_read"]),
+            (
+                "builtin-reviewer",
+                vec!["device_exec", "device_read", "exec_command", "web_read"],
+            ),
             ("builtin-researcher", vec!["web_read"]),
             (
                 "builtin-implementer",
-                vec!["device_exec", "device_read", "exec_command"],
+                vec![
+                    "apply_patch",
+                    "device_exec",
+                    "device_patch",
+                    "device_read",
+                    "exec_command",
+                ],
             ),
         ] {
             let profile = store.agent_profile(id, &catalog).await.unwrap().unwrap();
@@ -526,7 +539,7 @@ mod tests {
                 .settings
                 .tools
                 .iter()
-                .all(|tool| tool != "exec_command")
+                .any(|tool| tool == "exec_command")
         );
         assert_eq!(
             profiles[2].settings.skills,
@@ -569,6 +582,12 @@ mod tests {
             .unwrap();
         assert!(references.contains("SKILL.md"));
         assert!(!references.contains("What this change does:"));
+        std::fs::remove_file(dir.path().join(".system/ponytail-review/SKILL.md")).unwrap();
+        let fallback = builder
+            .child_skills(&reviewer.settings.skills, false, true)
+            .unwrap();
+        assert!(fallback.contains("What this change does:"));
+        assert!(!fallback.contains("PERSONAL REVIEW BODY"));
         catalog.skills.clear();
         assert!(bundled(&catalog).all(|profile| profile.settings.skills.is_empty()));
     }

@@ -402,10 +402,18 @@ changing the bundled role. Bundled profiles only use capabilities available
 in the current environment. Device tools require a live lease in the parent
 session; custom profiles configured in Settings use server tool names.
 
-- **Reviewer:** `ponytail-review` and `ponytail-audit`; no shell or file writes.
+- **Reviewer:** `ponytail-review` and `ponytail-audit`; shell for repository
+  inspection and focused checks, no patch tool. The profile instructs it not to
+  edit the project; shell access itself is not read-only. In isolated chats,
+  `exec_command` is the existing virtual shell, not the host shell.
 - **Implementer:** `ponytail`, `test-driven-development`, `systematic-debugging`,
   and `verification-before-completion`.
 - **Researcher:** no development skills by default.
+
+In regular chats, the coordinator keeps short references to the bundled review
+skills and prefers Reviewer for substantial code reviews and repository audits.
+Custom skill descriptions stay intact. It can review inline when the child
+cannot access the relevant material.
 
 Bundled profiles use the bundled copies of these skills. When a bundled
 profile has no server shell, Kodrik includes the skill text directly when it

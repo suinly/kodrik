@@ -22,6 +22,7 @@ pub struct ContextBuilder {
     system_prompt: String,
     agents_path: Option<PathBuf>,
     skills_directory: Option<PathBuf>,
+    review_routing: bool,
     memory: Option<MemoryStore>,
     soul_path: Option<PathBuf>,
     companion: Option<CompanionStore>,
@@ -34,6 +35,7 @@ impl ContextBuilder {
             system_prompt: system_prompt.into(),
             agents_path: None,
             skills_directory: None,
+            review_routing: false,
             memory: None,
             soul_path: None,
             companion: None,
@@ -48,6 +50,11 @@ impl ContextBuilder {
 
     pub fn with_skills(mut self, directory: &Path) -> Self {
         self.skills_directory = Some(directory.to_path_buf());
+        self
+    }
+
+    pub(super) fn with_review_routing(mut self) -> Self {
+        self.review_routing = self.skills_directory.is_some();
         self
     }
 
@@ -137,6 +144,11 @@ impl ContextBuilder {
         }
         let prompt = session.system_prompt().unwrap_or(&self.system_prompt);
         let skills = session.skills_catalog().unwrap_or_default();
+        let skills = if self.review_routing {
+            super::skills::route_review(skills)
+        } else {
+            Cow::Borrowed(skills)
+        };
         let memory = session.memory_snapshot().unwrap_or_default();
         let soul = session.soul_snapshot().unwrap_or_default();
         let companion = session.companion_snapshot().unwrap_or_default();
@@ -215,8 +227,8 @@ impl ContextBuilder {
                 ),
             };
             text.push_str(&format!("- {name}: {}\n", path.display()));
-            if inline
-                && let Some((_, content)) = bundled
+            if let Some((path, content)) = bundled
+                && (inline || !path.is_file())
                 && content.len() <= remaining
             {
                 let data = serde_json::to_string(content)?;
@@ -998,6 +1010,35 @@ mod tests {
             }
             assert_eq!(session.system_prompt(), Some(expected_prompt));
         }
+    }
+
+    #[test]
+    fn review_routing_compacts_the_coordinator_catalog_without_changing_the_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("ponytail-review");
+        std::fs::create_dir(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: ponytail-review\ndescription: Full review description\n---\n",
+        )
+        .unwrap();
+        let builder = ContextBuilder::new("base").with_skills(root.path());
+        let mut session = Session::new(SessionId::new("test"));
+        builder.initialize_session(&mut session).unwrap();
+        let now = chrono::Utc::now();
+        let original = builder.build_at(&session, now).instructions;
+        assert!(original.contains("Full review description"));
+
+        let coordinator = builder.clone().with_review_routing();
+        let routed = coordinator.build_at(&session, now).instructions;
+        assert!(routed.contains("builtin-reviewer"));
+        assert!(routed.contains("Full review description"));
+        assert!(routed.contains("ponytail-review/SKILL.md"));
+        assert!(routed.contains("ponytail-audit/SKILL.md"));
+        assert!(!routed.contains("Quality audit of a whole repo"));
+        assert!(routed.contains(".system/skill-creator/SKILL.md"));
+        assert!(routed.len() < original.len());
+        assert_eq!(builder.build_at(&session, now).instructions, original);
     }
 
     #[test]
