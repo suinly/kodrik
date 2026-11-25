@@ -3,7 +3,7 @@ use super::config::RemoteConfig;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 #[test]
-fn remote_config_needs_no_provider_defaults_to_no_shell_and_preserves_prefix() {
+fn remote_config_needs_no_provider_defaults_to_shell_and_preserves_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("remote.toml");
     std::fs::write(
@@ -12,7 +12,7 @@ fn remote_config_needs_no_provider_defaults_to_no_shell_and_preserves_prefix() {
     )
     .unwrap();
     let config = RemoteConfig::load(&path).unwrap();
-    assert!(!config.allow_shell);
+    assert!(config.allow_shell);
     assert!(config.mcp.is_empty());
     assert!(config.skill_roots.is_empty());
     assert_eq!(config.server.as_str(), "https://example.com/kodrik/");
@@ -117,8 +117,13 @@ fn grant_fixture() -> (
 ) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("remote.toml");
-    std::fs::write(&path, "server = 'https://example.com/'").unwrap();
+    std::fs::write(
+        &path,
+        "server = 'https://example.com/'\nallow_shell = false\n",
+    )
+    .unwrap();
     let config = RemoteConfig::load(&path).unwrap();
+    assert!(!config.allow_shell);
     let manifest = super::protocol::EnvironmentManifest {
         label: "Laptop".into(),
         project_root: "/project/a".into(),
@@ -197,7 +202,7 @@ fn legacy_grant_is_reused_until_a_new_grant_for_that_project_is_saved() {
 
 #[test]
 fn manifest_authorized_requires_exact_manifest_and_config() {
-    let (_dir, config, manifest) = grant_fixture();
+    let (dir, config, manifest) = grant_fixture();
     config.authorize_manifest(&manifest, || Ok(true)).unwrap();
     let path = config.grant_path(&manifest).unwrap();
     let saved = std::fs::read(&path).unwrap();
@@ -207,8 +212,11 @@ fn manifest_authorized_requires_exact_manifest_and_config() {
     let mut changed = config.clone();
     changed.server = "https://other.example/".parse().unwrap();
     assert!(!changed.manifest_authorized(&manifest).unwrap());
-    let mut changed = config.clone();
-    changed.allow_shell = true;
+    let changed = RemoteConfig::from_toml(
+        &dir.path().join("remote.toml"),
+        "server = 'https://example.com/'",
+    )
+    .unwrap();
     assert!(!changed.manifest_authorized(&manifest).unwrap());
     let mut changed = manifest.clone();
     changed.label.clear();

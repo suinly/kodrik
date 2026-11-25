@@ -1,14 +1,123 @@
 use super::directory_prompt::DirectoryPrompts;
 use super::*;
-use crate::remote::protocol::RemoteChatSnapshot;
 use crate::remote::{
     client::{ChatClient, RemoteClient},
     config::RemoteConfig,
     local::LocalEnvironment,
-    protocol::ChatCommand,
+    protocol::{ChatCommand, EnvironmentManifest, RemoteChatSnapshot, ToolKind},
 };
 use anyhow::{Context, ensure};
 use std::path::PathBuf;
+
+fn local_access_details(
+    language: Language,
+    server: &str,
+    manifest: &EnvironmentManifest,
+) -> String {
+    let literal = |text: &str| {
+        text.chars()
+            .flat_map(char::escape_debug)
+            .collect::<String>()
+    };
+    let bullet = |text: &str| format!("• {text}");
+    let has = |kind| manifest.tools.iter().any(|tool| tool.kind == kind);
+    let mcp = manifest
+        .tools
+        .iter()
+        .filter(|tool| tool.kind == ToolKind::Mcp)
+        .map(|tool| literal(&tool.id))
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        language
+            .pick(
+                "Grant local environment access?",
+                "Предоставить доступ к локальному окружению?",
+            )
+            .into(),
+        format!("{}: {}", language.pick("Server", "Сервер"), literal(server)),
+        format!(
+            "{}: {}",
+            language.pick("Project", "Проект"),
+            literal(&manifest.project_root)
+        ),
+        String::new(),
+        language
+            .pick(
+                "What Kodrik can do if you allow access:",
+                "Что сможет делать Кодрик, если вы разрешите доступ:",
+            )
+            .into(),
+    ];
+    lines.push(bullet(if has(ToolKind::Exec) {
+        language.pick(
+            "Run terminal commands (exec_command) with your OS permissions, without a sandbox. Commands can access or change files outside the project and use the network.",
+            "Выполнять команды в терминале (exec_command) с вашими правами в системе, без песочницы. Команды могут читать и менять файлы за пределами проекта и обращаться к сети.",
+        )
+    } else {
+        language.pick("Command execution is off.", "Выполнение команд выключено.")
+    }));
+    if has(ToolKind::ReadFile) && has(ToolKind::Image) {
+        lines.push(bullet(language.pick(
+            "Read text files and view images in the project and configured skill folders.",
+            "Читать текстовые файлы и смотреть изображения в проекте и настроенных папках навыков.",
+        )));
+    }
+    if has(ToolKind::Patch) {
+        lines.push(bullet(language.pick(
+            "Edit project files with the file editor. That editor needs separate permission to edit in another folder.",
+            "Редактировать файлы проекта. Для правок через редактор в другой папке нужно отдельное разрешение.",
+        )));
+    }
+    if !manifest.skills.is_empty() {
+        let skills = manifest
+            .skills
+            .iter()
+            .map(|skill| literal(&skill.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(bullet(&format!(
+            "{}: {skills}",
+            language.pick("Use local skills", "Использовать локальные навыки")
+        )));
+    }
+    if manifest.project_instructions.is_some() {
+        lines.push(bullet(language.pick(
+            "Read project instructions (AGENTS.md).",
+            "Читать инструкции проекта (AGENTS.md).",
+        )));
+    }
+    if !mcp.is_empty() {
+        lines.push(bullet(language.pick(
+            "Use connected services (MCP). They act with their own permissions and may change data outside this project:",
+            "Вызывать подключённые сервисы (MCP). Они действуют со своими правами и могут менять данные за пределами проекта:",
+        )));
+        lines.extend(mcp.into_iter().map(|id| format!("  - {id}")));
+    }
+    if !manifest.warnings.is_empty() {
+        lines.push(String::new());
+        lines.push(
+            language
+                .pick("Connection warnings:", "Предупреждения о подключении:")
+                .into(),
+        );
+        lines.extend(
+            manifest
+                .warnings
+                .iter()
+                .map(|warning| bullet(&literal(warning))),
+        );
+    }
+    lines.push(String::new());
+    lines.push(language.pick(
+        "File contents, instructions, tool inputs and results may be sent to the server and its AI provider.",
+        "Содержимое файлов, инструкции, запросы к инструментам и их результаты могут быть отправлены на сервер и его ИИ-провайдеру.",
+    ).into());
+    lines.push(language.pick(
+        "Access follows the selected conversation. To stop it, use /detach or close this terminal client. Changes already made are not undone.",
+        "Доступ действует в выбранном диалоге. Чтобы его отключить, введите /detach или закройте терминальный клиент. Уже внесённые изменения не отменяются.",
+    ).into());
+    lines.join("\n")
+}
 
 #[test]
 fn snapshot_waiting_queue_replaces_optimistic_inputs_and_clears_when_consumed() {
@@ -452,34 +561,8 @@ impl Remote {
                     .into(),
             );
         } else {
-            let literal = |text: &str| {
-                text.chars()
-                    .flat_map(char::escape_debug)
-                    .collect::<String>()
-            };
-            let language = app.language;
-            let details = format!(
-                "{}\n{}: {}\n{}: {}\n{}: {} ({})\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}\n\n{}",
-                language.pick("Grant local environment access?", "Предоставить доступ к локальному окружению?"),
-                language.pick("Server", "Сервер"), literal(self.config.server.as_str()),
-                language.pick("Project", "Проект"), literal(&manifest.project_root),
-                language.pick("Shell", "Оболочка"), language.pick(
-                    if self.config.allow_shell { "enabled" } else { "disabled" },
-                    if self.config.allow_shell { "включена" } else { "выключена" },
-                ), language.pick("not sandboxed", "без песочницы"),
-                language.pick("Selected HTTP MCP", "Выбранные HTTP MCP"), self.config.mcp.keys().map(|s| literal(s)).collect::<Vec<_>>().join(", "),
-                language.pick("Shared tools", "Общие инструменты"), manifest.tools.iter().map(|tool| literal(&tool.id)).collect::<Vec<_>>().join(", "),
-                language.pick("Skills", "Навыки"), manifest.skills.iter().map(|skill| literal(&skill.name)).collect::<Vec<_>>().join(", "),
-                language.pick("Project instructions", "Инструкции проекта"), language.pick(
-                    if manifest.project_instructions.is_some() { "present" } else { "none" },
-                    if manifest.project_instructions.is_some() { "есть" } else { "нет" },
-                ),
-                manifest.warnings.iter().map(|warning| literal(warning)).collect::<Vec<_>>().join("\n"),
-                language.pick(
-                    "Tool arguments, file contents, skill instructions and command/MCP outputs may be sent to the server and its model. Shell and MCP can affect resources outside this project; cleanup is best effort, not rollback. Access follows the selected conversation and ends when this TUI closes.",
-                    "Аргументы инструментов, содержимое файлов, инструкции навыков и вывод команд/MCP могут отправляться на сервер и его модели. Оболочка и MCP могут воздействовать на ресурсы вне этого проекта; очистка выполняется по возможности, это не откат изменений. Доступ следует за выбранным диалогом и прекращается при закрытии этого TUI.",
-                ),
-            );
+            let details =
+                local_access_details(app.language, self.config.server.as_str(), &manifest);
             self.pending = Some(prepared);
             self.binding_failed = false;
             app.remote_grant = Some(super::app::RemoteGrant { details, choice: 1 });
@@ -1337,7 +1420,12 @@ mod binding_tests {
     #[tokio::test]
     async fn bilingual_remote_commands_and_consent_render_without_granting_access() {
         use ratatui::{Terminal, backend::TestBackend};
-        for language in [Language::En, Language::Ru] {
+        for (language, allow_shell) in [
+            (Language::En, false),
+            (Language::En, true),
+            (Language::Ru, false),
+            (Language::Ru, true),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("AGENTS.md"), "project policy").unwrap();
             let config = RemoteConfig {
@@ -1345,7 +1433,7 @@ mod binding_tests {
                 server: "http://localhost/".parse().unwrap(),
                 credential_file: directory.path().join("private/device"),
                 label: "test".into(),
-                allow_shell: false,
+                allow_shell,
                 skill_roots: vec![],
                 mcp: Default::default(),
                 optional_mcp: vec![],
@@ -1448,27 +1536,40 @@ mod binding_tests {
                 ("Server:", "Сервер:"),
                 ("Project:", "Проект:"),
                 (
-                    "Shell: disabled (not sandboxed)",
-                    "Оболочка: выключена (без песочницы)",
+                    "Read text files and view images",
+                    "Читать текстовые файлы и смотреть изображения",
                 ),
-                ("Selected HTTP MCP:", "Выбранные HTTP MCP:"),
-                ("Shared tools:", "Общие инструменты:"),
-                ("Skills:", "Навыки:"),
-                ("Project instructions: present", "Инструкции проекта: есть"),
+                ("Edit project files", "Редактировать файлы проекта"),
+                ("separate permission", "отдельное разрешение"),
                 (
-                    "Tool arguments, file contents",
-                    "Аргументы инструментов, содержимое файлов",
+                    "Read project instructions (AGENTS.md)",
+                    "Читать инструкции проекта (AGENTS.md)",
                 ),
-                ("outside this project", "вне этого проекта"),
-                ("not rollback", "не откат изменений"),
                 (
-                    "ends when this TUI closes",
-                    "прекращается при закрытии этого TUI",
+                    "may be sent to the server and its AI provider",
+                    "могут быть отправлены на сервер и его ИИ-провайдеру",
                 ),
+                ("/detach", "/detach"),
             ] {
                 assert!(details.contains(language.pick(en, ru)), "{details}");
             }
-            let mut terminal = Terminal::new(TestBackend::new(180, 60)).unwrap();
+            assert_eq!(details.contains("exec_command"), allow_shell, "{details}");
+            if allow_shell {
+                assert!(
+                    details.contains(
+                        language.pick("with your OS permissions", "с вашими правами в системе")
+                    ),
+                    "{details}"
+                );
+            } else {
+                assert!(
+                    details.contains(
+                        language.pick("Command execution is off", "Выполнение команд выключено")
+                    ),
+                    "{details}"
+                );
+            }
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
             terminal.draw(|frame| ui::render(&mut app, frame)).unwrap();
             let screen = terminal
                 .backend()
@@ -1482,6 +1583,13 @@ mod binding_tests {
                     "Grant local environment access?",
                     "Предоставить доступ к локальному окружению?"
                 )),
+                "{screen}"
+            );
+            if allow_shell {
+                assert!(screen.contains("exec_command"), "{screen}");
+            }
+            assert!(
+                screen.contains(language.pick("> Reject", "> Отклонить")),
                 "{screen}"
             );
             remote.decide_grant(&mut app, false).await.unwrap();

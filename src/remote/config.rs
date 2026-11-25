@@ -297,7 +297,7 @@ impl RemoteConfig {
             server: String,
             credential_file: Option<PathBuf>,
             label: Option<String>,
-            #[serde(default)]
+            #[serde(default = "crate::config::default_true")]
             allow_shell: bool,
             #[serde(default)]
             skill_roots: Vec<PathBuf>,

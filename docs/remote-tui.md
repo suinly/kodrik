@@ -71,7 +71,7 @@ also create or edit a separate `~/.kodrik/remote.toml`:
 server = "https://kodrik.example.com/"
 label = "My laptop"
 credential_file = "remote/device.json"
-allow_shell = false
+allow_shell = true
 skill_roots = []
 optional_mcp = []
 ```
@@ -87,7 +87,7 @@ the remote configuration's directory, not the project directory.
 | `server` | Required HTTP(S) base URL, with a trailing `/` |
 | `label` | System hostname (falls back to `"Device"`); display label, not an identity or permission |
 | `credential_file` | `"remote/device.json"`, relative to the config file |
-| `allow_shell` | `false`; enable local shell explicitly |
+| `allow_shell` | `true`; include local shell in the access request. Set `false` to exclude it. |
 | `skill_roots` | `[]`; directories containing selected `<name>/SKILL.md` folders |
 | `mcp` | Empty; selected laptop-side Streamable HTTP MCP servers |
 | `optional_mcp` | `[]`; names from `mcp` whose connection failure may be omitted with a warning |
@@ -186,16 +186,20 @@ evidence have separate projection limits and cannot remove Stop or approval
 controls; full durable results remain in server history.
 
 The project root is the canonical launch directory. File read, patch and image
-tools are included; shell is included only with `allow_shell = true`. A new
-manifest grant discloses exact tools, selected MCP, skills and project
-instructions inside the full-screen UI, with PageUp/PageDown for long details.
+tools are included. Local shell is included by default unless `allow_shell = false`
+is set explicitly. The confirmation screen explains what Kodrik can do, names
+the available MCP tools and skills, and explains what data can leave the device.
+Use PageUp/PageDown for long details. Reject is selected by default.
 The saved `.grant-*` fingerprints beside the credential are separate for each
 server, device registration and project root. An unchanged configuration/manifest
-needs no further confirmation. Re-pairing, or upgrading from grants stored
-before device scoping was introduced, requires fresh local confirmation. A
+needs no further confirmation. A grant without shell does not authorize it: if
+an existing configuration omitted `allow_shell`, the new default requires a
+fresh grant before the device attaches with shell access. Re-pairing, or
+upgrading from grants stored before device scoping was introduced, also
+requires fresh local confirmation. A
 running TUI keeps its original account; restart it after replacing credentials.
 To use multiple accounts on one laptop, use separate remote config and
-credential files. Shell remains opt-in.
+credential files. Pairing alone does not grant shell or project access.
 
 Selecting a conversation, creating one, editing a message into a new branch or
 switching message versions **detaches the old binding before switching**, then
@@ -234,7 +238,6 @@ standalone slash command.
 For example, extend `remote.toml` with selected providers:
 
 ```toml
-allow_shell = true
 skill_roots = ["laptop-skills"]
 optional_mcp = ["local_docs"]
 
