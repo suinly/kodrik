@@ -27,6 +27,12 @@ pub(super) fn catalog(root: &Path) -> anyhow::Result<BTreeMap<String, serde_json
     Ok(skills)
 }
 
+pub(super) fn bundled_skill(root: &Path, name: &str) -> Option<(std::path::PathBuf, &'static str)> {
+    let path = format!("{name}/SKILL.md");
+    let content = builtin::BUNDLED.get_file(&path)?.contents_utf8()?;
+    Some((root.join(".system").join(path), content))
+}
+
 fn render_catalog(
     skills: BTreeMap<String, serde_json::Value>,
     root: &Path,
@@ -274,6 +280,48 @@ mod tests {
         let file = root.path().join("file");
         std::fs::write(&file, "not a directory").unwrap();
         assert!(load_catalog(&file).is_err());
+    }
+
+    #[test]
+    fn extracts_development_bundles_with_valid_skill_metadata_and_resources() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = catalog(root.path()).unwrap();
+        for name in [
+            "ponytail",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+            "ponytail-help",
+            "ponytail-review",
+            "brainstorming",
+            "diagnosing-superpowers",
+            "dispatching-parallel-agents",
+            "executing-plans",
+            "finishing-a-development-branch",
+            "receiving-code-review",
+            "requesting-code-review",
+            "subagent-driven-development",
+            "systematic-debugging",
+            "test-driven-development",
+            "using-git-worktrees",
+            "using-superpowers",
+            "verification-before-completion",
+            "writing-plans",
+            "writing-skills",
+        ] {
+            let expected = root.path().join(format!(".system/{name}/SKILL.md"));
+            assert_eq!(
+                catalog[name]["path"].as_str().unwrap(),
+                expected.canonicalize().unwrap().to_str().unwrap()
+            );
+        }
+        for path in [
+            "KODRIK.md",
+            "requesting-code-review/code-reviewer.md",
+            "systematic-debugging/root-cause-tracing.md",
+        ] {
+            assert!(root.path().join(".system").join(path).is_file(), "{path}");
+        }
     }
 
     #[test]

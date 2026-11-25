@@ -1355,7 +1355,7 @@ async fn temporary_role_has_no_execution_deadline() {
         tools: vec![],
     };
     let child = manager
-        .spawn_configured(&parent, "one task".into(), None, Some(settings))
+        .spawn_configured(&parent, "one task".into(), None, Some(settings), false)
         .await
         .unwrap();
     let (prompt, messages) = observed(&mut seen).await;

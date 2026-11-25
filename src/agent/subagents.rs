@@ -289,7 +289,8 @@ impl Subagents {
         task: String,
         model: Option<super::tools::model_selection::ModelTier>,
     ) -> anyhow::Result<Child> {
-        self.spawn_configured(parent, task, model, None).await
+        self.spawn_configured(parent, task, model, None, false)
+            .await
     }
 
     pub(crate) fn profile_choices(
@@ -323,6 +324,7 @@ impl Subagents {
         task: String,
         model: Option<super::tools::model_selection::ModelTier>,
         settings: Option<ProfileSettings>,
+        builtin_profile: bool,
     ) -> anyhow::Result<Child> {
         parent.active()?;
         validate_message(&task)?;
@@ -353,7 +355,11 @@ impl Subagents {
         session.child_policy = Some(if let Some(settings) = &settings {
             session.configure_child(
                 &settings.instructions,
-                self.runner.agent.child_skills(&settings.skills)?,
+                self.runner.agent.child_skills(
+                    &settings.skills,
+                    !settings.tools.iter().any(|tool| tool == "exec_command"),
+                    builtin_profile,
+                )?,
             );
             ChildPolicy {
                 tools: Some(settings.tools.clone()),

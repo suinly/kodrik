@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/DietrichGebert/ponytail",
+  "version": "5.3.3",
+  "archive_sha256": "d96025b2243939544ca6254815656b77559a19a4ee8f9afaea56e34180f34955",
+  "method": "Archive snapshot; native skill symlinks; no plugin hooks enabled"
+}

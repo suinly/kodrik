@@ -143,8 +143,13 @@ impl Agent {
         self.context.child_skill_names()
     }
 
-    pub(super) fn child_skills(&self, names: &[String]) -> anyhow::Result<String> {
-        self.context.child_skills(names)
+    pub(super) fn child_skills(
+        &self,
+        names: &[String],
+        inline: bool,
+        builtin_profile: bool,
+    ) -> anyhow::Result<String> {
+        self.context.child_skills(names, inline, builtin_profile)
     }
 
     pub(crate) fn with_subagents(mut self, manager: Arc<super::subagents::Subagents>) -> Self {

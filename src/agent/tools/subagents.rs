@@ -172,6 +172,10 @@ impl Tool for SubagentTool {
                     args.role.is_none() || args.profile_id.is_none(),
                     "Choose a profile or a temporary role, not both"
                 );
+                let builtin_profile = args
+                    .profile_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("builtin-"));
                 let settings = if let Some(id) = args.profile_id {
                     anyhow::ensure!(
                         personal(&parent.session) || id.starts_with("builtin-"),
@@ -197,7 +201,13 @@ impl Tool for SubagentTool {
                     tools: Vec::new(),
                 });
                 self.manager
-                    .spawn_configured(&parent, args.task, args.model, Some(settings))
+                    .spawn_configured(
+                        &parent,
+                        args.task,
+                        args.model,
+                        Some(settings),
+                        builtin_profile,
+                    )
                     .await?
                     .view()
             }

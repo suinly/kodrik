@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/obra/superpowers",
+  "version": "7.0.1",
+  "archive_sha256": "05d04947fe7f9a0b023c008815c1995cc977c885dc563952362a436edda915bb",
+  "method": "Archive snapshot; native skill symlinks; no plugin hooks enabled"
+}

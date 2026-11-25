@@ -56,12 +56,19 @@ A valid user skill with the same name overrides the built-in skill in the
 catalog. An invalid user override is warned about and skipped, leaving the
 built-in available. Updating built-ins does not overwrite user skills.
 
-Two skills are bundled:
+Core skills are bundled alongside two development skill sets:
 
 | Skill | Purpose |
 | --- | --- |
 | `skill-creator` | Create and validate user skills and their supporting files. |
 | `self-update` | Fetch upstream changes, build Kodrik and handle a verified service restart. See [Updating and running Kodrik](operations.md). |
+| `web-pages` | Create and update native pages and dashboards. |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) 5.3.3 | Six skills for minimal implementation, code review, repository audits, and related reference material. |
+| [Superpowers](https://github.com/obra/superpowers) 7.0.1 | Fifteen skills for development workflows such as planning, testing, debugging, and verification. |
+
+These are versioned skill snapshots adapted for Kodrik, not installed plugins.
+Kodrik does not enable their hooks, slash commands, or automatic updates.
+See [third-party notices](../skills/THIRD_PARTY.md) for versions and licenses.
 
 For example, ask:
 

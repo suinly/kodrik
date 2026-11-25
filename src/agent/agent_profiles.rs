@@ -125,25 +125,28 @@ fn bundled(catalog: &ProfileCatalog) -> impl Iterator<Item = AgentProfile> + '_ 
             "builtin-reviewer", "Reviewer",
             "Review the supplied work for correctness, regressions, safety, and missing tests. Report prioritized findings with evidence and locations. Do not change files or execute commands.",
             &["web_read", "web_search", "read_file", "file_read", "view_image"][..],
+            &["ponytail-review", "ponytail-audit"][..],
         ),
         (
             "builtin-researcher", "Researcher",
             "Research the assigned question using public sources. Read relevant pages, cite sources for important claims, and separate evidence from uncertainty. Do not publish or modify anything.",
             &["web_search", "web_read"],
+            &[],
         ),
         (
             "builtin-implementer", "Implementer",
             "Implement only the assigned change. Inspect relevant files, preserve unrelated edits, and run focused tests. Report the paths changed and the checks actually run. Do not commit, publish, or deploy unless explicitly authorized.",
             &["exec_command", "apply_patch", "read_file", "file_read", "view_image"],
+            &["ponytail", "test-driven-development", "systematic-debugging", "verification-before-completion"],
         ),
-    ].into_iter().map(move |(id, name, instructions, tools)| AgentProfile {
+    ].into_iter().map(move |(id, name, instructions, tools, skills)| AgentProfile {
         id: id.into(),
         builtin: true,
         settings: ProfileSettings {
             name: name.into(),
             instructions: instructions.into(),
             model: None,
-            skills: Vec::new(),
+            skills: skills.iter().filter(|name| catalog.skills.iter().any(|available| available == **name)).map(|name| (*name).into()).collect(),
             tools: bundled_tools(tools, catalog),
         },
     })
@@ -504,5 +507,69 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bundled_profiles_assign_installed_skills_by_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let builder = super::super::ContextBuilder::new("worker").with_skills(dir.path());
+        let mut catalog = catalog();
+        catalog.skills = builder.child_skill_names().unwrap();
+        let profiles: Vec<_> = bundled(&catalog).collect();
+        assert_eq!(
+            profiles[0].settings.skills,
+            ["ponytail-review", "ponytail-audit"]
+        );
+        assert!(profiles[1].settings.skills.is_empty());
+        assert!(
+            profiles[0]
+                .settings
+                .tools
+                .iter()
+                .all(|tool| tool != "exec_command")
+        );
+        assert_eq!(
+            profiles[2].settings.skills,
+            [
+                "ponytail",
+                "test-driven-development",
+                "systematic-debugging",
+                "verification-before-completion"
+            ]
+        );
+        for profile in profiles {
+            profile.settings.validate(&catalog).unwrap();
+        }
+        let reviewer = bundled(&catalog).next().unwrap();
+        let override_dir = dir.path().join("ponytail-review");
+        std::fs::create_dir(&override_dir).unwrap();
+        std::fs::write(override_dir.join("SKILL.md"), "---\nname: ponytail-review\ndescription: Personal review skill\n---\nPERSONAL REVIEW BODY").unwrap();
+        let prompt = builder
+            .child_skills(&reviewer.settings.skills, true, true)
+            .unwrap();
+        assert!(prompt.contains("What this change does:"));
+        assert!(!prompt.contains("PERSONAL REVIEW BODY"));
+        assert!(!prompt.contains("# Test-Driven Development"));
+        let custom = builder
+            .child_skills(&reviewer.settings.skills, true, false)
+            .unwrap();
+        assert!(
+            custom.contains(
+                &override_dir
+                    .canonicalize()
+                    .unwrap()
+                    .join("SKILL.md")
+                    .display()
+                    .to_string()
+            )
+        );
+        assert!(!custom.contains("PERSONAL REVIEW BODY"));
+        let references = builder
+            .child_skills(&reviewer.settings.skills, false, true)
+            .unwrap();
+        assert!(references.contains("SKILL.md"));
+        assert!(!references.contains("What this change does:"));
+        catalog.skills.clear();
+        assert!(bundled(&catalog).all(|profile| profile.settings.skills.is_empty()));
     }
 }

@@ -402,6 +402,16 @@ changing the bundled role. Bundled profiles only use capabilities available
 in the current environment. Device tools require a live lease in the parent
 session; custom profiles configured in Settings use server tool names.
 
+- **Reviewer:** `ponytail-review` and `ponytail-audit`; no shell or file writes.
+- **Implementer:** `ponytail`, `test-driven-development`, `systematic-debugging`,
+  and `verification-before-completion`.
+- **Researcher:** no development skills by default.
+
+Bundled profiles use the bundled copies of these skills. When a bundled
+profile has no server shell, Kodrik includes the skill text directly when it
+fits the context budget. Isolated child profiles do not currently resolve
+skills from the virtual filesystem.
+
 Kodrik can use a saved profile or create a one-off role directly for a task. It
 can propose a reusable profile, but that proposal cannot be launched by ID or
 replace an existing profile. Only saving it in Settings makes it launchable.
