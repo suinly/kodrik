@@ -7,16 +7,28 @@ use std::{
 #[test]
 fn pairing_cli_works_without_provider_keeps_prefix_and_never_prints_token() {
     for locale in ["en_US.UTF-8", "ru_RU.UTF-8"] {
-        pairing_for_locale(locale);
+        pairing_for_locale(locale, false);
     }
 }
 
-fn pairing_for_locale(locale: &str) {
+#[test]
+fn pairing_cli_accepts_server_url_and_saves_default_configuration() {
+    pairing_for_locale("en_US.UTF-8", true);
+}
+
+fn pairing_for_locale(locale: &str, quick: bool) {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let server = format!("http://{}/kodrik/", listener.local_addr().unwrap());
     let request = uuid::Uuid::new_v4();
     let device = uuid::Uuid::new_v4();
+    let config_dir = if quick {
+        dir.path().join(".kodrik")
+    } else {
+        dir.path().to_path_buf()
+    };
+    let path = config_dir.join("remote.toml");
+    let pending_path = path.clone();
     let fixture = std::thread::spawn(move || {
         for (path, body) in [
             (
@@ -54,34 +66,48 @@ fn pairing_for_locale(locale: &str) {
                 assert_eq!(input["polling_secret"], "private-poll-secret");
                 assert_eq!(input["request_id"], request.to_string());
             }
+            if quick {
+                assert!(
+                    !pending_path.exists(),
+                    "configuration saved before approval"
+                );
+            }
             let body = body.to_string();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
-    let path = dir.path().join("remote.toml");
-    std::fs::write(
-        &path,
-        format!("server = '{server}'\nlabel = 'Test laptop'\n"),
-    )
-    .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_kodrik"))
-        .args(["connect", "--remote-config"])
-        .arg(&path)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kodrik"));
+    command.arg("connect");
+    if quick {
+        command.arg(server.trim_end_matches('/'));
+    } else {
+        std::fs::write(
+            &path,
+            format!("server = '{server}'\nlabel = 'Test laptop'\n"),
+        )
+        .unwrap();
+        command.arg("--remote-config").arg(&path);
+    }
+    let output = command
         .env("HOME", dir.path())
         .env("LC_ALL", locale)
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    fixture.join().unwrap();
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{text}");
+    fixture.join().unwrap();
     assert!(text.contains(&format!("{server}app/profile")) && text.contains("ABCD2345"));
     assert!(text.contains(&request.to_string()));
     assert!(
         text.contains(if locale.starts_with("ru") {
             "Сравните этот код"
         } else {
-            "Compare this code"
+            if quick {
+                "Enter this code"
+            } else {
+                "Compare this code"
+            }
         }),
         "{text}"
     );
@@ -94,8 +120,23 @@ fn pairing_for_locale(locale: &str) {
         "{text}"
     );
     assert!(!text.contains("private-device-token") && !text.contains("private-poll-secret"));
+    if quick {
+        let url = format!("{server}app/profile?pair_request={request}#device-connections");
+        assert!(text.lines().any(|line| line == url), "{text}");
+        let config: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config["server"].as_str(), Some(server.as_str()));
+        assert_eq!(config.as_table().unwrap().len(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
     let credential: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dir.path().join("remote/device.json")).unwrap())
+        serde_json::from_slice(&std::fs::read(config_dir.join("remote/device.json")).unwrap())
             .unwrap();
     assert_eq!(credential["device_id"], device.to_string());
     assert_eq!(credential["token"], "private-device-token");
@@ -116,6 +157,29 @@ fn pairing_for_locale(locale: &str) {
         })
     );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("config.toml"));
+}
+
+#[test]
+fn pairing_cli_does_not_replace_an_existing_server_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join(".kodrik");
+    std::fs::create_dir(&config_dir).unwrap();
+    let path = config_dir.join("remote.toml");
+    let contents = "server = 'https://previous.example/'\nallow_shell = true\n";
+    std::fs::write(&path, contents).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kodrik"))
+        .args(["connect", "http://localhost:1"])
+        .env("HOME", dir.path())
+        .env("LC_ALL", "en_US.UTF-8")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("existing remote configuration"),
+        "{:?}",
+        output
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
 }
 
 #[test]

@@ -22,9 +22,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Pair this device with the server through the owner's web profile
+    /// Pair this device with the server through your web profile
     Connect {
-        #[arg(long)]
+        /// Server base URL for first-time setup (saves ~/.kodrik/remote.toml)
+        #[arg(value_name = "SERVER_URL")]
+        server: Option<String>,
+        #[arg(long, conflicts_with = "server")]
         remote_config: Option<std::path::PathBuf>,
     },
     #[command(hide = true)]
@@ -103,8 +106,12 @@ async fn run() -> anyhow::Result<bool> {
     {
         return commands::web::set_password().map(|_| false);
     }
-    if let Some(Commands::Connect { remote_config }) = &cli.command {
-        return commands::connect::run(remote_config.as_deref())
+    if let Some(Commands::Connect {
+        server,
+        remote_config,
+    }) = &cli.command
+    {
+        return commands::connect::run(server.as_deref(), remote_config.as_deref())
             .await
             .map(|_| false);
     }
@@ -155,6 +162,13 @@ mod tests {
             vec!["kodrik", "--remote", "ask", "hello"],
             vec!["kodrik", "--remote", "--tui-slot", "2"],
             vec!["kodrik", "--remote-config", "client.toml"],
+            vec![
+                "kodrik",
+                "connect",
+                "https://example.com",
+                "--remote-config",
+                "client.toml",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }

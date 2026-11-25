@@ -6,7 +6,14 @@ const devices=ref<RegisteredDevice[]>([])
 const loading=ref(false),working=ref(false),loaded=ref(false)
 const problem=ref(''),approved=ref(false)
 const requestId=ref(''),code=ref(''),compared=ref(false)
-const valid=computed(()=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId.value.trim()) && !!code.value.trim() && compared.value)
+const section=useTemplateRef<HTMLElement>('section')
+const isUuid=(id:string)=>id.length===36 && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)
+const requestParams=new URLSearchParams(window.location.search).getAll('pair_request')
+const candidate=requestParams[0] ?? ''
+const linkedRequest=requestParams.length===1 && isUuid(candidate)?candidate:null
+const valid=computed(()=>linkedRequest
+  ? code.value.length===8 && /^[A-Za-z0-9]{8}$/.test(code.value)
+  : isUuid(requestId.value.trim()) && !!code.value.trim() && compared.value)
 watch([requestId,code],()=>{compared.value=false;approved.value=false},{flush:'sync'})
 
 async function load() {
@@ -21,7 +28,7 @@ async function approve() {
   if(!valid.value || working.value || loading.value) return
   working.value=true;problem.value='';approved.value=false
   try {
-    await checkedFetch(new URL('api/devices/pair/approve',base),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId.value.trim(),code:code.value.trim()})})
+    await checkedFetch(new URL('api/devices/pair/approve',base),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:linkedRequest ?? requestId.value.trim(),code:linkedRequest?code.value:code.value.trim()})})
     requestId.value='';code.value='';compared.value=false;approved.value=true
     await load()
   } catch(error) {problem.value=messageOf(error)}
@@ -38,24 +45,33 @@ async function revoke(id:string) {
   finally {working.value=false}
 }
 
-onMounted(()=>{void load()})
+onMounted(()=>{
+  void load()
+  // The profile fetch delays this section past the browser's initial anchor jump.
+  // Login can also drop the fragment, so a valid request is enough to jump here.
+  if(linkedRequest || window.location.hash==='#device-connections') section.value?.scrollIntoView({block:'start'})
+  if(linkedRequest) section.value?.querySelector<HTMLInputElement>('input#device-pair-code')?.focus()
+})
 </script>
 
 <template>
-  <section :aria-label="t('Подключения устройств')" class="space-y-4">
+  <section id="device-connections" ref="section" :aria-label="t('Подключения устройств')" class="space-y-4">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-lg font-semibold text-highlighted">{{ t('Подключения устройств') }}</h2>
       <UButton :label="t('Обновить')" color="neutral" variant="soft" :loading="loading" :disabled="working" @click="load" />
     </div>
-    <p class="text-sm text-muted">{{ t('Сверьте UUID и код с терминалом на вашем устройстве. Подтверждайте только запрос, который вы начали сами.') }}</p>
+    <p v-if="requestParams.length && !linkedRequest" role="alert" class="text-sm text-error">{{ t('Недействительная ссылка подключения. Введите UUID и код вручную или запустите подключение заново.') }}</p>
+    <p id="device-pair-instructions" class="text-sm text-muted">{{ linkedRequest
+      ? t('Введите 8-значный буквенно-цифровой код из терминала. Подтверждайте только запрос, который вы запустили локально на своём устройстве.')
+      : t('Сверьте UUID и код с терминалом на вашем устройстве. Подтверждайте только запрос, который вы начали сами.') }}</p>
     <form class="space-y-3" @submit.prevent="approve">
-      <UFormField :label="t('UUID запроса подключения')" required>
+      <UFormField v-if="!linkedRequest" :label="t('UUID запроса подключения')" required>
         <UInput v-model="requestId" :aria-label="t('UUID запроса подключения')" autocomplete="off" :spellcheck="false" :maxlength="36" :disabled="working" required class="w-full" />
       </UFormField>
       <UFormField :label="t('Код сравнения')" required>
-        <UInput v-model="code" :aria-label="t('Код сравнения')" autocomplete="off" :spellcheck="false" :maxlength="128" :disabled="working" required class="w-full" />
+        <UInput id="device-pair-code" v-model="code" :aria-label="t('Код сравнения')" aria-describedby="device-pair-instructions" autocomplete="off" autocapitalize="none" :spellcheck="false" :maxlength="linkedRequest?undefined:128" :disabled="working" required class="w-full" />
       </UFormField>
-      <UCheckbox v-model="compared" :label="t('Я сверил UUID и код на своём устройстве')" :disabled="working" />
+      <UCheckbox v-if="!linkedRequest" v-model="compared" :label="t('Я сверил UUID и код на своём устройстве')" :disabled="working" />
       <UButton type="submit" :label="t('Подтвердить подключение')" :disabled="!valid || loading" :loading="working" />
     </form>
     <p v-if="loading" role="status" class="text-sm text-muted">{{ t('Загружаю устройства…') }}</p>

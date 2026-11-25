@@ -43,7 +43,28 @@ On the server, configure the model and enabled web server as usual and keep
 `kodrik gateway` running. Pair using the account that will use the device; see
 [Configuration](configuration.md) and [Web chat](web-chat.md).
 
-On the laptop, create a separate `~/.kodrik/remote.toml`:
+On the laptop, run:
+
+```sh
+kodrik connect https://kodrik.example.com/
+```
+
+In an interactive terminal on macOS or Linux, Kodrik tries to open the browser.
+You can also follow the printed link. Sign in to the account you want to use,
+enter the eight-character code shown in the terminal, and select **Approve
+connection**. Approve only requests you started yourself. The link contains a
+request ID, not the code or a credential. It expires after five minutes.
+
+After approval, Kodrik saves `~/.kodrik/remote.toml` and a private device
+credential. It never overwrites existing settings or credentials. You can omit
+the URL if the server is already configured. Pairing authorizes the device to
+use your server account, not the agent to access a laptop project; the TUI asks
+for that separately.
+
+### Manual configuration
+
+To customize the device label, shell access, skills or MCP servers, you can
+also create or edit a separate `~/.kodrik/remote.toml`:
 
 ```toml
 server = "https://kodrik.example.com/"
@@ -85,8 +106,9 @@ kodrik connect
 kodrik connect --remote-config /absolute/path/to/remote.toml
 ```
 
-The terminal prints the server profile URL (`/app/profile` beneath the base URL),
-a request UUID and an eight-character comparison code. Sign in there to the desired account, open **Device connections**, enter the UUID and code from this terminal,
+Without a URL argument the terminal prints the server profile URL (`/app/profile`
+beneath the base URL), a request UUID and an eight-character comparison code.
+Sign in to the desired account, open **Device connections**, enter the UUID and code from this terminal,
 compare them, check the comparison confirmation and approve. Approve only a
 request you initiated. Pairing expires after five minutes; the one-use token is
 saved to `credential_file` with mode `0600` in a private directory. Device

@@ -264,21 +264,6 @@ impl RemoteConfig {
     }
 
     pub(crate) fn load(path: &Path) -> anyhow::Result<Self> {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Settings {
-            server: String,
-            credential_file: Option<PathBuf>,
-            label: Option<String>,
-            #[serde(default)]
-            allow_shell: bool,
-            #[serde(default)]
-            skill_roots: Vec<PathBuf>,
-            #[serde(default)]
-            mcp: HashMap<String, McpServerConfig>,
-            #[serde(default)]
-            optional_mcp: Vec<String>,
-        }
         use std::io::Read;
         let file = crate::platform::OpenOptions::new()
             .read(true)
@@ -295,8 +280,27 @@ impl RemoteConfig {
             bytes.len() <= 256 * 1024,
             "Remote configuration exceeds limit"
         );
+        Self::from_toml(path, std::str::from_utf8(&bytes)?)
+    }
+
+    pub(crate) fn from_toml(path: &Path, contents: &str) -> anyhow::Result<Self> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Settings {
+            server: String,
+            credential_file: Option<PathBuf>,
+            label: Option<String>,
+            #[serde(default)]
+            allow_shell: bool,
+            #[serde(default)]
+            skill_roots: Vec<PathBuf>,
+            #[serde(default)]
+            mcp: HashMap<String, McpServerConfig>,
+            #[serde(default)]
+            optional_mcp: Vec<String>,
+        }
         // TOML diagnostics can include MCP secrets from the offending source line.
-        let settings: Settings = toml::from_str(std::str::from_utf8(&bytes)?)
+        let settings: Settings = toml::from_str(contents)
             .map_err(|_| anyhow::anyhow!("Invalid remote configuration"))?;
         let server = settings
             .server

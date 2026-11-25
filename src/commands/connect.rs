@@ -3,26 +3,88 @@ use crate::remote::{client::Credential, config::RemoteConfig};
 use anyhow::{Context, ensure};
 use std::{
     io::{IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
-fn config(path: Option<&Path>) -> anyhow::Result<RemoteConfig> {
-    RemoteConfig::load(
-        &path
-            .map(Path::to_path_buf)
-            .unwrap_or(crate::config::data_dir()?.join("remote.toml")),
-    )
+fn config_path(path: Option<&Path>) -> anyhow::Result<PathBuf> {
+    match path {
+        Some(path) => Ok(path.to_owned()),
+        None => Ok(crate::config::data_dir()?.join("remote.toml")),
+    }
 }
 
-pub async fn run(path: Option<&Path>) -> anyhow::Result<()> {
-    let config = config(path)?;
-    pair(&config).await
+pub async fn run(server: Option<&str>, path: Option<&Path>) -> anyhow::Result<()> {
+    let language = Language::from_environment();
+    let path = config_path(path)?;
+    let mut new_contents = None;
+    let config = if let Some(server) = server {
+        let mut url = reqwest::Url::parse(server)
+            .context(language.pick("Invalid server URL", "Некорректный URL сервера"))?;
+        if !url.path().ends_with('/') {
+            url.path_segments_mut()
+                .map_err(|_| {
+                    anyhow::anyhow!(language.pick("Invalid server URL", "Некорректный URL сервера"))
+                })?
+                .push("");
+        }
+        crate::remote::client::endpoint(&url)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let config = RemoteConfig::load(&path)?;
+                ensure!(config.server == url, "{}", language.pick(
+                    "Server URL does not match the existing remote configuration; use kodrik connect to keep its server",
+                    "URL сервера не совпадает с существующей конфигурацией; запустите kodrik connect, чтобы использовать сохранённый сервер"
+                ));
+                config
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let contents = toml::to_string(&std::collections::BTreeMap::from([(
+                    "server",
+                    url.as_str(),
+                )]))?;
+                let config = RemoteConfig::from_toml(&path, &contents)?;
+                new_contents = Some(contents);
+                config
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        RemoteConfig::load(&path)?
+    };
+    let credential = pair(&config, server.is_some()).await?;
+    if let Some(contents) = new_contents {
+        save_config(&path, &contents).context(language.pick(
+            "Could not save remote configuration after approval; revoke the new device in your profile before retrying",
+            "После подтверждения не удалось сохранить конфигурацию; отзовите новое устройство в профиле перед повторной попыткой",
+        ))?;
+    }
+    credential.save(&config.credential_file).context(language.pick(
+        "Could not save the credential after approval; revoke the new device in your profile before retrying",
+        "После подтверждения не удалось сохранить учётные данные; отзовите новое устройство в профиле перед повторной попыткой",
+    ))?;
+    eprintln!("{}", language.pick("Device paired. Credential saved privately; no model configuration is needed.", "Устройство подключено. Учётные данные сохранены приватно; настройка модели не требуется."));
+    Ok(())
+}
+
+fn save_config(path: &Path, contents: &str) -> anyhow::Result<()> {
+    let parent = path.parent().context("Configuration directory missing")?;
+    crate::platform::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    crate::platform::set_file_private(file.as_file(), 0o600)?;
+    file.write_all(contents.as_bytes())?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(path)?;
+    crate::platform::sync_directory(parent)?;
+    Ok(())
 }
 
 pub async fn remote_tui(path: Option<&Path>, session: Option<&str>) -> anyhow::Result<()> {
     let language = Language::from_environment();
-    let config = config(path)?;
+    let config = RemoteConfig::load(&config_path(path)?)?;
     ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         language.pick(
@@ -70,7 +132,7 @@ async fn response(request: reqwest::RequestBuilder) -> anyhow::Result<serde_json
     })
 }
 
-async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
+async fn pair(config: &RemoteConfig, open_link: bool) -> anyhow::Result<Credential> {
     let language = Language::from_environment();
     ensure!(
         !config.credential_file.try_exists()?,
@@ -100,29 +162,53 @@ async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
         code.len() == 8 && code.bytes().all(|b| b.is_ascii_alphanumeric()),
         language.pick("Invalid pairing code", "Некорректный код сопряжения")
     );
-    eprintln!(
-        "{}\n{}: {request}\n{}: {code}",
-        language.pick(
-            &format!(
-                "Open {} and approve device pairing.",
-                config.server.join("app/profile")?
-            ),
-            &format!(
-                "Откройте {} и подтвердите подключение устройства.",
-                config.server.join("app/profile")?
-            )
-        ),
-        language.pick("Request ID", "ID запроса"),
-        language.pick(
-            "Compare this code on both devices",
-            "Сравните этот код на обоих устройствах"
-        )
-    );
-    std::io::stderr().flush()?;
     let expires = start["expires_at"].as_i64().context(language.pick(
         "Missing pairing expiry",
         "Отсутствует срок действия сопряжения",
     ))?;
+    let mut profile_url = config.server.join("app/profile")?;
+    if open_link {
+        profile_url
+            .query_pairs_mut()
+            .append_pair("pair_request", &request.to_string());
+        profile_url.set_fragment(Some("device-connections"));
+    }
+    eprintln!(
+        "{}\n{}: {request}\n{}: {code}",
+        language.pick(
+            &format!("Open this page and approve device pairing:\n{profile_url}"),
+            &format!("Откройте эту страницу и подтвердите подключение устройства:\n{profile_url}")
+        ),
+        language.pick("Request ID", "ID запроса"),
+        if open_link {
+            language.pick("Enter this code", "Введите этот код")
+        } else {
+            language.pick(
+                "Compare this code on both devices",
+                "Сравните этот код на обоих устройствах",
+            )
+        }
+    );
+    std::io::stderr().flush()?;
+    if open_link && std::io::stderr().is_terminal() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            #[cfg(target_os = "macos")]
+            let opener = "open";
+            #[cfg(target_os = "linux")]
+            let opener = "xdg-open";
+            // The printed URL is the fallback; the opener must not block polling.
+            tokio::spawn(async move {
+                let _ = tokio::process::Command::new(opener)
+                    .arg(profile_url.as_str())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            });
+        }
+    }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
     loop {
         ensure!(
@@ -140,7 +226,7 @@ async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
         match poll["status"].as_str() {
             Some("pending") => continue,
             Some("authorized") => {
-                let credential = Credential {
+                return Ok(Credential {
                     device_id: poll["device_id"]
                         .as_str()
                         .and_then(|s| uuid::Uuid::parse_str(s).ok())
@@ -154,12 +240,7 @@ async fn pair(config: &RemoteConfig) -> anyhow::Result<()> {
                             "Отсутствуют учётные данные устройства",
                         ))?
                         .into(),
-                };
-                credential.save(&config.credential_file)?;
-                eprintln!(
-                    "{}", language.pick("Device paired. Credential saved privately; no model configuration is needed.", "Устройство подключено. Учётные данные сохранены приватно; настройка модели не требуется.")
-                );
-                return Ok(());
+                });
             }
             _ => anyhow::bail!(language.pick(
                 "Pairing expired or invalid; start a new pairing request",

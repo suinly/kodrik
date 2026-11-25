@@ -91,6 +91,67 @@ test('invited profile shows device controls without owner password controls',asy
   } finally {await browser.close()}
 });
 
+const pairingUuid='550e8400-e29b-41d4-a716-446655440000';
+
+for(const hash of ['#device-connections','']) test(`linked pairing waits for the profile and requires an exact terminal code ${hash?'with the anchor':'after login'}`,async()=>{
+  const {page,browser,mount}=await componentPage('ProfilePage');
+  try {
+    // Login preserves the query; do not rely on the fragment surviving.
+    await page.evaluate(query=>history.replaceState(null,'',query),`?pair_request=${pairingUuid}${hash}`);
+    await page.addStyleTag({content:'#app { height: 100vh; overflow-y: auto; } form:has(input[name="name"]) { min-height: 200vh; }'});
+    let releaseProfile;
+    const profileReady=new Promise(resolve=>{releaseProfile=resolve});
+    await page.route('**/api/profile',async r=>{
+      await profileReady;
+      return r.fulfill({json:{name:'Owner',owner:true,telegram_id:null,password_set:true}});
+    });
+    const posts=[];
+    await page.route('**/api/devices**',r=>{
+      if(r.request().method()!=='POST') return r.fulfill({json:[]});
+      posts.push({url:r.request().url(),body:r.request().postDataJSON()});
+      return r.fulfill({status:204});
+    });
+    const section=page.getByRole('region',{name:'Device connections',exact:true});
+    await mount();
+    await expect(section).toHaveCount(0);
+    releaseProfile();
+    const input=section.getByRole('textbox',{name:'Comparison code',exact:true});
+    const approve=section.getByRole('button',{name:'Approve connection',exact:true});
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport();
+    await expect(section).toHaveAttribute('id','device-connections');
+    await expect(section.getByRole('textbox')).toHaveCount(1);
+    await expect(section.getByRole('checkbox')).toHaveCount(0);
+    await expect(section.getByText(/Only approve a request you started locally/)).toBeVisible();
+    await expect(approve).toBeDisabled();
+    for(const value of ['Ab12Cd3','Ab12Cd345','Ab12Cd3!','Ab12Cd3é',' Ab12Cd3','Ab12Cd34 ']) {
+      await input.fill(value);
+      await expect(approve).toBeDisabled();
+    }
+    await input.fill('Ab12Cd34');
+    await expect(approve).toBeEnabled();
+    assert.deepEqual(posts,[]);
+    await approve.click();
+    await expect(section.getByText('Connection approved.',{exact:true})).toBeVisible();
+    assert.deepEqual(posts,[{url:'https://kodrik.test/nested/api/devices/pair/approve',body:{request_id:pairingUuid,code:'Ab12Cd34'}}]);
+    await expect(input).toHaveValue('');
+    assert.equal(new URL(page.url()).search,`?pair_request=${pairingUuid}`);
+  } finally {await browser.close()}
+});
+
+for(const query of ['pair_request=bogus',`pair_request=${pairingUuid}%0A`,`pair_request=${pairingUuid}&pair_request=${pairingUuid}`]) test(`invalid pairing query falls back to the manual form: ${query}`,async()=>{
+  const {page,browser,mount}=await componentPage('DeviceConnections');
+  try {
+    await page.route('**/api/devices',r=>r.fulfill({json:[]}));
+    await page.evaluate(query=>history.replaceState(null,'',`?${query}#device-connections`),query);
+    await mount();
+    await expect(page.getByRole('textbox',{name:'Pairing request UUID',exact:true})).toHaveValue('');
+    await expect(page.getByRole('checkbox')).not.toBeChecked();
+    await expect(page.getByRole('alert')).toContainText('Invalid pairing link');
+    await expect(page.getByRole('button',{name:'Approve connection',exact:true})).toBeDisabled();
+  } finally {await browser.close()}
+});
+
 test('device API failures stay visible and failed revoke retains the registered device',async()=>{
   const {page,browser,mount}=await componentPage('DeviceConnections');
   try {

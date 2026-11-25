@@ -185,6 +185,8 @@ const deviceTranslations = {
   'Подключения устройств': 'Device connections',
   'UUID запроса подключения': 'Pairing request UUID',
   'Код сравнения': 'Comparison code',
+  'Введите 8-значный буквенно-цифровой код из терминала. Подтверждайте только запрос, который вы запустили локально на своём устройстве.': 'Enter the 8-character alphanumeric code from your terminal. Only approve a request you started locally on your device.',
+  'Недействительная ссылка подключения. Введите UUID и код вручную или запустите подключение заново.': 'Invalid pairing link. Enter the UUID and code manually or start pairing again.',
   'Сверьте UUID и код с терминалом на вашем устройстве. Подтверждайте только запрос, который вы начали сами.': 'Compare the UUID and code with the terminal on your device. Only approve a request you initiated yourself.',
   'Я сверил UUID и код на своём устройстве': 'I compared the UUID and code on my device',
   'Подтвердить подключение': 'Approve connection',
