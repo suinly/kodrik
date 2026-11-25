@@ -1,3 +1,4 @@
+use super::setup;
 use crate::i18n::Language;
 use crate::remote::{client::Credential, config::RemoteConfig};
 use anyhow::{Context, ensure};
@@ -17,6 +18,17 @@ fn config_path(path: Option<&Path>) -> anyhow::Result<PathBuf> {
 pub async fn run(server: Option<&str>, path: Option<&Path>) -> anyhow::Result<()> {
     let language = Language::from_environment();
     let path = config_path(path)?;
+    let entered_server;
+    let server = if server.is_none() && setup::missing(&path)? {
+        ensure!(setup::interactive(), "{} {}. {}", language.pick("Remote configuration not found:", "Не найден файл удалённой конфигурации:"), path.display(), language.pick("Run Kodrik in an interactive terminal or use `kodrik connect <server-url>`", "Запустите Kodrik в интерактивном терминале или используйте `kodrik connect <адрес-сервера>`"));
+        entered_server = setup::prompt(
+            language.pick("Kodrik server URL: ", "Адрес сервера Kodrik: "),
+            true,
+        )?;
+        Some(entered_server.as_str())
+    } else {
+        server
+    };
     let mut new_contents = None;
     let config = if let Some(server) = server {
         let mut url = reqwest::Url::parse(server)
@@ -54,7 +66,7 @@ pub async fn run(server: Option<&str>, path: Option<&Path>) -> anyhow::Result<()
     };
     let credential = pair(&config, server.is_some()).await?;
     if let Some(contents) = new_contents {
-        save_config(&path, &contents).context(language.pick(
+        setup::save_new_config(&path, &contents).context(language.pick(
             "Could not save remote configuration after approval; revoke the new device in your profile before retrying",
             "После подтверждения не удалось сохранить конфигурацию; отзовите новое устройство в профиле перед повторной попыткой",
         ))?;
@@ -67,31 +79,23 @@ pub async fn run(server: Option<&str>, path: Option<&Path>) -> anyhow::Result<()
     Ok(())
 }
 
-fn save_config(path: &Path, contents: &str) -> anyhow::Result<()> {
-    let parent = path.parent().context("Configuration directory missing")?;
-    crate::platform::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    crate::platform::set_file_private(file.as_file(), 0o600)?;
-    file.write_all(contents.as_bytes())?;
-    file.as_file().sync_all()?;
-    file.persist_noclobber(path)?;
-    crate::platform::sync_directory(parent)?;
-    Ok(())
-}
-
 pub async fn remote_tui(path: Option<&Path>, session: Option<&str>) -> anyhow::Result<()> {
     let language = Language::from_environment();
-    let config = RemoteConfig::load(&config_path(path)?)?;
+    let resolved_path = config_path(path)?;
     ensure!(
-        std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+        setup::interactive(),
         language.pick(
             "Remote TUI requires an interactive terminal",
             "Для удалённого TUI нужен интерактивный терминал"
         )
     );
+    if setup::missing(&resolved_path)? {
+        run(None, path).await?;
+    }
+    let config = RemoteConfig::load(&resolved_path)?;
+    if setup::missing(&config.credential_file)? {
+        run(None, path).await?;
+    }
     super::tui::remote::run_with(&config, path, session).await
 }
 

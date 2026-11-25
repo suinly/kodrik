@@ -5,6 +5,14 @@ which defaults to `~/.kodrik`. Pass `--data-dir /path/to/kodrik` to use another
 directory for configuration and state. Restart the process after changing the
 configuration. The flag does not move existing files.
 
+If `config.toml` is missing, an interactive `kodrik`, `kodrik ask`, or
+`kodrik gateway` launch offers first-run setup. It asks for a model ID, an
+optional OpenAI-compatible API URL, and an API key without echoing it. Setup
+never replaces an existing file. An interactive first launch of the gateway
+sets up local-only web chat at `http://127.0.0.1:8080/`; set the owner password
+with `kodrik web set-password` in the same data directory. For unattended
+launches, create the file in advance.
+
 `--data-dir` is global and can go before or after a command, including nested
 commands. Use the same directory for the gateway and its administrative
 commands, for example:
@@ -47,6 +55,11 @@ HTTP providers. Unknown fields are rejected; do not copy `[provider]`, `[model]`
 `[gateway]` into it. Paths are literal, and relative credential/skill paths
 resolve from that file's directory. See [Remote TUI](remote-tui.md#configure-and-pair)
 for the complete example, defaults, owner pairing/revocation and HTTPS rules.
+
+When `remote.toml` is missing, interactive `kodrik connect` and
+`kodrik --remote` ask for the server URL and show the pairing code. If the
+configuration exists but the device credential is missing, interactive
+`kodrik --remote` offers pairing with the configured server.
 
 ## Providers and models
 

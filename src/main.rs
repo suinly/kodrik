@@ -141,7 +141,11 @@ async fn run(cli: Cli) -> anyhow::Result<bool> {
         .await
         .map(|_| false);
     }
-    let config = Config::load()?;
+    let config = match &cli.command {
+        None | Some(Commands::Ask { .. }) => commands::setup::load_local(false)?,
+        Some(Commands::Gateway) => commands::setup::load_local(true)?,
+        _ => Config::load()?,
+    };
 
     match cli.command {
         Some(Commands::Connect { .. }) => unreachable!("Pairing handled before provider config"),

@@ -3,6 +3,7 @@ pub mod connect;
 pub mod gateway;
 pub mod invites;
 pub mod request_restart;
+pub mod setup;
 pub mod tui;
 pub mod web;
 

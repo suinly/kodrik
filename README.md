@@ -93,7 +93,14 @@ You can also invoke `./target/release/kodrik` directly from the checkout.
 
 ### Configure and run
 
-For either installation method, create the private state directory:
+Run `kodrik` from an interactive terminal. On first launch, Kodrik asks for
+a model ID, an optional OpenAI-compatible API URL, and an API key (hidden as
+you type). It saves a private `config.toml` and opens the terminal UI.
+`kodrik ask` and `kodrik gateway` also offer setup when the file is missing.
+First-run gateway setup enables web chat only on `127.0.0.1:8080`.
+
+For non-interactive use, create the private state directory and configuration
+before launching:
 
 ```sh
 install -d -m 700 ~/.kodrik
