@@ -109,6 +109,32 @@ impl ToolRegistry {
         .with_mcp_search()
     }
 
+    pub(crate) fn child_allowed(&self, names: &[String]) -> Self {
+        Self {
+            deferred_builtins: self.deferred_builtins.clone(),
+            tools: self
+                .tools
+                .iter()
+                .filter(|(name, _)| {
+                    name.as_str() != super::mcp_search::NAME && names.contains(name)
+                })
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect(),
+        }
+        .with_mcp_search()
+    }
+
+    pub(crate) fn available_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .tools
+            .iter()
+            .filter(|(_, tool)| tool.available())
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
     pub fn list(&self) -> Vec<&dyn Tool> {
         let mut tools: Vec<&dyn Tool> = self
             .tools

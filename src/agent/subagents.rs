@@ -8,14 +8,20 @@ use tokio::sync::{Mutex, oneshot, watch};
 
 use super::{
     Agent, AgentRunner,
+    agent_profiles::{ProfileCatalog, ProfileSettings},
     inbox::{BusyMode, SubmissionRequest, SubmissionStatus},
-    session::{ExecutionOwnership, Session, SessionId, SqliteSessionStore},
+    session::{ExecutionOwnership, Session, SessionId, SessionStore, SqliteSessionStore},
 };
 use crate::gateway::{IncomingMessage, InterfaceId};
 
 pub(crate) const PREFIX: &str = "companion:subagent:";
 const MAX_ACTIVE: usize = 3;
 const MAX_CHILDREN: i64 = 16;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ChildPolicy {
+    pub tools: Option<Vec<String>>,
+}
 
 pub(crate) fn with_children(
     db: &rusqlite::Connection,
@@ -107,7 +113,7 @@ impl Child {
 
 pub(crate) struct Subagents {
     runner: AgentRunner,
-    store: SqliteSessionStore,
+    pub(super) store: SqliteSessionStore,
     // Admission and retirement share this lock so late input always has a worker.
     active: Mutex<HashMap<String, watch::Sender<bool>>>,
 }
@@ -276,18 +282,59 @@ impl Subagents {
         self.spawn_with_model(parent, task, None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn spawn_with_model(
         self: &Arc<Self>,
         parent: &ParentContext,
         task: String,
         model: Option<super::tools::model_selection::ModelTier>,
     ) -> anyhow::Result<Child> {
+        self.spawn_configured(parent, task, model, None).await
+    }
+
+    pub(crate) fn profile_choices(
+        &self,
+    ) -> anyhow::Result<(Vec<String>, Vec<String>, Vec<String>)> {
+        Ok((
+            self.runner.agent.child_tool_names(),
+            self.runner.agent.child_skill_names()?,
+            self.available_model_roles().unwrap_or_default(),
+        ))
+    }
+
+    pub(super) fn profile_catalog(&self, parent: &ParentContext) -> anyhow::Result<ProfileCatalog> {
+        let mut catalog: ProfileCatalog = self.profile_choices()?.into();
+        if let Some(scope) = crate::remote::tools::CURRENT_SCOPE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .filter(|scope| scope.belongs_to(parent.session.id()))
+        {
+            catalog.tools.extend(scope.child_tool_names());
+            catalog.tools.sort_unstable();
+            catalog.device_tools = scope.child_profile_tools();
+        }
+        Ok(catalog)
+    }
+
+    pub(super) async fn spawn_configured(
+        self: &Arc<Self>,
+        parent: &ParentContext,
+        task: String,
+        model: Option<super::tools::model_selection::ModelTier>,
+        settings: Option<ProfileSettings>,
+    ) -> anyhow::Result<Child> {
         parent.active()?;
         validate_message(&task)?;
         let fixed = parent.session.model_override().filter(|m| *m != "auto");
-        let proposed = model.map(|m| m.name());
+        if let Some(settings) = &settings {
+            settings.validate(&self.profile_catalog(parent)?)?;
+        }
+        let proposed = model
+            .map(|m| m.name())
+            .or_else(|| settings.as_ref().and_then(|p| p.model.as_deref()));
         ensure!(
-            fixed != Some("fast") || proposed.is_none_or(|model| model == "fast"),
+            fixed != Some("fast") || model.is_none_or(|model| model.name() == "fast"),
             "Parent session is fixed to Fast"
         );
         let chosen = fixed.or(proposed).or_else(|| {
@@ -303,6 +350,17 @@ impl Subagents {
         let id = format!("{PREFIX}{}", uuid::Uuid::new_v4());
         let ownership = self.store.execution_lock("subagent", &id).await?;
         let mut session = parent.session.child(SessionId::new(&id));
+        session.child_policy = Some(if let Some(settings) = &settings {
+            session.configure_child(
+                &settings.instructions,
+                self.runner.agent.child_skills(&settings.skills)?,
+            );
+            ChildPolicy {
+                tools: Some(settings.tools.clone()),
+            }
+        } else {
+            ChildPolicy::default()
+        });
         session.set_model_override(chosen.map(str::to_owned));
         let child = Child {
             id,
@@ -486,6 +544,17 @@ impl Subagents {
             .map(|provider| provider.identity()))
     }
 
+    pub(crate) async fn token_usage(
+        &self,
+        child: &Child,
+    ) -> anyhow::Result<Option<super::session::TokenUsage>> {
+        Ok(self
+            .store
+            .load(&SessionId::new(&child.id))
+            .await?
+            .map(|session| session.token_usage()))
+    }
+
     pub(crate) async fn cancellation_requested(&self, id: &str) -> anyhow::Result<bool> {
         if let Some(cancel) = self.active.lock().await.get(id) {
             return Ok(*cancel.borrow());
@@ -639,7 +708,6 @@ impl Subagents {
                 biased;
                 _=cancelled(parent)=>{stopping=true;let _=stop.send(());work.await},
                 _=cancelled(cancel)=>{stopping=true;let _=stop.send(());work.await},
-                _=tokio::time::sleep(Duration::from_secs(300))=>{stopping=true;let _=stop.send(());work.await},
                 result=&mut work=>result,
             };
             stopping |= result

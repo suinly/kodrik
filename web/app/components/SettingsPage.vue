@@ -2,6 +2,7 @@
 import {base, messageOf} from '../utils/api'
 import {settingsRequest, restartGateway, type ConfigDocument, type GatewayStatus} from '../utils/settings'
 import {t} from '../utils/i18n'
+import AgentProfilesSettings from './AgentProfilesSettings.vue'
 import ConfigFieldEditor from './ConfigFieldEditor.vue'
 import {configSchema,type ConfigValues} from '../utils/configForm'
 
@@ -12,6 +13,8 @@ const loading=ref(false),saving=ref(false),restarting=ref(false),confirmRestart=
 const gateway=ref<GatewayStatus|null>(null)
 const error=ref(''),gatewayError=ref(''),notice=ref(''),restartNotice=ref('')
 const dirty=computed(()=>document.value!==null && JSON.stringify(values.value)!==JSON.stringify(document.value.values))
+const profilesOpened=ref(false),profilesDirty=ref(false)
+const settingsDirty=computed(()=>dirty.value || profilesDirty.value)
 const selected=ref('provider'),showKeys=ref(false)
 const sections=[
   {id:'provider',label:'Модели',description:'Профили моделей и подключения к провайдерам ИИ.',fields:['provider','model']},
@@ -23,7 +26,7 @@ const sections=[
 ]
 const currentSection=computed(()=>sections.find(section=>section.id===selected.value)!)
 const controller=new AbortController()
-watch(dirty,value=>emit('dirty',value),{flush:'sync'})
+watch(settingsDirty,value=>emit('dirty',value),{flush:'sync'})
 
 async function load() {
   if(!props.owner || loading.value || saving.value || restarting.value) return
@@ -51,7 +54,7 @@ async function save() {
   finally {saving.value=false}
 }
 async function restart() {
-  if(!confirmRestart.value || dirty.value || saving.value || restarting.value || !gateway.value?.restart_available) return
+  if(!confirmRestart.value || settingsDirty.value || saving.value || restarting.value || !gateway.value?.restart_available) return
   confirmRestart.value=false;restarting.value=true;gatewayError.value='';restartNotice.value=''
   try {
     const result=await restartGateway(gateway.value.instance_id,(method,signal)=>settingsRequest<GatewayStatus>(base,method==='POST'?'gateway/restart':'gateway',method,undefined,signal),{signal:controller.signal})
@@ -62,7 +65,7 @@ async function restart() {
   finally {restarting.value=false}
 }
 function beforeUnload(event:BeforeUnloadEvent) {
-  if(dirty.value) {event.preventDefault();event.returnValue=''}
+  if(settingsDirty.value) {event.preventDefault();event.returnValue=''}
 }
 watch(()=>props.owner,()=>{void loadGateway()},{immediate:true})
 onMounted(()=>{window.addEventListener('beforeunload',beforeUnload)})
@@ -73,6 +76,15 @@ onBeforeUnmount(()=>{controller.abort();window.removeEventListener('beforeunload
   <section :aria-label="t('Настройки')" class="mx-auto w-full max-w-6xl space-y-8 p-4 sm:p-8">
     <p v-if="!owner" role="alert" class="text-sm text-error">{{ t('Настройки доступны только владельцу.') }}</p>
     <template v-else>
+      <section class="space-y-3" :aria-label="t('Профили агентов')">
+        <h2 class="text-lg font-semibold text-highlighted">{{ t('Профили агентов') }}</h2>
+        <p class="text-sm text-muted">{{ t('Настройте инструкции, модель, навыки и инструменты для лёгких агентов.') }}</p>
+        <details @toggle="profilesOpened ||= ($event.currentTarget as HTMLDetailsElement).open">
+          <summary class="cursor-pointer text-sm font-medium text-primary">{{ t('Открыть каталог профилей') }}</summary>
+          <AgentProfilesSettings v-if="profilesOpened" class="mt-4" @dirty="profilesDirty=$event" />
+        </details>
+      </section>
+      <USeparator />
       <section class="space-y-4" :aria-label="t('Конфигурация шлюза')">
         <h2 class="text-lg font-semibold text-highlighted">{{ t('Конфигурация шлюза') }}</h2>
         <p class="text-sm text-muted">{{ t('Все настройки доступны в форме, включая необязательные поля. Значения по умолчанию загружаются с сервера. Изменения применяются после перезапуска.') }}</p>
@@ -125,8 +137,8 @@ onBeforeUnmount(()=>{controller.abort();window.removeEventListener('beforeunload
         <p v-if="gateway" class="text-sm text-muted">{{ t('Процесс: {0}',gateway.pid) }}</p>
         <p class="text-sm text-muted">{{ t('Активные сессии будут приостановлены. Изменение владельца или веб-настроек может лишить вас доступа к этому интерфейсу.') }}</p>
         <p v-if="gateway && !gateway.restart_available" class="text-sm text-warning">{{ t('Перезапуск недоступен для этого способа запуска. Перезапустите шлюз вручную.') }}</p>
-        <p v-if="dirty" class="text-sm text-warning">{{ t('Сохраните или отбросьте изменения перед перезапуском.') }}</p>
-        <UButton :label="t('Перезапустить шлюз')" icon="i-lucide-refresh-cw" color="warning" variant="soft" :loading="restarting" :disabled="!gateway?.restart_available || dirty || saving || loading" @click="confirmRestart=true" />
+        <p v-if="settingsDirty" class="text-sm text-warning">{{ t('Сохраните или отбросьте изменения перед перезапуском.') }}</p>
+        <UButton :label="t('Перезапустить шлюз')" icon="i-lucide-refresh-cw" color="warning" variant="soft" :loading="restarting" :disabled="!gateway?.restart_available || settingsDirty || saving || loading" @click="confirmRestart=true" />
         <p v-if="restarting" role="status" class="text-sm text-muted">{{ t('Ожидаю новый экземпляр шлюза, до 60 секунд…') }}</p>
         <p v-if="restartNotice" role="status" class="text-sm text-muted">{{ restartNotice }}</p>
         <p v-if="gatewayError" role="alert" class="text-sm text-error">{{ gatewayError }}</p>
@@ -136,7 +148,7 @@ onBeforeUnmount(()=>{controller.abort();window.removeEventListener('beforeunload
         <template #body><p class="text-sm text-muted">{{ t('Активные сессии будут приостановлены. Изменение владельца или веб-настроек может лишить вас доступа к этому интерфейсу.') }}</p></template>
         <template #footer>
           <UButton :label="t('Отмена')" color="neutral" variant="ghost" @click="confirmRestart=false" />
-          <UButton :label="t('Подтвердить перезапуск')" color="warning" :disabled="dirty || saving" @click="restart" />
+          <UButton :label="t('Подтвердить перезапуск')" color="warning" :disabled="settingsDirty || saving" @click="restart" />
         </template>
       </UModal>
     </template>

@@ -537,10 +537,6 @@ impl AgentRunner {
                     .map(|store| Checkpoint::new(store, &session_id, &session));
                 if let Some(cp) = checkpoint.as_mut() {
                     cp.ownership = Some(super::session::ExecutionOwnership::join(ownership));
-                    if session_id.as_str().starts_with(super::subagents::PREFIX) {
-                        cp.record.deadline_at =
-                            Some(chrono::Utc::now() + chrono::Duration::minutes(5));
-                    }
                 }
                 if let Some(cp) = checkpoint.as_mut()
                     && let Some(record) = &submission

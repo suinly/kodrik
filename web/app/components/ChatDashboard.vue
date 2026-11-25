@@ -52,7 +52,7 @@ const section = ref<Section>(readLocation().section)
 const owner=ref(false)
 const settingsDirty=ref(false)
 function canLeaveSettings() {
-  return section.value!=='settings' || !settingsDirty.value || window.confirm(t('Отбросить несохранённые изменения конфигурации?'))
+  return section.value!=='settings' || !settingsDirty.value || window.confirm(t('Отбросить несохранённые изменения настроек?'))
 }
 const restoring = ref(false)
 const locationError = ref(false)

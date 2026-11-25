@@ -3570,8 +3570,8 @@ test('child task panel shows live outcomes and handles cancellation without losi
   try {
     const page=await signedPage(browser),errors=[];page.on('pageerror',error=>errors.push(error.message));
     const agents=[
-      {id:'companion:subagent:active',task:'Проверить авторизацию',status:'running',model:'openai:gpt-test-fast',result:null,error:null},
-      {id:'companion:subagent:done',task:'Проверить тесты\nСверить граничные случаи',status:'completed',model:'openai:gpt-test-deep',result:'Найдены две проверки',error:null},
+      {id:'companion:subagent:active',task:'Проверить авторизацию',status:'running',model:'openai:gpt-test-fast',result:null,error:null,token_usage:{input_tokens:3,output_tokens:null,cached_tokens:null,total_tokens:null,requests:1,partial:true}},
+      {id:'companion:subagent:done',task:'Проверить тесты\nСверить граничные случаи',status:'completed',model:'openai:gpt-test-deep',result:'Найдены две проверки',error:null,token_usage:{input_tokens:100,output_tokens:23,cached_tokens:10,total_tokens:123,requests:2,partial:true}},
       {id:'companion:subagent:failed',task:'Проверить провайдера',status:'failed',result:null,error:'Provider rejected the request'},
       {id:'companion:subagent:interrupted',task:'Проверить миграцию',status:'interrupted',result:null,error:'Execution outcome unknown'},
     ];
@@ -3595,7 +3595,10 @@ test('child task panel shows live outcomes and handles cancellation without losi
     const active=panel.getByTestId('subagent-companion:subagent:active');
     await expect(active.getByText('В работе',{exact:true})).toBeVisible();
     await expect(active.getByText('Модель: openai:gpt-test-fast',{exact:true})).toBeVisible();
+    await expect(active.getByTestId('child-token-usage')).toHaveText('Токены: — · Ответы модели: 1');
     await expect(panel.getByTestId('subagent-companion:subagent:done').getByText('Модель: openai:gpt-test-deep',{exact:true})).toBeVisible();
+    await expect(panel.getByTestId('subagent-companion:subagent:done').getByTestId('child-token-usage')).toHaveText('Токены: ≥123 · Ответы модели: 2');
+    await expect(panel.getByTestId('subagent-companion:subagent:failed').getByTestId('child-token-usage')).toHaveCount(0);
     await expect(panel.getByTestId('subagent-companion:subagent:failed').getByText(/^Модель:/)).toHaveCount(0);
     await expect(panel.getByText('Готово',{exact:true})).toBeVisible();
     await expect(panel.getByText('Ошибка',{exact:true})).toBeVisible();

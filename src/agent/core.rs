@@ -106,6 +106,12 @@ impl Agent {
             "list_agents",
             "wait_agent",
             "stop_agent",
+            "agent_profiles",
+            "select_model",
+            "context_read",
+            "session_search",
+            "memory",
+            "companion",
             "messages",
             "telegram_reply",
             "telegram_results",
@@ -121,7 +127,24 @@ impl Agent {
             "browser_evaluate",
         ]);
         agent.limits = None;
+        agent.compactor = None;
         agent
+    }
+
+    pub(super) fn child_tool_names(&self) -> Vec<String> {
+        self.tools
+            .available_names()
+            .into_iter()
+            .filter(|name| name != "mcp_search")
+            .collect()
+    }
+
+    pub(super) fn child_skill_names(&self) -> anyhow::Result<Vec<String>> {
+        self.context.child_skill_names()
+    }
+
+    pub(super) fn child_skills(&self, names: &[String]) -> anyhow::Result<String> {
+        self.context.child_skills(names)
     }
 
     pub(crate) fn with_subagents(mut self, manager: Arc<super::subagents::Subagents>) -> Self {
@@ -684,6 +707,12 @@ impl Agent {
                 Some(scope) => scope.tools(&self.tools)?,
                 None => self.tools.clone(),
             };
+            let registry =
+                if let Some(allow) = session.child_policy.as_ref().and_then(|p| p.tools.as_ref()) {
+                    registry.child_allowed(allow)
+                } else {
+                    registry
+                };
             let registry = if browser_client_id.is_some() && !self.isolated() {
                 registry
             } else {
@@ -806,7 +835,11 @@ impl Agent {
                     context
                         .instructions
                         .to_mut()
-                        .push_str(&scope.context_overlay());
+                        .push_str(&if let Some(policy) = &session.child_policy {
+                            scope.child_context_overlay(policy.tools.as_deref())
+                        } else {
+                            scope.context_overlay()
+                        });
                 }
                 if let Some(budget) = call_budget {
                     anyhow::ensure!(requests < budget, "Wakeup request budget exhausted");
@@ -1286,6 +1319,7 @@ impl Agent {
                                                     matches!(
                                                         call.name.as_str(),
                                                         "spawn_agent"
+                                                            | "agent_profiles"
                                                             | "send_message"
                                                             | "list_agents"
                                                             | "wait_agent"

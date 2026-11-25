@@ -178,14 +178,16 @@ async fn child_model_selection_uses_configured_roles_and_honors_a_fixed_parent()
 }
 
 #[tokio::test]
-async fn children_run_in_parallel_and_keep_parent_rules_without_copying_history() {
+async fn children_run_in_parallel_without_copying_parent_rules_or_history() {
     let (_dir, manager, parent, _finished, mut seen, gates) = setup().await;
     let first = manager.spawn(&parent, "first".into()).await.unwrap();
     let second = manager.spawn(&parent, "second".into()).await.unwrap();
     let a = observed(&mut seen).await;
     let b = observed(&mut seen).await;
-    assert!(a.0.contains("PARENT RULES"));
-    assert!(b.0.contains("PARENT RULES"));
+    assert!(a.0.contains("## Delegated task"));
+    assert!(b.0.contains("## Delegated task"));
+    assert!(!a.0.contains("PARENT RULES"));
+    assert!(!b.0.contains("PARENT RULES"));
     assert!(!a.0.contains("PRIVATE OLD CONVERSATION"));
     let mut tasks = vec![a.1, b.1];
     tasks.sort();
@@ -1307,7 +1309,7 @@ impl LlmProvider for RetryingModel {
 }
 
 #[tokio::test]
-async fn child_retry_attempts_are_not_capped_at_sixteen() {
+async fn child_has_no_model_call_budget() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open_async(dir.path().join("sessions"))
         .await
@@ -1340,6 +1342,79 @@ async fn child_retry_attempts_are_not_capped_at_sixteen() {
         .unwrap();
     assert_eq!(outcome.status, Status::Failed, "{outcome:?}");
     assert_eq!(model.0.load(std::sync::atomic::Ordering::SeqCst), 101);
+}
+
+#[tokio::test]
+async fn temporary_role_has_no_execution_deadline() {
+    let (_dir, manager, parent, _finished, mut seen, gates) = setup().await;
+    let settings = ProfileSettings {
+        name: "Review".into(),
+        instructions: "REVIEW ONLY".into(),
+        model: None,
+        skills: vec![],
+        tools: vec![],
+    };
+    let child = manager
+        .spawn_configured(&parent, "one task".into(), None, Some(settings))
+        .await
+        .unwrap();
+    let (prompt, messages) = observed(&mut seen).await;
+    assert!(prompt.contains("REVIEW ONLY"));
+    assert!(!prompt.contains("PARENT RULES"));
+    assert_eq!(messages, ["one task"]);
+    let runs = manager.store.unfinished_runs().await.unwrap();
+    let run = runs.iter().find(|run| run.session_id == child.id).unwrap();
+    assert!(run.deadline_at.is_none());
+    gates.add_permits(1);
+    let child = manager
+        .wait(&parent.session, &child.id, 3000)
+        .await
+        .unwrap();
+    assert_eq!(child.status, Status::Completed, "{child:?}");
+}
+
+#[tokio::test]
+async fn explicit_role_removes_unlisted_tools_from_dispatch_and_discovery() {
+    let registry = ToolRegistry::default().register(Arc::new(crate::agent::tools::UpdatePlanTool));
+    assert!(registry.contains("update_plan"));
+    let restricted = registry.child_allowed(&[]);
+    assert!(restricted.for_model(&[]).unwrap().is_empty());
+    assert!(
+        restricted
+            .execute("update_plan", serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown tool")
+    );
+}
+
+#[tokio::test]
+async fn profile_tool_can_propose_but_cannot_launch_a_draft() {
+    let (_dir, manager, parent, _finished, _seen, _gates) = setup().await;
+    let registry = crate::agent::tools::subagents::register(ToolRegistry::default(), manager);
+    let profile = serde_json::json!({"name":"Draft","instructions":"Do the task","model":null,"skills":[],"tools":[]});
+    CURRENT_PARENT
+        .scope(Some(parent), async {
+            let response = registry
+                .execute(
+                    "agent_profiles",
+                    serde_json::json!({"action":"propose","profile":profile}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.output["saved"], false);
+            let id = response.output["draft"]["id"].as_str().unwrap();
+            let error = registry
+                .execute(
+                    "spawn_agent",
+                    serde_json::json!({"task":"test","model":null,"profile_id":id,"role":null}),
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("No saved profile"));
+        })
+        .await;
 }
 
 #[tokio::test]

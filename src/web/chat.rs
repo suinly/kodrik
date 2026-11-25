@@ -35,6 +35,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 #[path = "chat_browser_context.rs"]
 mod browser_context;
 
+#[path = "chat_agent_profiles.rs"]
+mod agent_profiles;
 #[path = "chat_approvals.rs"]
 mod approvals;
 #[path = "chat_forms.rs"]
@@ -442,6 +444,7 @@ impl Chat {
                 let mut value = child.view();
                 value["task"] = json!(child.task);
                 value["model"] = json!(manager.model_identity(&child).await?);
+                value["token_usage"] = json!(manager.token_usage(&child).await?);
                 value["cancel_requested"] = json!(manager.cancellation_requested(&child.id).await?);
                 children.push(value);
             }
@@ -581,6 +584,19 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .route("/api/chat/activity", get(activity))
         .route("/api/chat/updates", get(updates))
         .route("/api/chat/models", get(models::list))
+        .merge(
+            Router::new()
+                .route("/api/chat/agent-profiles", get(agent_profiles::list))
+                .route(
+                    "/api/chat/agent-profiles/{id}",
+                    axum::routing::put(agent_profiles::save).delete(agent_profiles::delete),
+                )
+                .layer(DefaultBodyLimit::max(48 * 1024))
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    webhooks::owner_only,
+                )),
+        )
         .route("/api/chat/sessions/{id}/model", post(models::set))
         .route("/api/chat/sessions/{id}/read", post(mark_read))
         .route("/api/chat/sessions/read-all", post(mark_all_read))

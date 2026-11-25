@@ -706,7 +706,8 @@ async fn child_receives_only_explicit_parent_scope_and_loses_it_after_revoke() {
         .await
         .unwrap()
         .unwrap();
-    assert!(context.contains("/laptop/project/AGENTS.md"));
+    assert!(context.contains("/laptop/project"));
+    assert!(!context.contains("AGENTS.md"));
     assert!(names.iter().any(|name| name.starts_with("local__")));
     manager
         .wait(&parent.session, &child.id, 2000)

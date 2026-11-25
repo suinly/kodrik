@@ -388,12 +388,31 @@ available in the message's expandable steps.
 Ask Kodrik to split independent work between subagents, for example: “Have one
 agent inspect authentication and another inspect its tests; collect both results.”
 The parent can continue working while children run. Each child has its own
-history and inherits the parent's instruction, memory and skill snapshots and
-the same execution sandbox. The conversation history is not copied: the parent
-passes the needed context in the task. Children can edit files, including shared
-host files in owner/CLI mode, so assign non-overlapping changes.
+history and a short executor prompt, plus its role instructions, assigned skill
+references and delegated task. The coordinator's personality, memory, full
+skill catalog and conversation history are not copied. The parent passes only
+what the child needs. The workspace is still shared, so assign non-overlapping
+changes when write tools are enabled.
 
-`spawn_agent` takes `task` and returns `id` and `status`. `send_message` takes
+In **Settings → Agent profiles**, create, edit or remove custom profiles. A
+profile chooses a model role, instructions, skills and allowed tools. Bundled
+Reviewer, Researcher and Implementer roles ship
+with the release and update automatically. Copy one to customize it without
+changing the bundled role. Bundled profiles only use capabilities available
+in the current environment. Device tools require a live lease in the parent
+session; custom profiles configured in Settings use server tool names.
+
+Kodrik can use a saved profile or create a one-off role directly for a task. It
+can propose a reusable profile, but that proposal cannot be launched by ID or
+replace an existing profile. Only saving it in Settings makes it launchable.
+Profile edits apply to new children, not active executions or later turns of
+already-created children. Assigned skills describe workflow, not permissions:
+if a role has a shell, it can access what that shell can access. Avoid shell and
+write-capable connectors in a role intended to be read-only.
+
+`spawn_agent` takes `task`, optional `model`, and either a `profile_id` or a
+temporary `role`; it returns `id` and `status`. Without a profile or role a new
+tool-based spawn has no tools. `send_message` takes
 `agent_id` and `message`; corrections are persisted before acknowledgement and
 consumed between execution steps. A message to a finished child starts another
 turn in that history. `list_agents` takes no arguments. `wait_agent` takes
@@ -404,7 +423,9 @@ Other statuses are `completed`, `stopped`, `failed` and `interrupted`.
 
 Tasks/messages must contain 1–16384 UTF-8 bytes. Up to three children can run
 concurrently per application worker, with sixteen child sessions per parent
-session. Each child turn has a five-minute deadline and no model-call cap.
+session. Child turns have no execution deadline or model-call budget. Individual
+tool and provider requests retain their own timeouts. Web child details show
+model usage when reported by the provider.
 Returned results/errors are limited to 16384 characters; the full history remains
 in SQLite. Children cannot delegate, reply directly to the user,
 schedule wakeups, manage webhooks or run automatic learning reviews.

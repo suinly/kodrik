@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type {Subagent} from '../utils/api'
-import {t} from '../utils/i18n'
+import {locale,t} from '../utils/i18n'
 import {shortConversationTitle} from '../utils/chat-presentation'
 
 const props=defineProps<{agents:Subagent[];stopping:Set<string>;problems:Record<string,string>;disabled:boolean}>()
@@ -23,6 +23,8 @@ const title=(agent:Subagent)=>shortConversationTitle(agent.task?.split('\n').fin
 const state=(agent:Subagent)=>states[agent.status] ?? {label:'Нет данных',icon:'i-lucide-circle-help',color:'text-muted'}
 const stopping=(agent:Subagent)=>props.stopping.has(agent.id) || !!agent.cancel_requested
 const status=(agent:Subagent)=>t(stopping(agent) && agent.status==='running' ? 'Останавливаю…' : state(agent).label)
+const numberFormat=computed(()=>new Intl.NumberFormat(locale.value))
+const tokens=(value:number|null)=>value===null?'—':numberFormat.value.format(value)
 </script>
 
 <template>
@@ -35,12 +37,13 @@ const status=(agent:Subagent)=>t(stopping(agent) && agent.status==='running' ? '
       <ul class="divide-y divide-default">
         <li v-for="agent in agents" :key="agent.id" :data-testid="`subagent-${agent.id}`" class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 py-1">
           <UCollapsible class="min-w-0">
-            <UButton :aria-label="t('Подробности задачи «{0}»',title(agent))" :aria-describedby="agent.model ? `status-${agent.id} model-${agent.id}` : `status-${agent.id}`"
+            <UButton :aria-label="t('Подробности задачи «{0}»',title(agent))" :aria-describedby="[`status-${agent.id}`,agent.model && `model-${agent.id}`,agent.token_usage && `usage-${agent.id}`].filter(Boolean).join(' ')"
               :icon="state(agent).icon" color="neutral" variant="ghost" class="w-full justify-start px-0 text-left"
               :ui="{label:'min-w-0 flex-1',leadingIcon:agent.status==='running' ? 'motion-safe:animate-spin text-primary' : state(agent).color}">
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-sm text-highlighted">{{ title(agent) }}</span>
                 <span v-if="agent.model" :id="`model-${agent.id}`" class="block text-xs text-muted [overflow-wrap:anywhere]">{{ t('Модель: {0}',agent.model) }}</span>
+                <span v-if="agent.token_usage" :id="`usage-${agent.id}`" data-testid="child-token-usage" class="block text-xs text-muted tabular-nums">{{ t('Токены: {0} · Ответы модели: {1}',`${agent.token_usage.partial && agent.token_usage.total_tokens!==null?'≥':''}${tokens(agent.token_usage.total_tokens)}`,tokens(agent.token_usage.requests)) }}</span>
               </span>
               <span :id="`status-${agent.id}`" class="shrink-0 whitespace-nowrap text-xs" :class="state(agent).color">{{ status(agent) }}</span>
             </UButton>
@@ -52,6 +55,7 @@ const status=(agent:Subagent)=>t(stopping(agent) && agent.status==='running' ? '
                 <p v-if="agent.status==='interrupted'" class="text-warning">{{ t('Запуск прерван. Проверьте результат и дайте новое указание в чате.') }}</p>
                 <p v-if="agent.status==='stopped'" class="text-muted">{{ t('Уже выполненные действия не отменяются.') }}</p>
                 <p v-if="agent.error && agent.status!=='stopped'" class="whitespace-pre-wrap text-muted">{{ agent.error }}</p>
+                <p v-if="agent.token_usage" class="text-xs text-muted tabular-nums">{{ t('Входящие: {0} · Исходящие: {1} · Из кэша: {2}',tokens(agent.token_usage.input_tokens),tokens(agent.token_usage.output_tokens),tokens(agent.token_usage.cached_tokens)) }}</p>
               </div>
             </template>
           </UCollapsible>
