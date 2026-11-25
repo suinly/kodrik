@@ -58,7 +58,8 @@ text after rejection. See [Images and vision](vision.md).
 
 ## A new topic stays in the same session
 
-The foreground agent, not System One, must search for a suitable personal
+This is expected in TUI and Web Chat. In private Telegram, the foreground agent,
+not System One, must search for a suitable personal
 session for an unrelated topic, then switch to it or create a new dialogue if
 none fits. There is no idle threshold; legacy `auto_switch` and `idle_minutes`
 settings have no effect. Check whether the message was accepted as steering in

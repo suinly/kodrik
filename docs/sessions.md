@@ -1,12 +1,13 @@
 # Sessions and System One
 
-Session choice belongs to the foreground agent, not a separate System One
-classifier. When an incoming message is unrelated to the current topic, the
-system prompt requires the agent to use `session_search` to find a suitable
+In private Telegram chats, automatic session choice belongs to the foreground
+agent, not a separate System One classifier. When an incoming message is
+unrelated to the current topic, the system prompt requires `session_search` to find a suitable
 existing personal session and `switch_session` to continue there. If none fits,
 the agent must create a new dialogue through `switch_session`. Follow-ups,
 corrections and related messages stay in the current session; an active task is
-not abandoned for a minor vocabulary change.
+not abandoned for a minor vocabulary change. TUI and Web Chat keep the current
+dialogue until the user selects or creates another one.
 
 There is no idle-time threshold or automatic topic-routing call before the
 agent answers. The legacy `sessions.auto_switch` and `sessions.idle_minutes`
@@ -52,8 +53,7 @@ Switching preserves the previous session and uses the existing active-session
 mapping. Fresh sessions reload personality, memory, interests and skills. TUI
 and Telegram show a brief switch notification. The TUI reloads the selected
 session's saved history and preserves the input draft; accepted queued corrections
-remain in the durable inbox. The web chat navigates to the handoff target, including
-successive handoffs within the same run.
+remain in the durable inbox.
 Personal sessions are shared per user across Telegram and web; CLI/TUI always uses
 the configured owner. Each interface and each running TUI instance keeps its own
 active-session selection. TUI instances reserve separate reusable slots for their
@@ -66,13 +66,13 @@ Previous sessions remain available through `/sessions` in TUI, `/sessions` and
 Messages consumed as steering during an ongoing run stay in that run. Once a
 persistent session transition starts, it is allowed to finish before handling
 cancellation. One-shot CLI requests already create their own sessions; isolated
-runs and background wakeups cannot hand off. Web chat supports the same
-agent-directed handoffs as the personal Telegram chat and TUI.
+runs and background wakeups cannot hand off.
 
 ## Agent-directed handoff
 
-The foreground agent uses `session_search` to find a suitable existing personal
-session, then `switch_session(session_id, context)` to continue there. If none
+Only in private Telegram, the foreground agent uses `session_search` to find a
+suitable existing personal session, then `switch_session(session_id, context)`
+to continue there. If none
 fits, it uses `switch_session(create_new=true, context=...)`, omitting
 `session_id`. The optional `create_new` flag defaults to `false`; `session_id`
 defaults to empty and must identify an existing target when not creating one.

@@ -12,6 +12,7 @@ use std::sync::{
 
 struct HandoffModel {
     create_new: bool,
+    expects_switch_tool: bool,
     seen: Mutex<Vec<Vec<Message>>>,
     calls: AtomicUsize,
 }
@@ -20,9 +21,13 @@ impl LlmProvider for HandoffModel {
     async fn generate(
         &self,
         context: &LlmContext<'_>,
-        _: &[&dyn Tool],
+        tools: &[&dyn Tool],
         _: Option<&mpsc::Sender<AgentEvent>>,
     ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
+        assert_eq!(
+            tools.iter().any(|tool| tool.name() == "switch_session"),
+            self.expects_switch_tool
+        );
         self.seen.lock().unwrap().push(context.messages.to_vec());
         let messages = if self.calls.fetch_add(1, SeqCst) == 0 {
             vec![
@@ -80,6 +85,45 @@ fn user(content: &str) -> UserMessage {
 }
 
 #[tokio::test]
+async fn non_private_telegram_runs_cannot_request_handoff_in_shared_history() {
+    for channel in [
+        "cli:main",
+        "cli:tui:2",
+        "web:telegram:bot:42",
+        "e3ef5915-1970-4eb7-a327-c6656c736274",
+        "telegram:bot:-100",
+        "telegram:bot:42:guest",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        let mut source = Session::new(SessionId::new("telegram:bot:42"));
+        store.save(&source).await.unwrap();
+        let channel = SessionId::new(channel);
+        store.select(&channel, source.id()).await.unwrap();
+        let agent = Agent::new(
+            Arc::new(HandoffModel {
+                create_new: true,
+                expects_switch_tool: false,
+                seen: Mutex::new(vec![]),
+                calls: AtomicUsize::new(0),
+            }),
+            ToolRegistry::default()
+                .register(Arc::new(SwitchSessionTool))
+                .register(Arc::new(Effect(Arc::default()))),
+            ContextBuilder::new("rules"),
+        );
+        let mut cp = Checkpoint::new(&store, &channel, &source);
+        agent
+            .run_durable(&mut source, user("new topic"), None, None, Some(&mut cp))
+            .await
+            .unwrap();
+        assert_eq!(source.id().as_str(), "telegram:bot:42");
+        assert_eq!(store.active_id(&channel).await.unwrap(), *source.id());
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_history() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
@@ -89,10 +133,11 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
         content: "target answer".into(),
     }));
     store.save(&target).await.unwrap();
-    let mut source = Session::new(SessionId::new("source"));
+    let mut source = Session::new(SessionId::new("telegram:bot:42"));
     source.push(Message::User(user("old unrelated source history")));
     let model = Arc::new(HandoffModel {
         create_new: false,
+        expects_switch_tool: true,
         seen: Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
     });
@@ -147,7 +192,7 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
     );
     drop(seen);
     let preserved = store
-        .load(&SessionId::new("source"))
+        .load(&SessionId::new("telegram:bot:42"))
         .await
         .unwrap()
         .unwrap();
@@ -158,7 +203,10 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
             .any(|m| matches!(m,Message::ToolResult(r) if r.call_id=="effect"))
     );
     assert_eq!(
-        store.active_id(&SessionId::new("source")).await.unwrap(),
+        store
+            .active_id(&SessionId::new("telegram:bot:42"))
+            .await
+            .unwrap(),
         SessionId::new("target")
     );
     let (record, _) = store.load_run(&cp.record.id).await.unwrap().unwrap();
@@ -166,11 +214,16 @@ async fn handoff_core_moves_after_whole_batch_and_future_input_uses_target_histo
     assert!(matches!(record.phase, RunPhase::Completed));
     assert_eq!(record.handoff_hops, 1);
     let mut next = store
-        .load(&store.active_id(&SessionId::new("source")).await.unwrap())
+        .load(
+            &store
+                .active_id(&SessionId::new("telegram:bot:42"))
+                .await
+                .unwrap(),
+        )
         .await
         .unwrap()
         .unwrap();
-    let mut next_cp = Checkpoint::new(&store, &SessionId::new("source"), &next);
+    let mut next_cp = Checkpoint::new(&store, &SessionId::new("telegram:bot:42"), &next);
     agent
         .run_durable(&mut next, user("follow up"), None, None, Some(&mut next_cp))
         .await
@@ -196,7 +249,7 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
     let mut target = Session::new(SessionId::new("target"));
     target.push(Message::User(user("saved target history")));
     store.save(&target).await.unwrap();
-    let mut source = Session::new(SessionId::new("source"));
+    let mut source = Session::new(SessionId::new("telegram:bot:42"));
     source.push(Message::User(user("original task")));
     let call = ToolCall {
         call_id: "move".into(),
@@ -230,10 +283,14 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
     let id = cp.record.id.clone();
     drop(cp);
     let (record, mut source) = store.load_run(&id).await.unwrap().unwrap();
-    let ownership = store.claim_execution("source", "source").await.unwrap();
+    let ownership = store
+        .claim_execution("telegram:bot:42", "telegram:bot:42")
+        .await
+        .unwrap();
     let mut cp = Checkpoint::resume(&store, record, ownership);
     let model = Arc::new(HandoffModel {
         create_new: false,
+        expects_switch_tool: true,
         seen: Mutex::new(vec![]),
         calls: AtomicUsize::new(1),
     });
@@ -270,10 +327,11 @@ async fn handoff_core_resumes_saved_pending_result_without_replaying_effects() {
 async fn handoff_core_creates_dialogue_and_announces_creation_without_replaying_effects() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().into()).unwrap();
-    let mut source = Session::new(SessionId::new("source"));
+    let mut source = Session::new(SessionId::new("telegram:bot:42"));
     source.push(Message::User(user("old unrelated history")));
     let model = Arc::new(HandoffModel {
         create_new: true,
+        expects_switch_tool: true,
         seen: Mutex::new(vec![]),
         calls: AtomicUsize::new(0),
     });
@@ -297,9 +355,12 @@ async fn handoff_core_creates_dialogue_and_announces_creation_without_replaying_
         )
         .await
         .unwrap();
-    assert_ne!(source.id().as_str(), "source");
+    assert_ne!(source.id().as_str(), "telegram:bot:42");
     assert_eq!(
-        store.active_id(&SessionId::new("source")).await.unwrap(),
+        store
+            .active_id(&SessionId::new("telegram:bot:42"))
+            .await
+            .unwrap(),
         *source.id()
     );
     assert_eq!(effects.load(SeqCst), 1);
@@ -317,152 +378,4 @@ async fn handoff_core_creates_dialogue_and_announces_creation_without_replaying_
     }
     assert!(created);
     assert_eq!(store.list().await.unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn handoff_waits_for_same_device_before_next_model_step() {
-    use crate::agent::{
-        Agent, AssistantMessage, ContextBuilder, LlmContext,
-        llm::LlmProvider,
-        message::Message,
-        run_state::{Checkpoint, RunPhase},
-        tools::{Tool, ToolRegistry, session_switch::HandoffRequest},
-    };
-    struct Model;
-    #[async_trait::async_trait]
-    impl LlmProvider for Model {
-        async fn generate(
-            &self,
-            context: &LlmContext<'_>,
-            tools: &[&dyn Tool],
-            _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
-        ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
-            assert!(
-                context
-                    .instructions
-                    .contains("Temporary device environment")
-            );
-            assert!(tools.iter().any(|tool| tool.name().starts_with("local__")));
-            Ok((
-                vec![Message::Assistant(AssistantMessage {
-                    content: "done".into(),
-                })],
-                None,
-            ))
-        }
-    }
-    use crate::remote::{protocol::*, service::EnvironmentService};
-    use crate::web::auth::{
-        AuthStore, Identity,
-        devices::{DeviceIdentity, PairingPoll},
-    };
-    use std::time::Duration;
-    let dir = tempfile::tempdir().unwrap();
-    let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
-    let source_id = SessionId::new("source");
-    store.save(&Session::new(source_id.clone())).await.unwrap();
-    let auth = AuthStore::new(dir.path());
-    let now = chrono::Utc::now().timestamp();
-    let pair = auth.start_device_pairing("Laptop", now).unwrap();
-    auth.approve_device_pairing(pair.request_id, &pair.code, &Identity::Owner, now)
-        .unwrap();
-    let PairingPoll::Authorized { device_id, .. } = auth
-        .poll_device_pairing(pair.request_id, &pair.polling_secret, now)
-        .unwrap()
-    else {
-        panic!()
-    };
-    let device = DeviceIdentity {
-        device_id,
-        account: None,
-    };
-    let service = Arc::new(EnvironmentService::new(store.clone(), auth, None));
-    let manifest = || EnvironmentManifest {
-        label: "Laptop".into(),
-        project_root: "/project".into(),
-        tools: vec![ToolDescriptor {
-            id: "exec".into(),
-            kind: ToolKind::Exec,
-            description: "shell".into(),
-            parameters: serde_json::json!({"type":"object"}),
-            deferred: false,
-        }],
-        skills: vec![],
-        project_instructions: None,
-        warnings: vec![],
-    };
-    let target_id = SessionId::new("handoff-target");
-    store.save(&Session::new(target_id.clone())).await.unwrap();
-    let key = service
-        .attach(device.clone(), source_id.clone(), manifest())
-        .await
-        .unwrap();
-    let (peer, _frames) = crate::remote::transport::Peer::new();
-    service.bind_peer(&key, peer).await.unwrap();
-    let old_scope = service.step_scope(&source_id).await.unwrap().unwrap();
-    let mut source = store.load(&source_id).await.unwrap().unwrap();
-    let mut cp = Checkpoint::new(&store, &source_id, &source);
-    cp.record.isolated = Some(false);
-    cp.record.pending_handoff = Some(HandoffRequest {
-        session_id: target_id.as_str().into(),
-        create_new: false,
-        context: "continue".into(),
-    });
-    cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
-    let agent = Agent::new(
-        Arc::new(Model),
-        ToolRegistry::default(),
-        ContextBuilder::new("rules"),
-    );
-    {
-        let work = crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
-            Some(service.clone()),
-            agent.resume_durable(&mut source, &mut cp),
-        );
-        tokio::pin!(work);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut work)
-                .await
-                .is_err(),
-            "agent must wait for the TUI to reattach"
-        );
-    }
-    let run_id = cp.record.id.clone();
-    drop(cp);
-    let (record, saved) = store.load_run(&run_id).await.unwrap().unwrap();
-    assert_eq!(record.session_id, target_id.as_str());
-    assert!(record.pending_handoff.is_none());
-    assert!(record.handoff_environment.is_some());
-    source = saved;
-    let ownership = store
-        .claim_execution(source_id.as_str(), target_id.as_str())
-        .await
-        .unwrap();
-    let mut cp = Checkpoint::resume(&store, record, ownership);
-    let work = crate::remote::tools::CURRENT_ENVIRONMENTS.scope(
-        Some(service.clone()),
-        agent.resume_durable(&mut source, &mut cp),
-    );
-    tokio::pin!(work);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), &mut work)
-            .await
-            .is_err(),
-        "recovery must retain the device requirement"
-    );
-    service.revoke(&key, "handoff").await.unwrap();
-    assert!(old_scope.context_overlay().is_empty());
-    let fresh = service
-        .attach(device, target_id.clone(), manifest())
-        .await
-        .unwrap();
-    let (peer, _frames) = crate::remote::transport::Peer::new();
-    service.bind_peer(&fresh, peer).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), &mut work)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(service.step_scope(&source_id).await.unwrap().is_none());
-    assert!(service.step_scope(&target_id).await.unwrap().is_some());
-    assert_ne!(key, fresh);
 }

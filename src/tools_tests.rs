@@ -64,7 +64,7 @@ async fn wakeups_run_without_telegram_and_stop_with_the_application() {
 }
 
 #[tokio::test]
-async fn owner_tools_are_identical_across_foreground_interfaces() {
+async fn owner_tools_only_advertise_session_switching_in_private_telegram() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let router = Router::new().route("/responses", post(move |Json(body): Json<Value>| {
         let tx = tx.clone();
@@ -100,7 +100,9 @@ async fn owner_tools_are_identical_across_foreground_interfaces() {
         )
         .await
         .unwrap();
-    let expected = rx.recv().await.unwrap();
+    let mut expected = rx.recv().await.unwrap();
+    assert!(expected.iter().any(|n| n == "switch_session"));
+    expected.retain(|n| n != "switch_session");
     for name in [
         "mcp_search",
         "memory",

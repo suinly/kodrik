@@ -23,7 +23,7 @@ impl Tool for SwitchSessionTool {
         "switch_session".into()
     }
     fn description(&self) -> String {
-        "Move this task to an existing suitable personal session, or set create_new=true and omit session_id to create a new dialogue for an unrelated topic. Its history becomes active and later messages stay there. Supply task context, progress and already performed effects; never replay them. Runs only after all calls in this batch finish. Not available to children, wakeups, isolated, group or guest runs.".into()
+        "Move this task to an existing suitable personal session, or set create_new=true and omit session_id to create a new dialogue for an unrelated topic. Its history becomes active and later messages stay there. Supply task context, progress and already performed effects; never replay them. Runs only after all calls in this batch finish. Available only in normal private Telegram runs.".into()
     }
     fn parameters(&self) -> serde_json::Value {
         schema_for!(HandoffRequest).to_value()
@@ -45,7 +45,7 @@ pub(crate) async fn validate(
     source: &crate::agent::session::Session,
     args: serde_json::Value,
 ) -> anyhow::Result<(HandoffRequest, ToolOutput)> {
-    use crate::agent::session::{SessionId, SessionStore, handoff::eligible};
+    use crate::agent::session::{SessionId, SessionStore, handoff};
     let mut request: HandoffRequest = serde_json::from_value(args)?;
     anyhow::ensure!(
         !request.context.trim().is_empty() && request.context.len() <= 32_768,
@@ -56,10 +56,8 @@ pub(crate) async fn validate(
         "Session handoff limit reached or already pending"
     );
     anyhow::ensure!(
-        cp.record.isolated == Some(false)
-            && !cp.record.conversation_id.contains(":guest")
-            && !cp.record.conversation_id.starts_with("companion:"),
-        "Session handoff is restricted to normal personal runs"
+        handoff::allowed(&cp.record, source),
+        "Session handoff is restricted to normal private Telegram runs"
     );
     let target = if request.create_new {
         anyhow::ensure!(
@@ -75,7 +73,7 @@ pub(crate) async fn validate(
             .ok_or_else(|| anyhow::anyhow!("Target session not found in this user's store"))?
     };
     anyhow::ensure!(
-        eligible(source, &target),
+        handoff::eligible(source, &target),
         "Session handoff is not allowed between these sessions"
     );
     Ok((request, serde_json::json!({"handoff":"pending", "note":"The session changes after this tool batch; do not replay completed effects."}).into()))
@@ -102,7 +100,7 @@ mod tests {
     async fn creation_request_is_validated_without_creating_until_commit() {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
-        let source = Session::new(SessionId::new("source"));
+        let source = Session::new(SessionId::new("telegram:bot:42"));
         let mut cp = Checkpoint::new(&store, source.id(), &source);
         cp.record.isolated = Some(false);
         let (request, _) = validate(
@@ -147,7 +145,7 @@ mod tests {
                 "{id}"
             );
         }
-        let source = Session::new(SessionId::new("source"));
+        let source = Session::new(SessionId::new("telegram:bot:42"));
         let mut cp = Checkpoint::new(&store, source.id(), &source);
         cp.record.isolated = Some(false);
         assert!(
@@ -166,7 +164,7 @@ mod tests {
     async fn validation_restricts_scope_hops_and_malformed_context_without_effects() {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
-        let source = Session::new(SessionId::new("source"));
+        let source = Session::new(SessionId::new("telegram:bot:42"));
         let target = Session::new(SessionId::new("target"));
         store.save(&target).await.unwrap();
         let mut cp = Checkpoint::new(&store, source.id(), &source);
@@ -183,7 +181,7 @@ mod tests {
             cp.record.conversation_id = conversation.into();
             assert!(validate(&cp, &source, args.clone()).await.is_err());
         }
-        cp.record.conversation_id = "source".into();
+        cp.record.conversation_id = "telegram:bot:42".into();
         for bad in [
             serde_json::json!({"session_id":"target","context":" "}),
             serde_json::json!({"session_id":"target","context":"x".repeat(32769)}),

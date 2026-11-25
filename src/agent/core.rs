@@ -575,17 +575,6 @@ impl Agent {
                     .pending_handoff
                     .as_ref()
                     .is_some_and(|request| request.create_new);
-                let environments = crate::remote::tools::CURRENT_ENVIRONMENTS
-                    .try_with(Clone::clone)
-                    .ok()
-                    .flatten();
-                if cp.record.handoff_environment.is_none() {
-                    cp.record.handoff_environment = match &environments {
-                        Some(service) => service.handoff_environment(session.id()).await?,
-                        None => None,
-                    };
-                    cp.save(session, RunPhase::NeedModel, None).await?;
-                }
                 if let Some(target) = cp.apply_handoff(session, &self.context).await? {
                     *session = target;
                     turn_model = None;
@@ -618,7 +607,7 @@ impl Agent {
                         key: expected.1.clone(),
                         reason: "Handoff device service unavailable".into(),
                     })?;
-                // Also enforced after recovery of a handoff committed before the TUI reattached.
+                // Legacy checkpoints may already require a device in the target session.
                 service
                     .wait_handoff_environment(session.id(), expected)
                     .await?;
@@ -722,6 +711,14 @@ impl Agent {
                 registry
             } else {
                 registry.without(super::tools::browser_context::BROWSER_TOOLS)
+            };
+            let registry = if checkpoint
+                .as_ref()
+                .is_some_and(|cp| super::session::handoff::allowed(&cp.record, session))
+            {
+                registry
+            } else {
+                registry.without(&["switch_session"])
             };
             let tools = registry
                 .for_model(session.messages())?

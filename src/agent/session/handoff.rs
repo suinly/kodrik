@@ -2,18 +2,34 @@ use super::Session;
 
 /// Both sessions must have been loaded from the same user-scoped store.
 pub(crate) fn eligible(source: &Session, target: &Session) -> bool {
-    fn personal(s: &Session) -> bool {
-        let id = s.id().as_str();
-        s.telegram_group().is_none()
-            && s.webhook_instruction.is_none()
-            && s.approval_parent.is_none()
-            && !id.starts_with("companion:")
-            && !id.starts_with("webhook:")
-            && !id.starts_with("cli:once:")
-            && !id.contains(":guest")
-            && !(id.starts_with("telegram:") && id.split(':').any(|part| part.starts_with('-')))
-    }
     source.id() != target.id() && personal(source) && personal(target)
+}
+
+fn personal(s: &Session) -> bool {
+    let id = s.id().as_str();
+    s.telegram_group().is_none()
+        && s.webhook_instruction.is_none()
+        && s.approval_parent.is_none()
+        && !id.starts_with("companion:")
+        && !id.starts_with("webhook:")
+        && !id.starts_with("cli:once:")
+        && !id.contains(":guest")
+        && !(id.starts_with("telegram:") && id.split(':').any(|part| part.starts_with('-')))
+}
+
+pub(crate) fn allowed(run: &RunRecord, source: &Session) -> bool {
+    // History can be shared with TUI/Web; only the run's channel decides.
+    run.isolated == Some(false)
+        && run
+            .conversation_id
+            .strip_prefix("telegram:")
+            .is_some_and(|rest| {
+                !rest.contains(":guest")
+                    && rest
+                        .rsplit_once(':')
+                        .is_some_and(|(_, chat)| chat.parse::<u64>().is_ok_and(|id| id > 0))
+            })
+        && personal(source)
 }
 
 #[cfg(test)]
@@ -67,9 +83,12 @@ impl SqliteSessionStore {
                 && !run.phase.terminal() && run.pending_calls.is_empty() && matches!(run.phase, RunPhase::NeedModel), "Stale handoff checkpoint");
             let cancelled: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM run_controls WHERE run_id=?1)", [&run.id], |r|r.get(0))?;
             ensure!(!cancelled && !run.cancel_requested, "Run cancellation requested");
-            ensure!(run.isolated == Some(false) && run.handoff_hops < 4 && !run.conversation_id.contains(":guest") && !run.conversation_id.starts_with("companion:"), "Restricted handoff run");
             let request = run.pending_handoff.take().context("No pending handoff")?;
+            let allowed = allowed(&run, &source);
+            // Private Telegram handoffs do not move an attachment owned by another interface.
+            run.handoff_environment = None;
             let validation = (|| -> anyhow::Result<Session> {
+                ensure!(allowed && run.handoff_hops < 4, "Session handoff is restricted to normal private Telegram runs");
                 let existing = sqlite::load(&tx, &request.session_id)?;
                 let mut target = if request.create_new {
                     ensure!(existing.is_none(), "New session ID already exists");
@@ -227,7 +246,7 @@ mod durable_tests {
     async fn fixture() -> (tempfile::TempDir, SqliteSessionStore, Checkpoint, Session) {
         let dir = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open(dir.path().into()).unwrap();
-        let mut source = Session::new(SessionId::new("source"));
+        let mut source = Session::new(SessionId::new("telegram:bot:42"));
         source.push(Message::User(UserMessage {
             browser_client_id: None,
             browser_context: None,
@@ -256,6 +275,45 @@ mod durable_tests {
     }
 
     #[tokio::test]
+    async fn saved_tui_handoff_is_discarded_without_changing_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteSessionStore::open(dir.path().into()).unwrap();
+        let channel = SessionId::new("cli:main");
+        let source = Session::new(SessionId::new("telegram:bot:42"));
+        store.save(&source).await.unwrap();
+        store.select(&channel, source.id()).await.unwrap();
+        let mut cp = Checkpoint::new(&store, &channel, &source);
+        cp.record.isolated = Some(false);
+        cp.record.pending_handoff = Some(HandoffRequest {
+            create_new: true,
+            session_id: uuid::Uuid::new_v4().to_string(),
+            context: "new topic".into(),
+        });
+        cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
+        let id = cp.record.id.clone();
+        let (record, mut source) = store.load_run(&id).await.unwrap().unwrap();
+        let ownership = store
+            .claim_execution(channel.as_str(), source.id().as_str())
+            .await
+            .unwrap();
+        let mut cp = Checkpoint::resume(&store, record, ownership);
+        assert!(
+            cp.apply_handoff(&mut source, &crate::agent::ContextBuilder::new("rules"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.active_id(&channel).await.unwrap().as_str(),
+            "telegram:bot:42"
+        );
+        let (record, _) = store.load_run(&id).await.unwrap().unwrap();
+        assert!(record.pending_handoff.is_none());
+        assert_eq!(record.handoff_hops, 0);
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn saved_creation_request_recovers_into_exactly_one_new_dialogue() {
         let (_dir, store, mut cp, source) = fixture().await;
         cp.record.pending_handoff = None;
@@ -272,7 +330,10 @@ mod durable_tests {
         let run_id = cp.record.id.clone();
         drop(cp);
         let (record, mut source) = store.load_run(&run_id).await.unwrap().unwrap();
-        let ownership = store.claim_execution("source", "source").await.unwrap();
+        let ownership = store
+            .claim_execution("telegram:bot:42", "telegram:bot:42")
+            .await
+            .unwrap();
         let mut cp = Checkpoint::resume(&store, record, ownership);
         let target = cp
             .apply_handoff(&mut source, &crate::agent::ContextBuilder::new("rules"))
@@ -282,7 +343,7 @@ mod durable_tests {
         assert_eq!(target.id().as_str(), id);
         assert_eq!(
             store
-                .active_id(&super::super::SessionId::new("source"))
+                .active_id(&super::super::SessionId::new("telegram:bot:42"))
                 .await
                 .unwrap(),
             *target.id()
@@ -346,7 +407,7 @@ mod durable_tests {
             ))
             .await
             .unwrap();
-        assert_eq!(steering.session_id.as_deref(), Some("source"));
+        assert_eq!(steering.session_id.as_deref(), Some("telegram:bot:42"));
         assert_eq!(steering.run_id.as_deref(), Some(cp.record.id.as_str()));
         let _target = cp
             .apply_handoff(
@@ -439,7 +500,7 @@ mod durable_tests {
             .await
             .is_err()
         );
-        assert_eq!(cp.record.session_id, "source");
+        assert_eq!(cp.record.session_id, "telegram:bot:42");
         assert_eq!(store.active_id(source.id()).await.unwrap(), *source.id());
         assert_eq!(
             before,
@@ -461,7 +522,10 @@ mod durable_tests {
         let id = cp.record.id.clone();
         drop(cp);
         let (record, mut source) = store.load_run(&id).await.unwrap().unwrap();
-        let ownership = store.claim_execution("source", "source").await.unwrap();
+        let ownership = store
+            .claim_execution("telegram:bot:42", "telegram:bot:42")
+            .await
+            .unwrap();
         let mut cp = Checkpoint::resume(&store, record, ownership);
         let target = cp
             .apply_handoff(
@@ -479,7 +543,7 @@ mod durable_tests {
             original,
             serde_json::to_vec(
                 &store
-                    .load(&SessionId::new("source"))
+                    .load(&SessionId::new("telegram:bot:42"))
                     .await
                     .unwrap()
                     .unwrap()
@@ -487,7 +551,10 @@ mod durable_tests {
             .unwrap()
         );
         assert_eq!(
-            store.active_id(&SessionId::new("source")).await.unwrap(),
+            store
+                .active_id(&SessionId::new("telegram:bot:42"))
+                .await
+                .unwrap(),
             *target.id()
         );
         let (record, saved) = store.load_run(&id).await.unwrap().unwrap();

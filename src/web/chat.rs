@@ -342,36 +342,6 @@ impl Chat {
         self.snapshot_view(id, view).await
     }
 
-    pub(super) async fn handoff_target(
-        &self,
-        id: &str,
-        source: &Session,
-    ) -> anyhow::Result<Option<SessionId>> {
-        let active = self.sessions.active_id(&web_conversation(id)).await?;
-        let active = if active.as_str() == id {
-            let source_id = id.to_owned();
-            self.sessions.with_connection(move |db| {
-                use rusqlite::OptionalExtension;
-                let target: Option<String> = db.query_row(
-                    "SELECT r.session_id FROM runs r, json_each(r.payload,'$.handoff_sources') h
-                     WHERE h.value=?1 AND r.session_id<>?1
-                     AND (r.conversation_id=json_extract(r.payload,'$.handoff_sources[0]')
-                          OR r.conversation_id='web:'||json_extract(r.payload,'$.handoff_sources[0]'))
-                     ORDER BY r.rowid DESC LIMIT 1", [&source_id], |row| row.get(0)).optional()?;
-                Ok(target.map(SessionId::new))
-            }).await?.unwrap_or(active)
-        } else {
-            active
-        };
-        if active.as_str() != id
-            && let Some(target) = self.sessions.load(&active).await?
-            && crate::agent::session::handoff::eligible(source, &target)
-        {
-            return Ok(Some(active));
-        }
-        Ok(None)
-    }
-
     async fn session_cost(&self, session: &Session) -> anyhow::Result<crate::billing::SessionCost> {
         crate::billing::tracked_session_cost(&self.sessions, session).await
     }
@@ -397,7 +367,6 @@ impl Chat {
         {
             snapshot["messages"] = json!(history(&view.session));
         }
-        snapshot["handoff_session_id"] = json!(self.handoff_target(id, &view.session).await?);
         snapshot["read_revision"] = json!(crate::agent::session::activity::read_revision(
             &view.session
         ));
@@ -1035,9 +1004,16 @@ async fn admit_message(
     let mut runs = chat.runs.lock().await;
     let session = chat.session(&input.id).await?;
     let conversation = web_conversation(&input.id);
-    if conversation.as_str() != input.id {
+    // Ignore old Web handoff selections; new input goes to the session the user opened.
+    if chat
+        .sessions
+        .active_id(&conversation)
+        .await
+        .map_err(internal)?
+        != *session.id()
+    {
         chat.sessions
-            .select(&conversation, &SessionId::new(&input.id))
+            .select(&conversation, session.id())
             .await
             .map_err(internal)?;
     }
@@ -1678,76 +1654,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(observer.chunk().await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn handoff_snapshot_identifies_target_without_mixing_source_history() {
-        use crate::agent::{
-            run_state::{Checkpoint, RunPhase},
-            tools::session_switch::HandoffRequest,
-        };
-        let data = tempfile::tempdir().unwrap();
-        let chat = super::super::chat_tests::chat(data.path()).await;
-        let id = uuid::Uuid::new_v4().to_string();
-        let target_id = uuid::Uuid::new_v4().to_string();
-        let mut source = Session::new(SessionId::new(&id));
-        source.push(crate::agent::message::Message::User(
-            crate::agent::UserMessage {
-                browser_client_id: None,
-                browser_context: None,
-                content: "source question".into(),
-                images: vec![],
-                files: vec![],
-            },
-        ));
-        chat.sessions
-            .save(&Session::new(SessionId::new(&target_id)))
-            .await
-            .unwrap();
-        let mut cp = Checkpoint::new(&chat.sessions, &web_conversation(&id), &source);
-        cp.record.isolated = Some(false);
-        cp.record.pending_handoff = Some(HandoffRequest {
-            create_new: false,
-            session_id: target_id.clone(),
-            context: "continue task".into(),
-        });
-        cp.save(&source, RunPhase::NeedModel, None).await.unwrap();
-        let target = cp
-            .apply_handoff(&mut source, &crate::agent::ContextBuilder::new("rules"))
-            .await
-            .unwrap()
-            .unwrap();
-        let snapshot = chat.snapshot(&id).await.unwrap();
-        assert_eq!(snapshot["session_id"], id);
-        assert_eq!(snapshot["handoff_session_id"], target_id);
-        assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
-        let third_id = uuid::Uuid::new_v4().to_string();
-        chat.sessions
-            .save(&Session::new(SessionId::new(&third_id)))
-            .await
-            .unwrap();
-        let mut target = target;
-        cp.record.pending_handoff = Some(HandoffRequest {
-            create_new: false,
-            session_id: third_id.clone(),
-            context: "continue again".into(),
-        });
-        cp.save(&target, RunPhase::NeedModel, None).await.unwrap();
-        let third = cp
-            .apply_handoff(&mut target, &crate::agent::ContextBuilder::new("rules"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            chat.snapshot(&target_id).await.unwrap()["handoff_session_id"],
-            third_id
-        );
-        cp.save(&third, RunPhase::Completed, None).await.unwrap();
-        assert_eq!(
-            chat.snapshot(&id).await.unwrap()["handoff_session_id"],
-            third_id
-        );
-        assert!(chat.snapshot(&third_id).await.unwrap()["handoff_session_id"].is_null());
     }
 
     #[tokio::test]

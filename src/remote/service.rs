@@ -386,6 +386,7 @@ impl EnvironmentService {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn handoff_environment(
         &self,
         source: &SessionId,

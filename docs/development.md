@@ -69,10 +69,11 @@ path. Most tests live next to their implementation in `#[cfg(test)]` modules.
 1. A command or gateway submits input to the agent runner. For ordinary group
    messages the gateway first asks System One whether to reply, before any
    visible activity. Silent inputs are saved without starting the agent.
-2. The foreground agent chooses the session. For an unrelated incoming topic,
-   its system prompt requires `session_search`, then `switch_session` to a
+2. In private Telegram, the foreground agent handles an unrelated incoming
+   topic using `session_search`, then `switch_session` to a
    suitable existing personal dialogue or a new one if none fits. The handoff
-   uses the durable run transition, not a System One routing decision.
+   uses the durable run transition, not a System One routing decision. Other
+   interfaces do not automatically switch dialogues.
 3. The agent loads or reuses context snapshots, adds the current time in
    `companion.timezone` before each model call and executes requested tools.
    The clock is live context, not a persisted snapshot.

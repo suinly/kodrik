@@ -5162,7 +5162,7 @@ test('handoff context is a collapsed service notice rather than an editable user
   } finally {await browser.close();}
 });
 
-test('session handoff navigates to the target conversation',{timeout:60000},async()=>{
+test('web chat ignores a legacy automatic handoff target',{timeout:60000},async()=>{
   const source=await(await request('sessions',{})).json();
   const target=await(await request('sessions',{})).json();
   const browser=await chromium.launch({headless:true});
@@ -5170,13 +5170,14 @@ test('session handoff navigates to the target conversation',{timeout:60000},asyn
     const page=await signedPage(browser,{locale:'en-US'});
     const snapshot={
       type:'snapshot',session_id:source.id,handoff_session_id:target.id,run_id:null,revision:1,
-      busy:false,cancel_requested:false,phase:null,blocked_reason:null,messages:[],queued:[],
+      busy:false,cancel_requested:false,phase:null,blocked_reason:null,
+      messages:[{id:'source-message',role:'assistant',parts:[{type:'text',text:'Still in the source dialogue'}]}],queued:[],
       live:{current:null,interrupted:null},plan:null,subagents:[],command_approvals:[],
     };
     await page.route(`**/sessions/${source.id}/events`,route=>route.fulfill({contentType:'text/event-stream',body:`data: ${JSON.stringify(snapshot)}\n\n`}));
     await page.goto(new URL(`app/chat/${source.id}`,base).href);
-    await expect(page).toHaveURL(new RegExp(`/app/chat/${target.id}$`));
-    await expect(page.getByTestId('chat-composer')).toBeVisible();
+    await expect(page.getByText('Still in the source dialogue',{exact:true})).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/app/chat/${source.id}$`));
   } finally {await browser.close();}
 });
 
