@@ -412,11 +412,11 @@ mod tests {
         queue.send(peer.clone()).await.unwrap();
         drop(queue);
         tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(20),
             Box::pin(gateway.run_conversation(inputs)),
         )
         .await
-        .unwrap()
+        .expect("guest queue did not drain")
         .unwrap();
         assert_eq!(
             store

@@ -480,18 +480,21 @@ async fn approval_push_retries_only_while_the_request_is_pending() {
             .await
             .unwrap()
             .remove(0);
-        chat.push_tick(now).await.unwrap();
-        assert_eq!(
-            chat.sessions
-                .with_connection(|db| Ok(db.query_row(
-                    "SELECT attempts FROM web_push_queue",
+        chat.push_tick(chrono::Utc::now().timestamp())
+            .await
+            .unwrap();
+        let (attempts, retry_at) = chat
+            .sessions
+            .with_connection(|db| {
+                Ok(db.query_row(
+                    "SELECT attempts,next_attempt FROM web_push_queue",
                     [],
-                    |r| r.get::<_, i64>(0)
-                )?))
-                .await
-                .unwrap(),
-            1
-        );
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(attempts, 1);
         match resolution {
             "stop" => cp.save(&session, RunPhase::Cancelled, None).await.unwrap(),
             "trusted" => chat
@@ -505,7 +508,7 @@ async fn approval_push_retries_only_while_the_request_is_pending() {
                 .await
                 .unwrap(),
         }
-        chat.push_tick(now + 6).await.unwrap();
+        chat.push_tick(retry_at).await.unwrap();
         assert_eq!(
             chat.sessions
                 .with_connection(|db| Ok(db.query_row(
