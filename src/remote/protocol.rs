@@ -233,6 +233,38 @@ pub(crate) enum ChatCommand {
     },
 }
 
+// Remote paths describe the device filesystem, not the gateway's filesystem.
+fn is_absolute_device_path(path: &str) -> bool {
+    fn drive_root(path: &str, separator: impl Fn(u8) -> bool) -> bool {
+        matches!(path.as_bytes(), [drive, b':', sep, ..] if drive.is_ascii_alphabetic() && separator(*sep))
+    }
+
+    fn unc_root(path: &str, separator: impl Fn(char) -> bool) -> bool {
+        let mut parts = path.split(separator);
+        let valid = |part: &str| !matches!(part, "" | "." | ".." | "?");
+        parts.next().is_some_and(valid) && parts.next().is_some_and(valid)
+    }
+
+    if path.contains('\0') {
+        return false;
+    }
+    if let Some(path) = path.strip_prefix(r"\\?\") {
+        return drive_root(path, |c| c == b'\\')
+            || path
+                .strip_prefix(r"UNC\")
+                .is_some_and(|path| unc_root(path, |c| c == '\\'))
+            || path.strip_prefix("Volume{").is_some_and(|path| {
+                path.split_once(r"}\")
+                    .is_some_and(|(id, _)| Uuid::parse_str(id).is_ok())
+            });
+    }
+    path.starts_with('/')
+        || drive_root(path, |c| matches!(c, b'\\' | b'/'))
+        || path
+            .strip_prefix(r"\\")
+            .is_some_and(|path| unc_root(path, |c| matches!(c, '\\' | '/')))
+}
+
 pub(crate) fn validate_manifest(manifest: &EnvironmentManifest) -> anyhow::Result<()> {
     ensure!(
         serde_json::to_vec(manifest)?.len() <= MAX_FRAME_BYTES,
@@ -244,7 +276,7 @@ pub(crate) fn validate_manifest(manifest: &EnvironmentManifest) -> anyhow::Resul
     );
     ensure!(!manifest.label.trim().is_empty(), "Missing device label");
     ensure!(
-        std::path::Path::new(&manifest.project_root).is_absolute(),
+        is_absolute_device_path(&manifest.project_root),
         "Project root must be absolute"
     );
     let mut ids = HashSet::new();
@@ -262,7 +294,7 @@ pub(crate) fn validate_manifest(manifest: &EnvironmentManifest) -> anyhow::Resul
             "Invalid or duplicate skill ID"
         );
         ensure!(
-            std::path::Path::new(&skill.path).is_absolute(),
+            is_absolute_device_path(&skill.path),
             "Skill path must be absolute"
         );
         ensure!(valid_hash(&skill.content_hash), "Invalid skill hash");
@@ -273,7 +305,7 @@ pub(crate) fn validate_manifest(manifest: &EnvironmentManifest) -> anyhow::Resul
             "Project instructions exceed 64 KiB"
         );
         ensure!(
-            std::path::Path::new(&project.path).is_absolute(),
+            is_absolute_device_path(&project.path),
             "Instructions path must be absolute"
         );
         ensure!(

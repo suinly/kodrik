@@ -8,7 +8,6 @@ use anyhow::{Context, ensure};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -182,23 +181,20 @@ impl EnvironmentScope {
             .into());
         }
         if matches!(descriptor.kind, ToolKind::Exec | ToolKind::Patch) {
-            let root = Path::new(&self.manifest.project_root);
-            let cwd = match call.arguments.get("workdir") {
-                None | Some(serde_json::Value::Null) => root.to_path_buf(),
-                Some(value) => {
-                    let path = Path::new(value.as_str().context("Invalid local workdir")?);
-                    if path.is_absolute() {
-                        path.to_path_buf()
-                    } else {
-                        root.join(path)
-                    }
-                }
-            };
             ensure!(
                 call.arguments.is_object(),
                 "Local tool arguments must be an object"
             );
-            call.arguments["workdir"] = serde_json::json!(cwd);
+            // The audit records both the project root and these exact arguments.
+            // Only the device can resolve an explicit workdir using its native path rules.
+            match call.arguments.get("workdir") {
+                None | Some(serde_json::Value::Null) => {
+                    call.arguments["workdir"] = serde_json::json!(self.manifest.project_root);
+                }
+                Some(value) => {
+                    ensure!(value.is_string(), "Invalid local workdir");
+                }
+            }
         }
         Ok(())
     }

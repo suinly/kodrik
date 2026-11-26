@@ -235,6 +235,17 @@ async fn fixture() -> (
     SessionId,
     EnvironmentKey,
 ) {
+    fixture_at("/laptop/project").await
+}
+
+async fn fixture_at(
+    project_root: &str,
+) -> (
+    tempfile::TempDir,
+    Arc<EnvironmentService>,
+    SessionId,
+    EnvironmentKey,
+) {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteSessionStore::open(dir.path().join("sessions")).unwrap();
     let session = SessionId::new(Uuid::new_v4().to_string());
@@ -260,7 +271,7 @@ async fn fixture() -> (
             session.clone(),
             EnvironmentManifest {
                 label: "Laptop".into(),
-                project_root: "/laptop/project".into(),
+                project_root: project_root.into(),
                 tools: vec![
                     ToolDescriptor {
                         id: "exec_command".into(),
@@ -298,6 +309,41 @@ async fn fixture() -> (
         .await
         .unwrap();
     (dir, service, session, key)
+}
+
+#[tokio::test]
+async fn windows_remote_workdir_is_resolved_on_the_device() {
+    let root = r"\\?\C:\project";
+    let (_dir, service, session, _) = fixture_at(root).await;
+    let scope = service.step_scope(&session).await.unwrap().unwrap();
+    let tools = scope.tools(&ToolRegistry::default()).unwrap();
+    let name = tools
+        .list()
+        .iter()
+        .find(|tool| tool.name().starts_with("local__exec__"))
+        .unwrap()
+        .name();
+    for (workdir, expected) in [
+        (None, root),
+        (Some(""), ""),
+        (Some("src/bin"), "src/bin"),
+        (Some(r"src\bin"), r"src\bin"),
+        (Some(r"D:\another"), r"D:\another"),
+        (Some(r"\\server\share\work"), r"\\server\share\work"),
+    ] {
+        let mut call = ToolCall {
+            call_id: "call".into(),
+            name: name.clone(),
+            arguments: json!({"cmd":"pwd","workdir":workdir}),
+        };
+        scope.normalize(&mut call).unwrap();
+        assert_eq!(call.arguments["workdir"], expected);
+        // Calls are normalized both before auditing and when constructing the invocation.
+        assert_eq!(
+            scope.validate_call(&call).unwrap().arguments,
+            call.arguments
+        );
+    }
 }
 
 #[tokio::test]

@@ -113,6 +113,61 @@ fn manifest_rejects_invalid_duplicate_or_excessive_tools() {
 }
 
 #[test]
+fn manifest_paths_are_absolute_in_the_device_format() {
+    for root in [
+        "/project",
+        r"C:\project",
+        "C:/project",
+        r"\\?\C:\project",
+        r"\\server\share\project",
+        r"\\?\UNC\server\share\project",
+        r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\project",
+    ] {
+        let mut value = manifest();
+        value.project_root = root.into();
+        let sep = if root.starts_with('/') { '/' } else { '\\' };
+        value.skills.push(SkillDescriptor {
+            id: "test".into(),
+            name: "Test".into(),
+            description: "test".into(),
+            path: format!("{root}{sep}skills{sep}test{sep}SKILL.md"),
+            content_hash: "a".repeat(64),
+        });
+        value.project_instructions = Some(ProjectInstructions {
+            path: format!("{root}{sep}AGENTS.md"),
+            content: String::new(),
+            content_hash: "a".repeat(64),
+        });
+        validate_manifest(&value).unwrap_or_else(|error| panic!("{root}: {error}"));
+
+        for path in [
+            "project",
+            r"C:project",
+            r"\project",
+            r"\\server",
+            r"\\?\C:",
+            "C:/pro\0ject",
+        ] {
+            let mut invalid = value.clone();
+            invalid.project_root = path.into();
+            assert!(validate_manifest(&invalid).is_err(), "accepted root {path}");
+            let mut invalid = value.clone();
+            invalid.skills[0].path = path.into();
+            assert!(
+                validate_manifest(&invalid).is_err(),
+                "accepted skill {path}"
+            );
+            let mut invalid = value.clone();
+            invalid.project_instructions.as_mut().unwrap().path = path.into();
+            assert!(
+                validate_manifest(&invalid).is_err(),
+                "accepted instructions {path}"
+            );
+        }
+    }
+}
+
+#[test]
 fn manifest_and_project_instructions_have_byte_limits() {
     let mut value = manifest();
     value.project_instructions = Some(ProjectInstructions {

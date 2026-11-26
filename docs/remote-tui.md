@@ -186,7 +186,10 @@ evidence have separate projection limits and cannot remove Stop or approval
 controls; full durable results remain in server history.
 
 The project root is the canonical launch directory. File read, patch and image
-tools are included. Local shell is included by default unless `allow_shell = false`
+tools are included. Use paths from the device's filesystem (for example,
+`C:\Projects\example` for a Windows device connected to a Linux gateway).
+Relative tool paths are resolved on the device, not on the gateway.
+Local shell is included by default unless `allow_shell = false`
 is set explicitly. The confirmation screen explains what Kodrik can do, names
 the available MCP tools and skills, and explains what data can leave the device.
 Use PageUp/PageDown for long details. Reject is selected by default.
