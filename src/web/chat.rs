@@ -331,15 +331,33 @@ impl Chat {
                 }
             }
             runs.remove(session_id.as_str());
+            // Retirement changes the public busy state even after the last durable write.
+            if let Err(error) = self.sessions.with_connection(|db| {
+                db.execute("UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='run_view_revision'", [])?;
+                Ok(())
+            }).await {
+                log::warn!("Web worker retirement notification failed: {error:#}");
+            }
             self.workers_done.notify_waiters();
             break;
         }
     }
 
     async fn snapshot(&self, id: &str) -> anyhow::Result<Value> {
-        let view = self.sessions.conversation_view(id).await?;
+        let view = self.conversation_view(id).await?;
         anyhow::ensure!(listed_session(&view.session), "Conversation not found");
         self.snapshot_view(id, view).await
+    }
+
+    async fn conversation_view(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<crate::agent::run_view::ConversationView> {
+        // Admission, worker retirement and reads must agree on whether work is active.
+        let runs = self.runs.lock().await;
+        let mut view = self.sessions.conversation_view(id).await?;
+        view.busy |= runs.contains(id);
+        Ok(view)
     }
 
     async fn session_cost(&self, session: &Session) -> anyhow::Result<crate::billing::SessionCost> {
@@ -440,7 +458,7 @@ impl Chat {
         id: &str,
     ) -> Result<crate::agent::run_view::ConversationView, Response> {
         validate_conversation_id(id)?;
-        let view = self.sessions.conversation_view(id).await.map_err(|error| {
+        let view = self.conversation_view(id).await.map_err(|error| {
             if error.to_string() == "Conversation not found" {
                 self::error(StatusCode::NOT_FOUND, "Conversation not found")
             } else {
@@ -1579,6 +1597,28 @@ mod tests {
             .await
             .unwrap();
         assert!(chat.snapshot("companion:private").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_stays_busy_until_the_worker_retires() {
+        let data = tempfile::tempdir().unwrap();
+        let chat = super::super::chat_tests::chat(data.path()).await;
+        let id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        chat.sessions.save(&Session::new(id.clone())).await.unwrap();
+
+        // A terminal run can have no durable work while its web worker is still registered.
+        chat.runs.lock().await.insert(id.as_str().into());
+        let before = chat.snapshot(id.as_str()).await.unwrap();
+        assert_eq!(before["busy"], true);
+        assert_eq!(
+            chat.remote_snapshot(&id).await.unwrap().run.unwrap()["busy"],
+            true
+        );
+
+        chat.work(id.clone(), false).await;
+        let after = chat.snapshot(id.as_str()).await.unwrap();
+        assert_eq!(after["busy"], false);
+        assert!(after["revision"].as_i64().unwrap() > before["revision"].as_i64().unwrap());
     }
 
     #[tokio::test]

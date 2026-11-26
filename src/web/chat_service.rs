@@ -323,7 +323,6 @@ impl Chat {
             return Err(error(StatusCode::NOT_FOUND, "Conversation not found"));
         }
         let view = self
-            .sessions
             .conversation_view(id.as_str())
             .await
             .map_err(internal)?;
