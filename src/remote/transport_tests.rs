@@ -508,7 +508,7 @@ async fn client_rejects_untrusted_tls_certificate_without_plaintext_fallback() {
 async fn slow_reader_exhausts_bounded_writer_and_closes_local_authority() {
     use super::{client::RemoteClient, config::RemoteConfig, local::LocalEnvironment};
     use futures::{SinkExt, StreamExt};
-    use std::os::{fd::AsRawFd, unix::fs::PermissionsExt};
+    use std::os::fd::AsRawFd;
     use tokio_tungstenite::{accept_async, tungstenite::Message};
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("large"), vec![b'x'; 1024 * 1024]).unwrap();

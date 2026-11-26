@@ -49,7 +49,9 @@ jobs:
           rustup default stable
           npm ci --prefix web
           npm run build --prefix web
-          cargo test --locked -- --test-threads=2
+          # The large test binary exceeds ld's 16 MiB compact-unwind offset range.
+          # Use DWARF unwind tables for tests; leave production linking unchanged.
+          RUSTFLAGS="-C link-arg=-Wl,-no_compact_unwind" cargo test --locked -- --test-threads=2
           sh scripts/test-install-macos.sh
           brew ruby scripts/test-homebrew.rb
           cargo build --release --locked --target aarch64-apple-darwin
