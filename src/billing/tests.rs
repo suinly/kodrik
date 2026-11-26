@@ -1,6 +1,31 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn child_origin_migration_preserves_v18_charges_when_replayed() -> anyhow::Result<()> {
+    let db = Connection::open_in_memory()?;
+    db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY);")?;
+    migrate(&db)?;
+    db.execute_batch(
+        "INSERT INTO model_calls (id,session_id,generation,model,kind,cost_usd,partial)
+        VALUES ('legacy','chat','generation','model','subagent',1.25,0);",
+    )?;
+    migrate_child_origin(&db)?;
+    db.execute_batch("PRAGMA user_version=18;")?;
+    migrate_child_origin(&db)?;
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |row| row.get(0))?,
+        19
+    );
+    let (cost, child): (f64, Option<String>) = db.query_row(
+        "SELECT cost_usd,child_id FROM model_calls WHERE id='legacy'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!((cost, child), (1.25, None));
+    Ok(())
+}
+
 fn priced_call(id: &str) -> Call<'_> {
     Call {
         id,

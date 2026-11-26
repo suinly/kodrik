@@ -42,11 +42,20 @@ pub(crate) struct ModelCost {
 }
 
 pub(crate) fn migrate_child_origin(db: &Connection) -> anyhow::Result<()> {
+    for column in ["child_id", "child_generation", "child_run_id"] {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('model_calls') WHERE name=?1)",
+            [column],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            db.execute_batch(&format!(
+                "ALTER TABLE model_calls ADD COLUMN {column} TEXT;"
+            ))?;
+        }
+    }
     db.execute_batch(
-        "ALTER TABLE model_calls ADD COLUMN child_id TEXT;
-        ALTER TABLE model_calls ADD COLUMN child_generation TEXT;
-        ALTER TABLE model_calls ADD COLUMN child_run_id TEXT;
-        CREATE INDEX model_calls_child ON model_calls(child_id, child_generation);
+        "CREATE INDEX IF NOT EXISTS model_calls_child ON model_calls(child_id, child_generation);
         PRAGMA user_version=19;",
     )?;
     Ok(())
@@ -139,7 +148,10 @@ pub(crate) async fn record_call(
     let (cost, partial) = price(usage, rates);
     store.with_connection(move |db| {
         let tx = db.unchecked_transaction()?;
-        let updated = tx.execute("INSERT INTO model_calls VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+        let updated = tx.execute("INSERT INTO model_calls
+            (id,session_id,generation,model,kind,run_id,input_tokens,cached_tokens,output_tokens,
+             input_rate,cached_rate,output_rate,cost_usd,partial,child_id,child_generation,child_run_id)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
             ON CONFLICT(id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_tokens=excluded.cached_tokens,
                 output_tokens=excluded.output_tokens,cost_usd=excluded.cost_usd,partial=excluded.partial
             WHERE model_calls.session_id=excluded.session_id AND model_calls.generation=excluded.generation

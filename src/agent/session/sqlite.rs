@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(super) const VERSION: i64 = 19;
+pub(crate) const VERSION: i64 = 19;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]

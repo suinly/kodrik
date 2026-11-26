@@ -8,6 +8,8 @@ mod json;
 mod owner_migration;
 mod runtime;
 mod sqlite;
+#[cfg(test)]
+pub(crate) use sqlite::VERSION;
 mod store;
 mod titles;
 pub(crate) use branches::init_branches;
