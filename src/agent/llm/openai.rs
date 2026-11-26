@@ -1387,6 +1387,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = SqliteSessionStore::open(directory.path().into()).unwrap();
         let session = Session::new(SessionId::new("cost"));
+        let child = Session::new(SessionId::new("child-cost"));
         let (llm, finish, server) = streaming_server(Some(json!({"type":"response.completed",
             "response":{"output":[],"usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120,"input_tokens_details":{"cached_tokens":40}}}
         }))).await;
@@ -1395,9 +1396,14 @@ mod tests {
             cached_input_usd_per_million: Some(0.5),
             output_usd_per_million: Some(2.0),
         }));
-        let charge = super::super::charge::Charge::new(&store, &session, Some("run"), "chat");
+        use super::super::charge::{Charge, child_scope, scope};
+        let parent = Charge::new(&store, &session, Some("run"), "subagent");
+        let charge = child_scope(Some(parent), async {
+            Charge::new(&store, &child, Some("child-run"), "chat")
+        })
+        .await;
         let (tx, mut rx) = mpsc::channel(32);
-        let request = tokio::spawn(super::super::charge::scope(Some(charge), async move {
+        let request = tokio::spawn(scope(Some(charge), async move {
             llm.generate(
                 &LlmContext {
                     instructions: "test".into(),
@@ -1424,6 +1430,12 @@ mod tests {
         assert_eq!(cost.calls.len(), 1);
         assert!(!cost.partial);
         assert!((cost.total_usd - 0.00012).abs() < 1e-12);
+        let child_cost = crate::billing::session_cost(&store, "child-cost", child.generation())
+            .await
+            .unwrap();
+        assert_eq!(child_cost.calls[0].id, cost.calls[0].id);
+        assert_eq!(child_cost.calls[0].run_id.as_deref(), Some("child-run"));
+        assert_eq!(child_cost.total_usd, cost.total_usd);
     }
 
     #[tokio::test]

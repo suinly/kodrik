@@ -11,6 +11,7 @@ pub(crate) struct Charge {
     generation: String,
     run_id: Option<String>,
     kind: &'static str,
+    origin: Option<(String, String, Option<String>)>,
 }
 
 tokio::task_local! {
@@ -35,7 +36,15 @@ impl Charge {
                 generation: session.generation().to_owned(),
                 run_id: run_id.map(str::to_owned),
                 kind,
+                origin: None,
             });
+        if charge.session != session.id().as_str() {
+            charge.origin = Some((
+                session.id().as_str().into(),
+                session.generation().into(),
+                run_id.map(str::to_owned),
+            ));
+        }
         charge.kind = if charge.kind == "subagent" && kind == "chat" {
             "subagent"
         } else {
@@ -69,6 +78,9 @@ impl Charge {
                 model,
                 kind: self.kind,
                 run_id: self.run_id.as_deref(),
+                origin: self.origin.as_ref().map(|(id, generation, run)| {
+                    (id.as_str(), generation.as_str(), run.as_deref())
+                }),
                 usage,
                 rates,
             },

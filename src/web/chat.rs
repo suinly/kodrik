@@ -432,6 +432,15 @@ impl Chat {
                 value["task"] = json!(child.task);
                 value["model"] = json!(manager.model_identity(&child).await?);
                 value["token_usage"] = json!(manager.token_usage(&child).await?);
+                value["cost"] = json!(
+                    crate::billing::child_cost(
+                        &self.sessions,
+                        id,
+                        view.session.generation(),
+                        &child.id
+                    )
+                    .await?
+                );
                 value["cancel_requested"] = json!(manager.cancellation_requested(&child.id).await?);
                 children.push(value);
             }
@@ -630,6 +639,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         )
         .route("/api/chat/sessions/{id}/resume", post(resume))
         .route("/api/chat/sessions/{id}/run", get(run_snapshot))
+        .route("/api/chat/sessions/{id}/cost/calls", get(cost_calls))
         .route("/api/chat/sessions/{id}/events", get(events))
         .route(
             "/api/chat/sessions/{id}/attachments/{message}/{kind}/{index}",
@@ -1392,6 +1402,32 @@ async fn mark_all_read(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Deserialize)]
+struct CostQuery {
+    model: String,
+    before: Option<i64>,
+}
+
+async fn cost_calls(
+    Extension(state): Extension<WebState>,
+    Path(id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<CostQuery>,
+) -> Result<Json<crate::billing::ModelHistory>, Response> {
+    let chat = state.chat().map_err(IntoResponse::into_response)?;
+    let session = chat.readable_session(&id).await?;
+    Ok(Json(
+        crate::billing::model_history(
+            &chat.sessions,
+            &id,
+            session.generation(),
+            &query.model,
+            query.before,
+        )
+        .await
+        .map_err(internal)?,
+    ))
+}
+
 async fn run_snapshot(
     Extension(state): Extension<WebState>,
     Path(id): Path<String>,
@@ -1628,7 +1664,7 @@ mod tests {
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         chat.sessions.save(&Session::new(id.clone())).await.unwrap();
 
-        let expected = json!({"total_usd":0.0,"partial":false,"calls":[]});
+        let expected = json!({"total_usd":0.0,"partial":false,"calls":[],"models":[]});
         assert_eq!(
             chat.snapshot(id.as_str()).await.unwrap()["session_cost"],
             expected

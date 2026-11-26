@@ -22,7 +22,7 @@ export type MessagePart =
   | FilePart
   | { type: 'dynamic-tool'; toolCallId: string; toolName: string; state: string; input: unknown; output?: unknown; errorText?: string; images?:FilePart[]; origin?:ToolOrigin; attachment_saved?:boolean };
 export type ChatMessage = { id: string; role: 'user' | 'assistant'; parts: MessagePart[]; browser_context?:BrowserContext|null; created_at?:string|null; versions?:string[]; version?:number };
-export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;model?:string|null;cancel_requested?:boolean;token_usage?:TokenUsage|null};
+export type Subagent = {id:string;task:string;status:'running'|'completed'|'stopped'|'failed'|'interrupted';result:string|null;error:string|null;model?:string|null;cancel_requested?:boolean;token_usage?:TokenUsage|null;cost?:CostTotal|null};
 export type CommandAuditMode = 'trusted'|'review'|'ask';
 export type RegisteredDevice = {id:string;label:string;expires_at:number};
 export type EnvironmentStatus = {session_id:string;environment?:{connection_id:string;generation:string}|null;label:string;project_root:string;state:string;reason?:string|null};
@@ -85,10 +85,9 @@ export type TokenUsage = {
   input_tokens:number;output_tokens:number|null;cached_tokens:number|null;
   total_tokens:number|null;requests:number;partial:boolean;
 };
-export type SessionCost = {
-  total_usd:number;partial:boolean;
-  calls:{id:string;model:string;kind:string;cost_usd:number|null;run_id?:string|null}[];
-};
+export type CostTotal = {total_usd:number;partial:boolean};
+export type ModelCall = {id:string;model:string;kind:string;cost_usd:number|null;run_id?:string|null};
+export type SessionCost = CostTotal & {calls:ModelCall[];models?: (CostTotal & {model:string;count:number})[]};
 export type Snapshot = {
   model?: string | null;
   model_override?: string | null;

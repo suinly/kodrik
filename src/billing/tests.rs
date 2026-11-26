@@ -7,6 +7,7 @@ fn priced_call(id: &str) -> Call<'_> {
         model: "provider/model",
         kind: "primary",
         run_id: Some("run"),
+        origin: None,
         usage: GenerationUsage {
             input_tokens: Some(1_000_000),
             cached_tokens: Some(500_000),
@@ -19,6 +20,75 @@ fn priced_call(id: &str) -> Call<'_> {
             output_usd_per_million: Some(8.0),
         }),
     }
+}
+
+#[tokio::test]
+async fn child_calls_are_counted_once_and_model_history_is_complete() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = SqliteSessionStore::open(directory.path().into())?;
+    record_call(&store, "chat", "generation", priced_call("parent")).await?;
+    for index in 0..101 {
+        let id = index.to_string();
+        let mut call = priced_call(&id);
+        call.model = "provider/child-model";
+        call.kind = "subagent";
+        call.origin = Some(("child", "child-generation", Some("child-run")));
+        record_call(&store, "chat", "generation", call).await?;
+    }
+    assert_eq!(
+        child_cost(&store, "chat", "generation", "child")
+            .await?
+            .unwrap()
+            .total_usd,
+        656.5
+    );
+    assert!(
+        child_cost(&store, "chat", "generation", "other")
+            .await?
+            .is_none()
+    );
+    assert!(
+        child_cost(&store, "chat", "old-generation", "child")
+            .await?
+            .is_none()
+    );
+    let cost = session_cost(&store, "chat", "generation").await?;
+    assert_eq!(cost.total_usd, 663.0);
+    assert_eq!(
+        session_cost(&store, "child", "child-generation")
+            .await?
+            .total_usd,
+        656.5
+    );
+    assert_eq!(
+        run_cost(&store, "child", "child-generation", "child-run")
+            .await?
+            .unwrap()
+            .total_usd,
+        656.5
+    );
+    assert_eq!(
+        cost.models
+            .iter()
+            .find(|model| model.model == "provider/model")
+            .unwrap()
+            .count,
+        1
+    );
+    let page = model_history(&store, "chat", "generation", "provider/child-model", None).await?;
+    assert_eq!(page.calls.len(), 100);
+    assert_eq!(page.calls[0].id, "100");
+    let tail = model_history(
+        &store,
+        "chat",
+        "generation",
+        "provider/child-model",
+        page.next,
+    )
+    .await?;
+    assert_eq!(tail.calls[0].id, "0");
+    assert!(tail.next.is_none());
+    Ok(())
 }
 
 #[tokio::test]
@@ -42,7 +112,7 @@ async fn price_snapshot_survives_reopen_and_duplicate_write() -> anyhow::Result<
     let cost = session_cost(&store, "chat", "generation").await?;
     assert_eq!(
         serde_json::to_value(cost)?,
-        json!({"total_usd":6.5,"partial":false,"calls":[{
+        json!({"total_usd":6.5,"partial":false,"models":[{"model":"provider/model","total_usd":6.5,"partial":false,"count":1}],"calls":[{
             "id":"first","model":"provider/model","kind":"primary","cost_usd":6.5,"run_id":"run"
         }]})
     );

@@ -18,6 +18,7 @@ pub(crate) struct Call<'a> {
     pub model: &'a str,
     pub kind: &'a str,
     pub run_id: Option<&'a str>,
+    pub origin: Option<(&'a str, &'a str, Option<&'a str>)>,
     pub usage: GenerationUsage,
     pub rates: Option<Rates>,
 }
@@ -27,8 +28,28 @@ pub(crate) struct SessionCost {
     pub total_usd: f64,
     pub partial: bool,
     pub calls: Vec<CallCost>,
+    pub models: Vec<ModelCost>,
     #[serde(skip)]
     pub chat_calls: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ModelCost {
+    model: String,
+    total_usd: f64,
+    partial: bool,
+    count: i64,
+}
+
+pub(crate) fn migrate_child_origin(db: &Connection) -> anyhow::Result<()> {
+    db.execute_batch(
+        "ALTER TABLE model_calls ADD COLUMN child_id TEXT;
+        ALTER TABLE model_calls ADD COLUMN child_generation TEXT;
+        ALTER TABLE model_calls ADD COLUMN child_run_id TEXT;
+        CREATE INDEX model_calls_child ON model_calls(child_id, child_generation);
+        PRAGMA user_version=19;",
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -105,11 +126,20 @@ pub(crate) async fn record_call(
         call.run_id.map(str::to_owned),
     );
     let usage = call.usage;
+    let (child, child_generation, child_run) =
+        call.origin
+            .map_or((None, None, None), |(id, generation, run)| {
+                (
+                    Some(id.to_owned()),
+                    Some(generation.to_owned()),
+                    run.map(str::to_owned),
+                )
+            });
     let rates = call.rates.unwrap_or_default();
     let (cost, partial) = price(usage, rates);
     store.with_connection(move |db| {
         let tx = db.unchecked_transaction()?;
-        let updated = tx.execute("INSERT INTO model_calls VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+        let updated = tx.execute("INSERT INTO model_calls VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
             ON CONFLICT(id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_tokens=excluded.cached_tokens,
                 output_tokens=excluded.output_tokens,cost_usd=excluded.cost_usd,partial=excluded.partial
             WHERE model_calls.session_id=excluded.session_id AND model_calls.generation=excluded.generation
@@ -117,12 +147,61 @@ pub(crate) async fn record_call(
               AND (excluded.input_tokens IS NOT NULL OR excluded.cached_tokens IS NOT NULL OR excluded.output_tokens IS NOT NULL)",
             params![id,session,generation,model,kind,run_id,
                 usage.input_tokens.map(i64::try_from).transpose()?, usage.cached_tokens.map(i64::try_from).transpose()?, usage.output_tokens.map(i64::try_from).transpose()?,
-                rates.input_usd_per_million,rates.cached_input_usd_per_million,rates.output_usd_per_million,cost,partial])?;
+                rates.input_usd_per_million,rates.cached_input_usd_per_million,rates.output_usd_per_million,cost,partial,child,child_generation,child_run])?;
         if updated > 0 {
             tx.execute("UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='run_view_revision'", [])?;
         }
         tx.commit()?;
         Ok(())
+    }).await
+}
+
+const SCOPE: &str = "((session_id=?1 AND generation=?2) OR (child_id=?1 AND child_generation=?2))";
+
+fn read_call(row: &rusqlite::Row<'_>) -> rusqlite::Result<CallCost> {
+    Ok(CallCost {
+        id: row.get(0)?,
+        model: row.get(1)?,
+        kind: row.get(2)?,
+        cost_usd: row.get(3)?,
+        run_id: row.get(4)?,
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct ModelHistory {
+    calls: Vec<CallCost>,
+    next: Option<i64>,
+}
+
+pub(crate) async fn model_history(
+    store: &SqliteSessionStore,
+    session: &str,
+    generation: &str,
+    model: &str,
+    before: Option<i64>,
+) -> anyhow::Result<ModelHistory> {
+    let (session, generation, model) =
+        (session.to_owned(), generation.to_owned(), model.to_owned());
+    store.with_connection(move |db| {
+        let mut stmt = db.prepare(&format!("SELECT id,model,kind,cost_usd,CASE WHEN child_id=?1 THEN child_run_id ELSE run_id END,rowid FROM model_calls WHERE {SCOPE} AND model=?3 AND (?4 IS NULL OR rowid<?4) ORDER BY rowid DESC LIMIT 101"))?;
+        let mut rows = stmt.query_map(params![session,generation,model,before], |r| Ok((read_call(r)?,r.get::<_,i64>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = (rows.len() > 100).then(|| rows[99].1);
+        rows.truncate(100);
+        Ok(ModelHistory {calls:rows.into_iter().map(|(call,_)| call).collect(),next})
+    }).await
+}
+
+pub(crate) async fn child_cost(
+    store: &SqliteSessionStore,
+    parent: &str,
+    generation: &str,
+    child: &str,
+) -> anyhow::Result<Option<RunCost>> {
+    let (parent, generation, child) = (parent.to_owned(), generation.to_owned(), child.to_owned());
+    store.with_connection(move |db| {
+        let (count,total_usd,partial) = db.query_row("SELECT COUNT(*),COALESCE(SUM(cost_usd),0.0),COALESCE(MAX(partial),0) FROM model_calls WHERE session_id=?1 AND generation=?2 AND child_id=?3",params![parent,generation,child],|row| Ok((row.get::<_,i64>(0)?,row.get(1)?,row.get(2)?)))?;
+        Ok((count > 0).then_some(RunCost {total_usd,partial}))
     }).await
 }
 
@@ -133,10 +212,12 @@ pub(crate) async fn session_cost(
 ) -> anyhow::Result<SessionCost> {
     let (session, generation) = (session_id.to_owned(), generation.to_owned());
     store.with_connection(move |db| {
-        let (total_usd,partial,chat_calls) = db.query_row("SELECT COALESCE(SUM(cost_usd),0.0),COALESCE(MAX(partial),0),COALESCE(SUM(kind='chat' AND input_tokens IS NOT NULL),0) FROM model_calls WHERE session_id=?1 AND generation=?2", params![session,generation], |row| Ok((row.get(0)?,row.get(1)?,row.get::<_, i64>(2)?)))?;
-        let mut query = db.prepare("SELECT id,model,kind,cost_usd,run_id FROM model_calls WHERE session_id=?1 AND generation=?2 ORDER BY rowid DESC LIMIT 20")?;
-        let calls = query.query_map(params![session,generation], |row| Ok(CallCost { id: row.get(0)?,model:row.get(1)?,kind:row.get(2)?,cost_usd:row.get(3)?,run_id:row.get(4)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(SessionCost {total_usd,partial,calls,chat_calls: chat_calls as u64})
+        let (total_usd,partial,chat_calls) = db.query_row(&format!("SELECT COALESCE(SUM(cost_usd),0.0),COALESCE(MAX(partial),0),COALESCE(SUM(((session_id=?1 AND kind='chat') OR (child_id=?1 AND kind='subagent')) AND input_tokens IS NOT NULL),0) FROM model_calls WHERE {SCOPE}"), params![session,generation], |row| Ok((row.get(0)?,row.get(1)?,row.get::<_, i64>(2)?)))?;
+        let mut query = db.prepare(&format!("SELECT id,model,kind,cost_usd,CASE WHEN child_id=?1 THEN child_run_id ELSE run_id END FROM model_calls WHERE {SCOPE} ORDER BY rowid DESC LIMIT 20"))?;
+        let calls = query.query_map(params![session,generation], read_call)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = db.prepare(&format!("SELECT model,COALESCE(SUM(cost_usd),0.0),MAX(partial),COUNT(*) FROM model_calls WHERE {SCOPE} GROUP BY model ORDER BY model"))?;
+        let models = stmt.query_map(params![session,generation], |r| Ok(ModelCost {model:r.get(0)?,total_usd:r.get(1)?,partial:r.get(2)?,count:r.get(3)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(SessionCost {total_usd,partial,calls,models,chat_calls: chat_calls as u64})
     }).await
 }
 
@@ -165,7 +246,7 @@ pub(crate) async fn run_cost(
 ) -> anyhow::Result<Option<RunCost>> {
     let (session, generation, run) = (session.to_owned(), generation.to_owned(), run.to_owned());
     store.with_connection(move |db| {
-        let (count, total_usd, partial) = db.query_row("SELECT COUNT(*),COALESCE(SUM(cost_usd),0.0),COALESCE(MAX(partial),0) FROM model_calls WHERE session_id=?1 AND generation=?2 AND run_id=?3", params![session,generation,run], |row| Ok((row.get::<_, i64>(0)?,row.get(1)?,row.get(2)?)))?;
+        let (count, total_usd, partial) = db.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(cost_usd),0.0),COALESCE(MAX(partial),0) FROM model_calls WHERE {SCOPE} AND CASE WHEN child_id=?1 THEN child_run_id ELSE run_id END=?3"), params![session,generation,run], |row| Ok((row.get::<_, i64>(0)?,row.get(1)?,row.get(2)?)))?;
         Ok((count > 0).then_some(RunCost {total_usd,partial}))
     }).await
 }

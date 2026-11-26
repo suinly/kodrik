@@ -221,6 +221,8 @@ test('chat shows partial session costs with priced, free and unpriced model call
     await expect(cost).toContainText('Учёт неполный');
     const calls=cost.getByTestId('model-call-group');
     await expect(calls).toHaveCount(3);
+    await expect(calls.locator('details[open]')).toHaveCount(0);
+    for(const group of await calls.all()) await group.locator('summary').click();
     await expect(calls.filter({hasText:'vendor/fast'})).toContainText(/chat.*0,001234/);
     await expect(calls.filter({hasText:'vendor/free'})).toContainText(/title.*0,00/);
     await expect(calls.filter({hasText:'vendor/smart'})).toContainText(/review.*Нет данных/);

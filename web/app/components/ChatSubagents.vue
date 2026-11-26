@@ -25,6 +25,9 @@ const stopping=(agent:Subagent)=>props.stopping.has(agent.id) || !!agent.cancel_
 const status=(agent:Subagent)=>t(stopping(agent) && agent.status==='running' ? 'Останавливаю…' : state(agent).label)
 const numberFormat=computed(()=>new Intl.NumberFormat(locale.value))
 const tokens=(value:number|null)=>value===null?'—':numberFormat.value.format(value)
+const usd=computed(()=>new Intl.NumberFormat(locale.value,{style:'currency',currency:'USD',maximumFractionDigits:6}))
+const cost=(value:NonNullable<Subagent['cost']>)=>value.total_usd>0 && value.total_usd<0.000001
+  ? `<${usd.value.format(0.000001)}` : `${value.partial?'≥':''}${usd.value.format(value.total_usd)}`
 </script>
 
 <template>
@@ -44,6 +47,7 @@ const tokens=(value:number|null)=>value===null?'—':numberFormat.value.format(v
                 <span class="block truncate text-sm text-highlighted">{{ title(agent) }}</span>
                 <span v-if="agent.model" :id="`model-${agent.id}`" class="block text-xs text-muted [overflow-wrap:anywhere]">{{ t('Модель: {0}',agent.model) }}</span>
                 <span v-if="agent.token_usage" :id="`usage-${agent.id}`" data-testid="child-token-usage" class="block text-xs text-muted tabular-nums">{{ t('Токены: {0} · Ответы модели: {1}',`${agent.token_usage.partial && agent.token_usage.total_tokens!==null?'≥':''}${tokens(agent.token_usage.total_tokens)}`,tokens(agent.token_usage.requests)) }}</span>
+                <span v-if="agent.cost || agent.token_usage?.requests" data-testid="child-cost" class="block text-xs text-muted tabular-nums">{{ t('Стоимость: {0}',agent.cost ? cost(agent.cost) : t('Нет данных')) }}</span>
               </span>
               <span :id="`status-${agent.id}`" class="shrink-0 whitespace-nowrap text-xs" :class="state(agent).color">{{ status(agent) }}</span>
             </UButton>

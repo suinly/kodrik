@@ -1110,6 +1110,48 @@ impl Drop for Fixture {
     }
 }
 
+#[tokio::test]
+async fn model_call_history_does_not_include_calls_from_other_conversations() {
+    let f = Fixture::new().await;
+    let id = f.create().await;
+    let other = f.create().await;
+    for (session_id, call_id) in [(&id, "wanted"), (&other, "unrelated")] {
+        let session = f
+            .sessions
+            .load(&crate::agent::session::SessionId::new(session_id))
+            .await
+            .unwrap()
+            .unwrap();
+        crate::billing::record_call(
+            &f.sessions,
+            session_id,
+            session.generation(),
+            crate::billing::Call {
+                id: call_id,
+                model: "vendor/model + variant",
+                kind: "chat",
+                run_id: None,
+                origin: None,
+                usage: Default::default(),
+                rates: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let response = f
+        .request(reqwest::Method::GET, &format!("sessions/{id}/cost/calls"))
+        .query(&[("model", "vendor/model + variant")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let page: Value = response.json().await.unwrap();
+    assert_eq!(page["calls"].as_array().unwrap().len(), 1);
+    assert_eq!(page["calls"][0]["id"], "wanted");
+    assert_eq!(page["next"], Value::Null);
+}
+
 pub(super) fn multipart(id: &str, request: &str, text: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut body = Vec::new();
     for (name, value) in [("id", id), ("request_id", request), ("text", text)] {
