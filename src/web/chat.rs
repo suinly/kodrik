@@ -35,6 +35,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 #[path = "chat_browser_context.rs"]
 mod browser_context;
 
+#[path = "admin_users.rs"]
+mod admin_users;
 #[path = "chat_agent_profiles.rs"]
 mod agent_profiles;
 #[path = "chat_approvals.rs"]
@@ -682,6 +684,7 @@ pub(super) fn routes(settings: Settings, data: &FsPath, chat: Option<Chat>) -> R
         .merge(remote::routes(state.clone()))
         .merge(webhooks::routes(state.clone()))
         .merge(wakeups::routes(state.clone()))
+        .merge(admin_users::routes(state.clone()))
         .route("/push-sw.js", get(push::worker))
         .route("/chat", get(chat_redirect))
         .route("/chat/", get(chat_redirect))

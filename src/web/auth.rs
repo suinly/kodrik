@@ -27,7 +27,7 @@ mod telegram;
 pub(crate) use telegram::{LoginPoll, browser_login_cookie, browser_login_token};
 #[path = "auth_profile.rs"]
 mod profile;
-pub(crate) use profile::ProfileError;
+pub(crate) use profile::{AccountSummary, ProfileError};
 #[path = "device_auth.rs"]
 pub(crate) mod devices;
 

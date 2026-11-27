@@ -3,7 +3,7 @@ import {languagePreference, setLanguage, t} from '../utils/i18n'
 import {base} from '../utils/api'
 
 const props=defineProps<{active?:boolean;disabled?:boolean;owner?:boolean}>()
-const emit=defineEmits<{settings:[];gatewaySettings:[]}>()
+const emit=defineEmits<{settings:[];gatewaySettings:[];users:[]}>()
 const logout=useTemplateRef('logout')
 const logoutUrl=new URL('auth/logout',base).pathname
 const colorMode=useColorMode()
@@ -18,7 +18,10 @@ const items=computed(()=>[
     onSelect:()=>{colorMode.preference=value},
   }))},
   {label:t('Настройки профиля'),icon:'i-lucide-user-round',onSelect:()=>emit('settings')},
-  ...(props.owner?[{label:t('Настройки'),icon:'i-lucide-settings',onSelect:()=>emit('gatewaySettings')}]:[]),
+  ...(props.owner?[
+    {label:t('Настройки'),icon:'i-lucide-settings',onSelect:()=>emit('gatewaySettings')},
+    {label:t('Пользователи'),icon:'i-lucide-users',onSelect:()=>emit('users')},
+  ]:[]),
   {type:'separator' as const},
   {label:t('Выйти'),icon:'i-lucide-log-out',onSelect:()=>logout.value?.requestSubmit()},
 ])

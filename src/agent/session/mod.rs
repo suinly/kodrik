@@ -16,7 +16,7 @@ pub(crate) use branches::init_branches;
 pub(crate) use owner_migration::{checkpoint_owner_destination, stage_personal_sessions};
 pub(crate) use runtime::ExecutionOwnership;
 pub(crate) use sqlite::save as save_in_transaction;
-pub(crate) use sqlite::{ownership_lock, select as select_active};
+pub(crate) use sqlite::{DATABASE, ownership_lock, select as select_active};
 
 pub(crate) use core::{CompactionBlock, TokenUsage};
 pub use core::{Session, SessionId};

@@ -43,10 +43,10 @@ useHead(()=>({
 const [DefineRail, ReuseRail] = createReusableTemplate()
 const desktop = useMediaQuery('(min-width: 1024px)')
 watch(desktop, value => { if(value) menu.value=false })
-type Section = 'chat'|'pages'|'webhooks'|'wakeups'|'profile'|'settings'
+type Section = 'chat'|'pages'|'webhooks'|'wakeups'|'profile'|'settings'|'users'
 function readLocation():{section:Section;id:string|null} {
   const [section,id]=window.location.pathname.slice(base.pathname.length).split('/').slice(1)
-  return {section:section==='pages' || section==='webhooks' || section==='wakeups' || section==='profile' || section==='settings'?section:'chat',id:id?decodeURIComponent(id):null}
+  return {section:section==='pages' || section==='webhooks' || section==='wakeups' || section==='profile' || section==='settings' || section==='users'?section:'chat',id:id?decodeURIComponent(id):null}
 }
 const section = ref<Section>(readLocation().section)
 const owner=ref(false)
@@ -54,7 +54,8 @@ const settingsDirty=ref(false)
 function canLeaveSettings() {
   return section.value!=='settings' || !settingsDirty.value || window.confirm(t('Отбросить несохранённые изменения настроек?'))
 }
-const restoring = ref(false)
+// Avoid mounting the usage page before its initial location is restored.
+const restoring = ref(section.value==='users')
 const locationError = ref(false)
 let navigationRevision=0
 const webhookTab = ref(new URLSearchParams(window.location.search).get('view')==='events'?'events':'hooks')
@@ -92,7 +93,7 @@ function sectionLabel(id:string,label:string) {
   return count ? `${t(label)} · ${t('Непрочитанных: {0}',count)}` : t(label)
 }
 const sectionTitle = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Пробуждения'):section.value==='chat'?t('Диалоги'):showEvents.value?t('События'):section.value==='pages'?t('Страницы'):section.value==='profile'?t('Профиль'):t('Вебхуки'))
-const menuLabel = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Показать пробуждения'):section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
+const menuLabel = computed(()=>section.value==='users'?t('Показать меню'):section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Показать пробуждения'):section.value==='chat'?t('Показать диалоги'):section.value==='pages'?t('Показать страницы'):section.value==='profile'?t('Показать профиль'):t('Показать вебхуки'))
 const selectedPage = ref<PublishedPage | null>(null)
 const pageRevision = ref(0)
 const pageCatalogRevision = ref(0)
@@ -100,7 +101,7 @@ const pageToDelete = ref<PublishedPage | null>(null)
 const deletingPage = ref(false)
 const pageDeleteError = ref('')
 const pageDocumentUrl = computed(() => selectedPage.value ? new URL('document.json', selectedPage.value.url).href : '')
-const mainTitle = computed(()=>section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Пробуждения'):viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
+const mainTitle = computed(()=>section.value==='users'?t('Пользователи'):section.value==='settings'?t('Настройки'):section.value==='wakeups'?t('Пробуждения'):viewingConversation.value ? selected.value ? conversationTitle(selected.value) : t('Кодрик') : showEvents.value ? t('События') : section.value==='profile' ? t('Профиль') : section.value==='pages' ? selectedPage.value?.title ?? t('Страницы') : webhooks.current?.name ?? t(webhooks.editing?'Новый вебхук':'Вебхуки'))
 const conversationView = useTemplateRef('conversationView')
 let focusAfterMenu=false
 const creating = ref(false)
@@ -470,7 +471,7 @@ function openSection(next:Section) {
   section.value=next
   writeLocation()
   focusAfterMenu=false
-  if(next==='profile' || next==='settings') menu.value=false
+  if(next==='profile' || next==='settings' || next==='users') menu.value=false
   else if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
 }
 
@@ -660,7 +661,7 @@ onMounted(() => {
           </template>
         </UButton>
       </nav>
-      <div class="mt-auto"><SidebarProfile :active="section==='profile' || section==='settings'" :owner="owner" :disabled="webhooks.saving" @settings="openSection('profile')" @gateway-settings="openSection('settings')" /></div>
+      <div class="mt-auto"><SidebarProfile :active="section==='profile' || section==='settings' || section==='users'" :owner="owner" :disabled="webhooks.saving" @settings="openSection('profile')" @gateway-settings="openSection('settings')" @users="openSection('users')" /></div>
   </DefineRail>
   <div aria-hidden="true" class="chat-screen-edge top-0 lg:hidden" :style="{backgroundColor}" />
   <div aria-hidden="true" class="chat-screen-edge bottom-0 lg:hidden" :style="{backgroundColor}" />
@@ -853,6 +854,9 @@ onMounted(() => {
         </div>
         <div v-if="section==='profile' && !restoring" class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <LazyProfilePage />
+        </div>
+        <div v-if="section==='users' && !restoring" class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
+          <LazyUsersPage />
         </div>
         <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :browser-sidebar="browserSidebar" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refreshAfterConversationChange" @saved="refreshAfterConversationChange" @navigate="openVersion" @removed="removed" @new="newDraft" />
       </template>

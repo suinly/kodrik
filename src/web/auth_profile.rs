@@ -8,6 +8,21 @@ pub(crate) struct Profile {
     password_set: bool,
 }
 
+#[derive(Serialize)]
+pub(crate) struct AccountSummary {
+    #[serde(serialize_with = "serialize_telegram_id")]
+    pub telegram_id: Option<u64>,
+    name: String,
+    pub owner: bool,
+}
+
+fn serialize_telegram_id<S: serde::Serializer>(
+    id: &Option<u64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    id.map(|id| id.to_string()).serialize(serializer)
+}
+
 #[derive(Debug)]
 pub(crate) enum ProfileError {
     Unauthorized,
@@ -77,6 +92,38 @@ impl Journal {
 }
 
 impl AuthStore {
+    pub(crate) fn active_accounts(&self) -> anyhow::Result<Vec<AccountSummary>> {
+        let journal = self.read()?;
+        let owner = journal.profile(&Identity::Owner);
+        let mut accounts = vec![AccountSummary {
+            telegram_id: owner.telegram_id,
+            name: owner.name,
+            owner: true,
+        }];
+        for (&id, invite) in &journal.members {
+            if Some(id) == journal.owner_id {
+                continue;
+            }
+            let profile = journal.profile(&Identity::Telegram(id));
+            accounts.push(AccountSummary {
+                telegram_id: Some(id),
+                name: if profile.name.is_empty() {
+                    journal.invites[invite].label.clone()
+                } else {
+                    profile.name
+                },
+                owner: false,
+            });
+        }
+        Ok(accounts)
+    }
+
+    pub(crate) fn data_directory(&self) -> &Path {
+        self.root
+            .parent()
+            .expect("Auth directory is under the data root")
+    }
+
     pub(crate) fn profile(&self, token: &str, now: i64) -> anyhow::Result<Option<Profile>> {
         if !valid_token(token) {
             return Ok(None);

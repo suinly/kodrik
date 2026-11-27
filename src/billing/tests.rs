@@ -2,6 +2,66 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn account_usage_does_not_report_zero_cost_for_pre_ledger_history() -> anyhow::Result<()> {
+    let db = Connection::open_in_memory()?;
+    db.execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY, payload BLOB NOT NULL);
+         INSERT INTO sessions VALUES('old', CAST('{\"messages\":[{}],\"token_usage\":{\"requests\":2}}' AS BLOB));",
+    )?;
+    for version in [17, 18, 19] {
+        if version == 18 {
+            migrate(&db)?;
+        } else if version == 19 {
+            migrate_child_origin(&db)?;
+        }
+        let usage = read_account_usage(&db)?;
+        assert_eq!((usage.calls, usage.cost_usd), (0, None));
+        assert!(usage.partial && usage.tokens_partial);
+    }
+    Ok(())
+}
+
+#[test]
+fn saved_account_usage_marks_pending_legacy_import_without_importing() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let directory = root.path().join("sessions");
+    let store = SqliteSessionStore::open(directory.clone())?;
+    let db_path = directory.join(crate::agent::session::DATABASE);
+    let db = Connection::open(&db_path)?;
+    db.execute("DELETE FROM schema_meta WHERE key='legacy_imported'", [])?;
+    std::fs::write(directory.join("legacy.json"), "not imported by reporting")?;
+    let pending = saved_account_usage(root.path())?;
+    assert!(pending.partial && pending.tokens_partial && pending.cost_usd.is_none());
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get::<_, i64>(0))?,
+        0
+    );
+    drop((db, store));
+    std::fs::remove_file(&db_path)?;
+    let json_only = saved_account_usage(root.path())?;
+    assert!(json_only.partial && json_only.tokens_partial && json_only.cost_usd.is_none());
+    assert!(!db_path.exists());
+    Ok(())
+}
+
+#[test]
+fn account_usage_keeps_known_cost_even_when_transcript_cannot_be_checked() -> anyhow::Result<()> {
+    let db = Connection::open_in_memory()?;
+    db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, payload BLOB NOT NULL);")?;
+    migrate(&db)?;
+    db.execute_batch("INSERT INTO sessions VALUES('bad',X'00');
+        INSERT INTO model_calls (id,session_id,generation,model,kind,input_tokens,cached_tokens,output_tokens,cost_usd,partial)
+        VALUES('priced','bad','generation','model','chat',11,2,5,0.01,0);")?;
+    let usage = read_account_usage(&db)?;
+    assert_eq!(
+        (usage.calls, usage.input_tokens, usage.cost_usd),
+        (1, 11, Some(0.01))
+    );
+    assert!(usage.partial && usage.tokens_partial);
+    Ok(())
+}
+
+#[test]
 fn child_origin_migration_preserves_v18_charges_when_replayed() -> anyhow::Result<()> {
     let db = Connection::open_in_memory()?;
     db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY);")?;

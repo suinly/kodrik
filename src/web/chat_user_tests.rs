@@ -280,6 +280,174 @@ pub(crate) fn user_config() -> crate::config::Config {
 }
 
 #[tokio::test]
+async fn owner_users_report_is_private_and_aggregates_retained_calls_per_account() {
+    use crate::{
+        agent::llm::GenerationUsage,
+        billing::{Call, Rates, record_call},
+    };
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+
+    let data = tempfile::tempdir().unwrap();
+    let auth = AuthStore::new(data.path());
+    auth.configure_owner(Some(42)).unwrap();
+    for user in [7, 8, 9, 10, 11] {
+        auth.grant_test_user(user).unwrap();
+    }
+    auth.revoke_user(10).unwrap();
+    let invalid_db = data.path().join("users/11/sessions");
+    std::fs::create_dir_all(&invalid_db).unwrap();
+    std::fs::write(invalid_db.join("state.sqlite3"), "broken database").unwrap();
+    let chat = crate::web::chat_tests::chat(data.path()).await;
+    let member_dir = data.path().join("users/7/sessions");
+    let member_store = SqliteSessionStore::open(member_dir.clone()).unwrap();
+    for (store, call, kind, origin, usage, rates) in [
+        (
+            &*chat.sessions,
+            "call",
+            "chat",
+            None,
+            GenerationUsage {
+                input_tokens: Some(3),
+                cached_tokens: Some(0),
+                output_tokens: Some(2),
+                ..Default::default()
+            },
+            Some(Rates {
+                input_usd_per_million: Some(1_000_000.0),
+                output_usd_per_million: Some(2_000_000.0),
+                ..Default::default()
+            }),
+        ),
+        (
+            &member_store,
+            "call",
+            "chat",
+            None,
+            GenerationUsage {
+                input_tokens: Some(10),
+                cached_tokens: Some(2),
+                output_tokens: Some(4),
+                ..Default::default()
+            },
+            Some(Rates {
+                input_usd_per_million: Some(1_000_000.0),
+                cached_input_usd_per_million: Some(500_000.0),
+                output_usd_per_million: Some(2_000_000.0),
+            }),
+        ),
+        (
+            &member_store,
+            "child-call",
+            "subagent",
+            Some(("child", "child-generation", None)),
+            GenerationUsage {
+                input_tokens: Some(6),
+                ..Default::default()
+            },
+            None,
+        ),
+    ] {
+        record_call(
+            store,
+            "same-session",
+            "generation",
+            Call {
+                id: call,
+                model: "test",
+                kind,
+                run_id: None,
+                origin,
+                usage,
+                rates,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let unpriced = SqliteSessionStore::open(data.path().join("users/9/sessions")).unwrap();
+    record_call(
+        &unpriced,
+        "free?",
+        "chat",
+        Call {
+            id: "unpriced",
+            model: "test",
+            kind: "chat",
+            run_id: None,
+            origin: None,
+            usage: GenerationUsage {
+                input_tokens: Some(10),
+                cached_tokens: Some(2),
+                output_tokens: Some(4),
+                ..Default::default()
+            },
+            rates: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let now = chrono::Utc::now().timestamp();
+    let owner = auth
+        .test_session(Identity::Telegram(42), now)
+        .unwrap()
+        .unwrap();
+    let password_owner = auth.test_session(Identity::Owner, now).unwrap().unwrap();
+    let guest = auth
+        .test_session(Identity::Telegram(7), now)
+        .unwrap()
+        .unwrap();
+    auth.update_profile(&guest, "Member profile", now).unwrap();
+    let settings = Settings {
+        trusted_proxies: vec![],
+        listen: "127.0.0.1:0".parse().unwrap(),
+        base_url: "http://localhost/kodrik/".parse().unwrap(),
+    };
+    let router = crate::web::server::router_with_chat(settings, data.path(), Some(chat));
+    for path in ["/api/admin/users", "/app/users"] {
+        for (token, status) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some(&guest), StatusCode::FORBIDDEN),
+            (Some(&owner), StatusCode::OK),
+            (Some(&password_owner), StatusCode::OK),
+        ] {
+            let mut request = Request::builder().uri(format!("/kodrik{path}"));
+            if let Some(token) = token {
+                request = request.header("cookie", format!("kodrik_web_session={token}"));
+            }
+            let response = router
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status, "{path}");
+            if status != StatusCode::OK || path != "/api/admin/users" {
+                continue;
+            }
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                    .unwrap();
+            assert_eq!(
+                body["users"],
+                json!([
+                    {"telegram_id":"42", "name":"", "owner":true, "usage":{"calls":1,"input_tokens":3,"cached_tokens":0,"output_tokens":2,"cost_usd":7.0,"partial":false,"tokens_partial":false}},
+                    {"telegram_id":"7", "name":"Member profile", "owner":false, "usage":{"calls":2,"input_tokens":16,"cached_tokens":2,"output_tokens":4,"cost_usd":17.0,"partial":true,"tokens_partial":true}},
+                    {"telegram_id":"8", "name":"Test user", "owner":false, "usage":{"calls":0,"input_tokens":0,"cached_tokens":0,"output_tokens":0,"cost_usd":0.0,"partial":false,"tokens_partial":false}},
+                    {"telegram_id":"9", "name":"Test user", "owner":false, "usage":{"calls":1,"input_tokens":10,"cached_tokens":2,"output_tokens":4,"cost_usd":null,"partial":true,"tokens_partial":false}},
+                    {"telegram_id":"11", "name":"Test user", "owner":false, "usage":null}
+                ])
+            );
+            assert!(!data.path().join("users/8").exists());
+        }
+    }
+}
+
+#[tokio::test]
 async fn web_resume_explains_when_a_queue_requires_its_original_interface() {
     let data = tempfile::tempdir().unwrap();
     for user in [7, 8, 42] {

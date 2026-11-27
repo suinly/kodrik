@@ -46,6 +46,22 @@ async function pasteText(input,text) {
   },text);
 }
 
+test('owner opens the users report from the profile menu and can reload it',{timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.goto(new URL('app/chat',base).href);
+    await page.getByRole('button',{name:'Профиль',exact:true}).click();
+    await page.getByRole('menuitem',{name:'Пользователи',exact:true}).click();
+    await expect(page).toHaveURL(new URL('app/users',base).href);
+    const table=page.getByRole('table',{name:'Статистика по аккаунтам'});
+    await expect(table.getByText('Владелец',{exact:true})).toBeVisible();
+    await expect(table.getByText('ID в Telegram: 7',{exact:true})).toBeVisible();
+    await page.reload();
+    await expect(table.getByRole('rowheader',{name:/Итого по списку/})).toBeVisible();
+  } finally {await browser.close()}
+});
+
 test('the composer sends and edits text longer than 32 KiB without truncation',{timeout:60000},async()=>{
   const {id}=await(await request('sessions',{})).json();
   const text='abcdefghij '.repeat(6500)+'конец';

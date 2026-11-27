@@ -16,7 +16,7 @@ pub(super) fn valid_invite_token(token: &str) -> bool {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredInvite {
-    label: String,
+    pub(super) label: String,
     expires: i64,
     pub(super) user_id: Option<u64>,
     revoked: bool,
