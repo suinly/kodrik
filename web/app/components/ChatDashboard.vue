@@ -8,6 +8,7 @@ import {useWakeups, wakeupStatus} from '../utils/wakeups'
 import {initializePush, pushEnabled, updatePushPresence, refreshPushPermission} from '../utils/push'
 import icon from '../../public/chat/icon.svg?raw'
 import {faviconHref, type ChatActivity} from '../utils/favicon'
+import {accountKey,accountLabel,usersPath,type User} from '../utils/users'
 
 const sessions = ref<Conversation[]>([])
 const selected = ref<Conversation | null>(null)
@@ -50,6 +51,9 @@ function readLocation():{section:Section;id:string|null} {
 }
 const section = ref<Section>(readLocation().section)
 const owner=ref(false)
+const checkingOwner=ref(true)
+const usersAccount=ref<string|null>(null)
+const users=ref<User[]>([])
 const settingsDirty=ref(false)
 function canLeaveSettings() {
   return section.value!=='settings' || !settingsDirty.value || window.confirm(t('Отбросить несохранённые изменения настроек?'))
@@ -83,8 +87,9 @@ const sections = [
   {id:'wakeups',label:'Пробуждения',icon:'i-lucide-alarm-clock'},
   {id:'pages',label:'Страницы',icon:'i-lucide-panels-top-left'},
   {id:'webhooks',label:'Вебхуки',icon:'i-lucide-webhook'},
+  {id:'users',label:'Пользователи',icon:'i-lucide-users'},
 ] as const
-const visibleSections = computed(()=>sections.filter(item=>!['webhooks','wakeups'].includes(item.id) || webhooks.allowed))
+const visibleSections = computed(()=>sections.filter(item=>item.id==='users'?owner.value:!['webhooks','wakeups'].includes(item.id) || webhooks.allowed))
 function sectionUnread(id:string) {
   return id==='chat' ? activity.value.unread_chats ?? 0 : id==='webhooks' ? activity.value.unread_events ?? 0 : 0
 }
@@ -197,10 +202,10 @@ function notifySidebarLocation(url:URL) {
   }
 }
 
-function writeLocation() {
+function writeLocation(push=false) {
   navigationRevision++;restoring.value=false;locationError.value=false;error.value=''
   const event=showEvents.value && selected.value?.webhook ? selected.value : null
-  const id=event?.id ?? (section.value==='wakeups'?wakeups.selected:section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks' && !showEvents.value?webhooks.selected:null)
+  const id=event?.id ?? (section.value==='users'?usersAccount.value:section.value==='wakeups'?wakeups.selected:section.value==='chat'?selected.value?.id:section.value==='pages'?selectedPage.value?.slug:section.value==='webhooks' && !showEvents.value?webhooks.selected:null)
   const url=new URL(window.location.href)
   url.pathname=new URL(`app/${event?'chat':section.value}${id?`/${encodeURIComponent(id)}`:''}`,base).pathname
   url.search=showEvents.value && !event?'?view=events':''
@@ -208,7 +213,8 @@ function writeLocation() {
   url.hash=''
   notifySidebarLocation(url)
   if(url.href===window.location.href) return
-  window.history.replaceState(window.history.state,'',url)
+  if(push) window.history.pushState(window.history.state,'',url)
+  else window.history.replaceState(window.history.state,'',url)
 }
 
 async function restoreLocation() {
@@ -217,6 +223,7 @@ async function restoreLocation() {
   const target=readLocation()
   restoring.value=true;locationError.value=false;error.value='';menu.value=false;focusAfterMenu=false
   section.value=target.section
+  usersAccount.value=target.section==='users'?target.id:null
   try {
     if(target.section==='chat') {
       const previous=selected.value?.id
@@ -465,13 +472,29 @@ async function deletePage() {
   } finally { deletingPage.value = false }
 }
 
+function openUsers(account:string|null) {
+  if(!owner.value || !canLeaveSettings()) return
+  section.value='users'
+  usersAccount.value=account
+  writeLocation(true)
+  focusAfterMenu=false
+  menu.value=false
+}
+
+function followUser(event:MouseEvent,account:string|null) {
+  if(event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+  event.preventDefault()
+  openUsers(account)
+}
+
 function openSection(next:Section) {
+  if(next==='users') {openUsers(null);return}
   if(next===section.value || !canLeaveSettings()) return
   if(next==='chat' && selected.value?.webhook) {selected.value=null;conversationKey.value++}
   section.value=next
   writeLocation()
   focusAfterMenu=false
-  if(next==='profile' || next==='settings' || next==='users') menu.value=false
+  if(next==='profile' || next==='settings') menu.value=false
   else if(window.matchMedia('(max-width: 1023px)').matches) menu.value=true
 }
 
@@ -574,7 +597,7 @@ async function create(fromHome = false) {
 }
 
 onMounted(() => {
-  void checkedFetch(new URL('api/profile',base),{cache:'no-store'}).then(response=>response.json()).then(profile=>{owner.value=profile.owner===true}).catch(()=>{})
+  void checkedFetch(new URL('api/profile',base),{cache:'no-store'}).then(response=>response.json()).then(profile=>{owner.value=profile.owner===true}).catch(()=>{}).finally(()=>{checkingOwner.value=false})
   window.addEventListener('popstate',restoreLocation)
   onBeforeUnmount(()=>window.removeEventListener('popstate',restoreLocation))
   void initializePush().then(reportPushPresence)
@@ -737,6 +760,19 @@ onMounted(() => {
       <p v-if="!listing && !listError && !sessions.length" class="text-sm text-muted">{{ unreadOnly ? t(showEvents?'Нет непрочитанных событий.':'Нет непрочитанных диалогов.') : search.trim() ? t(showEvents?'События не найдены.':'Диалоги не найдены.') : t(showEvents?'Здесь появятся события вебхуков.':'Здесь появятся ваши разговоры.') }}</p>
       </template>
       <PageCatalog v-else-if="section==='pages'" :selected="selectedPage?.slug" :revision="pageCatalogRevision" @open="openPage" @delete="confirmPageDeletion" />
+      <nav v-else-if="section==='users' && owner" :aria-label="t('Пользователи')" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain">
+        <a :href="usersPath()" :aria-current="usersAccount===null?'page':undefined" class="sidebar-item flex items-center hover:bg-elevated" :class="{'bg-elevated':usersAccount===null}" @click="followUser($event,null)">
+          <UIcon name="i-lucide-users" class="sidebar-icon" />
+          <span class="truncate">{{ t('Все аккаунты') }}</span>
+        </a>
+        <a v-for="user in users" :key="accountKey(user)" :href="usersPath(accountKey(user))" :aria-current="usersAccount===accountKey(user)?'page':undefined" class="sidebar-item flex items-center hover:bg-elevated" :class="{'bg-elevated':usersAccount===accountKey(user)}" @click="followUser($event,accountKey(user))">
+          <UIcon :name="user.owner?'i-lucide-crown':'i-lucide-user-round'" class="sidebar-icon" />
+          <span class="min-w-0 flex-1">
+            <span class="block truncate">{{ accountLabel(user) }}</span>
+            <span v-if="user.blocked" class="block text-xs text-muted">{{ t('Заблокирован') }}</span>
+          </span>
+        </a>
+      </nav>
       <div v-else-if="section==='settings'" class="space-y-2 text-sm">
         <h2 class="font-semibold text-highlighted">{{ t('Настройки') }}</h2>
         <p class="leading-relaxed text-muted">{{ t('Полная конфигурация и перезапуск шлюза.') }}</p>
@@ -856,7 +892,9 @@ onMounted(() => {
           <LazyProfilePage />
         </div>
         <div v-if="section==='users' && !restoring" class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
-          <LazyUsersPage />
+          <LazyUsersPage v-if="owner" :account="usersAccount" @open="openUsers" @catalog="users=$event" />
+          <p v-else-if="checkingOwner" role="status" class="p-4 text-sm text-muted">{{ t('Загрузка статистики…') }}</p>
+          <p v-else role="alert" class="p-4 text-sm text-error">{{ t('Пользователи доступны только владельцу.') }}</p>
         </div>
         <ChatConversation v-if="selected || !initializing" v-show="viewingConversation && !restoring && !locationError" ref="conversationView" :key="conversationKey" :browser-sidebar="browserSidebar" :conversation="selected ?? homeConversation" :draft-state="draftFor(selected?.id ?? 'new')" :start="selected ? undefined : () => create(true)" :active="viewingConversation && !restoring && !locationError" :blocked="creating" :initial-search="conversationSearch" :search-open="conversationSearchOpen" @close-search="conversationSearchOpen=false;conversationSearch=''" @read="refreshAfterConversationChange" @saved="refreshAfterConversationChange" @navigate="openVersion" @removed="removed" @new="newDraft" />
       </template>

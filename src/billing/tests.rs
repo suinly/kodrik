@@ -107,6 +107,199 @@ fn priced_call(id: &str) -> Call<'_> {
     }
 }
 
+fn insert_report_call(db: &Connection, id: &str) -> anyhow::Result<()> {
+    db.execute(
+        "INSERT INTO model_calls (id,session_id,generation,model,kind,input_tokens,cached_tokens,output_tokens,cost_usd,partial)
+         VALUES (?1,'chat','gen','provider/model','chat',11,2,5,0.25,0)",
+        [id],
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn recording_sets_date_and_usage_updates_keep_the_original_date() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = SqliteSessionStore::open(directory.path().into())?;
+    let now = || std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64;
+    let started = now();
+    let mut pending = priced_call("new");
+    pending.usage = GenerationUsage::default();
+    record_call(&store, "chat", "gen", pending).await?;
+    let db = Connection::open(directory.path().join(crate::agent::session::DATABASE))?;
+    let date: i64 = db.query_row(
+        "SELECT created_at FROM model_calls WHERE id='new'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert!((started..=now()).contains(&date));
+    db.execute_batch(
+        "UPDATE model_calls SET created_at=123 WHERE id='new';
+      INSERT INTO model_calls (id,session_id,generation,model,kind,partial)
+      VALUES ('historic','chat','gen','provider/model','primary',1);",
+    )?;
+    for id in ["new", "historic"] {
+        record_call(&store, "chat", "gen", priced_call(id)).await?;
+    }
+    let rows = db
+        .prepare("SELECT id, created_at, cost_usd FROM model_calls ORDER BY id")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        rows,
+        [
+            ("historic".into(), None, 6.5),
+            ("new".into(), Some(123), 6.5)
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn account_report_reads_old_schema_without_migrating_it() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join(crate::agent::session::DATABASE);
+    let db = Connection::open(&path)?;
+    db.execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY, payload BLOB);
+        CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO schema_meta VALUES('legacy_imported','1');",
+    )?;
+    migrate(&db)?;
+    insert_report_call(&db, "old")?;
+    assert_eq!(
+        serde_json::to_value(account_report(directory.path(), None, None, None)?)?,
+        json!({
+            "usage":{"calls":1,"input_tokens":11,"cached_tokens":2,"output_tokens":5,"cost_usd":0.25,"partial":false,"tokens_partial":false},
+            "calls":[{"id":"old","model":"provider/model","created_at":null,"cost_usd":0.25,"partial":false}],
+            "next":null,"undated_calls":1
+        })
+    );
+    let period = account_report(directory.path(), Some(0), None, None)?;
+    assert_eq!(
+        (period.usage.calls, period.calls.len(), period.undated_calls),
+        (0, 0, 1)
+    );
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))?,
+        18
+    );
+    Ok(())
+}
+
+#[test]
+fn account_report_handles_missing_storage_and_rejects_malformed_cursor() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let directory = root.path().join("sessions");
+    let value = serde_json::to_value(account_report(&directory, None, None, None)?)?;
+    assert_eq!(value["usage"]["calls"], 0);
+    assert_eq!(value["calls"], json!([]));
+    assert_eq!(value["undated_calls"], 0);
+    assert!(!directory.exists());
+    assert!(
+        matches!(account_report(&directory, None, None, Some("malformed!")),
+        Err(error) if error.is::<InvalidCursor>())
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn account_report_rejects_symlinked_account_directory() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let alias = root.path().join("account");
+    std::os::unix::fs::symlink(root.path(), &alias)?;
+    assert!(account_report(&alias.join("sessions"), None, None, None).is_err());
+    Ok(())
+}
+
+#[test]
+fn account_report_bounds_apply_to_totals_and_details() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let _store = SqliteSessionStore::open(directory.path().into())?;
+    let db = Connection::open(directory.path().join(crate::agent::session::DATABASE))?;
+    for (id, date) in [
+        ("prior", Some(-1)),
+        ("first", Some(0)),
+        ("last", Some(9)),
+        ("after", Some(10)),
+        ("undated", None),
+    ] {
+        insert_report_call(&db, id)?;
+        db.execute(
+            "UPDATE model_calls SET created_at=?1 WHERE id=?2",
+            params![date, id],
+        )?;
+    }
+    for (from, to, expected) in [
+        (Some(0), Some(10), vec!["last", "first"]),
+        (Some(0), None, vec!["after", "last", "first"]),
+        (None, Some(0), vec!["prior"]),
+        (
+            None,
+            None,
+            vec!["after", "last", "first", "prior", "undated"],
+        ),
+    ] {
+        let report = account_report(directory.path(), from, to, None)?;
+        assert_eq!(
+            report
+                .calls
+                .iter()
+                .map(|call| call.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(report.usage.calls, expected.len() as i64);
+        assert_eq!(report.usage.cost_usd, Some(expected.len() as f64 * 0.25));
+        assert_eq!(report.undated_calls, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn account_report_pages_across_equal_timestamps_and_undated_rows() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let _store = SqliteSessionStore::open(directory.path().into())?;
+    let db = Connection::open(directory.path().join(crate::agent::session::DATABASE))?;
+    for n in 0..241 {
+        let id = format!("call-{n:03}");
+        insert_report_call(&db, &id)?;
+        let date = (n < 120).then_some(-1);
+        db.execute(
+            "UPDATE model_calls SET created_at=?1 WHERE id=?2",
+            params![date, id],
+        )?;
+    }
+    let mut ids = Vec::new();
+    let mut before = None;
+    for _ in 0..10 {
+        let page = account_report(directory.path(), None, None, before.as_deref())?;
+        assert_eq!((page.usage.calls, page.undated_calls), (241, 121));
+        assert!(page.calls.len() <= 100);
+        ids.extend(page.calls.into_iter().map(|call| call.id));
+        before = page.next;
+        if before.is_none() {
+            break;
+        }
+    }
+    assert!(before.is_none());
+    assert_eq!(
+        ids,
+        (0..120)
+            .rev()
+            .chain((120..241).rev())
+            .map(|n| format!("call-{n:03}"))
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn child_calls_are_counted_once_and_model_history_is_complete() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;

@@ -435,16 +435,204 @@ async fn owner_users_report_is_private_and_aggregates_retained_calls_per_account
             assert_eq!(
                 body["users"],
                 json!([
-                    {"telegram_id":"42", "name":"", "owner":true, "usage":{"calls":1,"input_tokens":3,"cached_tokens":0,"output_tokens":2,"cost_usd":7.0,"partial":false,"tokens_partial":false}},
-                    {"telegram_id":"7", "name":"Member profile", "owner":false, "usage":{"calls":2,"input_tokens":16,"cached_tokens":2,"output_tokens":4,"cost_usd":17.0,"partial":true,"tokens_partial":true}},
-                    {"telegram_id":"8", "name":"Test user", "owner":false, "usage":{"calls":0,"input_tokens":0,"cached_tokens":0,"output_tokens":0,"cost_usd":0.0,"partial":false,"tokens_partial":false}},
-                    {"telegram_id":"9", "name":"Test user", "owner":false, "usage":{"calls":1,"input_tokens":10,"cached_tokens":2,"output_tokens":4,"cost_usd":null,"partial":true,"tokens_partial":false}},
-                    {"telegram_id":"11", "name":"Test user", "owner":false, "usage":null}
+                    {"telegram_id":"42", "name":"", "owner":true, "blocked":false, "usage":{"calls":1,"input_tokens":3,"cached_tokens":0,"output_tokens":2,"cost_usd":7.0,"partial":false,"tokens_partial":false}},
+                    {"telegram_id":"7", "name":"Member profile", "owner":false, "blocked":false, "usage":{"calls":2,"input_tokens":16,"cached_tokens":2,"output_tokens":4,"cost_usd":17.0,"partial":true,"tokens_partial":true}},
+                    {"telegram_id":"8", "name":"Test user", "owner":false, "blocked":false, "usage":{"calls":0,"input_tokens":0,"cached_tokens":0,"output_tokens":0,"cost_usd":0.0,"partial":false,"tokens_partial":false}},
+                    {"telegram_id":"9", "name":"Test user", "owner":false, "blocked":false, "usage":{"calls":1,"input_tokens":10,"cached_tokens":2,"output_tokens":4,"cost_usd":null,"partial":true,"tokens_partial":false}},
+                    {"telegram_id":"11", "name":"Test user", "owner":false, "blocked":false, "usage":null}
                 ])
             );
             assert!(!data.path().join("users/8").exists());
         }
     }
+    let send = |method, path: String, token: &str, origin, body: Value| {
+        router.clone().oneshot(
+            Request::builder()
+                .method(method)
+                .uri(format!("/kodrik{path}"))
+                .header("cookie", format!("kodrik_web_session={token}"))
+                .header("origin", origin)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+    };
+    for (token, origin, path, body, status) in [
+        (
+            &guest,
+            "http://localhost",
+            "7",
+            json!({"blocked":true}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            &owner,
+            "http://wrong-host",
+            "7",
+            json!({"blocked":true}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            &owner,
+            "http://localhost",
+            "owner",
+            json!({"blocked":true}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            &owner,
+            "http://localhost",
+            "42",
+            json!({"blocked":true}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            &owner,
+            "http://localhost",
+            "10",
+            json!({"blocked":true}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            &owner,
+            "http://localhost",
+            "7",
+            json!({"name":""}),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let response = send(
+            "POST",
+            format!("/api/admin/users/{path}"),
+            token,
+            origin,
+            body,
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), status);
+    }
+    let write = |body| {
+        send(
+            "POST",
+            "/api/admin/users/7".into(),
+            &owner,
+            "http://localhost",
+            body,
+        )
+    };
+    let pair = auth.start_device_pairing("Member device", now).unwrap();
+    auth.approve_device_pairing_from_session(pair.request_id, &pair.code, &guest, now)
+        .unwrap();
+    let crate::web::auth::devices::PairingPoll::Authorized { token: device, .. } = auth
+        .poll_device_pairing(pair.request_id, &pair.polling_secret, now)
+        .unwrap()
+    else {
+        panic!("approved device must be issued before blocking");
+    };
+    assert!(auth.device_identity(&device, now).unwrap().is_some());
+    let pending = auth.start_device_pairing("Pending device", now).unwrap();
+    auth.approve_device_pairing_from_session(pending.request_id, &pending.code, &guest, now)
+        .unwrap();
+    assert_eq!(
+        write(json!({"name":"New name"})).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        write(json!({"blocked":true})).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert!(!auth.allowed_user(7).unwrap());
+    assert!(auth.identity(&guest, now).unwrap().is_none());
+    assert!(auth.device_identity(&device, now).unwrap().is_none());
+    assert!(matches!(
+        auth.poll_device_pairing(pending.request_id, &pending.polling_secret, now)
+            .unwrap(),
+        crate::web::auth::devices::PairingPoll::Expired
+    ));
+    assert!(
+        auth.test_session(Identity::Telegram(7), now)
+            .unwrap()
+            .is_none()
+    );
+    let detail = |path: &str, token| {
+        send(
+            "GET",
+            path.to_owned(),
+            token,
+            "http://localhost",
+            Value::Null,
+        )
+    };
+    let response = detail("/api/admin/users", &owner).await.unwrap();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let member = body["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["telegram_id"] == "7")
+        .unwrap();
+    assert_eq!(member["blocked"], true);
+    assert_eq!(member["name"], "New name");
+    let response = detail("/api/admin/users/7/usage", &owner).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body["usage"]["calls"], 2);
+    assert_eq!(body["calls"].as_array().unwrap().len(), 2);
+    assert!(body["calls"][0]["created_at"].is_number());
+    let response = detail(
+        &format!("/api/admin/users/7/usage?from={}", now + 60),
+        &owner,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body["usage"]["calls"], 0);
+    assert_eq!(
+        detail("/api/admin/users/7/usage?from=20&to=10", &owner)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        detail("/app/users/7", &owner).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        detail("/api/admin/users/7/usage", &guest)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        write(json!({"blocked":false})).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert!(auth.allowed_user(7).unwrap());
+    assert!(auth.identity(&guest, now).unwrap().is_none());
+    assert!(auth.device_identity(&device, now).unwrap().is_none());
+    let fresh = auth
+        .test_session(Identity::Telegram(7), now)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(auth.profile(&fresh, now).unwrap().unwrap()).unwrap()["name"],
+        "New name"
+    );
+    assert_eq!(
+        detail("/api/admin/users/7/usage", &fresh)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]

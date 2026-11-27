@@ -2,8 +2,10 @@ use crate::agent::{
     llm::GenerationUsage,
     session::{Session, SqliteSessionStore},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Serialize)]
 pub(crate) struct AccountUsage {
@@ -54,19 +56,147 @@ pub(crate) fn saved_account_usage(directory: &std::path::Path) -> anyhow::Result
     read_saved_usage(&directory.join("sessions"))
 }
 
-fn read_saved_usage(sessions: &std::path::Path) -> anyhow::Result<AccountUsage> {
+#[derive(Serialize)]
+pub(crate) struct AccountReport {
+    usage: AccountUsage,
+    calls: Vec<AccountCall>,
+    next: Option<String>,
+    undated_calls: i64,
+}
+
+#[derive(Serialize)]
+struct AccountCall {
+    id: String,
+    model: String,
+    created_at: Option<i64>,
+    cost_usd: Option<f64>,
+    partial: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct InvalidCursor;
+
+impl std::fmt::Display for InvalidCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Invalid usage cursor")
+    }
+}
+
+impl std::error::Error for InvalidCursor {}
+
+type Cursor = (Option<i64>, String);
+
+pub(crate) fn account_report(
+    directory: &Path,
+    from: Option<i64>,
+    to: Option<i64>,
+    before: Option<&str>,
+) -> anyhow::Result<AccountReport> {
+    let cursor = before
+        .map(|encoded| {
+            if encoded.len() > 2048 {
+                return Err(InvalidCursor);
+            }
+            let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| InvalidCursor)?;
+            let cursor: Cursor = serde_json::from_slice(&bytes).map_err(|_| InvalidCursor)?;
+            if cursor.1.is_empty() {
+                return Err(InvalidCursor);
+            }
+            Ok(cursor)
+        })
+        .transpose()?;
+    // Check the personal account leaf before canonicalizing the sessions path.
+    if let Some(account) = directory.parent().filter(|p| !p.as_os_str().is_empty()) {
+        match std::fs::symlink_metadata(account) {
+            Ok(metadata) => anyhow::ensure!(metadata.is_dir(), "Invalid account directory"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (usage, (calls, next, undated_calls)) = read_saved(directory, |db| {
+        let ledger = has_ledger(db)?;
+        let dated = ledger && has_ledger_column(db, "created_at")?;
+        let date = if dated { "created_at" } else { "NULL" };
+        let filter = format!("(?1 IS NULL OR {date} >= ?1) AND (?2 IS NULL OR {date} < ?2)");
+        let usage = read_usage(db, ledger, &filter, from, to)?;
+        if !ledger {
+            return Ok((usage, (Vec::new(), None, 0)));
+        }
+        let undated_calls = db.query_row(
+            &format!("SELECT COUNT(*) FROM model_calls WHERE {date} IS NULL"),
+            [],
+            |r| r.get(0),
+        )?;
+        // Sort dated calls newest-first, then undated calls; IDs break ties in both groups.
+        let key = match &cursor {
+            None => "?4 IS NULL",
+            Some((None, _)) => "(call_date IS ?3 AND id < ?4)",
+            Some((Some(_), _)) => "(call_date IS NULL OR (call_date,id) < (?3,?4))",
+        };
+        const PAGE: usize = 100;
+        let mut calls = db
+            .prepare(&format!(
+                "SELECT id,model,{date} AS call_date,cost_usd,partial FROM model_calls
+             WHERE {filter} AND {key} ORDER BY call_date DESC,id DESC LIMIT {}",
+                PAGE + 1
+            ))?
+            .query_map(
+                params![
+                    from,
+                    to,
+                    cursor.as_ref().and_then(|c| c.0),
+                    cursor.as_ref().map(|c| &c.1)
+                ],
+                |r| {
+                    Ok(AccountCall {
+                        id: r.get(0)?,
+                        model: r.get(1)?,
+                        created_at: r.get(2)?,
+                        cost_usd: r.get(3)?,
+                        partial: r.get(4)?,
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = if calls.len() > PAGE {
+            calls.pop();
+            let last = &calls[PAGE - 1];
+            Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&(last.created_at, &last.id))?))
+        } else {
+            None
+        };
+        Ok((usage, (calls, next, undated_calls)))
+    })?;
+    Ok(AccountReport {
+        usage,
+        calls,
+        next,
+        undated_calls,
+    })
+}
+
+fn read_saved_usage(sessions: &Path) -> anyhow::Result<AccountUsage> {
+    read_saved(sessions, |db| Ok((read_account_usage(db)?, ()))).map(|(usage, ())| usage)
+}
+
+fn read_saved<T: Default>(
+    sessions: &Path,
+    read: impl FnOnce(&Connection) -> anyhow::Result<(AccountUsage, T)>,
+) -> anyhow::Result<(AccountUsage, T)> {
     use rusqlite::OpenFlags;
     use std::{fs, io::ErrorKind};
 
     match fs::symlink_metadata(sessions) {
         Ok(metadata) => anyhow::ensure!(metadata.is_dir(), "Invalid account session directory"),
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(AccountUsage::empty()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok((AccountUsage::empty(), T::default()));
+        }
         Err(error) => return Err(error.into()),
     }
     // SQLite's NOFOLLOW also rejects symlinks in ancestor paths (e.g. macOS /var).
     let path = fs::canonicalize(sessions)?.join(crate::agent::session::DATABASE);
-    let mut usage = match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == ErrorKind::NotFound => AccountUsage::empty(),
+    let (mut usage, extra) = match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => (AccountUsage::empty(), T::default()),
         Err(error) => return Err(error.into()),
         Ok(metadata) => {
             anyhow::ensure!(metadata.is_file(), "Invalid account session database");
@@ -76,7 +206,7 @@ fn read_saved_usage(sessions: &std::path::Path) -> anyhow::Result<AccountUsage> 
             )?;
             db.busy_timeout(std::time::Duration::from_secs(1))?;
             let tx = db.unchecked_transaction()?;
-            let usage = read_account_usage(&tx)?;
+            let result = read(&tx)?;
             let imported: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM schema_meta WHERE key='legacy_imported')",
                 [],
@@ -84,9 +214,9 @@ fn read_saved_usage(sessions: &std::path::Path) -> anyhow::Result<AccountUsage> 
             )?;
             tx.commit()?;
             if imported {
-                return Ok(usage);
+                return Ok(result);
             }
-            usage
+            result
         }
     };
     for entry in fs::read_dir(sessions)? {
@@ -95,32 +225,55 @@ fn read_saved_usage(sessions: &std::path::Path) -> anyhow::Result<AccountUsage> 
             break;
         }
     }
-    Ok(usage)
+    Ok((usage, extra))
 }
 
 fn read_account_usage(db: &Connection) -> anyhow::Result<AccountUsage> {
-    let ledger: bool = db.query_row(
+    read_usage(
+        db,
+        has_ledger(db)?,
+        "(?1 IS NULL AND ?2 IS NULL)",
+        None,
+        None,
+    )
+}
+
+fn has_ledger(db: &Connection) -> rusqlite::Result<bool> {
+    db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='model_calls')",
         [],
         |row| row.get(0),
-    )?;
+    )
+}
+
+fn has_ledger_column(db: &Connection, column: &str) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('model_calls') WHERE name=?1)",
+        [column],
+        |r| r.get(0),
+    )
+}
+
+fn read_usage(
+    db: &Connection,
+    ledger: bool,
+    filter: &str,
+    from: Option<i64>,
+    to: Option<i64>,
+) -> anyhow::Result<AccountUsage> {
     let mut usage = if ledger {
         // Every persisted row represents one call, including calls attributed to a child.
-        db.query_row("SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+        db.query_row(&format!("SELECT COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cached_tokens), 0),
                       COALESCE(SUM(output_tokens), 0), SUM(cost_usd), COALESCE(MAX(partial), 0),
                       COALESCE(MAX(input_tokens IS NULL OR cached_tokens IS NULL OR output_tokens IS NULL), 0)
-                      FROM model_calls", [], |r| Ok(AccountUsage {calls:r.get(0)?, input_tokens:r.get(1)?, cached_tokens:r.get(2)?, output_tokens:r.get(3)?, cost_usd:r.get(4)?, partial:r.get(5)?, tokens_partial:r.get(6)?}))?
+                      FROM model_calls WHERE {filter}"), params![from,to], |r| Ok(AccountUsage {calls:r.get(0)?, input_tokens:r.get(1)?, cached_tokens:r.get(2)?, output_tokens:r.get(3)?, cost_usd:r.get(4)?, partial:r.get(5)?, tokens_partial:r.get(6)?}))?
     } else {
         AccountUsage::empty()
     };
 
     let recorded_chat_calls = if ledger {
         // Mirrors tracked_session_cost for personal stores. The child columns were added in v19.
-        let child_scope: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('model_calls') WHERE name='child_id')",
-            [],
-            |r| r.get(0),
-        )?;
+        let child_scope = has_ledger_column(db, "child_id")?;
         let child_count = if child_scope {
             "+ (SELECT COUNT(*) FROM model_calls WHERE child_id=s.id AND child_generation=json_extract(CAST(s.payload AS TEXT),'$.generation') AND kind='subagent' AND input_tokens IS NOT NULL)"
         } else {
@@ -214,6 +367,17 @@ pub(crate) fn migrate_child_origin(db: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn migrate_call_dates(db: &Connection) -> anyhow::Result<()> {
+    if !has_ledger_column(db, "created_at")? {
+        db.execute_batch("ALTER TABLE model_calls ADD COLUMN created_at INTEGER;")?;
+    }
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS model_calls_date ON model_calls(created_at DESC, id DESC);
+        PRAGMA user_version=20;",
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct CallCost {
     pub id: String,
@@ -303,8 +467,8 @@ pub(crate) async fn record_call(
         let tx = db.unchecked_transaction()?;
         let updated = tx.execute("INSERT INTO model_calls
             (id,session_id,generation,model,kind,run_id,input_tokens,cached_tokens,output_tokens,
-             input_rate,cached_rate,output_rate,cost_usd,partial,child_id,child_generation,child_run_id)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+             input_rate,cached_rate,output_rate,cost_usd,partial,child_id,child_generation,child_run_id,created_at)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,unixepoch())
             ON CONFLICT(id) DO UPDATE SET input_tokens=excluded.input_tokens,cached_tokens=excluded.cached_tokens,
                 output_tokens=excluded.output_tokens,cost_usd=excluded.cost_usd,partial=excluded.partial
             WHERE model_calls.session_id=excluded.session_id AND model_calls.generation=excluded.generation

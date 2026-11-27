@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use super::{Session, SessionId, SessionStore};
 
-pub(crate) const VERSION: i64 = 19;
+pub(crate) const VERSION: i64 = 20;
 pub(crate) const DATABASE: &str = "state.sqlite3";
 
 #[derive(Clone)]
@@ -289,6 +289,9 @@ impl SqliteSessionStore {
         }
         if version < 19 {
             crate::billing::migrate_child_origin(&tx)?;
+        }
+        if version < 20 {
+            crate::billing::migrate_call_dates(&tx)?;
         }
         tx.commit()?;
         import_legacy(&mut db, &directory)?;

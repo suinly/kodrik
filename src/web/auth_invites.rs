@@ -2,7 +2,7 @@ use super::*;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 const MAX_INVITES: usize = 1024;
-const MAX_MEMBERS: usize = 1024;
+pub(super) const MAX_MEMBERS: usize = 1024;
 const MAX_INVITE_SECONDS: i64 = 30 * 86400;
 
 pub(super) fn valid_invite_token(token: &str) -> bool {
@@ -52,13 +52,20 @@ impl Journal {
     }
 
     pub(super) fn allowed_user(&self, user: u64) -> bool {
-        valid_user(user) && (self.owner_id == Some(user) || self.members.contains_key(&user))
+        valid_user(user)
+            && (self.owner_id == Some(user)
+                || self.members.contains_key(&user) && !self.blocked_members.contains(&user))
     }
 
     pub(super) fn valid_membership(&self) -> bool {
         self.owner_id.is_none_or(valid_user)
             && self.invites.len() <= MAX_INVITES
             && self.members.len() <= MAX_MEMBERS
+            && self.blocked_members.len() <= MAX_MEMBERS
+            && self
+                .blocked_members
+                .iter()
+                .all(|id| valid_user(*id) && Some(*id) != self.owner_id)
             && self.invites.iter().all(|(id, invite)| {
                 valid_token(id)
                     && !invite.label.trim().is_empty()
@@ -99,6 +106,9 @@ impl AuthStore {
                 journal.revoke_user_sessions(previous);
             }
             journal.owner_id = owner_id;
+            if let Some(owner) = owner_id {
+                journal.blocked_members.remove(&owner);
+            }
             journal.devices.clear();
             journal.device_pairings.clear();
             self.save(&journal)?;
@@ -195,7 +205,9 @@ impl AuthStore {
         let removed = grant.is_some();
         journal.revoke_user_sessions(user);
         journal.revoke_user_devices(user);
-        journal.profiles.remove(&format!("telegram:{user}"));
+        if !journal.blocked_members.contains(&user) {
+            journal.profiles.remove(&format!("telegram:{user}"));
+        }
         self.save(&journal)?;
         Ok(removed)
     }
@@ -248,6 +260,77 @@ mod tests {
         let store = AuthStore::new(dir.path());
         store.register_telegram_bot("main", "TestBot").unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn blocked_member_cannot_redeem_another_invite_or_finish_an_approved_login() {
+        let (_dir, store) = setup();
+        store.grant_test_user(42).unwrap();
+        let owner = store.test_session(Identity::Owner, 100).unwrap().unwrap();
+        let invite = store.create_invite("Another invitation", 500, 100).unwrap();
+        let approved = approve(&store, Some(&invite.token), 42);
+        store
+            .update_account(
+                &owner,
+                Some(42),
+                AccountChange::SetBlocked { blocked: true },
+                103,
+            )
+            .unwrap();
+        assert!(!matches!(
+            store.poll_telegram_login(&approved.cookie, 103).unwrap(),
+            LoginPoll::Approved { .. }
+        ));
+
+        assert!(store.revoke_user(42).unwrap());
+        let retry = store
+            .begin_telegram_login_with_invite(None, "/chat/", Some(&invite.token), 104)
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .present_telegram_login(&retry.id, "main", 42, 105)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !store
+                .decide_telegram_login(&retry.id, "main", 42, true, 106)
+                .unwrap()
+        );
+        assert!(matches!(
+            store.poll_telegram_login(&retry.cookie, 107).unwrap(),
+            LoginPoll::Denied
+        ));
+        assert!(store.read().unwrap().usable_invite(&invite.id, 107));
+        assert!(store.account(Some(42)).unwrap().unwrap().blocked);
+
+        store.logout(&owner).unwrap();
+        assert!(
+            store
+                .update_account(
+                    &owner,
+                    Some(42),
+                    AccountChange::SetBlocked { blocked: false },
+                    108
+                )
+                .is_err()
+        );
+        let owner = store.test_session(Identity::Owner, 108).unwrap().unwrap();
+        store
+            .update_account(
+                &owner,
+                Some(42),
+                AccountChange::SetBlocked { blocked: false },
+                108,
+            )
+            .unwrap();
+        assert!(!store.allowed_user(42).unwrap());
+        let fresh = approve(&store, Some(&invite.token), 42);
+        assert!(matches!(
+            store.poll_telegram_login(&fresh.cookie, 103).unwrap(),
+            LoginPoll::Approved { .. }
+        ));
     }
 
     #[test]

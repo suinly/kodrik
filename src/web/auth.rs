@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::fs;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::File,
     io::{Read, Write},
     net::IpAddr,
@@ -27,7 +27,7 @@ mod telegram;
 pub(crate) use telegram::{LoginPoll, browser_login_cookie, browser_login_token};
 #[path = "auth_profile.rs"]
 mod profile;
-pub(crate) use profile::{AccountSummary, ProfileError};
+pub(crate) use profile::{AccountChange, AccountSummary, ProfileError};
 #[path = "device_auth.rs"]
 pub(crate) mod devices;
 
@@ -96,6 +96,8 @@ struct Journal {
     invites: BTreeMap<String, invites::StoredInvite>,
     #[serde(default)]
     members: BTreeMap<u64, String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    blocked_members: BTreeSet<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     profiles: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

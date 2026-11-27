@@ -95,13 +95,13 @@ impl Journal {
         match identity {
             Identity::Owner => Ok(None),
             Identity::Telegram(id) if self.owner_id == Some(*id) => Ok(None),
-            Identity::Telegram(id) if self.members.contains_key(id) => Ok(Some(*id)),
+            Identity::Telegram(id) if self.allowed_user(*id) => Ok(Some(*id)),
             _ => Err(DeviceError::Forbidden.into()),
         }
     }
 
     fn device_account_active(&self, account: Option<u64>) -> bool {
-        account.is_none_or(|id| self.owner_id != Some(id) && self.members.contains_key(&id))
+        account.is_none_or(|id| self.owner_id != Some(id) && self.allowed_user(id))
     }
 
     pub(super) fn revoke_user_devices(&mut self, user: u64) {

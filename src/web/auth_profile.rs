@@ -14,6 +14,14 @@ pub(crate) struct AccountSummary {
     pub telegram_id: Option<u64>,
     name: String,
     pub owner: bool,
+    pub blocked: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub(crate) enum AccountChange {
+    Rename { name: String },
+    SetBlocked { blocked: bool },
 }
 
 fn serialize_telegram_id<S: serde::Serializer>(
@@ -47,6 +55,39 @@ fn valid_name(name: &str) -> bool {
 }
 
 impl Journal {
+    fn account_summary(&self, member: Option<u64>) -> Option<AccountSummary> {
+        let Some(id) = member else {
+            let owner = self.profile(&Identity::Owner);
+            return Some(AccountSummary {
+                telegram_id: owner.telegram_id,
+                name: owner.name,
+                owner: true,
+                blocked: false,
+            });
+        };
+        if self.owner_id == Some(id) {
+            return None;
+        }
+        let invite = self.members.get(&id);
+        let blocked = self.blocked_members.contains(&id);
+        if invite.is_none() && !blocked {
+            return None;
+        }
+        let profile = self.profile(&Identity::Telegram(id));
+        Some(AccountSummary {
+            telegram_id: Some(id),
+            name: if profile.name.is_empty() {
+                invite
+                    .map(|key| self.invites[key].label.clone())
+                    .unwrap_or_default()
+            } else {
+                profile.name
+            },
+            owner: false,
+            blocked,
+        })
+    }
+
     fn profile_key(&self, identity: &Identity) -> String {
         match identity {
             Identity::Owner => "owner".into(),
@@ -92,30 +133,83 @@ impl Journal {
 }
 
 impl AuthStore {
-    pub(crate) fn active_accounts(&self) -> anyhow::Result<Vec<AccountSummary>> {
+    pub(crate) fn accounts(&self) -> anyhow::Result<Vec<AccountSummary>> {
         let journal = self.read()?;
-        let owner = journal.profile(&Identity::Owner);
-        let mut accounts = vec![AccountSummary {
-            telegram_id: owner.telegram_id,
-            name: owner.name,
-            owner: true,
-        }];
-        for (&id, invite) in &journal.members {
-            if Some(id) == journal.owner_id {
-                continue;
-            }
-            let profile = journal.profile(&Identity::Telegram(id));
-            accounts.push(AccountSummary {
-                telegram_id: Some(id),
-                name: if profile.name.is_empty() {
-                    journal.invites[invite].label.clone()
-                } else {
-                    profile.name
-                },
-                owner: false,
-            });
-        }
+        let mut accounts = vec![journal.account_summary(None).expect("Owner always exists")];
+        let ids: BTreeSet<_> = journal
+            .members
+            .keys()
+            .chain(&journal.blocked_members)
+            .copied()
+            .collect();
+        accounts.extend(
+            ids.into_iter()
+                .filter_map(|id| journal.account_summary(Some(id))),
+        );
         Ok(accounts)
+    }
+
+    pub(crate) fn account(&self, member: Option<u64>) -> anyhow::Result<Option<AccountSummary>> {
+        Ok(self.read()?.account_summary(member))
+    }
+
+    pub(crate) fn update_account(
+        &self,
+        token: &str,
+        member: Option<u64>,
+        change: AccountChange,
+        now: i64,
+    ) -> anyhow::Result<Option<AccountSummary>> {
+        let _lock = self.lock()?;
+        let mut journal = self.read()?;
+        match journal.identity(token, now) {
+            Some(Identity::Owner) => {}
+            Some(Identity::Telegram(user)) if Some(user) == journal.owner_id => {}
+            _ => return Err(ProfileError::Unauthorized.into()),
+        }
+        let Some(previous) = journal.account_summary(member) else {
+            return Ok(None);
+        };
+        match change {
+            AccountChange::Rename { name } => {
+                let name = name.trim();
+                if !valid_name(name) {
+                    return Err(ProfileError::Invalid(
+                        "Имя должно содержать от 1 до 100 символов без управляющих знаков.",
+                    )
+                    .into());
+                }
+                let identity = member.map_or(Identity::Owner, Identity::Telegram);
+                journal
+                    .profiles
+                    .insert(journal.profile_key(&identity), name.to_owned());
+                ensure!(journal.valid_profiles(), "Profile storage limit reached");
+            }
+            AccountChange::SetBlocked { blocked } => {
+                let user =
+                    member.ok_or(ProfileError::Invalid("Владельца нельзя заблокировать."))?;
+                if blocked {
+                    if !previous.blocked && journal.blocked_members.len() >= invites::MAX_MEMBERS {
+                        return Err(ProfileError::Invalid(
+                            "Достигнут лимит заблокированных аккаунтов.",
+                        )
+                        .into());
+                    }
+                    journal.blocked_members.insert(user);
+                    journal.revoke_user_sessions(user);
+                    journal.revoke_user_devices(user);
+                } else {
+                    journal.blocked_members.remove(&user);
+                }
+            }
+        }
+        self.save(&journal)?;
+        Ok(journal.account_summary(member).or_else(|| {
+            Some(AccountSummary {
+                blocked: false,
+                ..previous
+            })
+        }))
     }
 
     pub(crate) fn data_directory(&self) -> &Path {

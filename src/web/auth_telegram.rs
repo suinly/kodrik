@@ -184,11 +184,12 @@ impl AuthStore {
         let Some(request) = journal.telegram_requests.get(&token_hash(id)) else {
             return Ok(None);
         };
-        let eligible = allowed
-            || request
-                .invite_hash
-                .as_ref()
-                .is_some_and(|hash| journal.usable_invite(hash, now));
+        let eligible = !journal.blocked_members.contains(&user_id)
+            && (allowed
+                || request
+                    .invite_hash
+                    .as_ref()
+                    .is_some_and(|hash| journal.usable_invite(hash, now)));
         if request.expires <= now
             || request.interface != interface
             || request.decision.is_some()
@@ -223,11 +224,12 @@ impl AuthStore {
             return Ok(false);
         };
         if approve
-            && !allowed
-            && !request
-                .invite_hash
-                .as_ref()
-                .is_some_and(|hash| journal.usable_invite(hash, now))
+            && (journal.blocked_members.contains(&user_id)
+                || !allowed
+                    && !request
+                        .invite_hash
+                        .as_ref()
+                        .is_some_and(|hash| journal.usable_invite(hash, now)))
         {
             return Ok(false);
         }
@@ -307,7 +309,9 @@ impl AuthStore {
             .invite_hash
             .clone()
             .filter(|hash| journal.usable_invite(hash, now));
-        if !journal.allowed_user(user) && invite.is_none() {
+        if journal.blocked_members.contains(&user)
+            || !journal.allowed_user(user) && invite.is_none()
+        {
             journal.telegram_requests.remove(&key);
             self.save(&journal)?;
             return Ok(LoginPoll::Denied);

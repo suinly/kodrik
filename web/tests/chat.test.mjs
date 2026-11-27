@@ -55,10 +55,43 @@ test('owner opens the users report from the profile menu and can reload it',{tim
     await page.getByRole('menuitem',{name:'Пользователи',exact:true}).click();
     await expect(page).toHaveURL(new URL('app/users',base).href);
     const table=page.getByRole('table',{name:'Статистика по аккаунтам'});
-    await expect(table.getByText('Владелец',{exact:true})).toBeVisible();
+    await expect(table.getByRole('link',{name:'Владелец',exact:true})).toBeVisible();
     await expect(table.getByText('ID в Telegram: 7',{exact:true})).toBeVisible();
     await page.reload();
     await expect(table.getByRole('rowheader',{name:/Итого по списку/})).toBeVisible();
+  } finally {await browser.close()}
+});
+
+for(const mobile of [false,true]) test(`users sidebar opens account details and supports direct reload (${mobile?'mobile':'desktop'})`,{timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true});
+  try {
+    const page=await signedPage(browser);
+    await page.setViewportSize(mobile?{width:390,height:844}:{width:1280,height:900});
+    const usersUrl=new URL('app/users',base);
+    const memberUrl=new URL('app/users/7',base).href;
+    await page.goto(new URL('app/chat',base).href);
+    if(mobile) await page.getByRole('button',{name:'Показать диалоги',exact:true}).click();
+    await page.getByRole('button',{name:'Пользователи',exact:true}).click();
+    await expect(page).toHaveURL(usersUrl.href);
+    const overview=page.getByRole('table',{name:'Статистика по аккаунтам'});
+    await expect(overview).toBeVisible();
+    if(mobile) await page.getByRole('button',{name:'Показать меню',exact:true}).click();
+    const sidebar=page.getByRole('navigation',{name:'Пользователи',exact:true});
+    const member=sidebar.locator(`a[href="${new URL(memberUrl).pathname}"]`);
+    await expect(member).toBeVisible();
+    await member.click();
+    await expect(page).toHaveURL(memberUrl);
+    const details=page.getByRole('region',{name:'Статистика аккаунта',exact:true});
+    await expect(details.getByLabel('Дата начала',{exact:true})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'История запросов к моделям'})).toBeVisible();
+    await page.reload();
+    await expect(details.getByLabel('Дата начала',{exact:true})).toBeVisible();
+    await page.getByRole('link',{name:'Все аккаунты',exact:true}).last().click();
+    await expect(page).toHaveURL(usersUrl.href);
+    await expect(overview).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(memberUrl);
+    await expect(details.getByLabel('Дата начала',{exact:true})).toBeVisible();
   } finally {await browser.close()}
 });
 

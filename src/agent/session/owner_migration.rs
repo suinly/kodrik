@@ -56,6 +56,21 @@ pub(crate) fn stage_personal_sessions(
             if version >= 17 {
                 merge_table(&snapshot, &tx, "draft_models", &["session_id"], 2)?;
             }
+            if version >= 18 {
+                let columns = match version {
+                    18 => 14,
+                    19 => 17,
+                    _ => 18,
+                };
+                merge_table(&snapshot, &tx, "model_calls", &["id"], columns).with_context(
+                    || {
+                        format!(
+                            "Owner migration conflict in {} (model_calls)",
+                            path.display()
+                        )
+                    },
+                )?;
+            }
             if version >= 14 {
                 merge_table(&snapshot, &tx, "web_chat_activity", &["session_id"], 4)?;
             } else {
@@ -258,7 +273,10 @@ fn merge_table(
     columns: usize,
 ) -> anyhow::Result<()> {
     // All identifiers come from the fixed schema above, never user input.
-    let select = if table == "web_chat_activity" {
+    let select = if table == "model_calls" {
+        let padding = ",NULL".repeat(18 - columns);
+        format!("SELECT *{padding} FROM model_calls")
+    } else if table == "web_chat_activity" {
         "SELECT session_id,revision,read_revision,listed FROM web_chat_activity".to_owned()
     } else if table == "webhooks" {
         let has_mode: bool = source.query_row(
@@ -276,6 +294,7 @@ fn merge_table(
     } else {
         format!("SELECT * FROM {table}")
     };
+    let columns = if table == "model_calls" { 18 } else { columns };
     let placeholders = vec!["?"; columns].join(",");
     let names = if table == "web_chat_activity" {
         "(session_id,revision,read_revision,listed)"
@@ -316,7 +335,11 @@ fn merge_table(
             )
             .optional()?;
         let existing = existing.context("Conflicting unique key")?;
-        let compare = if table == "sessions" { 2 } else { columns };
+        let compare = match table {
+            "sessions" => 2,
+            "model_calls" => 17,
+            _ => columns,
+        };
         ensure!(
             existing[..compare] == incoming[..compare],
             "Different records for key {:?}",
@@ -327,6 +350,20 @@ fn merge_table(
                 "UPDATE sessions SET updated_at=max(updated_at,?2) WHERE id=?1",
                 [&incoming[0], &incoming[2]],
             )?;
+        } else if table == "model_calls" {
+            match (&existing[17], &incoming[17]) {
+                (Value::Null, Value::Integer(date)) => {
+                    destination.execute(
+                        "UPDATE model_calls SET created_at=?2 WHERE id=?1",
+                        [&incoming[0], &Value::Integer(*date)],
+                    )?;
+                }
+                (left, right) => ensure!(
+                    right == &Value::Null || left == right,
+                    "Different recording dates for model call {:?}",
+                    incoming[0]
+                ),
+            }
         }
     }
     Ok(())
@@ -363,6 +400,85 @@ pub(crate) fn checkpoint_owner_destination(directory: &Path) -> anyhow::Result<(
 mod tests {
     use super::*;
     use crate::agent::session::{Session, SessionId, SessionStore};
+
+    #[test]
+    fn owner_migration_copies_billing_rows_from_all_ledger_versions() -> anyhow::Result<()> {
+        let destination = tempfile::tempdir()?;
+        let sources = (18..=20)
+            .map(|_| tempfile::tempdir())
+            .collect::<std::io::Result<Vec<_>>>()?;
+        for (version, source) in (18..=20).zip(&sources) {
+            drop(SqliteSessionStore::open(source.path().into())?);
+            let db = Connection::open(source.path().join(DATABASE))?;
+            db.execute(
+                "INSERT INTO model_calls (id,session_id,generation,model,kind,cost_usd,partial)
+                VALUES (?1,'chat','gen','provider/model','chat',1.25,0)",
+                [version.to_string()],
+            )?;
+            if version == 20 {
+                db.execute("UPDATE model_calls SET created_at=123 WHERE id='20'", [])?;
+            } else {
+                db.execute_batch("DROP INDEX IF EXISTS model_calls_date; ALTER TABLE model_calls DROP COLUMN created_at;")?;
+                db.pragma_update(None, "user_version", version)?;
+                if version == 18 {
+                    db.execute_batch("DROP INDEX model_calls_child; ALTER TABLE model_calls DROP COLUMN child_id;
+                        ALTER TABLE model_calls DROP COLUMN child_generation; ALTER TABLE model_calls DROP COLUMN child_run_id;")?;
+                }
+            }
+        }
+        let directories = sources
+            .iter()
+            .map(|source| source.path().into())
+            .collect::<Vec<_>>();
+        for (index, path) in [&sources[1], &sources[2]].into_iter().enumerate() {
+            let db = Connection::open(path.path().join(DATABASE))?;
+            db.execute(
+                "INSERT INTO model_calls (id,session_id,generation,model,kind,cost_usd,partial)
+                VALUES ('shared','chat','gen','provider/model','chat',1.25,0)",
+                [],
+            )?;
+            if index == 1 {
+                db.execute(
+                    "UPDATE model_calls SET created_at=456 WHERE id='shared'",
+                    [],
+                )?;
+            }
+        }
+        stage_personal_sessions(&directories, destination.path())?;
+        let db = Connection::open(destination.path().join(DATABASE))?;
+        let calls = db
+            .prepare("SELECT id,created_at,cost_usd FROM model_calls ORDER BY id")?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            calls,
+            [
+                ("18".into(), None, 1.25),
+                ("19".into(), None, 1.25),
+                ("20".into(), Some(123), 1.25),
+                ("shared".into(), Some(456), 1.25)
+            ]
+        );
+        let upgraded = SqliteSessionStore::open(directories[1].clone())?;
+        let db = Connection::open(upgraded.directory().join(DATABASE))?;
+        let date: Option<i64> = db.query_row(
+            "SELECT created_at FROM model_calls WHERE id='19'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(date, None);
+        assert_eq!(
+            db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))?,
+            20
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn owner_migration_preserves_model_selected_for_unsent_draft() {
