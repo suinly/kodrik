@@ -256,6 +256,22 @@ Releases can also be built and verified locally before uploading their artifacts
 
 ## Documentation
 
+### Built-in skills
+
+Kodrik embeds these skills in the executable; there is no separate plugin install.
+
+| Source repository | Included skills |
+| --- | --- |
+| [Kodrik](https://github.com/suinly/kodrik/tree/main/skills) | `skill-creator`, `self-update`, `web-pages` |
+| [Ponytail](https://github.com/DietrichGebert/ponytail) | `ponytail`, `ponytail-audit`, `ponytail-debt`, `ponytail-gain`, `ponytail-help`, `ponytail-review` |
+| [Superpowers](https://github.com/obra/superpowers) | `brainstorming`, `diagnosing-superpowers`, `dispatching-parallel-agents`, `executing-plans`, `finishing-a-development-branch`, `receiving-code-review`, `requesting-code-review`, `subagent-driven-development`, `systematic-debugging`, `test-driven-development`, `using-git-worktrees`, `using-superpowers`, `verification-before-completion`, `writing-plans`, `writing-skills` |
+| [Taste Skill](https://github.com/Leonxlnx/taste-skill) | `design-taste-frontend` for website design and review. Its checks require Node.js 22+ and a Chromium-based browser; it is not bundled into isolated Bashkit chats. |
+
+See [Skills](docs/skills.md) for discovery, overrides and runtime requirements, and
+[third-party notices](skills/THIRD_PARTY.md) for pinned upstream sources and licenses.
+
+### Guides
+
 Start at the [documentation index](docs/index.md), or go directly to:
 
 | Task                                       | Guide                                                                                |

@@ -4,6 +4,7 @@ use anyhow::Context;
 use yaml_rust::YamlLoader;
 
 mod builtin;
+pub(super) use builtin::install_sandbox as install_sandbox_builtins;
 
 pub(super) fn is_builtin_name(name: &str) -> bool {
     builtin::BUNDLED
@@ -322,6 +323,7 @@ mod tests {
             "ponytail-help",
             "ponytail-review",
             "brainstorming",
+            "design-taste-frontend",
             "diagnosing-superpowers",
             "dispatching-parallel-agents",
             "executing-plans",
@@ -345,6 +347,11 @@ mod tests {
         }
         for path in [
             "KODRIK.md",
+            "LICENSE-taste-skill",
+            "design-taste-frontend/assets/starter.html",
+            "design-taste-frontend/library/palettes.json",
+            "design-taste-frontend/references/layout-v4.md",
+            "design-taste-frontend/scripts/gate.mjs",
             "requesting-code-review/code-reviewer.md",
             "systematic-debugging/root-cause-tracing.md",
         ] {

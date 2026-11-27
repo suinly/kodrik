@@ -7,7 +7,7 @@ for scope and limits. Skills below remain available on demand.
 
 Kodrik combines built-in skills with `skills/*/SKILL.md` in the current
 [space directory](storage.md#chat-spaces) at the first
-message of each new session. This works in CLI, TUI and Telegram. Use `/new`
+message of each new session. This works in CLI, TUI, Telegram and web chat. Use `/new`
 after adding, removing or changing skill metadata. Existing sessions keep
 their saved catalog; older sessions without one load it on their next request.
 
@@ -39,7 +39,9 @@ build time, including nested scripts and resources. Cargo watches this directory
 for changes. The binary does not need the source directory at runtime.
 
 When loading a session's catalog, Kodrik extracts the bundle into
-`~/.kodrik/skills/.system/`. It records a
+`skills/.system/` within the current space directory (`~/.kodrik/skills/.system/`
+in the legacy local layout). Isolated Bashkit spaces get a subset of the bundle.
+Kodrik records a
 fingerprint of the embedded paths and contents in
 `.system/.kodrik-builtin-skills.marker`. A matching marker skips extraction.
 A missing or different marker causes replacement of the entire `.system`
@@ -56,7 +58,7 @@ A valid user skill with the same name overrides the built-in skill in the
 catalog. An invalid user override is warned about and skipped, leaving the
 built-in available. Updating built-ins does not overwrite user skills.
 
-Core skills are bundled alongside two development skill sets:
+Core skills are bundled alongside these third-party skills:
 
 | Skill | Purpose |
 | --- | --- |
@@ -65,10 +67,21 @@ Core skills are bundled alongside two development skill sets:
 | `web-pages` | Create and update native pages and dashboards. |
 | [Ponytail](https://github.com/DietrichGebert/ponytail) 5.3.3 | Six skills for minimal implementation, code review, repository audits, and related reference material. |
 | [Superpowers](https://github.com/obra/superpowers) 7.0.1 | Fifteen skills for development workflows such as planning, testing, debugging, and verification. |
+| [Taste Skill](https://github.com/Leonxlnx/taste-skill) 2.5.1 (`design-taste-frontend`) | Design, build and review websites with bundled templates, visual assets and browser checks. |
 
 These are versioned skill snapshots adapted for Kodrik, not installed plugins.
 Kodrik does not enable their hooks, slash commands, or automatic updates.
 See [third-party notices](../skills/THIRD_PARTY.md) for versions and licenses.
+
+#### Website design with Taste Skill
+
+In a session with native tools, ask: “Use `design-taste-frontend` to redesign
+this landing page, keeping the project's existing stack.” The kit's scripts
+require Node.js 22+; its browser checks also require Chrome, Edge or Chromium.
+Kodrik does not install these dependencies or run the upstream finish gate
+automatically. The kit is omitted from isolated Bashkit chats, where Node.js
+and native browsers are unavailable. For pages published inside Kodrik, use
+[`web-pages`](web-pages.md) instead.
 
 For example, ask:
 

@@ -14,6 +14,21 @@ const MARKER: &str = ".kodrik-builtin-skills.marker";
 
 /// Retain the returned lock until the caller finishes reading the catalog.
 pub(super) fn install(root: &Path) -> anyhow::Result<fs::File> {
+    install_bundle(root, &BUNDLED)
+}
+
+pub(in crate::agent) fn install_sandbox(root: &Path) -> anyhow::Result<fs::File> {
+    // Bashkit cannot run Node or Chrome, and the website kit exceeds its import budget.
+    let entries: Vec<_> = BUNDLED
+        .entries()
+        .iter()
+        .filter(|entry| entry.path() != Path::new("design-taste-frontend"))
+        .cloned()
+        .collect();
+    install_bundle(root, &Dir::new("", &entries))
+}
+
+fn install_bundle(root: &Path, bundle: &Dir<'_>) -> anyhow::Result<fs::File> {
     fs::create_dir_all(root)
         .with_context(|| format!("Cannot create skills directory {}", root.display()))?;
     // Keep the lock outside .system, which is replaced during updates.
@@ -39,7 +54,7 @@ pub(super) fn install(root: &Path) -> anyhow::Result<fs::File> {
         Err(error) if error.kind() == ErrorKind::NotFound => false,
         Err(error) => return Err(error).context("Cannot inspect built-in skills destination"),
     };
-    let expected = fingerprint(&BUNDLED);
+    let expected = fingerprint(bundle);
     // ponytail: the marker checks bundle version, not cache integrity;
     // remove the marker to repair the cache, add file checks if tampering matters.
     if exists
@@ -52,7 +67,7 @@ pub(super) fn install(root: &Path) -> anyhow::Result<fs::File> {
         .prefix(".system-")
         .tempdir_in(root)
         .context("Cannot create built-in skills staging directory")?;
-    BUNDLED
+    bundle
         .extract(staging.path())
         .context("Cannot extract built-in skills")?;
     fs::write(staging.path().join(MARKER), format!("{expected}\n"))

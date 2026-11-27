@@ -73,7 +73,7 @@ impl Sandbox {
         let skills = self.directory.join("skills");
         let files =
             tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(PathBuf, Vec<u8>)>> {
-                super::skills::load_catalog(&skills)?;
+                let _lock = super::skills::install_sandbox_builtins(&skills)?;
                 let mut files = Vec::new();
                 collect_skills(&skills, &skills, &mut files, &mut 0)?;
                 Ok(files)
@@ -464,7 +464,15 @@ mod tests {
             files: vec![],
             images: vec![],
         };
-        sandbox.prepare_input(&mut input).await.unwrap();
+        let catalog = sandbox.prepare_input(&mut input).await.unwrap();
+        assert!(catalog.contains(".system/skill-creator/SKILL.md"));
+        assert!(!catalog.contains(".system/design-taste-frontend/SKILL.md"));
+        assert!(
+            !root
+                .path()
+                .join("skills/.system/design-taste-frontend")
+                .exists()
+        );
         std::fs::remove_dir_all(&assets).unwrap();
         std::fs::write(&assets, "new asset").unwrap();
         let reopened = Sandbox::new(root.path().to_owned());
