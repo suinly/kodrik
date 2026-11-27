@@ -32,6 +32,8 @@ pub struct App {
     pub sessions_loading: bool,
     pub sessions_error: Option<String>,
     pub sessions_more: bool,
+    pub sessions_query: String,
+    pub sessions_offset: usize,
     pub session_index: usize,
     pub session: Option<crate::agent::session::SessionId>,
     pub versions: HashMap<usize, crate::agent::session::branches::MessageVersions>,
@@ -79,6 +81,33 @@ pub enum Status {
 }
 
 impl App {
+    pub(super) fn start_session_picker(&mut self) {
+        self.sessions_query.clear();
+        self.reset_session_results();
+    }
+
+    fn reset_session_results(&mut self) {
+        self.sessions = Some(Vec::new());
+        self.session_index = 0;
+        self.sessions_offset = 0;
+        self.sessions_more = true;
+        self.sessions_loading = false;
+        self.sessions_error = None;
+    }
+
+    pub(super) fn append_session_query(&mut self, text: &str) {
+        use crate::agent::session::picker::MAX_QUERY;
+        let previous = self.sessions_query.len();
+        for c in text.chars().filter(|c| !c.is_control()) {
+            if self.sessions_query.len() + c.len_utf8() > MAX_QUERY {
+                break;
+            }
+            self.sessions_query.push(c);
+        }
+        if self.sessions_query.len() != previous {
+            self.reset_session_results();
+        }
+    }
     pub fn set_copy_notice(&mut self, text: String) {
         self.copy_notice = Some((
             text,
@@ -532,23 +561,36 @@ impl App {
             return super::approvals::update(self, key);
         }
         if let Some(sessions) = &self.sessions {
+            let length = sessions.len();
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                KeyCode::Up if key.modifiers.is_empty() => {
                     self.session_index = self.session_index.saturating_sub(1)
                 }
-                KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
-                    self.session_index =
-                        (self.session_index + 1).min(sessions.len().saturating_sub(1))
+                KeyCode::Down if key.modifiers.is_empty() => {
+                    self.session_index = (self.session_index + 1).min(length.saturating_sub(1))
                 }
                 KeyCode::Char('r')
-                    if key.modifiers.is_empty()
+                    if control
                         && key.kind == KeyEventKind::Press
                         && self.sessions_error.is_some() =>
                 {
-                    return Some("/sessions retry".into());
+                    self.sessions_error = None;
+                }
+                KeyCode::Char('c' | 'C' | 'с' | 'С') if control => self.should_quit = true,
+                KeyCode::Char('u') if control && !self.sessions_query.is_empty() => {
+                    self.sessions_query.clear();
+                    self.reset_session_results();
+                }
+                KeyCode::Backspace if self.sessions_query.pop().is_some() => {
+                    self.reset_session_results();
+                }
+                KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
+                    self.append_session_query(&c.to_string());
                 }
                 KeyCode::Esc => {
                     self.sessions = None;
+                    self.sessions_query.clear();
                     self.sessions_loading = false;
                     self.sessions_error = None;
                     self.sessions_more = false;
@@ -1103,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn jk_navigates_menus_but_remains_text_in_the_composer() {
+    fn jk_navigates_command_menus_but_remains_text_in_the_composer_and_search() {
         let mut app = App::default();
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('k'));
@@ -1113,10 +1155,13 @@ mod tests {
             (crate::agent::session::SessionId::new("one"), "one".into()),
             (crate::agent::session::SessionId::new("two"), "two".into()),
         ]);
-        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Down);
         assert_eq!(app.session_index, 1);
+        key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('k'));
         assert_eq!(app.session_index, 0);
+        assert_eq!(app.sessions_query, "jk");
+        assert_eq!(app.input, "jk\n");
         app.sessions = None;
         app.input = "/".into();
         app.input_cursor = 1;
@@ -1242,18 +1287,8 @@ mod tests {
             status: Status::Working,
             ..Default::default()
         };
-        assert_eq!(
-            key(&mut app, KeyCode::Char('r')).as_deref(),
-            Some("/sessions retry")
-        );
-        assert!(
-            app.update(KeyEvent::new_with_kind(
-                KeyCode::Char('r'),
-                KeyModifiers::NONE,
-                KeyEventKind::Repeat
-            ))
-            .is_none()
-        );
+        app.update(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(app.sessions_error.is_none());
         assert!(matches!(app.status, Status::Working));
         assert!(app.messages.is_empty());
         key(&mut app, KeyCode::Esc);

@@ -228,10 +228,19 @@ async fn independent_chat_preserves_prefix_auth_cursor_and_command_id() {
 async fn sessions_page_preserves_array_prefix_auth_and_offset() {
     let rows = json!([{"id":"older","title":"Older conversation"}]);
     let mut f = fixture(vec![json_response(rows.clone())]).await;
-    assert_eq!(f.client.sessions_page(60).await.unwrap(), rows);
+    assert_eq!(
+        f.client
+            .sessions_page(60, 21, "/my project", "old & new")
+            .await
+            .unwrap(),
+        rows
+    );
     let (method, uri, auth, body) = f.requests.recv().await.unwrap();
     assert_eq!(method, "GET");
-    assert_eq!(uri, "/prefix/api/remote/chat/sessions?limit=30&offset=60");
+    assert_eq!(
+        uri,
+        "/prefix/api/remote/chat/sessions?limit=21&offset=60&directory=%2Fmy+project&q=old+%26+new"
+    );
     assert_eq!(auth, "Bearer test-private-token");
     assert_eq!(body, Value::Null);
 }

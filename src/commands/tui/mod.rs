@@ -11,6 +11,7 @@ mod navigation;
 pub(crate) mod remote;
 #[cfg(test)]
 mod remote_tests;
+mod session_picker;
 #[cfg(all(test, unix))]
 mod startup_tests;
 mod terminal;
@@ -144,6 +145,11 @@ async fn run_session_inner(
     let mut cancel_request: Option<oneshot::Sender<()>> = None;
     let mut redraw = true;
     let mut drawn_size = None;
+    let directory = std::env::current_dir()?.canonicalize()?;
+    let directory = directory
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF8 working directory"))?;
+    let mut pages = session_picker::Pages::default();
 
     let shutdown = super::shutdown_signal();
     tokio::pin!(shutdown);
@@ -185,6 +191,21 @@ async fn run_session_inner(
                 (result, inputs)
             });
         }
+        pages.refresh(&mut app, |query, limit, offset| {
+            let store = runner.sqlite_store();
+            let scope = crate::agent::session::picker::Scope::Local(directory.to_owned());
+            let empty = language.pick("Empty session", "Пустой сеанс");
+            async move {
+                let store =
+                    store.ok_or_else(|| anyhow::anyhow!("Session picker requires SQLite"))?;
+                Ok(store
+                    .picker_page(scope, query, limit, offset)
+                    .await?
+                    .into_iter()
+                    .map(|row| (row.id, row.title.unwrap_or_else(|| empty.into())))
+                    .collect())
+            }
+        });
         reporter.update(&app);
         if redraw {
             drawn_size = Some(crossterm::terminal::size()?);
@@ -192,6 +213,10 @@ async fn run_session_inner(
             redraw = false;
         }
         tokio::select! {
+            result = pages.next() => {
+                pages.receive(&mut app, result);
+                redraw = true;
+            },
             report = &mut recovery, if recovering => {
                 recovering = false;
                 let mut report = report?;
@@ -267,7 +292,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Esc && recovering && app.command_suggestion().is_none() && app.language_choice.is_none() {
+                        if key.code == KeyCode::Esc && app.sessions.is_none() && recovering && app.command_suggestion().is_none() && app.language_choice.is_none() {
                             // Recovery is paused here, so queued work cannot start during cancellation.
                             while let Some(input) = runner.next_input(&session_id).await? {
                                 runner.cancel_queued_input(&session_id, &input.request_id).await?;
@@ -299,7 +324,7 @@ async fn run_session_inner(
                             redraw = true;
                             continue;
                         }
-                        if key.code == KeyCode::Esc && app.command_suggestion().is_none() && app.language_choice.is_none() && matches!(app.status, Status::Working) {
+                        if key.code == KeyCode::Esc && app.sessions.is_none() && app.command_suggestion().is_none() && app.language_choice.is_none() && matches!(app.status, Status::Working) {
                             if let Some(cancel) = cancel_request.take() {
                                 let _ = cancel.send(());
                                 app.status = Status::Stopping;
@@ -347,22 +372,7 @@ async fn run_session_inner(
                                 continue;
                             }
                             if input == "/sessions" {
-                                match runner.list_conversations().await {
-                                    Ok(sessions) => {
-                                        app.sessions = Some(sessions.iter().map(|session| {
-                                            let title = session.messages().iter().find_map(|message| match message {
-                                                Message::User(message) => Some(short(&message.content, 80)),
-                                                _ => None,
-                                            }).unwrap_or_else(|| app.language.pick("Empty session", "Пустой сеанс").into());
-                                            (session.id().clone(), title)
-                                        }).collect());
-                                        app.session_index = 0;
-                                    }
-                                    Err(error) => {
-                                        app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Could not load sessions", "Не удалось загрузить сеансы")));
-                                        app.status = Status::Error;
-                                    }
-                                }
+                                app.start_session_picker();
                                 redraw = true;
                                 continue;
                             }
@@ -385,7 +395,8 @@ async fn run_session_inner(
                                 redraw = true;
                                 continue;
                             }
-                            let message=images::message(&app, session_id.as_str(), input);
+                            let mut message=images::message(&app, session_id.as_str(), input);
+                            message.tui_directory = Some(directory.to_owned());
                             match runner.submit(crate::agent::inbox::SubmissionRequest::new(&session_id,message.clone(),crate::agent::inbox::BusyMode::Steer)).await {
                                 Ok(_)=>{app.clear_input_images();input_tx.send(message)?;},
                                 Err(error)=>{app.discard_pending_input(&message.text, message.images.len());app.input = message.text.clone(); app.input_cursor = app.input.len();app.push_kodrik_message(format!("{}: {error:#}", app.language.pick("Input was not confirmed", "Ввод не подтверждён")));app.status=Status::Error;}
@@ -395,7 +406,11 @@ async fn run_session_inner(
                     }
                     Ok(Event::Paste(text)) => {
                         app.view.clear_selection();
-                        images::paste(&mut app, &text).await;
+                        if app.sessions.is_some() {
+                            app.append_session_query(&text);
+                        } else {
+                            images::paste(&mut app, &text).await;
+                        }
                         redraw = true;
                     }
                     Ok(Event::Mouse(mouse)) => {
@@ -528,7 +543,7 @@ async fn run_session_inner(
             _ = tick.tick() => {
                 redraw |= app.view.tick(&mut app.scroll);
                 redraw |= app.expire_copy_notice(std::time::Instant::now());
-                if matches!(app.status, Status::Recovering | Status::Working | Status::Stopping) {
+                if app.sessions_loading || matches!(app.status, Status::Recovering | Status::Working | Status::Stopping) {
                     app.animation_frame = app.animation_frame.wrapping_add(1);
                     redraw = true;
                 }

@@ -72,9 +72,10 @@ Esc stops recovery, and Ctrl+C with empty input exits while keeping it resumable
 | Enter | Send the message |
 | Shift+Enter, Alt+Enter or Ctrl+J | Insert a newline |
 | `/new` | Start a fresh session |
-| `/sessions` | Open the session picker |
+| `/sessions` | Search saved sessions for the current working directory; pages fit the terminal height |
 | `/language en` or `/language ru` | Change and save the interface language locally |
-| ↑ / ↓ or j / k in a picker or command menu | Move the selection |
+| ↑ / ↓ in the session picker | Move the selection; type to search titles, IDs and messages, Ctrl+U to clear |
+| ↑ / ↓ or j / k in the command menu | Move the selection |
 | Enter / Esc in the picker | Open / close |
 | Esc while working, with no menu or editor open | Cancel the current request |
 | Double Esc within 500 ms while idle | Select the latest saved user message |

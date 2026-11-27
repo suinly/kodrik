@@ -164,6 +164,7 @@ impl SqliteSessionStore {
 }
 
 impl AgentRunner {
+    #[cfg(test)]
     pub(crate) async fn list_conversations(&self) -> anyhow::Result<Vec<Session>> {
         let Some(store) = self.sqlite_store() else {
             return self.list_sessions().await;

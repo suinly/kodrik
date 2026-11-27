@@ -127,7 +127,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             .prepare(&app.messages, area, 0, &mut app.scroll, true);
         let items = sessions
             .iter()
-            .map(|(id, title)| ListItem::new(format!("{title}  · {}", id.as_str())))
+            .map(|(id, title)| {
+                ListItem::new(format!(
+                    "{}  · {}",
+                    literal_text(title).replace('\n', " "),
+                    literal_text(id.as_str()).replace('\n', " ")
+                ))
+            })
             .collect::<Vec<_>>();
         let mut block = Block::bordered().title(language.pick(
             " Sessions · ↑/↓ select · Enter open · Esc close ",
@@ -145,7 +151,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             notices.push(format!(
                 "{} · {}: {}",
                 language.pick("Could not load sessions", "Не удалось загрузить сеансы"),
-                language.pick("r retry", "r повторить"),
+                language.pick("Ctrl+R retry", "Ctrl+R повторить"),
                 literal_text(error).replace('\n', " ")
             ));
         } else if app.sessions_more {
@@ -158,17 +164,33 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         if !notices.is_empty() {
             block = block.title_bottom(format!(" {} ", notices.join(" · ")));
         }
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
         frame.render_widget(block, area);
+        if inner.height > 0 && inner.width > 0 {
+            let search = Rect {
+                height: super::session_picker::SEARCH_ROWS,
+                ..inner
+            };
+            let prefix = language.pick("Search: ", "Поиск: ");
+            let line = Line::raw(format!("{prefix}{}", literal_text(&app.sessions_query)));
+            let width = line.width();
+            let scroll = width.saturating_sub(usize::from(search.width - 1));
+            frame.render_widget(Paragraph::new(line).scroll((0, scroll as u16)), search);
+            frame.set_cursor_position((search.x + (width - scroll) as u16, search.y));
+            inner.y += search.height;
+            inner.height -= search.height;
+        }
         if items.is_empty() {
             frame.render_widget(
                 Paragraph::new(if app.sessions_loading {
                     notices[0].as_str()
                 } else if app.sessions_error.is_some() {
                     language.pick(
-                        "Could not load sessions · r retry",
-                        "Не удалось загрузить сеансы · r повторить",
+                        "Could not load sessions · Ctrl+R retry",
+                        "Не удалось загрузить сеансы · Ctrl+R повторить",
                     )
+                } else if !app.sessions_query.trim().is_empty() {
+                    language.pick("No matching sessions", "Ничего не найдено")
                 } else {
                     language.pick("No saved sessions", "Нет сохранённых сеансов")
                 }),
@@ -1970,7 +1992,7 @@ mod tests {
         terminal.draw(|frame| render(&mut app, frame)).unwrap();
         assert!(text(&terminal).contains("Saved conversation"));
         assert!(text(&terminal).contains("Could not load sessions"));
-        assert!(text(&terminal).contains("r retry"));
+        assert!(text(&terminal).contains("Ctrl+R retry"));
         assert!(matches!(app.status, Status::Ready));
         app.sessions_error = None;
         app.sessions_more = true;

@@ -497,11 +497,18 @@ impl ChatClient {
         self.json(self.http.get(self.url(None, None)?)).await
     }
 
-    pub(crate) async fn sessions_page(&self, offset: usize) -> anyhow::Result<serde_json::Value> {
+    pub(crate) async fn sessions_page(
+        &self,
+        offset: usize,
+        limit: usize,
+        directory: &str,
+        query: &str,
+    ) -> anyhow::Result<serde_json::Value> {
         let request = self
             .http
             .get(self.url(None, None)?)
-            .query(&[("limit", 30), ("offset", offset)]);
+            .query(&[("limit", limit), ("offset", offset)])
+            .query(&[("directory", directory), ("q", query)]);
         self.json(request).await
     }
 

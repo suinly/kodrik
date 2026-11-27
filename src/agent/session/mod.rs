@@ -10,6 +10,7 @@ mod runtime;
 mod sqlite;
 #[cfg(test)]
 pub(crate) use sqlite::VERSION;
+pub(crate) mod picker;
 mod store;
 mod titles;
 pub(crate) use branches::init_branches;

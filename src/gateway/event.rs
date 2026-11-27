@@ -10,6 +10,8 @@ pub struct IncomingMessage {
     pub request_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) from_tui: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tui_directory: Option<String>,
     // Keep ordinary messages small inside nested runtime futures.
     #[serde(skip)]
     pub(crate) callback: Option<Box<SessionCallback>>,
@@ -48,6 +50,7 @@ impl IncomingMessage {
         Self {
             request_id: uuid::Uuid::new_v4().to_string(),
             from_tui: false,
+            tui_directory: None,
             callback: None,
             admission: None,
             source: MessageSource {

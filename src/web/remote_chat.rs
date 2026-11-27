@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::session::picker::Scope;
 use crate::remote::protocol::ChatCommand;
 use axum::{extract::Query, http::header};
 
@@ -66,6 +67,7 @@ async fn authorize(
         return response;
     }
     request.extensions_mut().insert(state);
+    request.extensions_mut().insert(device);
     next.run(request).await
 }
 
@@ -76,6 +78,9 @@ struct SessionsQuery {
     limit: usize,
     #[serde(default)]
     offset: usize,
+    directory: Option<String>,
+    #[serde(default)]
+    q: String,
 }
 
 fn sessions_page_size() -> usize {
@@ -84,10 +89,22 @@ fn sessions_page_size() -> usize {
 
 async fn sessions(
     Extension(state): Extension<WebState>,
+    Extension(device): Extension<crate::web::auth::devices::DeviceIdentity>,
     Query(query): Query<SessionsQuery>,
 ) -> Result<Json<Value>, Response> {
     let chat = state.chat().map_err(IntoResponse::into_response)?;
-    Ok(Json(chat.remote_sessions(query.limit, query.offset).await?))
+    let scope = match query.directory {
+        Some(directory) if !directory.is_empty() && directory.len() <= 4096 => Scope::Remote {
+            device: device.device_id,
+            directory,
+        },
+        Some(_) => return Err(error(StatusCode::BAD_REQUEST, "Invalid directory")),
+        None => Scope::Unfiltered,
+    };
+    Ok(Json(
+        chat.remote_sessions(query.limit, query.offset, scope, query.q)
+            .await?,
+    ))
 }
 
 #[derive(Default, Deserialize)]

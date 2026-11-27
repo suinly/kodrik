@@ -870,7 +870,13 @@ fn startup_and_new_remain_drafts_until_the_first_message() {
     terminal.wait_for(b"edited reply: hello", 0);
     terminal.wait_for(b"Done", 0);
     terminal.send(b"/sessions\r");
-    terminal.wait_for(b"previous conversation", 0);
+    terminal.wait_for(b"Search:", 0);
+    assert!(!screen_text(&terminal.output).contains("previous conversation"));
+    terminal.send(b"not found\r");
+    terminal.wait_for(b"No matching sessions", 0);
+    let since = terminal.output.len();
+    terminal.send(b"\x15EDITED REPLY");
+    terminal.wait_for(b"hello", since);
     terminal.send(b"\x1b[27u");
     terminal.send(b"\x03");
     terminal.wait_for(b"test result: ok", 0);

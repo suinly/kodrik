@@ -229,10 +229,55 @@ async fn native_sessions_pages_validate_bounds_and_default_to_thirty() {
     else {
         panic!()
     };
+    let device = state.auth.device_identity(&token, now).unwrap().unwrap();
+    chat.sessions
+        .with_connection(move |db| {
+            for (id, owner, root) in [
+                ("page-33", device.device_id, "/project"),
+                ("page-32", device.device_id, "/project"),
+                ("page-34", device.device_id, "/project-other"),
+                ("page-31", uuid::Uuid::new_v4(), "/project"),
+            ] {
+                db.execute(
+                    "INSERT INTO remote_bindings VALUES(?1,?2,?3,?4,?5)",
+                    rusqlite::params![
+                        uuid::Uuid::new_v4().to_string(),
+                        uuid::Uuid::new_v4().to_string(),
+                        owner.to_string(),
+                        id,
+                        serde_json::to_vec(&json!({"project_root":root}))?
+                    ],
+                )?;
+            }
+            let payload =
+                json!({"id":"page-32","messages":[{"Assistant":{"content":"Привет из истории"}}]});
+            db.execute(
+                "UPDATE sessions SET payload=?1 WHERE id='page-32'",
+                [serde_json::to_vec(&payload)?],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let app = crate::web::server::router_with_chat(state.settings.clone(), dir.path(), Some(chat));
     for (query, status, ids) in [
         ("", 200, None),
         ("?limit=2&offset=30", 200, Some(vec!["page-05", "page-04"])),
+        (
+            "?directory=%2Fproject&limit=1&offset=1",
+            200,
+            Some(vec!["page-32"]),
+        ),
+        (
+            "?directory=%2Fproject",
+            200,
+            Some(vec!["page-33", "page-32"]),
+        ),
+        (
+            "?directory=%2Fproject&q=%D0%9F%D0%A0%D0%98%D0%92%D0%95%D0%A2",
+            200,
+            Some(vec!["page-32"]),
+        ),
         ("?limit=100&offset=36", 200, Some(vec![])),
         ("?offset=9223372036854775807", 200, Some(vec![])),
         ("?limit=0", 400, None),
@@ -312,7 +357,15 @@ async fn native_sessions_group_order_and_titles_do_not_deserialize_histories() {
         db.execute("INSERT INTO web_chat_titles VALUES('root','Saved root title')", [])?;
         Ok(())
     }).await.unwrap();
-    let rows = chat.remote_sessions(30, 0).await.unwrap();
+    let rows = chat
+        .remote_sessions(
+            30,
+            0,
+            crate::agent::session::picker::Scope::Unfiltered,
+            String::new(),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         rows.as_array()
             .unwrap()
@@ -337,11 +390,25 @@ async fn native_sessions_group_order_and_titles_do_not_deserialize_histories() {
     assert_eq!(rows[6]["title"], "🌍".repeat(80));
     assert_eq!(rows[7]["title"], "Новый диалог");
     assert_eq!(
-        chat.remote_sessions(2, 0).await.unwrap(),
+        chat.remote_sessions(
+            2,
+            0,
+            crate::agent::session::picker::Scope::Unfiltered,
+            String::new()
+        )
+        .await
+        .unwrap(),
         json!(rows.as_array().unwrap()[..2])
     );
     assert_eq!(
-        chat.remote_sessions(2, 2).await.unwrap(),
+        chat.remote_sessions(
+            2,
+            2,
+            crate::agent::session::picker::Scope::Unfiltered,
+            String::new()
+        )
+        .await
+        .unwrap(),
         json!(rows.as_array().unwrap()[2..4])
     );
 }
@@ -960,7 +1027,14 @@ async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
         .is_ok()
     );
     assert_eq!(
-        chat.remote_sessions(30, 0).await.unwrap()[0]["id"],
+        chat.remote_sessions(
+            30,
+            0,
+            crate::agent::session::picker::Scope::Unfiltered,
+            String::new()
+        )
+        .await
+        .unwrap()[0]["id"],
         branch.as_str()
     );
     chat.remote_command(
@@ -972,7 +1046,14 @@ async fn native_send_retries_do_not_duplicate_and_edit_keeps_branches() {
     .await
     .unwrap();
     assert_eq!(
-        chat.remote_sessions(30, 0).await.unwrap()[0]["id"],
+        chat.remote_sessions(
+            30,
+            0,
+            crate::agent::session::picker::Scope::Unfiltered,
+            String::new()
+        )
+        .await
+        .unwrap()[0]["id"],
         id.as_str()
     );
     let unrelated = SessionId::new(uuid::Uuid::new_v4().to_string());

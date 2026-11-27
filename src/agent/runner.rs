@@ -509,12 +509,14 @@ impl AgentRunner {
                         self.load_session(session_id.clone()).await?
                     };
                 session.merge_telegram_group(message.telegram_group.as_ref());
-
                 let mut wakeup_context = super::reminders::WakeupContext::for_message(
                     &session_id,
                     session.id(),
                     &message,
                 );
+                if let Some(directory) = message.tui_directory {
+                    session.tui_directory.get_or_insert(directory);
+                }
                 let webhook_source = message.webhook;
 
                 let input = UserMessage {

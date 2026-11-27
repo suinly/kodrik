@@ -326,19 +326,12 @@ impl Drop for Observer {
     }
 }
 
-struct SessionListRequest {
-    offset: usize,
-    task: tokio::task::JoinHandle<anyhow::Result<serde_json::Value>>,
-}
-impl Drop for SessionListRequest {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-fn session_rows(value: serde_json::Value) -> anyhow::Result<Vec<(SessionId, String)>> {
+fn session_rows(
+    value: serde_json::Value,
+    limit: usize,
+) -> anyhow::Result<Vec<(SessionId, String)>> {
     let rows = value.as_array().context("Invalid session list")?;
-    ensure!(rows.len() <= 30, "Session page exceeds limit");
+    ensure!(rows.len() <= limit, "Session page exceeds limit");
     rows.iter()
         .map(|row| {
             let id = row["id"].as_str().context("Missing session ID")?;
@@ -423,8 +416,6 @@ struct Remote {
     projection: Projection,
     snapshot: RemoteChatSnapshot,
     uncertain: Option<ChatCommand>,
-    session_list: Option<SessionListRequest>,
-    sessions_offset: usize,
     root: PathBuf,
 }
 impl Remote {
@@ -463,62 +454,6 @@ impl Remote {
         self.snapshot = snapshot;
         Ok(())
     }
-    fn load_sessions(&mut self, app: &mut App, reset: bool) {
-        if reset {
-            self.session_list.take();
-            self.sessions_offset = 0;
-            app.sessions = Some(Vec::new());
-            app.session_index = 0;
-            app.sessions_more = true;
-        } else if self.session_list.is_some() || app.sessions.is_none() || !app.sessions_more {
-            return;
-        }
-        app.sessions_loading = true;
-        app.sessions_error = None;
-        let chat = self.chat.clone();
-        let offset = self.sessions_offset;
-        self.session_list = Some(SessionListRequest {
-            offset,
-            task: tokio::spawn(async move { chat.sessions_page(offset).await }),
-        });
-    }
-
-    fn receive_sessions(
-        &mut self,
-        app: &mut App,
-        result: Result<anyhow::Result<serde_json::Value>, tokio::task::JoinError>,
-    ) {
-        let Some(request) = self.session_list.take() else {
-            return;
-        };
-        app.sessions_loading = false;
-        let Some(rows) = app.sessions.as_mut() else {
-            return;
-        };
-        match result
-            .map_err(anyhow::Error::from)
-            .and_then(|result| result)
-            .and_then(session_rows)
-        {
-            Ok(page) => {
-                self.sessions_offset = request.offset + page.len();
-                app.sessions_more = page.len() == 30;
-                for row in page {
-                    if !rows.iter().any(|(id, _)| id == &row.0) {
-                        rows.push(row);
-                    }
-                }
-            }
-            Err(error) => {
-                app.sessions_error = Some(format!(
-                    "{}: {error}",
-                    app.language
-                        .pick("Could not load sessions", "Не удалось загрузить диалоги")
-                ))
-            }
-        }
-    }
-
     fn connection_status(&self, app: &mut App) {
         app.remote_environment = Some(
             self.root
@@ -802,9 +737,8 @@ impl Remote {
                     .to_owned(),
             ),
             "/sessions" => {
-                self.load_sessions(app, true);
+                app.start_session_picker();
             }
-            "/sessions retry" => self.load_sessions(app, false),
             "/new" => self.select(app, ChatCommand::New).await?,
             "/detach" => {
                 self.detach().await?;
@@ -1037,8 +971,7 @@ pub(crate) async fn run_with(
         projection: Projection::default(),
         snapshot,
         uncertain: None,
-        session_list: None,
-        sessions_offset: 0,
+
         root: std::env::current_dir()?.canonicalize()?,
     };
     let mut app = App {
@@ -1097,20 +1030,19 @@ async fn event_loop(
         )).to_owned()),
         Some(Ok(())) => {}
     }
+    let mut pages = session_picker::Pages::default();
     while !app.should_quit {
-        if app.sessions.is_none() {
-            remote.session_list.take();
-            app.sessions_loading = false;
-        } else if !app.sessions_loading
-            && app.sessions_error.is_none()
-            && app.sessions_more
-            && app
-                .sessions
-                .as_ref()
-                .is_some_and(|rows| app.session_index.saturating_add(5) >= rows.len())
-        {
-            remote.load_sessions(app, false);
-        }
+        pages.refresh(app, |query, limit, offset| {
+            let chat = remote.chat.clone();
+            let root = remote.root.clone();
+            async move {
+                let directory = root.to_str().context("Non-UTF8 project root")?;
+                session_rows(
+                    chat.sessions_page(offset, limit, directory, &query).await?,
+                    limit,
+                )
+            }
+        });
         remote.connection_status(app);
         reporter.update(app);
         if let Some(binding) = remote.binding.as_mut()
@@ -1147,10 +1079,7 @@ async fn event_loop(
         let language = app.language;
         tokio::select! {
             _=&mut shutdown=>app.should_quit=true,
-            result=async {match remote.session_list.as_mut() {
-                Some(request)=>(&mut request.task).await,
-                None=>std::future::pending().await,
-            }}=>remote.receive_sessions(app,result),
+            result=pages.next()=>pages.receive(app,result),
             result=async {match remote.reconnect.as_mut() {
                 Some(retry)=>(&mut retry.0).await,
                 None=>std::future::pending().await,
@@ -1215,7 +1144,7 @@ async fn event_loop(
                         let turn=app.selected_user_turn();
                         let granting=app.remote_grant.is_some();
                         if let Some(input)=app.update(key){remote.input(app,input).await?;}
-                        if !granting && key.code==KeyCode::PageUp && app.navigation.selected.is_none() {remote.older(app).await?;}
+                        if !granting && app.sessions.is_none() && key.code==KeyCode::PageUp && app.navigation.selected.is_none() {remote.older(app).await?;}
                         if let Some(id)=app.navigation.pending_version.take() && let Some(turn)=turn {
                             let user_turn=remote.absolute_turn(turn).context(app.language.pick("User message is not loaded", "Сообщение пользователя не загружено"))?;
                             remote.select(app,ChatCommand::SelectVersion{session_id:SessionId::new(id),user_turn}).await?;
@@ -1245,6 +1174,7 @@ async fn event_loop(
                     let Some(operation)=operation else {app.should_quit=true;continue;};
                     if let Err(error)=operation {app.status=Status::Error;let message=app.language.pick(&format!("Remote action not confirmed: {error}. Uncertain input: /retry checks its original ID."), &format!("Удалённое действие не подтверждено: {error}. Для неподтверждённого ввода /retry проверяет исходный ID запроса.")).to_owned();if app.navigation.editing.is_some() {app.set_copy_notice(app.language.pick("Remote action not confirmed", "Удалённое действие не подтверждено").into());}app.push_kodrik_message(message);}
                 }
+                Event::Paste(text) if app.sessions.is_some() && app.remote_grant.is_none()=>app.append_session_query(&text),
                 Event::Paste(text)=>{super::images::paste(app, &text).await;},
                 Event::Mouse(mouse)=>{
                     if let Some(text)=app.view.mouse(mouse,&mut app.scroll){let id=app.view.selection_id();copies.spawn(async move{(id,clipboard::copy(text).await)});}
@@ -1464,8 +1394,7 @@ mod binding_tests {
                 projection: Projection::default(),
                 snapshot,
                 uncertain: None,
-                session_list: None,
-                sessions_offset: 0,
+
                 root: directory.path().into(),
             };
             let mut app = App {
@@ -1788,7 +1717,8 @@ mod binding_tests {
     #[test]
     fn session_pages_validate_rows_and_escape_titles() {
         use serde_json::json;
-        let page = session_rows(json!([{"id":"one","title":"hello\n\u{1b}[31mworld"}])).unwrap();
+        let page =
+            session_rows(json!([{"id":"one","title":"hello\n\u{1b}[31mworld"}]), 30).unwrap();
         assert_eq!(page[0].0.as_str(), "one");
         assert!(!page[0].1.chars().any(char::is_control));
         for value in [
@@ -1799,7 +1729,7 @@ mod binding_tests {
             json!([{"id":"one"}]),
             json!(vec![json!({"id":"one","title":"too many"}); 31]),
         ] {
-            assert!(session_rows(value).is_err());
+            assert!(session_rows(value, 30).is_err());
         }
     }
 

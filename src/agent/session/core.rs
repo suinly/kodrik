@@ -95,6 +95,8 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tui_directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) child_policy: Option<super::super::subagents::ChildPolicy>,
     #[serde(default)]
     system_prompt: Option<String>,
@@ -135,6 +137,7 @@ impl Session {
             generation: uuid::Uuid::new_v4().to_string(),
             id,
             model_override: None,
+            tui_directory: None,
             child_policy: None,
             system_prompt: None,
             webhook_instruction: None,

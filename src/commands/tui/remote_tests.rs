@@ -742,20 +742,22 @@ async fn terminal_remote_fixture() {
                 let case=std::env::var("KODRIK_TUI_CASE").unwrap_or_default();
                 if case.starts_with("remote-sessions-") && query.contains_key("offset") {
                     let offset=query["offset"].parse::<usize>().unwrap();
-                    assert_eq!(query.get("limit").map(String::as_str),Some("30"));
+                    let limit=query["limit"].parse::<usize>().unwrap();
+                    assert_eq!(query.get("directory").map(String::as_str), std::env::current_dir().unwrap().canonicalize().unwrap().to_str());
+                    assert_eq!(limit, 21);
                     if case=="remote-sessions-slow" {
                         std::fs::write("sessions-request",b"1").unwrap();
                         while !std::path::Path::new("sessions-release").exists() {
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                     }
-                    if (case=="remote-sessions-retry" || case=="remote-sessions-pages-retry" && offset==30) && !std::path::Path::new("sessions-failed").exists() {
+                    if (case=="remote-sessions-retry" || case=="remote-sessions-pages-retry" && offset==21) && !std::path::Path::new("sessions-failed").exists() {
                         std::fs::write("sessions-failed",b"1").unwrap();
                         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
                     }
                     if case.starts_with("remote-sessions-pages") {
                         std::fs::write(format!("sessions-page-{offset}"),b"1").unwrap();
-                        let rows=(offset..(offset+30).min(35)).map(|index|json!({"id":format!("session-{index}"),"title":format!("Paged conversation {index}")})).collect::<Vec<_>>();
+                        let rows=(offset..(offset+limit).min(35)).map(|index|json!({"id":format!("session-{index}"),"title":format!("Paged conversation {index}")})).collect::<Vec<_>>();
                         return Json(json!(rows)).into_response();
                     }
                 }
@@ -1120,20 +1122,24 @@ fn remote_sessions_paginates_near_end_and_selects_later_page() {
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"/sessions\r");
     terminal.wait_for(b"Paged conversation 0", 0);
-    assert!(!dir.path().join("sessions-page-30").exists());
-    for _ in 0..27 {
+    assert!(!dir.path().join("sessions-page-21").exists());
+    for _ in 0..20 {
         terminal.send(b"\x1b[B");
     }
-    terminal.wait_for(b"Paged conversation 27", 0);
+    terminal.wait_for(b"> Paged conversation 20", 0);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !dir.path().join("sessions-page-30").exists() {
+    while !dir.path().join("sessions-page-21").exists() {
         assert!(
             std::time::Instant::now() < deadline,
-            "next page not prefetched"
+            "next page not requested"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    for _ in 0..7 {
+    std::thread::sleep(Duration::from_millis(100));
+    terminal.send(b"\x1b[B");
+    terminal.wait_for(b"Paged conversation 21", 0);
+    assert!(dir.path().join("sessions-page-21").exists());
+    for _ in 0..13 {
         terminal.send(b"\x1b[B");
     }
     terminal.wait_for(b"Paged conversation 34", 0);
@@ -1159,7 +1165,7 @@ fn remote_sessions_error_is_retried_inside_the_picker() {
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"/sessions\r");
     terminal.wait_for(b"Could not load sessions", 0);
-    terminal.send(b"r");
+    terminal.send(b"\x12");
     terminal.wait_for(b"server conversation", 0);
     terminal.send(b"\r");
     terminal.wait_for(b"fixture-attached-server-session", 0);
@@ -1178,14 +1184,14 @@ fn remote_sessions_later_page_failure_keeps_rows_and_retries_same_offset() {
     terminal.wait_for(b"Stopped", 0);
     terminal.send(b"/sessions\r");
     terminal.wait_for(b"Paged conversation 0", 0);
-    for _ in 0..27 {
+    for _ in 0..20 {
         terminal.send(b"\x1b[B");
     }
     terminal.wait_for(b"Could not load sessions", 0);
-    terminal.wait_for(b"Paged conversation 27", 0);
-    terminal.send(b"r");
+    terminal.wait_for(b"Paged conversation 20", 0);
+    terminal.send(b"\x12");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !dir.path().join("sessions-page-30").exists() {
+    while !dir.path().join("sessions-page-21").exists() {
         assert!(
             std::time::Instant::now() < deadline,
             "failed page was not retried"
@@ -1193,7 +1199,7 @@ fn remote_sessions_later_page_failure_keeps_rows_and_retries_same_offset() {
         std::thread::sleep(Duration::from_millis(10));
     }
     terminal.send(b"\r");
-    terminal.wait_for(b"fixture-attached-session-27", 0);
+    terminal.wait_for(b"fixture-attached-session-20", 0);
     terminal.send(b"\x03");
     terminal.wait_for(b"remote-clean-exit", 0);
 }

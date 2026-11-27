@@ -134,8 +134,8 @@ kodrik --remote
 kodrik --remote --remote-config /absolute/path/to/remote.toml
 ```
 
-An interactive terminal is required. The initial server conversation is the
-first in the returned session list, or a new conversation if none exists.
+An interactive terminal is required. The TUI opens a new draft unless resuming
+an explicitly selected server conversation.
 The launch project attaches automatically. For a new or changed environment
 grant, the TUI first shows the server, project and capabilities with an
 **Allow / Reject** keyboard picker, like a command approval. Use arrows and
@@ -149,7 +149,7 @@ the first message saves the conversation; attaching alone does not save it.
 
 | Remote TUI input | Action |
 | --- | --- |
-| `/sessions` | Select a saved server conversation; load 30 at a time without blocking keyboard input |
+| `/sessions` | Search titles, IDs and messages in saved conversations previously attached to this project directory on this device; pages fit the terminal height |
 | `/models` | Search the server provider's model catalogue; ↑/↓ and Enter select, Esc cancels; the default entry resets the override. Changes apply to the next model request, even within an active run |
 | `/new` | Create and select a server conversation |
 | `/attach` | Reconnect the launch project; show the grant picker if approval is needed |
