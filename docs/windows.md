@@ -254,6 +254,13 @@ and uploads a ZIP containing `kodrik.exe` and the license plus `SHA256SUMS`.
 This produces a CI artifact, not a published GitHub release. A successful
 cross-check on macOS does not replace a successful native workflow run.
 
+For an interactive check in Windows Terminal, open `kodrik.exe`, type Cyrillic,
+scroll and drag-select text, and try `Ctrl+T` and `Ctrl+J` in both English and
+Russian keyboard layouts. Exit and check that PowerShell accepts input normally.
+The native Windows input backend does not distinguish terminal paste from
+typing. Paste single lines only in the TUI; use the web chat for multiline
+clipboard text, since a pasted newline in the terminal may submit the draft.
+
 Tagged releases also run this workflow and include both Windows ZIPs alongside
 the macOS archive, with a combined `SHA256SUMS`. All three platform builds must
 succeed before the release draft is created.

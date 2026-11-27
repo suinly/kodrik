@@ -101,6 +101,8 @@ jobs:
         run: 'cargo test --locked --target $env:TARGET --lib platform::'
       - name: Test native Windows processes
         run: cargo test --locked --target $env:TARGET --lib windows_tests
+      - name: Test terminal UI
+        run: 'cargo test --locked --target $env:TARGET --lib commands::tui:: -- --test-threads=2'
       - name: Test Windows process supervisor
         run: 'cargo test --locked --target $env:TARGET --lib remote::supervisor::'
       - name: Test restart PID validation

@@ -563,6 +563,7 @@ impl App {
         if let Some(sessions) = &self.sessions {
             let length = sessions.len();
             let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            let shortcut = control && !key.modifiers.contains(KeyModifiers::ALT);
             match key.code {
                 KeyCode::Up if key.modifiers.is_empty() => {
                     self.session_index = self.session_index.saturating_sub(1)
@@ -570,15 +571,17 @@ impl App {
                 KeyCode::Down if key.modifiers.is_empty() => {
                     self.session_index = (self.session_index + 1).min(length.saturating_sub(1))
                 }
-                KeyCode::Char('r')
-                    if control
+                KeyCode::Char('r' | 'R' | 'к' | 'К')
+                    if shortcut
                         && key.kind == KeyEventKind::Press
                         && self.sessions_error.is_some() =>
                 {
                     self.sessions_error = None;
                 }
                 KeyCode::Char('c' | 'C' | 'с' | 'С') if control => self.should_quit = true,
-                KeyCode::Char('u') if control && !self.sessions_query.is_empty() => {
+                KeyCode::Char('u' | 'U' | 'г' | 'Г')
+                    if shortcut && !self.sessions_query.is_empty() =>
+                {
                     self.sessions_query.clear();
                     self.reset_session_results();
                 }
@@ -668,7 +671,10 @@ impl App {
             {
                 self.insert_input("\n");
             }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('j' | 'J' | 'о' | 'О')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
                 self.insert_input("\n");
             }
             KeyCode::Enter
@@ -1275,6 +1281,24 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(key(&mut app, KeyCode::Enter).is_none());
         assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn russian_ctrl_shortcuts_retry_clear_and_insert_newline() {
+        let mut app = App {
+            sessions: Some(vec![]),
+            sessions_error: Some("offline".into()),
+            sessions_query: "запрос".into(),
+            ..Default::default()
+        };
+        app.update(KeyEvent::new(KeyCode::Char('к'), KeyModifiers::CONTROL));
+        assert!(app.sessions_error.is_none());
+        app.update(KeyEvent::new(KeyCode::Char('г'), KeyModifiers::CONTROL));
+        assert!(app.sessions_query.is_empty());
+        key(&mut app, KeyCode::Esc);
+        app.insert_input("текст");
+        app.update(KeyEvent::new(KeyCode::Char('о'), KeyModifiers::CONTROL));
+        assert_eq!(app.input, "текст\n");
     }
 
     #[test]

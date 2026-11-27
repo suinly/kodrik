@@ -481,14 +481,14 @@ mod windows_tests {
     #[tokio::test]
     async fn powershell_returns_output_and_explicit_exit_status() {
         let output = execute(
-            json!({"cmd": "[Console]::Write('hello'); [Console]::Error.Write('error'); exit 7"}),
+            json!({"cmd": "[Console]::Write('Привет'); [Console]::Error.Write('Ошибка'); exit 7"}),
             None,
         )
         .await
         .unwrap()
         .output;
-        assert_eq!(output["stdout"], "hello");
-        assert_eq!(output["stderr"], "error");
+        assert_eq!(output["stdout"], "Привет");
+        assert_eq!(output["stderr"], "Ошибка");
         assert_eq!(output["exit_code"], 7);
         assert_eq!(output["timed_out"], false);
     }

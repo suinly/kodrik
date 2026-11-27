@@ -36,8 +36,9 @@ impl App {
 
     pub fn tool_details_key(&mut self, key: KeyEvent) -> bool {
         if key.kind != KeyEventKind::Release
-            && key.code == KeyCode::Char('t')
+            && matches!(key.code, KeyCode::Char('t' | 'T' | 'е' | 'Е'))
             && key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
         {
             self.tools_expanded = !self.tools_expanded;
             self.view.clear_selection();
@@ -112,6 +113,16 @@ mod tests {
             app.update_message_navigation(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
             assert!(app.display_messages().is_empty());
         }
+    }
+
+    #[test]
+    fn ctrl_t_in_russian_layout_toggles_details_without_changing_text_input() {
+        let mut app = App::default();
+        app.update(KeyEvent::new(KeyCode::Char('е'), KeyModifiers::NONE));
+        assert_eq!(app.input, "е");
+        app.update(KeyEvent::new(KeyCode::Char('е'), KeyModifiers::CONTROL));
+        assert!(app.tools_expanded);
+        assert_eq!(app.input, "е");
     }
 
     #[test]

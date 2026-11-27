@@ -1,27 +1,32 @@
 use std::{io, panic};
 
-#[cfg(not(windows))]
-use crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
 use crossterm::{
     SynchronizedUpdate,
     cursor::Show,
-    event::{
-        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    style::Print,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+};
+#[cfg(not(windows))]
+use crossterm::{
+    event::{
+        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
+    style::Print,
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use super::{app::App, directory_prompt::DirectoryPrompt, ui};
 use crate::i18n::Language;
 
+#[cfg(windows)]
+type TerminalOutput = io::BufWriter<io::Stderr>;
+#[cfg(not(windows))]
+type TerminalOutput = io::Stderr;
+
 pub struct Tui {
-    terminal: Terminal<CrosstermBackend<io::Stderr>>,
+    terminal: Terminal<CrosstermBackend<TerminalOutput>>,
 }
 
 impl Tui {
@@ -43,7 +48,11 @@ impl Tui {
         let result = (|| {
             execute!(io::stderr(), EnterAlternateScreen)?;
             enable_input_modes(io::stderr(), report_key_events)?;
-            let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+            let output = io::stderr();
+            // Crossterm formats ANSI commands in pieces; avoid a console write per piece.
+            #[cfg(windows)]
+            let output = io::BufWriter::new(output);
+            let mut terminal = Terminal::new(CrosstermBackend::new(output))?;
             terminal.hide_cursor()?;
             Ok(Self { terminal })
         })();
@@ -107,14 +116,26 @@ fn reset() -> io::Result<()> {
     if !terminal::is_raw_mode_enabled()? {
         return Ok(());
     }
+    // On Windows, disabling mouse capture restores the mode saved *after* entering raw mode.
+    let input_result = disable_input_modes(io::stderr());
     let raw_result = terminal::disable_raw_mode();
-    disable_input_modes(io::stderr())?;
-    raw_result
+    let screen_result = execute!(io::stderr(), LeaveAlternateScreen, Show);
+    input_result.and(raw_result).and(screen_result)
 }
 
+// The Windows backend reads native input records, not VT mouse/focus/paste sequences.
+#[cfg(windows)]
+fn enable_input_modes(mut output: impl io::Write, _: bool) -> io::Result<()> {
+    execute!(output, EnableMouseCapture)
+}
+
+#[cfg(windows)]
+fn disable_input_modes(mut output: impl io::Write) -> io::Result<()> {
+    execute!(output, DisableMouseCapture)
+}
+
+#[cfg(not(windows))]
 fn enable_input_modes(mut output: impl io::Write, report_key_events: bool) -> io::Result<()> {
-    #[cfg(windows)]
-    let _ = report_key_events;
     execute!(
         output,
         Print("\x1b[?1007l"),
@@ -124,8 +145,6 @@ fn enable_input_modes(mut output: impl io::Write, report_key_events: bool) -> io
         EnableFocusChange,
         EnableBracketedPaste
     )?;
-    // Crossterm's native Windows input backend does not support the Kitty protocol.
-    #[cfg(not(windows))]
     execute!(
         output,
         PushKeyboardEnhancementFlags(
@@ -140,17 +159,15 @@ fn enable_input_modes(mut output: impl io::Write, report_key_events: bool) -> io
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn disable_input_modes(mut output: impl io::Write) -> io::Result<()> {
-    #[cfg(not(windows))]
-    execute!(output, PopKeyboardEnhancementFlags)?;
     execute!(
         output,
+        PopKeyboardEnhancementFlags,
         DisableBracketedPaste,
         DisableMouseCapture,
         DisableFocusChange,
-        Print("\x1b[?1007l"),
-        LeaveAlternateScreen,
-        Show
+        Print("\x1b[?1007l")
     )
 }
 
@@ -160,24 +177,19 @@ impl Drop for Tui {
     }
 }
 
-#[cfg(test)]
+// On Windows the mode commands use Win32 directly, not the injected writer.
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_protocol_is_only_enabled_outside_windows() {
+    fn keyboard_protocol_is_enabled_and_reset() {
         let mut output = Vec::new();
         enable_input_modes(&mut output, false).unwrap();
-        assert_eq!(
-            output.windows(5).any(|bytes| bytes == b"\x1b[>1u"),
-            !cfg!(windows)
-        );
+        assert!(output.windows(5).any(|bytes| bytes == b"\x1b[>1u"));
         output.clear();
         disable_input_modes(&mut output).unwrap();
-        assert_eq!(
-            output.windows(5).any(|bytes| bytes == b"\x1b[<1u"),
-            !cfg!(windows)
-        );
+        assert!(output.windows(5).any(|bytes| bytes == b"\x1b[<1u"));
     }
 
     #[test]
@@ -236,7 +248,7 @@ mod tests {
         enable_input_modes(&mut output, false).unwrap();
         let enabled = String::from_utf8(output.clone()).unwrap();
         assert!(enabled.contains("\x1b[?1007l"));
-        for mode in [1000, 1002, 1006, 1004] {
+        for mode in [1000, 1002, 1006, 1004, 2004] {
             assert!(enabled.contains(&format!("\x1b[?{mode}h")));
         }
 
@@ -244,7 +256,7 @@ mod tests {
         disable_input_modes(&mut output).unwrap();
         let disabled = String::from_utf8(output).unwrap();
         assert!(disabled.contains("\x1b[?1007l"));
-        for mode in [1000, 1002, 1003, 1006, 1004] {
+        for mode in [1000, 1002, 1003, 1006, 1004, 2004] {
             assert!(disabled.contains(&format!("\x1b[?{mode}l")));
         }
 

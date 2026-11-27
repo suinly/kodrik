@@ -119,7 +119,11 @@ pub(super) fn key(key: crossterm::event::KeyEvent) -> bool {
         && key
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL)
-        && key.code == crossterm::event::KeyCode::Char('v')
+        && !key.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+        && matches!(
+            key.code,
+            crossterm::event::KeyCode::Char('v' | 'V' | 'м' | 'М')
+        )
 }
 
 #[cfg(test)]
@@ -127,6 +131,19 @@ mod tests {
     use super::*;
     use crate::commands::tui::app::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn ctrl_v_recognizes_russian_layout_without_intercepting_altgr() {
+        assert!(key(KeyEvent::new(
+            KeyCode::Char('м'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!key(KeyEvent::new(KeyCode::Char('м'), KeyModifiers::NONE)));
+        assert!(!key(KeyEvent::new(
+            KeyCode::Char('м'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        )));
+    }
 
     #[tokio::test]
     async fn bilingual_image_errors_keep_draft_and_markers() {
