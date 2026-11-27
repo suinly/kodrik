@@ -854,6 +854,11 @@ impl Agent {
                     );
                     if let Some(max_chars) = max_chars {
                         let size = context.instructions.chars().count()
+                            + context
+                                .turn_clocks
+                                .iter()
+                                .map(|(_, clock)| clock.chars().count())
+                                .sum::<usize>()
                             + serde_json::to_string(&context.messages)?.chars().count();
                         anyhow::ensure!(size <= max_chars, "Background input budget exhausted");
                     }

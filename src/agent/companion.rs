@@ -440,6 +440,7 @@ Facts and interests require direct user evidence, not speculation. Procedures re
             let context = LlmContext {
                 instructions: Cow::Borrowed(&instructions),
                 messages: messages.as_slice().into(),
+                turn_clocks: Vec::new(),
             };
             let (response, _) =
                 tokio::time::timeout_at(deadline, llm.generate(&context, &[], None)).await??;

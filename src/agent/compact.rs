@@ -205,7 +205,12 @@ impl Compactor {
             return Ok(None);
         }
         let context = builder.build(session);
-        let history_tokens: u64 = context.messages.iter().map(message_tokens).sum();
+        let history_tokens: u64 = context.messages.iter().map(message_tokens).sum::<u64>()
+            + context
+                .turn_clocks
+                .iter()
+                .map(|(_, clock)| 16 + text_tokens(clock))
+                .sum::<u64>();
         let tool_tokens: u64 = tools
             .iter()
             .map(|tool| {
@@ -306,6 +311,7 @@ impl Compactor {
             let mut request = LlmContext {
                 instructions: Cow::Borrowed(&instructions),
                 messages: input.into(),
+                turn_clocks: Vec::new(),
             };
             let (response, usage) = loop {
                 if let Some((store, session, id)) = job {

@@ -346,7 +346,15 @@ impl OpenAiLlm {
             "Files in this conversation exceed the 50 MB request limit. Start a new session with /new."
         );
         let mut input_items = Vec::new();
-        for message in context.messages.iter() {
+        let mut turn_clocks = context.turn_clocks.iter().peekable();
+        for (index, message) in context.messages.iter().enumerate() {
+            if let Some((_, clock)) = turn_clocks.next_if(|(position, _)| *position == index) {
+                input_items.push(InputItem::EasyMessage(EasyInputMessage {
+                    role: Role::Developer,
+                    content: EasyInputContent::Text(clock.clone()),
+                    ..Default::default()
+                }));
+            }
             let item = match message {
                 Message::User(msg) => InputItem::EasyMessage(EasyInputMessage {
                     role: Role::User,
@@ -697,6 +705,50 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn responses_request_keeps_previous_turn_clock_in_the_input_prefix() {
+        use crate::agent::{ContextBuilder, session::Session};
+
+        let builder = ContextBuilder::new("base");
+        let mut saved = json!({
+            "id": "clock",
+            "messages": [{"User": {"content": "first"}}],
+            "message_times": ["2026-11-27T10:00:00Z"]
+        });
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let session: Session = serde_json::from_value(saved.clone()).unwrap();
+            let (llm, finish, server) = streaming_server(Some(json!({
+                "type": "response.completed", "response": {"output": []}
+            })))
+            .await;
+            let (progress, _events) = mpsc::channel(32);
+            finish.send(()).unwrap();
+            llm.generate(&builder.build(&session), &[], Some(&progress))
+                .await
+                .unwrap();
+            requests.push(server.await.unwrap());
+            saved["messages"] = json!([
+                {"User": {"content": "first"}},
+                {"Assistant": {"content": "answer"}},
+                {"User": {"content": "next"}}
+            ]);
+            saved["message_times"] = json!(["2026-11-27T10:00:00Z", null, "2026-11-27T11:00:00Z"]);
+        }
+        let first = requests[0]["input"].as_array().unwrap();
+        let second = requests[1]["input"].as_array().unwrap();
+        assert_eq!(requests[0]["instructions"], requests[1]["instructions"]);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first, &second[..2]);
+        assert_eq!(second.len(), 5);
+        for (index, clock, text) in [(0, "10:00:00", "first"), (3, "11:00:00", "next")] {
+            assert_eq!(second[index]["role"], "developer");
+            assert!(second[index]["content"].as_str().unwrap().contains(clock));
+            assert_eq!(second[index + 1]["role"], "user");
+            assert_eq!(second[index + 1]["content"], text);
+        }
+    }
+
+    #[tokio::test]
     async fn reasoning_effort_is_serialized_only_when_configured() {
         use axum::{Router, http::header, routing::post};
 
@@ -727,6 +779,7 @@ mod tests {
         let context = LlmContext {
             instructions: "test".into(),
             messages: (&[][..]).into(),
+            turn_clocks: Vec::new(),
         };
         let (tx, _rx) = mpsc::channel(8);
 
@@ -836,6 +889,7 @@ mod tests {
         let context = LlmContext {
             instructions: "test".into(),
             messages: (&[] as &[Message]).into(),
+            turn_clocks: Vec::new(),
         };
         for result in [
             llm.generate_attempt(&context, &[], None).await,
@@ -899,6 +953,7 @@ mod tests {
             let context = LlmContext {
                 instructions: "rules".into(),
                 messages: (&[][..]).into(),
+                turn_clocks: Vec::new(),
             };
             let (tx, _rx) = mpsc::channel(8);
             let progress = streaming.then_some(&tx);
@@ -1000,6 +1055,7 @@ mod tests {
                 &LlmContext {
                     instructions: "test".into(),
                     messages: (&[][..]).into(),
+                    turn_clocks: Vec::new(),
                 },
                 &[],
                 None,
@@ -1084,6 +1140,7 @@ mod tests {
                     &LlmContext {
                         instructions: "test".into(),
                         messages: messages.as_slice().into(),
+                        turn_clocks: Vec::new(),
                     },
                     &[],
                     streaming.then_some(&tx),
@@ -1199,6 +1256,7 @@ mod tests {
                 &LlmContext {
                     instructions: "test".into(),
                     messages: (&[][..]).into(),
+                    turn_clocks: Vec::new(),
                 },
                 &[],
                 Some(&tx),
@@ -1288,6 +1346,7 @@ mod tests {
                 &LlmContext {
                     instructions: "test".into(),
                     messages: messages.as_slice().into(),
+                    turn_clocks: Vec::new(),
                 },
                 &[],
                 None,
@@ -1321,6 +1380,7 @@ mod tests {
             &LlmContext {
                 instructions: "test".into(),
                 messages: messages.as_slice().into(),
+                turn_clocks: Vec::new(),
             },
             &[],
             Some(&tx),
@@ -1361,6 +1421,7 @@ mod tests {
             &LlmContext {
                 instructions: "test".into(),
                 messages: messages.as_slice().into(),
+                turn_clocks: Vec::new(),
             },
             &[],
             Some(&tx),
@@ -1408,6 +1469,7 @@ mod tests {
                 &LlmContext {
                     instructions: "test".into(),
                     messages: (&[][..]).into(),
+                    turn_clocks: Vec::new(),
                 },
                 &[],
                 Some(&tx),
@@ -1450,7 +1512,7 @@ mod tests {
             }))).await;
             let (tx, mut rx) = mpsc::channel(32);
             let request = tokio::spawn(async move {
-                llm.generate(&LlmContext { instructions: "test".into(), messages: (&[][..]).into() }, &[], Some(&tx)).await
+                llm.generate(&LlmContext { instructions: "test".into(), messages: (&[][..]).into(), turn_clocks: Vec::new() }, &[], Some(&tx)).await
             });
             for expected in ["При", "вет"] {
                 assert!(matches!(rx.recv().await, Some(AgentEvent::TextDelta(delta)) if delta == expected));
@@ -1480,7 +1542,7 @@ mod tests {
                 let (llm, finish, server) = streaming_server(terminal).await;
                 let (tx, _rx) = mpsc::channel(32);
                 finish.send(()).unwrap();
-                let error = llm.generate_once(&LlmContext { instructions: "test".into(), messages: (&[][..]).into() }, &[], Some(&tx)).await.unwrap_err();
+                let error = llm.generate_once(&LlmContext { instructions: "test".into(), messages: (&[][..]).into(), turn_clocks: Vec::new() }, &[], Some(&tx)).await.unwrap_err();
                 assert!(error.to_string().contains(expected), "{error:#}");
                 assert!(error.to_string().starts_with("Response stream"), "{error:#}");
                 server.await.unwrap();

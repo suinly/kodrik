@@ -814,6 +814,7 @@ async fn fake_subagents_waits_for_running_child_not_first_completed_result() {
     let context = LlmContext {
         instructions: "".into(),
         messages: messages.into(),
+        turn_clocks: Vec::new(),
     };
     let (messages, _) = FakeLlm.generate(&context, &[], None).await.unwrap();
     let Message::ToolCall(call) = &messages[0] else {
@@ -829,6 +830,7 @@ async fn fake_subagents_waits_for_running_child_not_first_completed_result() {
     let context = LlmContext {
         instructions: "".into(),
         messages: messages.into(),
+        turn_clocks: Vec::new(),
     };
     let (messages, _) = FakeLlm.generate(&context, &[], None).await.unwrap();
     assert!(matches!(&messages[0], Message::Assistant(_)));
