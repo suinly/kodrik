@@ -144,6 +144,28 @@ api_base = "{base}"
                 }
             }
         }
+        let data = tempfile::tempdir().unwrap();
+        let config: Config = toml::from_str(&format!(
+            "[gateway]\n[companion]\nlearning_enabled=false\n[sessions]\nauto_switch=false\n\
+             [provider.primary]\ntype='openai'\nmodel='test'\napi_key='test'\napi_base='{base}'\ntool_discovery='native'\n"
+        )).unwrap();
+        let app = build_app_at(&config, data.path(), false).await.unwrap();
+        app.agent_runner.run_once("hello").await.unwrap();
+        let tools = received.recv().await.unwrap();
+        assert!(
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["type"] == "tool_search")
+        );
+        assert!(
+            !tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "mcp_search")
+        );
         server.abort();
     }
 }
@@ -189,9 +211,13 @@ pub(crate) async fn build_app_with_access(
     let profiles = config.model_profiles()?;
     let make_llm = |profile: ResolvedModel<'_>| {
         let ProviderConfig::OpenAi {
-            api_key, api_base, ..
+            api_key,
+            api_base,
+            tool_discovery,
+            ..
         } = profile.provider;
         OpenAiLlm::new(api_key, Some(profile.model), api_base.as_deref())
+            .with_tool_discovery(*tool_discovery)
             .with_reasoning_effort(profile.reasoning_effort.cloned())
             .with_rates(profile.rates)
             .with_access(access.clone())

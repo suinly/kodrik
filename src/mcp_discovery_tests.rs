@@ -50,10 +50,10 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
             let start = items.iter().rposition(|item| item["role"] == "user").unwrap();
             let again = items[start]["content"].to_string().contains("again");
             let steps = items[start+1..].iter().filter(|item| item["type"] == "function_call_output").count();
-            let output = if steps == 0 && !again {
-                json!({"type":"function_call","name":"mcp_search","call_id":"discover","arguments":"{\"query\":\"rustrak search_issues\",\"limit\":1}"})
-            } else if steps == usize::from(!again) {
-                json!({"type":"function_call","namespace":"mcp__rustrak","name":"search_issues","call_id":if again { "read-again" } else { "read" },"arguments":"{\"project\":7}"})
+            let output = if steps == 0 {
+                json!({"type":"function_call","name":"mcp_search","call_id":if again { "discover-again" } else { "discover" },"arguments":"{\"query\":\"rustrak search_issues\",\"limit\":1}"})
+            } else if steps == 1 {
+                json!({"type":"function_call","name":"mcp_call","call_id":if again { "read-again" } else { "read" },"arguments":json!({"name":"mcp__rustrak__search_issues","arguments":"{\"project\":7}"}).to_string()})
             } else {
                 json!({"type":"message","content":[{"type":"output_text","text":"done"}]})
             };
@@ -78,36 +78,50 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
         )
         .await
         .unwrap();
+    let mut stable_tools = None;
     for step in 0..3 {
         let request = rx.recv().await.unwrap();
         assert!(!request.to_string().contains("PRIVATE_MCP_TOKEN"));
         let tools = request["tools"].as_array().unwrap();
         assert!(tools.len() <= 128, "model received {} tools", tools.len());
-        for native in ["web_search", "web_read", "mcp_search"] {
+        for native in ["web_search", "web_read", "mcp_search", "mcp_call"] {
             assert!(
                 tools.iter().any(|tool| tool["name"] == native),
                 "{native} missing"
             );
         }
-        let loaded: Vec<_> = tools
-            .iter()
-            .filter(|tool| tool["name"].as_str().unwrap().starts_with("mcp__"))
-            .collect();
-        if step == 0 {
-            assert!(loaded.is_empty());
+        assert!(
+            tools
+                .iter()
+                .all(|tool| !tool["name"].as_str().unwrap().starts_with("mcp__"))
+        );
+        if let Some(expected) = &stable_tools {
+            assert_eq!(&request["tools"], expected);
         } else {
-            assert_eq!(loaded.len(), 1);
-            assert_eq!(loaded[0]["name"], "mcp__rustrak__search_issues");
-            assert_eq!(loaded[0]["strict"], false);
-            assert_eq!(loaded[0]["parameters"]["required"], json!(["project"]));
+            stable_tools = Some(request["tools"].clone());
+        }
+        if step > 0 {
+            let output = request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| {
+                    item["type"] == "function_call_output" && item["call_id"] == "discover"
+                })
+                .unwrap();
+            let output: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+            let definitions = output["tool_definitions"].as_array().unwrap();
+            assert_eq!(definitions.len(), 1);
+            assert_eq!(definitions[0]["name"], "mcp__rustrak__search_issues");
+            assert_eq!(definitions[0]["strict"], false);
+            assert_eq!(definitions[0]["parameters"]["required"], json!(["project"]));
         }
         if step == 2 {
             let output = request["input"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|item| item["type"] == "function_call_output")
-                .last()
+                .rfind(|item| item["type"] == "function_call_output")
                 .unwrap();
             let output: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
             assert_eq!(output["structuredContent"]["issues"][0]["id"], 42);
@@ -116,6 +130,10 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let store = app.agent_runner.sqlite_store().unwrap();
     let mut session = store.load(&id).await.unwrap().unwrap();
+    assert!(session.messages().iter().any(|message| matches!(message,
+        crate::agent::message::Message::ToolCall(call)
+        if call.name == "mcp__rustrak__search_issues" && call.arguments == json!({"project":7})
+    )));
     session.set_compaction(
         session.messages().len(),
         "Previously found the project issues".into(),
@@ -132,14 +150,14 @@ async fn mcp_discovery_bounds_large_catalog_and_restores_selection_after_compact
         )
         .await
         .unwrap();
-    for _ in 0..2 {
+    for step in 0..3 {
         let request = rx.recv().await.unwrap();
-        assert!(
-            request["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["name"] == "mcp__rustrak__search_issues")
+        assert_eq!(request["tools"], *stable_tools.as_ref().unwrap());
+        let input = request["input"].as_array().unwrap();
+        assert!(!input.iter().any(|item| item["call_id"] == "discover"));
+        assert_eq!(
+            input.iter().any(|item| item["call_id"] == "discover-again"),
+            step > 0
         );
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);

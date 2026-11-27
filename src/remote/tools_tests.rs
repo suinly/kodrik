@@ -17,6 +17,49 @@ use uuid::Uuid;
 struct ServerTool;
 
 #[tokio::test]
+async fn rebuilt_environment_catalog_has_a_stable_sorted_order() {
+    let (_dir, service, id, key) = fixture().await;
+    let manifest = EnvironmentManifest {
+        label: "Laptop".into(),
+        project_root: "/project".into(),
+        tools: (0..8)
+            .map(|n| ToolDescriptor {
+                id: format!("command_{n}"),
+                kind: ToolKind::Exec,
+                description: "shell".into(),
+                parameters: json!({"type":"object"}),
+                deferred: false,
+            })
+            .collect(),
+        skills: vec![],
+        project_instructions: None,
+        warnings: vec![],
+    };
+    for _ in 0..8 {
+        let scope = super::tools::EnvironmentScope::new(
+            service.clone(),
+            id.clone(),
+            key.clone(),
+            manifest.clone(),
+            Arc::new(super::tools::ScopeLease::new()),
+        );
+        let overlay = scope.context_overlay();
+        let metadata: serde_json::Value =
+            serde_json::from_str(overlay.lines().last().unwrap()).unwrap();
+        let names: Vec<_> = metadata["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.windows(2).all(|pair| pair[0] < pair[1]),
+            "unstable tool order: {names:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn audit_target_keeps_manifest_label_and_reads_legacy_records() {
     let (_dir, service, id, _key) = fixture().await;
     let scope = service.step_scope(&id).await.unwrap().unwrap();

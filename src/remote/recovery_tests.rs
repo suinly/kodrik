@@ -962,13 +962,18 @@ async fn late_evidence_reaches_next_context_without_rewriting_history() {
             _: Option<&tokio::sync::mpsc::Sender<crate::agent::AgentEvent>>,
         ) -> anyhow::Result<(Vec<Message>, Option<u64>)> {
             assert!(
-                context
+                !context
                     .instructions
-                    .contains("Remote operation reconciliation"),
-                "late evidence absent from next context"
+                    .contains("Remote operation reconciliation")
             );
-            assert!(context.instructions.contains("completed"));
-            assert!(!context.instructions.contains("late private result"));
+            let evidence = context
+                .turn_clocks
+                .iter()
+                .find(|(_, text)| text.contains("Remote operation reconciliation"))
+                .expect("late evidence absent from next context");
+            assert_eq!(evidence.0, context.messages.len());
+            assert!(evidence.1.contains("completed"));
+            assert!(!evidence.1.contains("late private result"));
             Ok((
                 vec![Message::Assistant(AssistantMessage {
                     content: "reconciled".into(),

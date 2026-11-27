@@ -89,6 +89,11 @@ enum ResponseItem {
         namespace: Option<String>,
         arguments: String,
     },
+    ToolSearchCall {
+        call_id: String,
+        execution: String,
+        arguments: serde_json::Value,
+    },
     #[serde(other)]
     Other,
 }
@@ -160,6 +165,22 @@ impl ResponseOutput {
                         })
                         .map_err(anyhow::Error::from),
                 ),
+                ResponseItem::ToolSearchCall {
+                    call_id,
+                    execution,
+                    arguments,
+                } => Some((|| {
+                    anyhow::ensure!(execution == "client", "Unexpected server-side tool search");
+                    let arguments = match arguments {
+                        serde_json::Value::String(text) => serde_json::from_str(&text)?,
+                        arguments => arguments,
+                    };
+                    Ok(Message::ToolCall(ToolCall {
+                        call_id,
+                        name: "mcp_search".into(),
+                        arguments,
+                    }))
+                })()),
                 ResponseItem::Other => None,
             })
             .collect()
@@ -190,6 +211,7 @@ pub struct OpenAiLlm {
     rates: Option<crate::billing::Rates>,
     max_output_tokens: Option<u32>,
     reasoning_effort: Option<ReasoningEffort>,
+    tool_discovery: super::ToolDiscovery,
     retries: u32,
     compaction: bool,
     access: Option<(crate::web::auth::AuthStore, u64)>,
@@ -270,6 +292,7 @@ impl OpenAiLlm {
             rates: None,
             max_output_tokens: None,
             reasoning_effort: None,
+            tool_discovery: Default::default(),
             retries: 3,
             compaction: false,
             access: None,
@@ -316,6 +339,11 @@ impl OpenAiLlm {
         self
     }
 
+    pub fn with_tool_discovery(mut self, mode: super::ToolDiscovery) -> Self {
+        self.tool_discovery = mode;
+        self
+    }
+
     pub(crate) fn without_retries(mut self) -> Self {
         self.retries = 0;
         self
@@ -348,7 +376,7 @@ impl OpenAiLlm {
         let mut input_items = Vec::new();
         let mut turn_clocks = context.turn_clocks.iter().peekable();
         for (index, message) in context.messages.iter().enumerate() {
-            if let Some((_, clock)) = turn_clocks.next_if(|(position, _)| *position == index) {
+            while let Some((_, clock)) = turn_clocks.next_if(|(position, _)| *position == index) {
                 input_items.push(InputItem::EasyMessage(EasyInputMessage {
                     role: Role::Developer,
                     content: EasyInputContent::Text(clock.clone()),
@@ -418,6 +446,13 @@ impl OpenAiLlm {
             };
             input_items.push(item);
         }
+        for (_, note) in turn_clocks {
+            input_items.push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::Developer,
+                content: EasyInputContent::Text(note.clone()),
+                ..Default::default()
+            }));
+        }
 
         let api_tools: Vec<OpenAiTool> = tools
             .iter()
@@ -440,15 +475,6 @@ impl OpenAiLlm {
             })
             .collect();
 
-        // Sizes only: never log prompts, tool arguments or attachment contents.
-        log::debug!(
-            "LLM request context: instructions_bytes={} tools_bytes={} messages_bytes={} tools_count={}",
-            context.instructions.len(),
-            serde_json::to_vec(&api_tools)?.len(),
-            serde_json::to_vec(&input_items)?.len(),
-            api_tools.len(),
-        );
-
         let mut request = CreateResponseArgs::default()
             .model(&self.model)
             .instructions(context.instructions.as_ref())
@@ -460,6 +486,16 @@ impl OpenAiLlm {
             effort: Some(effort),
             ..Default::default()
         });
+        let mut request = serde_json::to_value(request)?;
+        super::discovery::project(&mut request, tools, self.tool_discovery)?;
+        // Sizes only: never log prompts, tool arguments or attachment contents.
+        log::debug!(
+            "LLM request context: instructions_bytes={} tools_bytes={} messages_bytes={} tools_count={}",
+            context.instructions.len(),
+            serde_json::to_vec(&request["tools"])?.len(),
+            serde_json::to_vec(&request["input"])?.len(),
+            request["tools"].as_array().map_or(0, Vec::len),
+        );
 
         // Persist an unknown attempt first: cancellation can occur after the provider accepted it.
         let charge = super::charge::Charge::current()
@@ -470,7 +506,7 @@ impl OpenAiLlm {
                 .await;
         }
         let response: ResponseOutput = if let Some(progress) = progress {
-            request.stream = Some(true);
+            request["stream"] = serde_json::json!(true);
             let mut stream = self
                 .client
                 .responses()
@@ -538,6 +574,12 @@ impl OpenAiLlm {
             .as_ref()
             .map(ResponseUsage::generation_usage)
             .unwrap_or_default();
+        log::debug!(
+            "LLM token usage: input_tokens={:?} cached_tokens={:?} output_tokens={:?}",
+            usage.input_tokens,
+            usage.cached_tokens,
+            usage.output_tokens
+        );
         if let Some((charge, id, model)) = &charge {
             charge.record(id, model, self.rates, usage).await;
         }
@@ -553,7 +595,9 @@ impl OpenAiLlm {
         if self.compaction {
             response.validate_compaction()?;
         }
-        Ok((response.into_messages()?, usage))
+        let mut messages = response.into_messages()?;
+        super::discovery::normalize_calls(&mut messages, tools);
+        Ok((messages, usage))
     }
 }
 

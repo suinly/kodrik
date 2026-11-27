@@ -57,9 +57,10 @@ export const configSchema=object({
   })},
   provider:map(object({
     type:string(),api_key:secret,api_base:{...string(true),advanced:true},
+    tool_discovery:{...string(),advanced:true,description:'Протокол обнаружения инструментов: compatible (по умолчанию) — постоянные функции поиска и вызова; native — нативный tool_search для поддерживаемого маршрута Responses API. После изменения нужен перезапуск.'},
     model:{...string(true),description:'Точный идентификатор модели для прежней конфигурации. Для нового подключения задайте его в профиле модели.'},
     reasoning_effort:reasoningEffort,rates,
-  }),{type:'openai',api_key:'',api_base:null}),
+  }),{type:'openai',api_key:'',api_base:null,tool_discovery:'compatible'}),
   model:{...map(object({
     provider:{...string(),label:'Провайдер',description:'Имя существующего подключения из [provider], например openai для [provider.openai].'},
     model:{...string(),label:'Идентификатор модели в API',description:'Точный идентификатор модели, принимаемый этим API, а не произвольное название подключения.'},
@@ -74,6 +75,7 @@ export const configLabel=(key:string)=>t(fieldLabels[key] ?? key)
 
 Object.assign(fieldLabels, {
   reasoning_effort:'Уровень рассуждений',
+  tool_discovery:'Обнаружение инструментов',
   rates:'Цены за токены',input_usd_per_million:'Входные токены, USD за 1 млн',
   cached_input_usd_per_million:'Кэшированные входные токены, USD за 1 млн',
   output_usd_per_million:'Выходные токены, USD за 1 млн',

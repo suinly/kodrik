@@ -148,6 +148,8 @@ const deviceTranslations = {
   'Профиль модели': 'Model profile',
   'Идентификатор модели в API': 'API model ID',
   'Уровень рассуждений': 'Reasoning effort',
+  'Обнаружение инструментов': 'Tool discovery',
+  'Протокол обнаружения инструментов: compatible (по умолчанию) — постоянные функции поиска и вызова; native — нативный tool_search для поддерживаемого маршрута Responses API. После изменения нужен перезапуск.': 'Tool discovery protocol: compatible (default) uses stable search and call functions; native uses native tool_search on a supported Responses API route. Restart after changing this setting.',
   'Цены за токены': 'Token prices',
   'Входные токены, USD за 1 млн': 'Input tokens, USD per million',
   'Кэшированные входные токены, USD за 1 млн': 'Cached input tokens, USD per million',

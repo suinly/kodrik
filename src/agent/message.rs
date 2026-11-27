@@ -62,10 +62,23 @@ pub(crate) fn truncate_tool_outputs(
 ) -> std::borrow::Cow<'_, [Message]> {
     // Match the context estimator's UTF-8 bytes / 3 heuristic: about 10,000 tokens.
     const MAX_BYTES: usize = 30_000;
+    let searches: std::collections::HashSet<_> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolCall(call) if call.name == "mcp_search" => Some(call.call_id.clone()),
+            _ => None,
+        })
+        .collect();
     for index in 0..messages.len() {
         let Message::ToolResult(result) = &messages[index] else {
             continue;
         };
+        // Discovery schemas are executable protocol data; truncating JSON loses callable tools.
+        if searches.contains(&result.call_id)
+            && result.content.output["tool_definitions"].is_array()
+        {
+            continue;
+        }
         let text = result.content.output.to_string();
         if text.len() <= MAX_BYTES {
             continue;

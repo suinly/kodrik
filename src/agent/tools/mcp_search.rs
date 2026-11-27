@@ -27,6 +27,7 @@ pub(super) struct McpSearchTool {
 }
 
 impl McpSearchTool {
+    #[cfg(test)]
     pub(super) fn new(catalog: Vec<(String, String)>) -> Self {
         Self {
             live: vec![],
@@ -51,6 +52,14 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn definition(tool: &dyn Tool) -> Value {
+    let mut parameters = tool.parameters();
+    if let Some(schema) = parameters.as_object_mut() {
+        schema.entry("properties").or_insert_with(|| json!({}));
+    }
+    json!({"type":"function", "name":tool.name(), "description":tool.description(), "parameters":parameters, "strict":tool.strict_schema()})
+}
+
 #[async_trait::async_trait]
 impl Tool for McpSearchTool {
     fn name(&self) -> String {
@@ -69,6 +78,29 @@ impl Tool for McpSearchTool {
 
     fn replay_policy(&self) -> ReplayPolicy {
         ReplayPolicy::Safe
+    }
+
+    fn discovery_names(&self) -> Vec<String> {
+        let mut names = self
+            .catalog
+            .iter()
+            .map(|entry| entry.name.clone())
+            .chain(
+                self.live
+                    .iter()
+                    .filter(|tool| tool.available())
+                    .map(|tool| tool.name()),
+            )
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn discovery_definition(&self, name: &str) -> Option<Value> {
+        self.live
+            .iter()
+            .find(|tool| tool.name() == name && tool.available())
+            .map(|tool| definition(tool.as_ref()))
     }
 
     async fn execute(&self, properties: Value) -> anyhow::Result<ToolOutput> {
@@ -133,7 +165,11 @@ impl Tool for McpSearchTool {
             .collect();
         let loaded: Vec<_> = selected.iter().map(|entry| entry.name.as_str()).collect();
         let summaries: Vec<_> = selected.iter().map(|entry| json!({"name":entry.name,"description":entry.description.chars().take(400).collect::<String>()})).collect();
-        Ok(json!({"tools":summaries,"loaded_tools":loaded,"total_matches":total,"has_more":total>limit}).into())
+        let definitions: Vec<_> = selected
+            .iter()
+            .filter_map(|entry| self.discovery_definition(&entry.name))
+            .collect();
+        Ok(json!({"tools":summaries,"loaded_tools":loaded,"tool_definitions":definitions,"total_matches":total,"has_more":total>limit}).into())
     }
 }
 

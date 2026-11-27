@@ -430,6 +430,8 @@ pub enum ProviderConfig {
     OpenAi {
         api_key: String,
         api_base: Option<String>,
+        #[serde(default)]
+        tool_discovery: crate::agent::llm::ToolDiscovery,
         // Legacy combined connection and model settings.
         model: Option<String>,
         reasoning_effort: Option<ReasoningEffort>,
@@ -486,6 +488,28 @@ fn deserialize_rates<'de, D: serde::Deserializer<'de>>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_tool_discovery_defaults_to_compatible_and_roundtrips_native() {
+        for (setting, expected) in [("", "compatible"), ("tool_discovery='native'", "native")] {
+            let provider: super::ProviderConfig =
+                toml::from_str(&format!("type='openai'\napi_key='fixture'\n{setting}\n")).unwrap();
+            let value = serde_json::to_value(&provider).unwrap();
+            assert_eq!(value["tool_discovery"], expected);
+            let restored: super::ProviderConfig = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn provider_tool_discovery_rejects_unknown_protocols() {
+        assert!(
+            toml::from_str::<super::ProviderConfig>(
+                "type='openai'\napi_key='fixture'\ntool_discovery='automatic'\n"
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn model_routing_resolves_new_and_legacy_provider_keys() {
         use super::{Config, ProviderConfig};

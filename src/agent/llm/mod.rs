@@ -1,4 +1,5 @@
 pub(crate) mod charge;
+mod discovery;
 mod openai;
 mod provider;
 
@@ -7,6 +8,7 @@ tokio::task_local! {
     pub(crate) static REQUEST_BUDGET: std::cell::Cell<usize>;
 }
 
+pub use discovery::ToolDiscovery;
 pub use openai::OpenAiLlm;
 pub use provider::{GenerationUsage, LlmProvider};
 

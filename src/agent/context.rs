@@ -15,6 +15,7 @@ use crate::agent::{
 pub struct LlmContext<'a> {
     pub instructions: Cow<'a, str>,
     pub messages: Cow<'a, [Message]>,
+    // Positioned developer context, including clocks and immutable remote receipts.
     pub(crate) turn_clocks: Vec<(usize, String)>,
 }
 
@@ -133,7 +134,7 @@ impl ContextBuilder {
                     session.skills_catalog().unwrap_or_default()
                 )),
                 messages: truncate_tool_outputs(session.context_messages()),
-                turn_clocks: Vec::new(),
+                turn_clocks: session.remote_context_messages(),
             };
         }
         let prompt = session.system_prompt().unwrap_or(&self.system_prompt);
@@ -169,7 +170,7 @@ impl ContextBuilder {
         let messages = truncate_tool_outputs(session.context_messages());
         // Compaction replaces a prefix with one assistant message; the retained suffix stays aligned.
         let offset = session.messages().len() - messages.len();
-        let turn_clocks = messages
+        let clocks = messages
             .iter()
             .enumerate()
             .filter(|(_, message)| matches!(message, Message::User(_)))
@@ -187,7 +188,11 @@ impl ContextBuilder {
                     ),
                 ))
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // A receipt at the old tail must stay before a user/clock appended there later.
+        let mut turn_clocks = session.remote_context_messages();
+        turn_clocks.extend(clocks);
+        turn_clocks.sort_by_key(|(index, _)| *index);
         LlmContext {
             instructions: Cow::Owned(format!(
                 "{prompt}{soul}{skills}{memory}{companion}{group}{webhook}\n\nUse the developer [Turn clock] attached to the latest user message as that turn's local time. Earlier clocks are historical; if the latest message has no clock, its time is unknown.\n{image_guidance}{group_guidance}",
@@ -317,6 +322,112 @@ fn load_soul(path: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_evidence_is_positioned_without_changing_instructions_or_transcript() {
+        use crate::agent::session::Session;
+        let mut session: Session = serde_json::from_value(serde_json::json!({
+            "id":"remote", "messages":[{"User":{"content":"inspect"}}],
+            "remote_context_events":[{"before_message":1,"operations":[{"run_id":"run","call_id":"a","state":"completed"}]}]
+        })).unwrap();
+        let builder = super::ContextBuilder::new("base");
+        let context = builder.build(&session);
+        assert!(
+            !context
+                .instructions
+                .contains("Remote operation reconciliation")
+        );
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(context.turn_clocks.len(), 1);
+        assert_eq!(context.turn_clocks[0].0, 1);
+        assert!(context.turn_clocks[0].1.contains("completed"));
+        let instructions = context.instructions.into_owned();
+        session.set_compaction(1, "Earlier request".into());
+        let compacted = builder.build(&session);
+        assert_eq!(compacted.instructions, instructions);
+        assert_eq!(compacted.turn_clocks[0].0, 1);
+        assert!(compacted.turn_clocks[0].1.contains("completed"));
+    }
+
+    #[test]
+    fn remote_receipt_updates_append_once_and_survive_reload_and_compaction() {
+        use crate::agent::{
+            AssistantMessage, UserMessage,
+            message::Message,
+            session::{Session, SessionId},
+        };
+        use serde_json::json;
+        let mut session = Session::new(SessionId::new("remote"));
+        let initial = json!({"run_id":"run","call_id":"a","state":"dispatched"});
+        let completed = json!({"run_id":"run","call_id":"a","state":"completed"});
+        session.record_remote_reconciliation(vec![initial.clone()]);
+        let before = session.remote_context_messages();
+        session.record_remote_reconciliation(vec![initial]);
+        assert_eq!(session.remote_context_messages(), before);
+        session.push(Message::User(UserMessage {
+            content: "inspect".into(),
+            browser_client_id: None,
+            browser_context: None,
+            images: vec![],
+            files: vec![],
+        }));
+        let builder = super::ContextBuilder::new("base");
+        let context = builder.build(&session);
+        assert_eq!(context.turn_clocks[0], before[0]);
+        assert!(context.turn_clocks[1].1.contains("[Turn clock]"));
+        session.record_remote_reconciliation(vec![completed.clone()]);
+        let updated = session.remote_context_messages();
+        assert_eq!(&updated[..before.len()], before);
+        assert_eq!(updated.len(), 2);
+        let saved = serde_json::to_vec(&session).unwrap();
+        session = serde_json::from_slice(&saved).unwrap();
+        session.record_remote_reconciliation(vec![completed]);
+        assert_eq!(session.remote_context_messages(), updated);
+        session.push(Message::Assistant(AssistantMessage {
+            content: "done".into(),
+        }));
+        session.set_compaction(2, "Earlier conversation".into());
+        let compacted = builder.build(&session);
+        assert_eq!(compacted.turn_clocks.len(), 1);
+        assert_eq!(compacted.turn_clocks[0].0, 1);
+        assert!(compacted.turn_clocks[0].1.contains("completed"));
+        assert!(!compacted.turn_clocks[0].1.contains("dispatched"));
+    }
+
+    #[test]
+    fn compacted_remote_metadata_bounds_resolved_operations_and_keeps_uncertain_effects() {
+        use crate::agent::session::Session;
+        use serde_json::json;
+        let mut operations = vec![json!({"run_id":"run","call_id":"uncertain","state":"unknown"})];
+        operations.extend((0..260).rev().map(
+            |index| json!({"run_id":"run","call_id":format!("done_{index}"),"state":"completed"}),
+        ));
+        let mut session: Session = serde_json::from_value(json!({
+            "id":"remote", "messages":[{"User":{"content":"inspect"}},{"Assistant":{"content":"done"}}],
+            "remote_context_events":[{"before_message":1,"operations":operations}]
+        })).unwrap();
+        session.set_compaction(2, "Earlier discussion".into());
+        let builder = super::ContextBuilder::new("base");
+        let context = builder.build(&session);
+        let metadata: Vec<serde_json::Value> =
+            serde_json::from_str(context.turn_clocks[0].1.lines().last().unwrap()).unwrap();
+        assert_eq!(metadata.len(), 257);
+        assert!(
+            metadata
+                .iter()
+                .any(|operation| operation["call_id"] == "uncertain")
+        );
+        assert!(
+            metadata
+                .iter()
+                .any(|operation| operation["call_id"] == "done_259")
+        );
+        assert!(
+            !metadata
+                .iter()
+                .any(|operation| operation["call_id"] == "done_0")
+        );
+    }
+
     #[test]
     fn grouped_webhook_context_keeps_events_separate_from_owner_followups() {
         use crate::agent::{

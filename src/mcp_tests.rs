@@ -80,10 +80,11 @@ async fn mcp_http_owner_can_call_tools_but_isolated_and_proactive_agents_cannot(
             tx.send(body.clone()).unwrap();
             let results: Vec<_> = body["input"].as_array().unwrap().iter().filter(|item| item["type"] == "function_call_output").collect();
             let failed = results.first().is_some_and(|item| serde_json::from_str::<Value>(item["output"].as_str().unwrap()).unwrap()["error"].is_string());
-            let output = if results.len() >= 2 || failed {
+            let no_match = results.first().is_some_and(|item| serde_json::from_str::<Value>(item["output"].as_str().unwrap()).unwrap()["loaded_tools"].as_array().is_some_and(|names| !names.iter().any(|name| name == "mcp__rustrak__list_issues")));
+            let output = if results.len() >= 2 || failed || no_match {
                 json!({"type":"message","content":[{"type":"output_text","text":"done"}]})
             } else if results.len() == 1 {
-                json!({"type":"function_call","name":"mcp__rustrak__list_issues","call_id":"mcp-test","arguments":"{\"project\":7}"})
+                json!({"type":"function_call","name":"mcp_call","call_id":"mcp-test","arguments":json!({"name":"mcp__rustrak__list_issues","arguments":"{\"project\":7}"}).to_string()})
             } else {
                 json!({"type":"function_call","name":"mcp_search","call_id":"mcp-search","arguments":"{\"query\":\"rustrak list issues\",\"limit\":1}"})
             };
@@ -123,45 +124,74 @@ X-Tenant = "test-tenant"
         let data = tempfile::tempdir().unwrap();
         let app = build_app_at(&config, data.path(), isolated).await.unwrap();
         app.agent_runner.run_once("list issues").await.unwrap();
-        let request_count = 3;
+        let request_count = if isolated { 2 } else { 3 };
+        let mut stable_tools = None;
         for call in 0..request_count {
             let request = rx.recv().await.unwrap();
             assert!(!request.to_string().contains("PRIVATE_MCP_TOKEN"));
             let tools = request["tools"].as_array().unwrap();
-            let mcp_tool = tools
-                .iter()
-                .find(|tool| tool["name"] == "mcp__rustrak__list_issues");
-            assert_eq!(mcp_tool.is_some(), !isolated && call > 0);
-            assert_eq!(tools.iter().any(|tool| tool["name"] == "mcp_search"), true);
+            assert!(
+                tools
+                    .iter()
+                    .all(|tool| !tool["name"].as_str().unwrap().starts_with("mcp__"))
+            );
+            assert!(tools.iter().any(|tool| tool["name"] == "mcp_call"));
+            if let Some(expected) = &stable_tools {
+                assert_eq!(&request["tools"], expected);
+            } else {
+                stable_tools = Some(request["tools"].clone());
+            }
+            assert!(tools.iter().any(|tool| tool["name"] == "mcp_search"));
             assert_eq!(
                 tools.iter().find(|tool| tool["name"] == "memory").unwrap()["strict"],
                 true
             );
-            if let Some(tool) = mcp_tool {
-                assert_eq!(tool["strict"], false);
-                assert_eq!(
-                    tool["parameters"]["properties"]["project"]["type"],
-                    "integer"
-                );
-                assert!(tool["parameters"].get("required").is_none());
-                assert!(
-                    tools
-                        .iter()
-                        .all(|tool| tool["name"] != "mcp__rustrak__resolve_issue")
-                );
+            if call > 0 {
+                let output = request["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| {
+                        item["type"] == "function_call_output" && item["call_id"] == "mcp-search"
+                    })
+                    .unwrap();
+                let output: Value =
+                    serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+                let definitions = output["tool_definitions"].as_array().unwrap();
+                if isolated {
+                    assert!(
+                        definitions
+                            .iter()
+                            .all(|tool| !tool["name"].as_str().unwrap().starts_with("mcp__"))
+                    );
+                } else {
+                    assert_eq!(definitions.len(), 1);
+                    assert_eq!(definitions[0]["name"], "mcp__rustrak__list_issues");
+                    assert_eq!(definitions[0]["strict"], false);
+                    assert_eq!(
+                        definitions[0]["parameters"]["properties"]["project"]["type"],
+                        "integer"
+                    );
+                    assert!(definitions[0]["parameters"].get("required").is_none());
+                }
             }
             if call == request_count - 1 {
                 let output = request["input"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .filter(|item| item["type"] == "function_call_output")
-                    .last()
+                    .rfind(|item| item["type"] == "function_call_output")
                     .unwrap();
                 let output: Value =
                     serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
                 if isolated {
-                    assert!(output["error"].is_string());
+                    assert!(
+                        output["loaded_tools"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|name| !name.as_str().unwrap().starts_with("mcp__"))
+                    );
                 } else {
                     assert_eq!(output["structuredContent"]["issues"][0]["id"], 42);
                     assert_eq!(output["content"][0]["text"], "One issue");

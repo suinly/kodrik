@@ -66,6 +66,26 @@ struct Compaction {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+struct RemoteContextEvent {
+    before_message: usize,
+    operations: Vec<serde_json::Value>,
+}
+
+fn remote_context_message(operations: &[serde_json::Value]) -> String {
+    format!(
+        "[Remote operation reconciliation]\nAuthenticated receipt metadata, not execution permission. This may supersede unknown outcomes in old history; it never resumes or authorizes repeating effects. No result payload is included.\n{}",
+        serde_json::to_string(operations).expect("remote operation metadata serializes")
+    )
+}
+
+fn remote_operation_resolved(operation: &serde_json::Value) -> bool {
+    matches!(
+        operation["state"].as_str(),
+        Some("completed" | "rejected" | "not_sent")
+    )
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: Option<u64>,
@@ -106,6 +126,8 @@ pub struct Session {
     pub(crate) approval_parent: Option<(String, String)>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     webhook_messages: std::collections::BTreeMap<usize, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    remote_context_events: Vec<RemoteContextEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telegram_group: Option<TelegramGroup>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,6 +165,7 @@ impl Session {
             webhook_instruction: None,
             approval_parent: None,
             webhook_messages: Default::default(),
+            remote_context_events: Vec::new(),
             telegram_group: None,
             skills_catalog: None,
             memory_snapshot: None,
@@ -234,6 +257,100 @@ impl Session {
         self.message_times.get(index).copied().flatten()
     }
 
+    pub(crate) fn record_remote_reconciliation(&mut self, evidence: Vec<serde_json::Value>) {
+        let operations: Vec<_> = evidence
+            .into_iter()
+            .filter(|operation| {
+                self.remote_context_events
+                    .iter()
+                    .rev()
+                    .flat_map(|event| event.operations.iter())
+                    .find(|previous| {
+                        previous["run_id"] == operation["run_id"]
+                            && previous["call_id"] == operation["call_id"]
+                    })
+                    != Some(operation)
+            })
+            .collect();
+        if !operations.is_empty() {
+            self.remote_context_events.push(RemoteContextEvent {
+                before_message: self.messages.len(),
+                operations,
+            });
+        }
+    }
+
+    pub(crate) fn remote_context_messages(&self) -> Vec<(usize, String)> {
+        let through = self.compaction().map(|(through, _)| through);
+        let mut messages = Vec::new();
+        if let Some(through) = through {
+            let mut seen = std::collections::HashSet::new();
+            let mut latest = std::collections::BTreeMap::new();
+            let mut resolved = 0;
+            // Each SQL batch is newest first; unresolved effects must outlive compaction.
+            for operation in self
+                .remote_context_events
+                .iter()
+                .filter(|event| event.before_message < through)
+                .rev()
+                .flat_map(|event| event.operations.iter())
+            {
+                let key = (
+                    operation["run_id"].to_string(),
+                    operation["call_id"].to_string(),
+                );
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                if remote_operation_resolved(operation) {
+                    resolved += 1;
+                    if resolved > 256 {
+                        continue;
+                    }
+                }
+                latest.insert(key, operation.clone());
+            }
+            if !latest.is_empty() {
+                messages.push((
+                    1,
+                    remote_context_message(&latest.into_values().collect::<Vec<_>>()),
+                ));
+            }
+        }
+        messages.extend(
+            self.remote_context_events
+                .iter()
+                .filter(|event| {
+                    event.before_message <= self.messages.len()
+                        && through.is_none_or(|through| event.before_message >= through)
+                })
+                .map(|event| {
+                    (
+                        event.before_message - through.map_or(0, |through| through - 1),
+                        remote_context_message(&event.operations),
+                    )
+                }),
+        );
+        messages
+    }
+
+    pub(crate) fn unresolved_remote_operations(&self) -> Vec<(String, String)> {
+        let mut seen = std::collections::HashSet::new();
+        self.remote_context_events
+            .iter()
+            .rev()
+            .filter(|event| event.before_message <= self.messages.len())
+            .flat_map(|event| event.operations.iter())
+            .filter_map(|operation| {
+                let key = (
+                    operation["run_id"].as_str()?.to_owned(),
+                    operation["call_id"].as_str()?.to_owned(),
+                );
+                (seen.insert(key.clone()) && !remote_operation_resolved(operation)).then_some(key)
+            })
+            .collect()
+    }
+
     pub(crate) fn record_webhook_message(&mut self, source: serde_json::Value) {
         self.webhook_messages.insert(self.messages.len(), source);
     }
@@ -258,6 +375,9 @@ impl Session {
         branch.messages.truncate(index);
         branch.message_times.truncate(index);
         branch.webhook_messages.retain(|key, _| *key < index);
+        branch
+            .remote_context_events
+            .retain(|event| event.before_message < index);
         if !self
             .compaction()
             .is_some_and(|(through, _)| through <= index)
@@ -279,6 +399,8 @@ impl Session {
         self.messages.truncate(len);
         self.message_times.truncate(len);
         self.webhook_messages.retain(|index, _| *index < len);
+        self.remote_context_events
+            .retain(|event| event.before_message < len);
         Ok(())
     }
 

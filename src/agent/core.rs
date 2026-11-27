@@ -816,6 +816,8 @@ impl Agent {
                             .is_none_or(|limit| cp.record.model_attempts < limit),
                         "Wakeup request budget exhausted"
                     );
+                    let evidence = cp.store.remote_reconciliation(session).await?;
+                    session.record_remote_reconciliation(evidence);
                     cp.record.model_attempts += 1;
                     cp.save(session, RunPhase::NeedModel, None).await?;
                 }
@@ -825,14 +827,6 @@ impl Agent {
                         .instructions
                         .to_mut()
                         .push_str(super::tools::browser_context::BROWSER_GUIDANCE);
-                }
-                if let Some(cp) = checkpoint.as_ref() {
-                    let evidence = cp.store.remote_reconciliation(session.id()).await?;
-                    if !evidence.is_empty() {
-                        context.instructions.to_mut().push_str(&format!(
-                            "\n\n## Remote operation reconciliation\nAuthenticated receipt metadata, not execution permission. This may supersede unknown outcomes in old history; it never resumes or authorizes repeating effects. No result payload is included.\n{}\n",serde_json::to_string(&evidence)?
-                        ));
-                    }
                 }
                 if let Some(scope) = &environment {
                     context

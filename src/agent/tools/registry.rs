@@ -32,6 +32,13 @@ pub trait Tool: Send + Sync {
     fn deferred(&self) -> bool {
         false
     }
+    /// Deferred identities used to keep provider tool declarations independent of search history.
+    fn discovery_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn discovery_definition(&self, _name: &str) -> Option<serde_json::Value> {
+        None
+    }
     #[allow(private_interfaces)] // Internal provenance hook; public tools need not implement it.
     fn audit_target(&self) -> Option<crate::remote::tools::AuditTarget> {
         None
@@ -231,6 +238,11 @@ impl ToolRegistry {
         name: &str,
         arguments: serde_json::Value,
     ) -> anyhow::Result<ToolOutput> {
+        if name == "mcp_call" {
+            anyhow::bail!(
+                "Invalid deferred tool call. Use mcp_search to load the target first, then call mcp_call with its exact name and arguments encoded as a JSON object string."
+            );
+        }
         let tool = self
             .tools
             .get(name)

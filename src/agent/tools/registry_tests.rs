@@ -322,3 +322,29 @@ async fn builtin_discovery_loads_schemas_only_after_search_and_keeps_execution_p
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn discovery_snapshots_schemas_for_replay_without_advertising_them_up_front() {
+    let registry = ToolRegistry::default()
+        .register(Arc::new(Function {
+            name: "datasets".into(),
+            deferred: false,
+        }))
+        .with_deferred_builtin_schemas();
+    let search = registry
+        .list()
+        .into_iter()
+        .find(|tool| tool.name() == "mcp_search")
+        .unwrap();
+    let result = search
+        .execute(json!({"query":"datasets","limit":1}))
+        .await
+        .unwrap();
+    assert_eq!(result.output["tool_definitions"][0]["name"], "datasets");
+    assert_eq!(
+        result.output["tool_definitions"][0]["parameters"]["properties"]["id"]["type"],
+        "integer"
+    );
+    assert_eq!(result.output["tool_definitions"][0]["strict"], true);
+    assert_eq!(names(&registry, &[]), ["mcp_search"]);
+}

@@ -72,6 +72,41 @@ Chat Completions. Multiple models can reference the same connection.
 | `type` | Yes | `"openai"`, the supported adapter |
 | `api_key` | Yes | API credential |
 | `api_base` | No | Custom API base URL; omitted uses the adapter's OpenAI default |
+| `tool_discovery` | No | `"compatible"` (default) or `"native"`; see below |
+
+### Tool discovery and prompt caching
+
+The default `tool_discovery = "compatible"` uses stable `mcp_search` and
+`mcp_call` function definitions. Search returns the selected tool schemas in
+conversation history instead of changing the request's top-level tool list.
+Actual calls retain the tool's normal access checks, approvals and replay policy.
+
+Set `tool_discovery = "native"` on a provider whose upstream model and route
+support client-executed Responses API `tool_search`:
+
+```toml
+[provider.openai]
+type = "openai"
+api_key = "your-key"
+tool_discovery = "native"
+```
+
+Native discovery returns definitions in the `kodrik` namespace with
+`defer_loading`, appending them to history. The native Codex/Responses routes in
+OmniRoute and 9Router preserve this representation in the versions checked for
+this implementation. A route that translates Responses to Chat Completions does
+not preserve native discovery semantics; use `"compatible"` there. The router's
+name alone does not establish upstream support. Kodrik does not retry a failed
+native request using another protocol.
+
+Restart the process to apply the setting. Existing sessions remain readable;
+changing discovery mode changes the wire representation and causes a one-time
+prefix change. Compaction also replaces part of the prefix, and a tool whose
+definition is no longer in the compacted context may need to be discovered again.
+Stable prefixes allow provider caching but do not guarantee a particular hit
+rate: model selection, upstream routing and cache retention still matter.
+
+### Model profiles
 
 Each `[model.<role>]` sets `provider` (the connection name), `model` (the API
 model ID) and optionally `reasoning_effort` and [token prices](#optional-token-prices).

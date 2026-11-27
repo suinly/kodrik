@@ -738,6 +738,30 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn tool_discovery_configuration_survives_form_editing() {
+        let (_dir, app, owner, _) = fixture();
+        let (_, mut form) = request_at("/api/config/form", &app, &owner, None, None).await;
+        assert_eq!(
+            form["values"]["provider"]["primary"]["tool_discovery"],
+            "compatible"
+        );
+        form["values"]["provider"]["primary"]["tool_discovery"] = json!("native");
+        let (status, form) = request_at(
+            "/api/config/form",
+            &app,
+            &owner,
+            Some(form),
+            Some("http://127.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            form["values"]["provider"]["primary"]["tool_discovery"],
+            "native"
+        );
+    }
+
     #[test]
     fn configuration_form_roundtrips_fractional_rates_and_rejects_invalid_rates() {
         let source = format!(

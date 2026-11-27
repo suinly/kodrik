@@ -270,8 +270,26 @@ pub(crate) fn reconciliation(
     db: &Connection,
     session: &str,
 ) -> anyhow::Result<Vec<serde_json::Value>> {
-    let mut stmt = db.prepare("SELECT json_object('run_id',o.run_id,'call_id',o.call_id,'connection_id',o.connection_id,'generation',o.generation,'tool_id',json_extract(o.payload,'$.invocation.tool_id'),'state',json_extract(o.payload,'$.state'),'arguments_hash',json_extract(o.payload,'$.arguments_hash')) FROM remote_operations o JOIN runs r ON r.id=o.run_id WHERE r.session_id=?1 ORDER BY o.rowid DESC LIMIT 256")?;
-    stmt.query_map([session], |row| row.get::<_, String>(0))?
+    reconciliation_with_watchlist(db, session, None)
+}
+
+fn reconciliation_with_watchlist(
+    db: &Connection,
+    session: &str,
+    watchlist: Option<&str>,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let limit = if watchlist.is_none() {
+        " LIMIT 256"
+    } else {
+        ""
+    };
+    let mut stmt = db.prepare(&format!("SELECT json_object('run_id',o.run_id,'call_id',o.call_id,'connection_id',o.connection_id,'generation',o.generation,'tool_id',json_extract(o.payload,'$.invocation.tool_id'),'state',json_extract(o.payload,'$.state'),'arguments_hash',json_extract(o.payload,'$.arguments_hash')) FROM remote_operations o JOIN runs r ON r.id=o.run_id WHERE r.session_id=?1 AND (
+        ?2 IS NULL
+        OR COALESCE(json_extract(o.payload,'$.state'),'unknown') NOT IN ('completed','rejected','not_sent')
+        OR (o.run_id,o.call_id) IN (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?2))
+        OR o.rowid IN (SELECT recent.rowid FROM remote_operations recent JOIN runs recent_run ON recent_run.id=recent.run_id WHERE recent_run.session_id=?1 AND json_extract(recent.payload,'$.state') IN ('completed','rejected','not_sent') ORDER BY recent.rowid DESC LIMIT 256)
+    ) ORDER BY o.rowid DESC{limit}"))?;
+    stmt.query_map(params![session, watchlist], |row| row.get::<_, String>(0))?
         .map(|row| Ok(serde_json::from_str(&row?)?))
         .collect()
 }
@@ -328,11 +346,14 @@ impl SqliteSessionStore {
 
     pub(crate) async fn remote_reconciliation(
         &self,
-        session: &SessionId,
+        session: &crate::agent::session::Session,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let session = session.as_str().to_owned();
-        self.with_connection(move |db| reconciliation(db, &session))
-            .await
+        let watchlist = serde_json::to_string(&session.unresolved_remote_operations())?;
+        let session = session.id().as_str().to_owned();
+        self.with_connection(move |db| {
+            reconciliation_with_watchlist(db, &session, Some(&watchlist))
+        })
+        .await
     }
     pub(crate) async fn yield_environment_run(
         &self,

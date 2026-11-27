@@ -122,11 +122,8 @@ pub(crate) async fn connect_scoped(
         }
     }
     if !tools.is_empty() {
-        let catalog = tools
-            .iter()
-            .map(|tool| (tool.name(), tool.description()))
-            .collect();
-        tools.push(Arc::new(super::mcp_search::McpSearchTool::new(catalog)));
+        let search = super::mcp_search::McpSearchTool::live(tools.clone());
+        tools.push(Arc::new(search));
     }
     Ok(tools)
 }

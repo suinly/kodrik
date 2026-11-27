@@ -627,6 +627,66 @@ async fn run_observer_sees_evidence_without_changing_execution_checkpoint() {
 }
 
 #[tokio::test]
+async fn runtime_reconciliation_refreshes_old_uncertain_effects_outside_the_recent_window() {
+    let (_dir, store, device, call) = fixture().await;
+    bind(&store, device, &call).await;
+    store.remote_intent(device, call.clone()).await.unwrap();
+    store.remote_dispatch(device, call.clone()).await.unwrap();
+    let run = call.run_id.clone();
+    store.with_connection(move |db| {
+        for index in 0..260 {
+            db.execute(
+                "INSERT INTO remote_operations (run_id,call_id,device_id,connection_id,generation,payload) SELECT run_id,?2,device_id,connection_id,generation,CAST(json_set(CAST(payload AS TEXT),'$.state','completed','$.invocation.call_id',?2) AS BLOB) FROM remote_operations WHERE run_id=?1 AND call_id='call'",
+                rusqlite::params![run,format!("newer_{index}")],
+            )?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let mut session = Session::new(call.session_id.clone());
+    let initial = store.remote_reconciliation(&session).await.unwrap();
+    assert_eq!(initial.len(), 257);
+    assert!(
+        initial
+            .iter()
+            .any(|operation| operation["call_id"] == "call" && operation["state"] == "unknown")
+    );
+    assert!(
+        initial
+            .iter()
+            .all(|operation| operation.get("arguments").is_none())
+    );
+    session.record_remote_reconciliation(initial);
+    session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+    let mut completed = receipt(&call, OperationState::Completed);
+    completed.result = Some(json!({"stdout":"done"}).into());
+    store.remote_receipt(device, completed).await.unwrap();
+    let updated = store.remote_reconciliation(&session).await.unwrap();
+    assert_eq!(updated.len(), 257);
+    assert!(
+        updated
+            .iter()
+            .any(|operation| operation["call_id"] == "call" && operation["state"] == "completed")
+    );
+    session.record_remote_reconciliation(updated);
+    let settled = store.remote_reconciliation(&session).await.unwrap();
+    assert_eq!(settled.len(), 256);
+    assert!(
+        !settled
+            .iter()
+            .any(|operation| operation["call_id"] == "call")
+    );
+    assert_eq!(
+        store
+            .run_view(&call.run_id)
+            .await
+            .unwrap()
+            .remote_operations
+            .len(),
+        256
+    );
+}
+
+#[tokio::test]
 async fn remote_intent_refuses_replayable_tool_checkpoint() {
     let (_dir, store, device, call) = fixture().await;
     bind(&store, device, &call).await;
