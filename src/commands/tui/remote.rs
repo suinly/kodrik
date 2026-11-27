@@ -1031,6 +1031,9 @@ async fn event_loop(
         Some(Ok(())) => {}
     }
     let mut pages = session_picker::Pages::default();
+    let update = super::update::check();
+    tokio::pin!(update);
+    let mut checking_update = true;
     while !app.should_quit {
         pages.refresh(app, |query, limit, offset| {
             let chat = remote.chat.clone();
@@ -1078,6 +1081,10 @@ async fn event_loop(
         };
         let language = app.language;
         tokio::select! {
+            version = &mut update, if checking_update => {
+                checking_update = false;
+                app.available_update = version;
+            },
             _=&mut shutdown=>app.should_quit=true,
             result=pages.next()=>pages.receive(app,result),
             result=async {match remote.reconnect.as_mut() {

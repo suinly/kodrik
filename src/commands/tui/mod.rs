@@ -17,6 +17,7 @@ mod startup_tests;
 mod terminal;
 mod transcript;
 mod ui;
+mod update;
 mod view;
 
 use std::{
@@ -130,6 +131,9 @@ async fn run_session_inner(
     refresh_waiting(&mut app, &runner, &session_id).await;
 
     let mut tui = Tui::enter()?;
+    let update = update::check();
+    tokio::pin!(update);
+    let mut checking_update = true;
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut history_tick = tokio::time::interval(Duration::from_secs(1));
@@ -213,6 +217,11 @@ async fn run_session_inner(
             redraw = false;
         }
         tokio::select! {
+            version = &mut update, if checking_update => {
+                checking_update = false;
+                app.available_update = version;
+                redraw |= app.available_update.is_some();
+            },
             result = pages.next() => {
                 pages.receive(&mut app, result);
                 redraw = true;
@@ -700,6 +709,7 @@ fn reset_session(app: &mut App) {
     *app = App {
         language: app.language,
         model: std::mem::take(&mut app.model),
+        available_update: app.available_update.take(),
         ..Default::default()
     };
 }

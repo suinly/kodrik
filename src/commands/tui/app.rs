@@ -57,6 +57,7 @@ pub struct App {
     pub scroll: usize,
     pub view: super::view::View,
     pub copy_notice: Option<(String, std::time::Instant)>,
+    pub(super) available_update: Option<String>,
     pub animation_frame: usize,
     pub status: Status,
     pub task_started_at: Option<chrono::DateTime<chrono::Utc>>,

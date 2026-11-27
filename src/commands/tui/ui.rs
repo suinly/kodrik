@@ -862,7 +862,7 @@ fn format_session_cost((usd, partial): (f64, bool)) -> String {
     format!("{bound}${whole}.{cents}")
 }
 
-fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
+fn render_footer(app: &App, frame: &mut Frame, mut footer: Rect) {
     let language = app.language;
     let (mode_icon, mode_color) = match app.audit_mode {
         CommandAuditMode::Trusted => ("◈", Color::Yellow),
@@ -870,13 +870,32 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
         CommandAuditMode::Ask => ("◆", Color::Green),
     };
     let audit = format!("{mode_icon} {}", app.audit_mode.label(language));
-    if let Some(connection) = app.remote_connection {
-        let connection = match connection {
-            "connected" => language.pick("connected", "подключено"),
-            "disconnected" => language.pick("disconnected", "нет связи"),
-            "detached" => language.pick("detached", "отключено"),
-            other => other,
-        };
+    let connection = app.remote_connection.map(|connection| match connection {
+        "connected" => language.pick("connected", "подключено"),
+        "disconnected" => language.pick("disconnected", "нет связи"),
+        "detached" => language.pick("detached", "отключено"),
+        other => other,
+    });
+    let mandatory_width = Span::raw(audit.as_str()).width()
+        + connection.map_or(0, |label| Span::raw(label).width() + 3);
+    if let Some(version) = &app.available_update {
+        let badge = Span::styled(format!("↑ {version}"), Style::default().fg(Color::Cyan));
+        let badge_width = badge.width();
+        if mandatory_width + badge_width < usize::from(footer.width) {
+            let badge_width = badge_width as u16;
+            frame.render_widget(
+                Paragraph::new(Line::from(badge)),
+                Rect::new(
+                    footer.right() - badge_width,
+                    footer.y,
+                    badge_width,
+                    footer.height,
+                ),
+            );
+            footer.width -= badge_width + 1;
+        }
+    }
+    if let Some(connection) = connection {
         let model = app
             .model
             .split_once('/')
@@ -897,7 +916,6 @@ fn render_footer(app: &App, frame: &mut Frame, footer: Rect) {
             .copy_notice
             .as_ref()
             .map_or(0, |(notice, _)| Span::raw(notice.as_str()).width() + 1);
-        let mandatory_width = Span::raw(format!("{audit} · {connection}")).width();
         let metadata_width = if mandatory_width + notice_width <= width {
             width.saturating_sub(notice_width)
         } else {
@@ -1137,6 +1155,37 @@ pub fn message_text(message: &AppMessage) -> Text<'static> {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn update_badge_is_at_bottom_right_in_local_and_remote_tui() {
+        for connection in [None, Some("connected")] {
+            let mut app = App {
+                remote_connection: connection,
+                model: "a-long-model-name".into(),
+                ..Default::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            let row = |terminal: &Terminal<TestBackend>| {
+                (0..40)
+                    .map(|x| terminal.backend().buffer()[(x, 11)].symbol())
+                    .collect::<String>()
+            };
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            assert!(!row(&terminal).contains("↑ v"));
+            app.available_update = Some("v1.2.3".into());
+            app.set_copy_notice("Copied".into());
+            terminal.draw(|frame| render(&mut app, frame)).unwrap();
+            let footer = row(&terminal);
+            assert!(footer.ends_with("Copied ↑ v1.2.3"), "{footer}");
+            assert!(
+                footer.contains(app.audit_mode.label(app.language)),
+                "{footer}"
+            );
+            if let Some(connection) = connection {
+                assert!(footer.contains(connection), "{footer}");
+            }
+        }
+    }
 
     #[test]
     fn bilingual_remote_footer_labels_preserve_protocol_state() {
